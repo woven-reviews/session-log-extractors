@@ -7,9 +7,12 @@ Run: python3 scripts/test_extract_claude_session_log.py
 from __future__ import annotations
 
 import base64
+import os
+import shutil
 import tempfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
+import extract_claude_session_log as claude_log
 from extract_claude_session_log import (
     Turn,
     _candidate_project_dirs,
@@ -19,9 +22,17 @@ from extract_claude_session_log import (
     clean_user_text,
     dump_images,
     encode_project_path,
+    load_entries,
+    main,
     parse_permission_denial,
     permission_denials_from_result,
     render,
+    select_transcript,
+)
+
+# Real, trimmed, redacted Claude Code transcript -- see tests/fixtures/claude/.
+CLAUDE_FIXTURE = (
+    Path(__file__).resolve().parent.parent / "tests/fixtures/claude/session.jsonl"
 )
 
 # 1x1 transparent PNG.
@@ -451,9 +462,124 @@ def test_plan_without_result_is_marked_undecided():
     assert plan["decision"] == "no decision recorded"
 
 
+# --------------------------------------------------------------------------- #
+# Fixture-driven: real (trimmed, redacted) transcript, session selection,
+# --strict, malformed input, and main() end-to-end.
+# --------------------------------------------------------------------------- #
+
+
+def test_load_entries_parses_the_real_fixture():
+    entries = load_entries(CLAUDE_FIXTURE)
+    assert len(entries) == 10
+    assert entries[1]["type"] == "user"
+    assert "subagent definition" in entries[1]["message"]["content"]
+
+
+def test_load_entries_skips_malformed_and_blank_lines(tmp_path):
+    corrupted = tmp_path / "session.jsonl"
+    real_text = CLAUDE_FIXTURE.read_text(encoding="utf-8")
+    corrupted.write_text(real_text + "\n{this is not json\n\n", encoding="utf-8")
+    entries = load_entries(corrupted)
+    # The real entries all still parse; only the corrupt/blank tail is skipped.
+    assert len(entries) == 10
+
+
+def test_select_transcript_project_dir_picks_newest(tmp_path):
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    older = proj / "aaaaaaaa-0000-0000-0000-000000000001.jsonl"
+    newer = proj / "bbbbbbbb-0000-0000-0000-000000000002.jsonl"
+    shutil.copy(CLAUDE_FIXTURE, older)
+    shutil.copy(CLAUDE_FIXTURE, newer)
+    os.utime(older, (1, 1))
+    os.utime(newer, (2, 2))
+    assert select_transcript(None, None, str(proj)) == newer
+
+
+def test_select_transcript_session_id_prefix_match(tmp_path):
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    target = proj / "cccccccc-1111-2222-3333-444444444444.jsonl"
+    other = proj / "dddddddd-1111-2222-3333-444444444444.jsonl"
+    shutil.copy(CLAUDE_FIXTURE, target)
+    shutil.copy(CLAUDE_FIXTURE, other)
+    assert select_transcript("cccccccc", None, str(proj)) == target
+
+
+def test_select_transcript_ambiguous_prefix_raises(tmp_path):
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    shutil.copy(CLAUDE_FIXTURE, proj / "abc11111-0000-0000-0000-000000000000.jsonl")
+    shutil.copy(CLAUDE_FIXTURE, proj / "abc22222-0000-0000-0000-000000000000.jsonl")
+    try:
+        select_transcript("abc", None, str(proj))
+    except FileNotFoundError as exc:
+        assert "ambiguous" in str(exc)
+    else:
+        raise AssertionError("expected FileNotFoundError")
+
+
+def test_select_transcript_strict_disables_parent_walk_and_global_fallback(
+    monkeypatch, tmp_path
+):
+    projects_root = tmp_path / "claude_projects"
+    projects_root.mkdir()
+    cwd = tmp_path / "work" / "sub"
+    cwd.mkdir(parents=True)
+    parent_dir = projects_root / claude_log.encode_project_path(cwd.parent)
+    parent_dir.mkdir()
+    shutil.copy(CLAUDE_FIXTURE, parent_dir / "session.jsonl")
+
+    monkeypatch.setattr(claude_log, "PROJECTS_ROOT", projects_root)
+    monkeypatch.setattr(Path, "cwd", staticmethod(lambda: cwd))
+
+    # Non-strict: the parent-dir walk finds the parent's transcript dir.
+    assert select_transcript(None, None, None, strict=False) == (
+        parent_dir / "session.jsonl"
+    )
+
+    # Strict: no parent-walk and no global fallback -- nothing matches.
+    try:
+        select_transcript(None, None, None, strict=True)
+    except FileNotFoundError as exc:
+        assert "--strict" in str(exc)
+    else:
+        raise AssertionError("expected FileNotFoundError")
+
+
+def test_main_end_to_end_renders_the_real_fixture(tmp_path):
+    out_path = tmp_path / "out.md"
+    rc = main(
+        [
+            "--transcript",
+            str(CLAUDE_FIXTURE),
+            "--output",
+            str(out_path),
+            "--no-raw",
+        ]
+    )
+    assert rc == 0
+    assert out_path.is_file()
+    markdown = out_path.read_text(encoding="utf-8")
+    assert "subagent definition" in markdown
+    assert "Trade-off is cost/speed" in markdown
+
+
+def test_main_reports_missing_transcript_and_exits_nonzero(tmp_path, capsys):
+    missing = tmp_path / "nope.jsonl"
+    rc = main(["--transcript", str(missing)])
+    assert rc == 1
+    assert "does not exist" in capsys.readouterr().err
+
+
 if __name__ == "__main__":
+    import inspect
+
     for name, fn in sorted(globals().items()):
-        if name.startswith("test_") and callable(fn):
-            fn()
-            print(f"ok  {name}")
+        if not (name.startswith("test_") and callable(fn)):
+            continue
+        if inspect.signature(fn).parameters:
+            continue  # needs pytest fixtures (monkeypatch/tmp_path/...); run via pytest
+        fn()
+        print(f"ok  {name}")
     print("all passed")

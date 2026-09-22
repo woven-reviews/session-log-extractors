@@ -26,9 +26,18 @@ from extract_copilot_session_log import (
     get_db_connection,
     get_session_by_id,
     get_session_turns,
+    main,
     matching_sessions,
+    newest_session,
     render_session,
 )
+
+# Real, trimmed, redacted Copilot session-store.db + events.jsonl sidecar --
+# see tests/fixtures/copilot/.
+_COPILOT_FIXTURES = Path(__file__).resolve().parent.parent / "tests/fixtures/copilot"
+COPILOT_FIXTURE_DB = _COPILOT_FIXTURES / "session-store.db"
+COPILOT_FIXTURE_STATE_ROOT = _COPILOT_FIXTURES / "session-state"
+COPILOT_FIXTURE_SESSION_ID = "b10f9a1b-1803-4178-8fcc-8b2a15134624"
 
 _PNG_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/ax6fN8A"
@@ -897,6 +906,78 @@ def test_copilot_main_defaults_to_all_without_a_selector(monkeypatch, tmp_path):
     rc = copilot_log.main(["--db", str(tmp_path / "x.db")])
     assert rc == 0
     assert called == {"output": None, "strict": False}
+
+
+# --------------------------------------------------------------------------- #
+# Fixture-driven: real (trimmed, redacted) session-store.db + events.jsonl
+# sidecar, real cwd-overlap --strict matching (no monkeypatch), and main()
+# end-to-end.
+# --------------------------------------------------------------------------- #
+
+
+def test_matching_sessions_real_fixture_cwd_overlap_and_strict():
+    conn = get_db_connection(COPILOT_FIXTURE_DB)
+    try:
+        exact = matching_sessions(conn, Path("/redacted/project"), strict=True)
+        assert [s["id"] for s in exact] == [COPILOT_FIXTURE_SESSION_ID]
+
+        # A descendant cwd overlaps the recorded one but isn't an exact match.
+        nested = Path("/redacted/project/sub")
+        assert [s["id"] for s in matching_sessions(conn, nested, strict=False)] == [
+            COPILOT_FIXTURE_SESSION_ID
+        ]
+        assert matching_sessions(conn, nested, strict=True) == []
+    finally:
+        conn.close()
+
+
+def test_newest_session_real_fixture():
+    conn = get_db_connection(COPILOT_FIXTURE_DB)
+    try:
+        session = newest_session(conn, Path("/redacted/project"))
+        assert session is not None
+        assert session["id"] == COPILOT_FIXTURE_SESSION_ID
+    finally:
+        conn.close()
+
+
+def test_render_session_includes_real_events_sidecar_tool_call(monkeypatch):
+    monkeypatch.setattr(copilot_log, "COPILOT_STATE_ROOT", COPILOT_FIXTURE_STATE_ROOT)
+    conn = get_db_connection(COPILOT_FIXTURE_DB)
+    try:
+        session = get_session_by_id(conn, COPILOT_FIXTURE_SESSION_ID)
+        assert session is not None
+        markdown = render_session(conn, session)
+    finally:
+        conn.close()
+    assert "Please run the setup in this repo" in markdown
+    assert "rename_session" in markdown
+
+
+def test_main_end_to_end_with_real_fixture(monkeypatch, tmp_path):
+    monkeypatch.setattr(copilot_log, "COPILOT_STATE_ROOT", COPILOT_FIXTURE_STATE_ROOT)
+    out_path = tmp_path / "out.md"
+    rc = main(
+        [
+            "--db",
+            str(COPILOT_FIXTURE_DB),
+            COPILOT_FIXTURE_SESSION_ID,
+            "--output",
+            str(out_path),
+            "--no-raw",
+        ]
+    )
+    assert rc == 0
+    assert out_path.is_file()
+    markdown = out_path.read_text(encoding="utf-8")
+    assert "Please run the setup in this repo" in markdown
+
+
+def test_main_reports_missing_db_and_exits_nonzero(tmp_path, capsys):
+    missing = tmp_path / "nope.db"
+    rc = main(["--db", str(missing)])
+    assert rc == 1
+    assert "not found" in capsys.readouterr().err
 
 
 if __name__ == "__main__":
