@@ -1,0 +1,7 @@
+interface:
+  display_name: "Extract Codex Session Logs"
+  short_description: "Export Codex sessions and describe pasted images"
+  default_prompt: "Use $extract-codex-session-logs to extract all Codex session logs for this repository and replace dumped-image markers with brief image descriptions."
+
+policy:
+  allow_implicit_invocation: false

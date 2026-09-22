@@ -1,0 +1,7 @@
+interface:
+  display_name: "Extract Copilot Session Logs"
+  short_description: "Export all Copilot CLI sessions for this repo"
+  default_prompt: "Use $extract-copilot-session-logs to extract all GitHub Copilot CLI session logs for this repository."
+
+policy:
+  allow_implicit_invocation: false
