@@ -1,0 +1,17 @@
+{
+  "source": "monorepo .claude/commands/",
+  "propagated": [
+    "address-coderabbit.md",
+    "commit-review.md",
+    "commit.md",
+    "create-pr.md",
+    "investigate-coc-divergence.md",
+    "review-changes.md",
+    "rewrite-branch-commits.md",
+    "self-review-pr.md",
+    "work-ticket.md",
+    "write-spec.md",
+    "shared/commit-message-style.md"
+  ],
+  "last_synced": "2026-09-22T19:29:50Z"
+}
