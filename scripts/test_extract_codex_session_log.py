@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -17,10 +18,17 @@ from extract_codex_session_log import (
     build_turns,
     clean_user_text,
     dump_images,
+    load_entries,
     main,
     parse_permission_denial,
     render,
+    select_transcript,
     skill_names_from_call,
+)
+
+# Real, trimmed, redacted Codex transcript -- see tests/fixtures/codex/.
+CODEX_FIXTURE = (
+    Path(__file__).resolve().parent.parent / "tests/fixtures/codex/session.jsonl"
 )
 
 # 1x1 transparent PNG.
@@ -712,9 +720,116 @@ def test_build_events_does_not_disturb_the_markdown_turns():
     assert [t.user_text for t in build_turns(entries)[0]] == before
 
 
+# --------------------------------------------------------------------------- #
+# Fixture-driven: real (trimmed, redacted) transcript, session selection,
+# --strict, malformed input, and main() end-to-end.
+# --------------------------------------------------------------------------- #
+
+
+def test_load_entries_parses_the_real_fixture():
+    entries = load_entries(CODEX_FIXTURE)
+    assert len(entries) == 6
+    assert entries[0]["type"] == "session_meta"
+    assert entries[0]["payload"]["cwd"] == "/redacted/project"
+
+
+def test_load_entries_skips_malformed_and_blank_lines(tmp_path):
+    corrupted = tmp_path / "session.jsonl"
+    real_text = CODEX_FIXTURE.read_text(encoding="utf-8")
+    corrupted.write_text(real_text + "\n{this is not json\n\n", encoding="utf-8")
+    entries = load_entries(corrupted)
+    assert len(entries) == 6
+
+
+def test_select_transcript_sessions_root_picks_newest(tmp_path):
+    older = tmp_path / "rollout-a.jsonl"
+    newer = tmp_path / "rollout-b.jsonl"
+    shutil.copy(CODEX_FIXTURE, older)
+    shutil.copy(CODEX_FIXTURE, newer)
+    os.utime(older, (1, 1))
+    os.utime(newer, (2, 2))
+    assert select_transcript(None, None, str(tmp_path)) == newer
+
+
+def test_select_transcript_session_id_prefix_match(tmp_path):
+    target = tmp_path / "rollout-target.jsonl"
+    shutil.copy(CODEX_FIXTURE, target)
+    # The real fixture's session id is 01a0c43e-367f-7833-91d9-4d9283a3fbd5.
+    assert select_transcript("01a0c43e", None, str(tmp_path)) == target
+
+
+def test_select_transcript_ambiguous_session_id_raises(tmp_path):
+    shutil.copy(CODEX_FIXTURE, tmp_path / "rollout-a.jsonl")
+    shutil.copy(CODEX_FIXTURE, tmp_path / "rollout-b.jsonl")
+    # Two files sharing the same real session id (e.g. one copied as a
+    # backup) -- the prefix match is ambiguous between them.
+    try:
+        select_transcript("01a0c43e", None, str(tmp_path))
+    except FileNotFoundError as exc:
+        assert "ambiguous" in str(exc)
+    else:
+        raise AssertionError("expected FileNotFoundError")
+
+
+def test_select_transcript_strict_requires_exact_cwd_and_disables_fallback(
+    monkeypatch, tmp_path
+):
+    shutil.copy(CODEX_FIXTURE, tmp_path / "rollout.jsonl")
+
+    # Exact cwd match: found both strict and non-strict.
+    monkeypatch.setattr(Path, "cwd", staticmethod(lambda: Path("/redacted/project")))
+    assert select_transcript(None, None, str(tmp_path), strict=True) == (
+        tmp_path / "rollout.jsonl"
+    )
+
+    # A cwd nested under the recorded one only overlaps -- strict rejects it.
+    monkeypatch.setattr(
+        Path, "cwd", staticmethod(lambda: Path("/redacted/project/sub"))
+    )
+    assert select_transcript(None, None, str(tmp_path), strict=False) == (
+        tmp_path / "rollout.jsonl"
+    )
+    try:
+        select_transcript(None, None, str(tmp_path), strict=True)
+    except FileNotFoundError as exc:
+        assert "--strict" in str(exc)
+    else:
+        raise AssertionError("expected FileNotFoundError")
+
+
+def test_main_end_to_end_renders_the_real_fixture(tmp_path):
+    out_path = tmp_path / "out.md"
+    rc = main(
+        [
+            "--transcript",
+            str(CODEX_FIXTURE),
+            "--output",
+            str(out_path),
+            "--no-raw",
+        ]
+    )
+    assert rc == 0
+    assert out_path.is_file()
+    markdown = out_path.read_text(encoding="utf-8")
+    assert "What does this skill do?" in markdown
+    assert "relentless interview" in markdown
+
+
+def test_main_reports_missing_transcript_and_exits_nonzero(tmp_path, capsys):
+    missing = tmp_path / "nope.jsonl"
+    rc = main(["--transcript", str(missing)])
+    assert rc == 1
+    assert "does not exist" in capsys.readouterr().err
+
+
 if __name__ == "__main__":
+    import inspect
+
     for name, fn in sorted(globals().items()):
-        if name.startswith("test_") and callable(fn):
-            fn()
-            print(f"ok  {name}")
+        if not (name.startswith("test_") and callable(fn)):
+            continue
+        if inspect.signature(fn).parameters:
+            continue  # needs pytest fixtures (monkeypatch/tmp_path/...); run via pytest
+        fn()
+        print(f"ok  {name}")
     print("all passed")
