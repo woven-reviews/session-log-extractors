@@ -31,6 +31,13 @@ CODEX_FIXTURE = (
     Path(__file__).resolve().parent.parent / "tests/fixtures/codex/session.jsonl"
 )
 
+# Real, trimmed, redacted Codex transcript covering a real /fixture-skill
+# invocation and a real attached-image turn -- see tests/fixtures/codex/.
+CODEX_SKILL_IMAGE_FIXTURE = (
+    Path(__file__).resolve().parent.parent
+    / "tests/fixtures/codex/skill_and_image_session.jsonl"
+)
+
 # 1x1 transparent PNG.
 _PNG_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9"
@@ -820,6 +827,31 @@ def test_main_reports_missing_transcript_and_exits_nonzero(tmp_path, capsys):
     rc = main(["--transcript", str(missing)])
     assert rc == 1
     assert "does not exist" in capsys.readouterr().err
+
+
+def test_real_fixture_slash_command_invokes_a_real_skill():
+    # /fixture-skill triggered an actual `exec` read of that skill's SKILL.md,
+    # unlike the synthetic skill tests above which fabricate the call.
+    entries = load_entries(CODEX_SKILL_IMAGE_FIXTURE)
+    turns, _ = build_turns(entries)
+    assert turns[0].command == "/fixture-skill"
+    assert turns[0].skills_used == ["fixture-skill"]
+
+    md = render(turns, [], "project", entries[0]["timestamp"])
+    assert "_Skill used:_ **fixture-skill**" in md
+    assert "Hello! Python files here:" in md
+
+
+def test_real_fixture_attached_image_is_captured_and_inlined():
+    # A real `codex exec --image` attachment, not a synthetic input_image block.
+    entries = load_entries(CODEX_SKILL_IMAGE_FIXTURE)
+    turns, _ = build_turns(entries)
+    assert "Describe what is in the attached image" in turns[1].user_text
+
+    events = build_events(entries)
+    user = next(e for e in events if e["role"] == "user" and e.get("images"))
+    assert user["images"][0]["media_type"] == "image/png"
+    assert base64.b64decode(user["images"][0]["data"]).startswith(b"\x89PNG")
 
 
 if __name__ == "__main__":
