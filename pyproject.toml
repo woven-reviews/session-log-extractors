@@ -9,7 +9,7 @@ description = "Reusable extractors for Claude, Codex, and Copilot session logs"
 requires-python = ">=3.11"
 
 [project.optional-dependencies]
-test = ["pytest"]
+test = ["pytest", "pytest-cov"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

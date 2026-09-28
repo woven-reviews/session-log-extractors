@@ -155,6 +155,26 @@ _COMMAND_ARGS = re.compile(
     r"<command-args>\s*(.*?)\s*</command-args>", re.DOTALL | re.IGNORECASE
 )
 
+# A user-invoked Skill (typed as `/skill-name`, same as a custom slash command)
+# is NOT a `tool_use` named "Skill" -- that only happens when the model invokes
+# a skill on its own. Claude Code represents the user-typed case exactly like
+# any other slash command (the <command-name> tag above), with the skill's
+# SKILL.md content injected as a companion `isMeta` entry immediately after,
+# prefixed with its directory. That prefix is the only signal distinguishing a
+# skill from an ordinary custom command.
+_SKILL_BASE_DIR_PREFIX = "Base directory for this skill:"
+
+
+def _skill_from_meta_companion(entry: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    """(name, path) from a skill's isMeta companion entry, or None."""
+    text = _human_text(entry)
+    if not text.startswith(_SKILL_BASE_DIR_PREFIX):
+        return None
+    path = text.splitlines()[0][len(_SKILL_BASE_DIR_PREFIX) :].strip()
+    if not path:
+        return None
+    return Path(path).name or path, path
+
 # When the human denies a permission prompt, the harness feeds the assistant a
 # canned tool_result (is_error) whose content opens with one of these preambles.
 # An approval leaves no distinct record — the tool just runs — so denials are the
@@ -471,6 +491,31 @@ def _image_sources(entry: Dict[str, Any]) -> List[Dict[str, Any]]:
     return out
 
 
+def _result_block_images(block: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Base64 image ``source`` dicts nested inside a tool_result block.
+
+    A tool that reads an image file back (e.g. Read on a screenshot) returns
+    it as an image block inside the *result*, not as a top-level message
+    image like a pasted attachment -- ``_image_sources`` only looks at the
+    latter, so this covers the former.
+    """
+    out: List[Dict[str, Any]] = []
+    content = block.get("content")
+    if not isinstance(content, list):
+        return out
+    for item in content:
+        if not isinstance(item, dict) or item.get("type") != "image":
+            continue
+        src = item.get("source")
+        if (
+            isinstance(src, dict)
+            and src.get("type") == "base64"
+            and isinstance(src.get("data"), str)
+        ):
+            out.append(src)
+    return out
+
+
 def clean_user_text(text: str) -> str:
     """Strip harness-injected wrappers while keeping the human's prose."""
     if not text:
@@ -676,11 +721,23 @@ def permission_denials_from_result(
     ``tool_uses`` maps a tool_use id to its rendered label ("Name — descriptor")
     so we can name the tool that was denied. Returns [] when nothing was denied.
     """
+    # A non-interactive auto-deny (no human present to answer, e.g. a headless
+    # `-p` run with no --dangerously-skip-permissions) carries this top-level
+    # field and a differently-worded message ("`rm` in '<path>' needs
+    # approval...") that doesn't start with either canned prefix below --
+    # confirmed from a real captured session. It's a genuine denial the
+    # harness marks structurally rather than by wording, so it's a fallback
+    # signal, not a replacement for the string match (the original curated
+    # fixture's interactive-denial capture predates this field and has none).
+    denial_kind = entry.get("toolDenialKind")
     out: List[Dict[str, Any]] = []
     for block in _content_blocks(entry):
         if not isinstance(block, dict) or block.get("type") != "tool_result":
             continue
-        message = parse_permission_denial(_result_block_text(block))
+        text = _result_block_text(block)
+        message = parse_permission_denial(text)
+        if message is None and denial_kind:
+            message = text.strip()
         if message is None:
             continue
         tuid = block.get("tool_use_id")
@@ -826,8 +883,13 @@ def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]:
     for entry in entries:
         etype = entry.get("type")
 
-        # Meta and summary entries never participate in the main flow.
+        # Meta and summary entries never participate in the main flow -- except
+        # a skill's injected SKILL.md companion, which is how we learn the
+        # command turn just above was actually a skill invocation.
         if entry.get("isMeta") is True:
+            skill_ref = _skill_from_meta_companion(entry)
+            if skill_ref and current is not None:
+                current.add_skill(*skill_ref)
             continue
         if etype in ("summary", "system"):
             continue
@@ -997,6 +1059,12 @@ def build_events(
                     )
                     if block.get("is_error"):
                         call["is_error"] = True
+                    result_images = [
+                        image_from_base64(src.get("data", ""), src.get("media_type"))
+                        for src in _result_block_images(block)
+                    ]
+                    if result_images:
+                        call["images"] = result_images
                 continue
 
             raw = _human_text(entry)

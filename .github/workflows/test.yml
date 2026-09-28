@@ -13,4 +13,4 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install .[test]
-      - run: pytest
+      - run: pytest --cov=scripts --cov-report=term-missing --cov-fail-under=95

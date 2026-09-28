@@ -35,6 +35,14 @@ CLAUDE_FIXTURE = (
     Path(__file__).resolve().parent.parent / "tests/fixtures/claude/session.jsonl"
 )
 
+# Real, trimmed, redacted transcript covering a real `/fixture-skill` slash
+# invocation and two real non-interactive permission denials (a headless `-p`
+# run with no human to answer the prompt) -- see tests/fixtures/claude/.
+CLAUDE_SKILL_DENIAL_FIXTURE = (
+    Path(__file__).resolve().parent.parent
+    / "tests/fixtures/claude/skill_and_denial_session.jsonl"
+)
+
 # 1x1 transparent PNG.
 _PNG_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9"
@@ -72,6 +80,46 @@ def test_skill_tool_use_is_recorded():
     ]
     turns, _ = build_turns(entries)
     assert turns[0].skills_used == ["documents"]
+
+
+def test_user_invoked_skill_via_slash_command_is_recorded():
+    # A user typing `/skill-name` is NOT a `tool_use` named "Skill" -- Claude
+    # Code represents it exactly like a custom slash command (a <command-name>
+    # tag), with the skill's SKILL.md injected as a companion `isMeta` entry
+    # prefixed with its base directory. Confirmed from a real captured
+    # session -- see tests/fixtures/claude/skill_and_denial_session.jsonl.
+    entries = [
+        {
+            "type": "user",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "message": {
+                "content": (
+                    "<command-message>fixture-skill</command-message>\n"
+                    "<command-name>/fixture-skill</command-name>"
+                ),
+            },
+        },
+        {
+            "type": "user",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "isMeta": True,
+            "message": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "Base directory for this skill: /work/app/.claude/"
+                            "skills/fixture-skill\n\n# Fixture Skill\n\nSay "
+                            "hello.\n"
+                        ),
+                    }
+                ]
+            },
+        },
+    ]
+    turns, _ = build_turns(entries)
+    assert turns[0].command == "/fixture-skill"
+    assert turns[0].skills_used == ["fixture-skill"]
 
 
 def test_single_choice():
@@ -129,6 +177,44 @@ def test_permission_denials_from_result_names_tool():
     }
     out = permission_denials_from_result(entry, {"toolu_1": "Bash — rm -rf build"})
     assert out == [{"tool": "Bash — rm -rf build", "message": "no"}]
+
+
+def test_permission_denials_from_result_detects_non_interactive_auto_deny():
+    # A headless run with no human to answer a permission prompt auto-denies
+    # with a differently-worded message and a top-level toolDenialKind field
+    # -- neither canned prefix matches this text, so toolDenialKind is the
+    # only signal. Confirmed from a real captured session (see
+    # tests/fixtures/claude/skill_and_denial_session.jsonl).
+    entry = {
+        "toolDenialKind": "user-rejected",
+        "message": {
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_1",
+                    "is_error": True,
+                    "content": (
+                        "rm in '/work/app/calculator.py' needs approval. The "
+                        "path is inside the working directories for this "
+                        "session, and Claude Code asks before a shell command "
+                        "creates, changes or removes files there."
+                    ),
+                }
+            ]
+        },
+    }
+    out = permission_denials_from_result(entry, {"toolu_1": "Bash — rm calculator.py"})
+    assert out == [
+        {
+            "tool": "Bash — rm calculator.py",
+            "message": (
+                "rm in '/work/app/calculator.py' needs approval. The path is "
+                "inside the working directories for this session, and Claude "
+                "Code asks before a shell command creates, changes or removes "
+                "files there."
+            ),
+        }
+    ]
 
 
 def test_custom_answer_matches_no_option():
@@ -301,6 +387,54 @@ def test_build_events_inlines_pasted_images_as_base64():
     assert user["text"] == "here is the mock"
     assert base64.b64decode(user["images"][0]["data"]) == base64.b64decode(_PNG_B64)
     assert user["images"][0]["media_type"] == "image/png"
+
+
+def test_build_events_inlines_images_returned_inside_a_tool_result():
+    # `@path` (or any tool reading an image file back, e.g. Read on a
+    # screenshot) returns the image nested in a tool_result's own content
+    # list, not as a top-level message image like a pasted attachment.
+    entries = [
+        {
+            "type": "assistant",
+            "timestamp": "2026-01-01T00:00:01Z",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "t1",
+                        "name": "Read",
+                        "input": {"file_path": "fixture.png"},
+                    }
+                ]
+            },
+        },
+        {
+            "type": "user",
+            "timestamp": "2026-01-01T00:00:02Z",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "t1",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "image/png",
+                                    "data": _PNG_B64,
+                                },
+                            }
+                        ],
+                    }
+                ]
+            },
+        },
+    ]
+    call = build_events(entries)[0]["tool_calls"][0]
+    assert call["name"] == "Read"
+    assert base64.b64decode(call["images"][0]["data"]) == base64.b64decode(_PNG_B64)
+    assert call["images"][0]["media_type"] == "image/png"
 
 
 def test_build_events_attaches_tool_results_to_their_call():
@@ -570,6 +704,35 @@ def test_main_reports_missing_transcript_and_exits_nonzero(tmp_path, capsys):
     rc = main(["--transcript", str(missing)])
     assert rc == 1
     assert "does not exist" in capsys.readouterr().err
+
+
+def test_real_fixture_slash_command_invokes_a_real_skill():
+    # `/fixture-skill` here is a real invocation via --add-dir (the documented
+    # exception to --bare's skill-loading skip), not the synthetic tool_use
+    # the earlier unit test above fabricates.
+    entries = load_entries(CLAUDE_SKILL_DENIAL_FIXTURE)
+    turns, _ = build_turns(entries)
+    assert turns[0].command == "/fixture-skill"
+    assert turns[0].skills_used == ["fixture-skill"]
+
+    md = render(turns, [], "project", entries[0]["timestamp"])
+    assert "_Skill used:_ **fixture-skill**" in md
+    assert "Welcome to the Fixture Skill" in md
+
+
+def test_real_fixture_captures_non_interactive_auto_deny():
+    # A headless `-p` run with no human to answer the permission prompt --
+    # confirmed to auto-deny with a message that doesn't match either canned
+    # prefix, so this only works via the toolDenialKind fallback.
+    entries = load_entries(CLAUDE_SKILL_DENIAL_FIXTURE)
+    turns, _ = build_turns(entries)
+    denials = turns[1].permission_denials
+    assert len(denials) == 2
+    assert all(d["tool"] == "Bash — rm calculator.py" for d in denials)
+    assert "needs approval" in denials[0]["message"]
+
+    md = render(turns, [], "project", entries[0]["timestamp"])
+    assert "_user denied permission:_ Bash — rm calculator.py" in md
 
 
 if __name__ == "__main__":

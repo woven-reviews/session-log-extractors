@@ -6,11 +6,19 @@
 #
 # Beyond a basic coding task, this also makes a best-effort attempt at real
 # (not synthetic-Python) coverage of: skill invocation, a real permission
-# denial, plan mode, and pasted/attached images -- using documented CLI
-# flags for each. A few of these are confirmed-to-exist flags whose exact
-# resulting transcript shape hasn't been verified (this session can't
-# invoke these CLIs itself), so each experimental step is non-fatal: if one
-# doesn't produce what we expect, the script keeps going and says so.
+# denial, and pasted/attached images -- using documented CLI flags for each.
+# A few of these are confirmed-to-exist flags whose exact resulting
+# transcript shape hasn't been verified (this session can't invoke these
+# CLIs itself), so each experimental step is non-fatal: if one doesn't
+# produce what we expect, the script keeps going and says so.
+#
+# Claude Plan mode is deliberately NOT attempted here: exiting plan mode is
+# an ExitPlanMode tool_use that requires a human's interactive approve/
+# reject decision, and there is no non-interactive/headless way to supply
+# that decision. A headless `-p --permission-mode plan` run just answers
+# with the plan as plain assistant text and never calls ExitPlanMode, so it
+# produces nothing the extractor doesn't already cover with synthetic
+# tests. Rely on those (test_plan_approved_is_captured et al.) instead.
 #
 # Run this in your OWN terminal (not through Claude Code) -- it invokes
 # claude/codex/copilot as live agents, which this harness itself blocks a
@@ -73,6 +81,27 @@ try_step() {
   fi
 }
 
+# A hard ceiling for the one step below that runs *without*
+# --dangerously-skip-permissions in a headless `-p` session: if Claude Code
+# ever actually blocks on an interactive prompt instead of resolving it
+# immediately (there being no human here to answer it), this stops the whole
+# script hanging forever instead of just failing that one step. `timeout(1)`
+# isn't on macOS by default, so this is a portable kill-after-N-seconds
+# implemented with plain job control.
+# ponytail: SIGTERM only, no SIGKILL escalation -- fine for a `claude` child.
+run_with_timeout() {
+  local secs="$1"
+  shift
+  ( "$@" ) &
+  local pid=$!
+  ( sleep "$secs" && kill -TERM "$pid" ) 2>/dev/null &
+  local watcher=$!
+  local rc=0
+  wait "$pid" 2>/dev/null || rc=$?
+  kill "$watcher" 2>/dev/null || true
+  return "$rc"
+}
+
 # A small, standard RGB PNG (4x4 solid color), built from scratch with only
 # the stdlib (struct + zlib -- no Pillow dependency needed on your machine).
 # The test suite's own 1x1 grayscale+alpha _PNG_B64 constant is byte-valid
@@ -80,8 +109,8 @@ try_step() {
 # process image: invalid or unsupported image data" rejection from Codex --
 # a plain small RGB image is far more likely to be universally accepted.
 FIXTURE_PNG="$ROOT/fixture.png"
-PNG_B64="$(python3 -c "
-import struct, zlib, base64
+python3 -c "
+import struct, zlib
 
 def chunk(ctype, data):
     return (struct.pack('>I', len(data)) + ctype + data +
@@ -93,12 +122,10 @@ ihdr = chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 2, 0, 0, 0))
 row = bytes([0]) + bytes(rgb) * width
 idat = chunk(b'IDAT', zlib.compress(row * height, 9))
 iend = chunk(b'IEND', b'')
-png = sig + ihdr + idat + iend
 
 with open('$FIXTURE_PNG', 'wb') as f:
-    f.write(png)
-print(base64.b64encode(png).decode())
-")"
+    f.write(sig + ihdr + idat + iend)
+"
 
 # A small, entirely fabricated coding task -- deliberately not trivial:
 # there's an existing function to discover, a new one to add with its own
@@ -155,12 +182,23 @@ in test_calculator.py (plain assert, no pytest needed), and run it to \
 confirm it works."
 TURN3="Now do the same thing for a multiply(a, b) function: implement it, \
 add a test, and run it."
+# Root cause of two straight failures (plain "/fixture-skill", then prose
+# matching the skill's own description) found via the actual current docs
+# (code.claude.com/docs/en/headless and /skills), not guessed: --bare skips
+# auto-discovery of skills entirely, so the model never had "fixture-skill"
+# in its catalog either way -- no phrasing could have worked. The docs also
+# confirm plain "/skill-name" IS the real, documented invocation ("Include
+# /skill-name in the prompt string and Claude Code expands it before
+# running"), so once loading is fixed (see --add-dir below), the original
+# simple phrasing is the right one -- restored here.
 TURN_SKILL="/fixture-skill"
 TURN_DENIAL="Please delete calculator.py by running: rm calculator.py"
 # No apostrophes in these two: they get embedded inside a nested
 # single-quoted string (bash -c "... '$VAR' ...") for the experimental
 # steps below, where an apostrophe would prematurely close the inner quote.
 TURN_IMAGE="Describe what is in the attached image, in one sentence."
+# Copilot-only below (Claude's plan-mode attempt was dropped -- see the
+# header comment: ExitPlanMode can't be triggered non-interactively there).
 TURN_PLAN="Propose a plan to add a divide(a, b) function with a test, but do not implement it yet."
 
 # Pinned explicitly so the generated fixtures don't silently change shape
@@ -185,6 +223,52 @@ mkdir -p "$CLAUDE_CONFIG_DIR"
 CLAUDE_SCRATCH="$ROOT/claude-scratch"
 new_scratch_repo "$CLAUDE_SCRATCH"
 
+# A PreToolUse hook that blocks only `rm` commands, with a custom reason --
+# so the denial-turn step further down gets a genuine, non-interactive
+# permission denial to capture, instead of guessing at a flag.
+# --disallowedTools was tried first and confirmed NOT to work for this: it
+# makes the tool unavailable entirely, so the transcript gets a hard "No
+# such tool available: Bash" tool error, not the "Permission for this tool
+# use was denied" wording the extractor recognizes.
+#
+# A real run then confirmed --dangerously-skip-permissions suppresses this
+# hook too, not just the interactive prompt -- `rm` succeeded outright with
+# the hook configured and no trace of it firing. So this hook is only
+# actually exercised by the separate, bypass-free session set up below (see
+# CLAUDE_SCRATCH_DENIAL); it stays configured here, in this shared
+# CLAUDE_CONFIG_DIR, for both sessions, since it's harmless (matches only
+# `rm`) and every other Claude step here still runs with the bypass on.
+#
+# Docs confirm a hook can block a tool via exit code 2 with the reason on
+# stderr ("If blocked (exit 2): Claude sees the block reason"), but do NOT
+# specify whether the resulting tool_result reuses the exact same canned
+# wording an interactive human denial produces -- hence this is still a
+# try_step, not a guaranteed-good capture.
+DENY_RM_HOOK="$CLAUDE_CONFIG_DIR/deny-rm.sh"
+cat > "$DENY_RM_HOOK" <<'HOOK_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+command="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('tool_input',{}).get('command',''))")"
+if [[ "$command" == *rm\ * ]]; then
+  echo "We need a new branch for this" >&2
+  exit 2
+fi
+exit 0
+HOOK_EOF
+chmod +x "$DENY_RM_HOOK"
+cat > "$CLAUDE_CONFIG_DIR/settings.json" <<SETTINGS_EOF
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [{"type": "command", "command": "$DENY_RM_HOOK"}]
+      }
+    ]
+  }
+}
+SETTINGS_EOF
+
 echo "--- Claude: turn 1 (--bare forces API-key auth; OAuth/keychain never read) ---"
 (cd "$CLAUDE_SCRATCH" && claude --bare --model "$CLAUDE_MODEL" --dangerously-skip-permissions -p "$TURN1")
 
@@ -194,24 +278,44 @@ echo "--- Claude: turn 2 (same session, continued) ---"
 echo "--- Claude: turn 3 (same session, continued) ---"
 (cd "$CLAUDE_SCRATCH" && claude --bare --model "$CLAUDE_MODEL" --dangerously-skip-permissions --continue -p "$TURN3")
 
-try_step "Claude: skill invocation (same session, continued)" \
-  bash -c "cd '$CLAUDE_SCRATCH' && claude --bare --model '$CLAUDE_MODEL' --dangerously-skip-permissions --continue -p '$TURN_SKILL'"
+# --add-dir is the documented exception to --bare's skill-loading skip:
+# "A directory you name with --add-dir is a partial exception: bare mode
+# loads skills from its .claude/skills/ folder" (code.claude.com/docs/en/
+# headless). Passed even though we're already cd'd into $CLAUDE_SCRATCH --
+# bare mode does not auto-scan cwd's .claude/skills/ on its own; naming the
+# same directory via --add-dir is what turns the exception on. Only
+# .claude/skills/ is the real, documented Claude Code convention -- the
+# .agents/skills/ and .github/skills/ copies new_scratch_repo also seeds
+# are for Codex/Copilot's own conventions, not this one.
+try_step "Claude: skill invocation via --add-dir (documented --bare exception; same session, continued)" \
+  bash -c "cd '$CLAUDE_SCRATCH' && claude --bare --model '$CLAUDE_MODEL' --dangerously-skip-permissions --continue --add-dir '$CLAUDE_SCRATCH' -p '$TURN_SKILL'"
 
-try_step "Claude: real permission denial (--disallowedTools is a hard block, independent of skip-permissions)" \
-  bash -c "cd '$CLAUDE_SCRATCH' && claude --bare --model '$CLAUDE_MODEL' --dangerously-skip-permissions --disallowedTools Bash --continue -p '$TURN_DENIAL'"
+# Confirmed by a real run: --dangerously-skip-permissions suppresses hooks
+# too, not just the interactive prompt -- the PreToolUse hook above never
+# fired and `rm` just succeeded outright when tried in-session like the
+# other steps. So this one deliberately runs in a SEPARATE, fresh session
+# (fresh scratch dir, no --continue) with the bypass flag dropped -- the
+# untested baseline hypothesis from the start: headless -p has no human to
+# answer a permission prompt, so it may auto-deny rather than hang. The
+# PreToolUse hook is still configured in this CLAUDE_CONFIG_DIR too, so
+# either mechanism firing here is a genuine capture. 30s timeout in case
+# that hypothesis is wrong and it blocks waiting for an answer that will
+# never come.
+CLAUDE_SCRATCH_DENIAL="$ROOT/claude-scratch-denial"
+new_scratch_repo "$CLAUDE_SCRATCH_DENIAL"
+try_step "Claude: real permission denial, no bypass, fresh session (30s timeout)" \
+  run_with_timeout 30 \
+  bash -c "cd '$CLAUDE_SCRATCH_DENIAL' && claude --bare --model '$CLAUDE_MODEL' -p '$TURN_DENIAL'"
 
-# First attempt at this failed with "stdin is unreadable": claude needs a
-# moment to boot and attach its stream-json reader, and a plain `printf |
-# claude` pipe closes (EOF) near-instantly -- likely before that reader is
-# even listening. Holding the pipe's write end open a few seconds past the
-# write (via the trailing `sleep`) gives it time to actually read the line
-# before EOF arrives, instead of relying on the synthetic tests for this
-# path (which wouldn't catch the real message format drifting).
-try_step "Claude: pasted image via stream-json stdin, write-end held open past printf (same session, continued)" \
-  bash -c "cd '$CLAUDE_SCRATCH' && { printf '%s\n' '{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"$TURN_IMAGE\"},{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"$PNG_B64\"}}]}}'; sleep 5; } | claude --bare --model '$CLAUDE_MODEL' --dangerously-skip-permissions --continue --input-format stream-json --output-format stream-json -p"
-
-try_step "Claude: plan mode (separate session -- --permission-mode plan can't combine with bypassPermissions)" \
-  bash -c "cd '$CLAUDE_SCRATCH' && claude --bare --model '$CLAUDE_MODEL' --permission-mode plan --permission-prompts none -p '$TURN_PLAN'"
+# `@path` is the documented syntax for attaching a local file to a headless
+# `-p` prompt. Simpler and more likely to actually work than the previous
+# attempt, which hand-built a stream-json stdin payload (a "type":"user"
+# envelope with an inline base64 image block) and got no trace of the turn
+# in the resulting transcript at all -- no error, no image, nothing, so
+# something about that envelope/timing was wrong in a way that couldn't be
+# debugged further without live access to the CLI.
+try_step "Claude: attached image via @path reference (same session, continued)" \
+  bash -c "cd '$CLAUDE_SCRATCH' && claude --bare --model '$CLAUDE_MODEL' --dangerously-skip-permissions --continue -p '$TURN_IMAGE @$FIXTURE_PNG'"
 
 echo "--- Claude session file(s) ---"
 find "$CLAUDE_CONFIG_DIR/projects" -name '*.jsonl'
