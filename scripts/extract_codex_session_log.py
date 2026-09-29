@@ -273,6 +273,8 @@ def session_id_from_file(path: Path) -> Optional[str]:
                     obj = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if not isinstance(obj, dict):
+                    continue
                 if obj.get("type") == "session_meta":
                     sid = _payload(obj).get("id")
                     return sid if isinstance(sid, str) else None
@@ -288,6 +290,8 @@ def session_cwd_from_file(path: Path) -> Optional[str]:
                 try:
                     obj = json.loads(line)
                 except json.JSONDecodeError:
+                    continue
+                if not isinstance(obj, dict):
                     continue
                 payload = _payload(obj)
                 if obj.get("type") == "session_meta":
