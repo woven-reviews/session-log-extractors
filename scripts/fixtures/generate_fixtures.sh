@@ -61,6 +61,11 @@
 # claude/codex/copilot as live agents, which this harness itself blocks a
 # running session from doing to another.
 #
+# Usage: ./generate_fixtures.sh [all|claude|codex|copilot]
+# Defaults to "all" (every harness, sequentially, as before). Pass a single
+# harness name to iterate on just that one -- e.g. testing a Copilot-only
+# fix -- without waiting on the other two or needing their credentials.
+#
 # Credentials: config-dir isolation alone does NOT stop the CLI from writing
 # a *real* login credential into the throwaway dir if you sign in with your
 # personal account there. Instead, export scoped/revocable credentials below
@@ -76,9 +81,8 @@
 #   COPILOT_GITHUB_TOKEN  - a fine-grained GitHub PAT scoped to ONLY the
 #                           "Copilot Requests" permission. Copilot reads this
 #                           env var itself and skips any login/OAuth flow.
-#                           (Copilot generation is currently DISABLED below --
-#                           no usable token yet. Flip RUN_COPILOT to true and
-#                           export this once you have one.)
+#                           Only required when running Copilot -- see Usage
+#                           above.
 #
 # The Claude plan-mode and pasted-image steps also need the
 # `claude_agent_sdk` Python package: `pip install -e '.[fixtures]'` from the
@@ -95,13 +99,24 @@ set -euo pipefail
 # exit-on-failure (commands tested in an if-condition never trigger it), so
 # -e still stays strict for every other, non-experimental command below.
 
-# Set to true and export COPILOT_GITHUB_TOKEN once a usable, scoped token
-# exists. Claude and Codex generation are unaffected either way.
-RUN_COPILOT=false
+# See Usage in the header comment. Defaults to running every harness.
+HARNESS="${1:-all}"
+case "$HARNESS" in
+  all | claude | codex | copilot) ;;
+  *)
+    echo "Usage: $0 [all|claude|codex|copilot]" >&2
+    exit 1
+    ;;
+esac
+run_harness() { [[ "$HARNESS" == "$1" || "$HARNESS" == all ]]; }
 
-: "${ANTHROPIC_API_KEY:?Set a dedicated, revocable ANTHROPIC_API_KEY before running (see header comment)}"
-: "${OPENAI_API_KEY:?Set a dedicated, revocable OPENAI_API_KEY before running (see header comment)}"
-if [ "$RUN_COPILOT" = true ]; then
+if run_harness claude; then
+  : "${ANTHROPIC_API_KEY:?Set a dedicated, revocable ANTHROPIC_API_KEY before running (see header comment)}"
+fi
+if run_harness codex; then
+  : "${OPENAI_API_KEY:?Set a dedicated, revocable OPENAI_API_KEY before running (see header comment)}"
+fi
+if run_harness copilot; then
   : "${COPILOT_GITHUB_TOKEN:?Set a scoped, revocable COPILOT_GITHUB_TOKEN before running (see header comment)}"
 fi
 
@@ -126,24 +141,40 @@ try_step() {
   fi
 }
 
-# A hard ceiling for the one step below that runs *without*
-# --dangerously-skip-permissions in a headless `-p` session: if Claude Code
-# ever actually blocks on an interactive prompt instead of resolving it
-# immediately (there being no human here to answer it), this stops the whole
-# script hanging forever instead of just failing that one step. `timeout(1)`
-# isn't on macOS by default, so this is a portable kill-after-N-seconds
-# implemented with plain job control.
-# ponytail: SIGTERM only, no SIGKILL escalation -- fine for a `claude` child.
+# Run selected headless agent calls with a hard ceiling so an unanswered
+# prompt or stalled model request cannot block the script forever.
+# `timeout(1)` isn't on macOS by default, so use portable job control.
 run_with_timeout() {
   local secs="$1"
   shift
-  ( "$@" ) &
+  "$@" &
   local pid=$!
-  ( sleep "$secs" && kill -TERM "$pid" ) 2>/dev/null &
+  (
+    local timer=""
+    local grace=""
+    cleanup_watcher() {
+      [[ -n "$timer" ]] && kill "$timer" 2>/dev/null || true
+      [[ -n "$grace" ]] && kill "$grace" 2>/dev/null || true
+      wait "$timer" "$grace" 2>/dev/null || true
+      exit 0
+    }
+    trap cleanup_watcher TERM INT
+    sleep "$secs" &
+    timer=$!
+    wait "$timer" || exit 0
+    printf 'Timed out after %ss; sending SIGTERM to pid %s\n' "$secs" "$pid" >&2
+    kill -TERM "$pid" 2>/dev/null || exit 0
+    sleep 5 &
+    grace=$!
+    wait "$grace" || exit 0
+    echo "Process did not stop after SIGTERM; sending SIGKILL" >&2
+    kill -KILL "$pid" 2>/dev/null || true
+  ) 2>/dev/null &
   local watcher=$!
   local rc=0
   wait "$pid" 2>/dev/null || rc=$?
   kill "$watcher" 2>/dev/null || true
+  wait "$watcher" 2>/dev/null || true
   return "$rc"
 }
 
@@ -245,6 +276,11 @@ TURN_IMAGE="Describe what is in the attached image, in one sentence."
 # Copilot-only below (Claude's plan-mode attempt was dropped -- see the
 # header comment: ExitPlanMode can't be triggered non-interactively there).
 TURN_PLAN="Propose a plan to add a divide(a, b) function with a test, but do not implement it yet."
+# Speculative: session_refs is empty in every real Copilot capture so far
+# (nothing ever committed). Whether Copilot records a commit hash there at
+# all -- and what it takes to trigger it -- is undocumented; this is a
+# best-effort probe, not a known-working step.
+TURN_COMMIT="Commit the calculator.py and test_calculator.py changes with git and tell me the resulting commit hash."
 
 # Pinned explicitly so the generated fixtures don't silently change shape
 # whenever an account's default model changes. All confirmed valid by
@@ -263,6 +299,10 @@ COPILOT_MODEL="gpt-5.4-mini"
 # ---------------------------------------------------------------------------
 # Claude Code
 # ---------------------------------------------------------------------------
+if ! run_harness claude; then
+  echo "--- Claude: skipped (harness=$HARNESS) ---"
+else
+
 export CLAUDE_CONFIG_DIR="$ROOT/claude-home"
 mkdir -p "$CLAUDE_CONFIG_DIR"
 CLAUDE_SCRATCH="$ROOT/claude-scratch"
@@ -498,56 +538,65 @@ try_step "Claude: pasted image via Agent SDK streaming input (own session)" \
 echo "--- Claude session file(s) ---"
 find "$CLAUDE_CONFIG_DIR/projects" -name '*.jsonl'
 
+fi  # run_harness claude
+
 # ---------------------------------------------------------------------------
 # Codex
 # ---------------------------------------------------------------------------
+if ! run_harness codex; then
+  echo "--- Codex: skipped (harness=$HARNESS) ---"
+else
+
 export CODEX_HOME="$ROOT/codex-home"
 mkdir -p "$CODEX_HOME"
 CODEX_SCRATCH="$ROOT/codex-scratch"
 new_scratch_repo "$CODEX_SCRATCH"
+CODEX_TIMEOUT=300
+run_codex() {
+  (cd "$CODEX_SCRATCH" && run_with_timeout "$CODEX_TIMEOUT" codex "$@")
+}
 
 echo "--- Codex: logging into throwaway CODEX_HOME with the dedicated API key ---"
 printenv OPENAI_API_KEY | codex login --with-api-key
 
 echo "--- Codex: turn 1 ---"
-(cd "$CODEX_SCRATCH" && codex exec --model "$CODEX_MODEL" --sandbox workspace-write "$TURN1")
+run_codex exec --model "$CODEX_MODEL" --sandbox workspace-write "$TURN1"
 
 echo "--- Codex: turn 2 (resume same session) ---"
-(cd "$CODEX_SCRATCH" && codex exec resume --last --model "$CODEX_MODEL" "$TURN2")
+run_codex exec resume --last --model "$CODEX_MODEL" "$TURN2"
 
 echo "--- Codex: turn 3 (resume same session) ---"
-(cd "$CODEX_SCRATCH" && codex exec resume --last --model "$CODEX_MODEL" "$TURN3")
+run_codex exec resume --last --model "$CODEX_MODEL" "$TURN3"
 
 # Codex's slash-command detection is plain regex on the message text (unlike
 # Claude's tag-based interactive dispatch), so this is a real slash-command
 # fixture regardless of whether Codex's skill-discovery path (unconfirmed)
 # actually picks up the seeded .agents/skills/fixture-skill/SKILL.md.
-try_step "Codex: slash command / best-effort skill (resume same session)" \
-  bash -c "cd '$CODEX_SCRATCH' && codex exec resume --last --model '$CODEX_MODEL' '$TURN_SKILL'"
+try_step "Codex: slash command / best-effort skill (resume same session; 300s timeout)" \
+  run_codex exec resume --last --model "$CODEX_MODEL" "$TURN_SKILL"
 
-try_step "Codex: attached image (resume same session)" \
-  bash -c "cd '$CODEX_SCRATCH' && codex exec resume --last --model '$CODEX_MODEL' --image '$FIXTURE_PNG' '$TURN_IMAGE'"
+try_step "Codex: attached image (resume same session; 300s timeout)" \
+  run_codex exec resume --last --model "$CODEX_MODEL" --image "$FIXTURE_PNG" "$TURN_IMAGE"
 
 # Best-effort: a read-only sandbox denying a write is a real execution
 # failure, but it may not match the extractor's specific permission-denial
 # regex (that format looks tied to Codex-as-subagent usage). Real content
 # either way -- worth checking once generated rather than assuming.
-try_step "Codex: best-effort denial via read-only sandbox (separate session)" \
-  bash -c "cd '$CODEX_SCRATCH' && codex exec --model '$CODEX_MODEL' --sandbox read-only 'Delete calculator.py by running: rm calculator.py'"
+try_step "Codex: best-effort denial via read-only sandbox (separate session; 300s timeout)" \
+  run_codex exec --model "$CODEX_MODEL" --sandbox read-only \
+  'Delete calculator.py by running: rm calculator.py'
 
 echo "--- Codex session file(s) ---"
 find "$CODEX_HOME/sessions" -name '*.jsonl'
 
+fi  # run_harness codex
+
 # ---------------------------------------------------------------------------
 # Copilot -- two separate scratch repos, so there's more than one real
 # session to choose from if the fixtures end up needing that.
-#
-# DISABLED for now (no usable Copilot token) -- flip RUN_COPILOT to true
-# above and export COPILOT_GITHUB_TOKEN once you have one scoped just to
-# "Copilot Requests". Claude and Codex fixtures are unaffected by this.
 # ---------------------------------------------------------------------------
-if [ "$RUN_COPILOT" != true ]; then
-  echo "--- Copilot: skipped (RUN_COPILOT=false) ---"
+if ! run_harness copilot; then
+  echo "--- Copilot: skipped (harness=$HARNESS) ---"
 else
 
 export COPILOT_HOME="$ROOT/copilot-home"
@@ -566,20 +615,44 @@ for i in 1 2; do
   try_step "Copilot: session $i skill invocation (continued)" \
     bash -c "cd '$COPILOT_SCRATCH' && copilot -p '$TURN_SKILL' --model '$COPILOT_MODEL' --allow-all-tools --continue"
 
-  try_step "Copilot: session $i real permission denial (deny just rm, allow everything else)" \
-    bash -c "cd '$COPILOT_SCRATCH' && copilot -p '$TURN_DENIAL' --model '$COPILOT_MODEL' --allow-all-tools --deny-tool 'shell(rm*)' --continue"
+  # `copilot help permissions`: a --deny-tool shell() pattern is an exact
+  # match against the command's stem, with a *literal* trailing `:*` for
+  # prefix matching -- a bare `*` (what this used to say) is not a
+  # wildcard at all, so 'shell(rm*)' only ever matched a command literally
+  # named "rm*" and silently denied nothing. Fixed to 'shell(rm)', but a
+  # real run then showed the model doesn't even use a shell for this --
+  # it deletes via its own apply_patch "Delete File" operation, which
+  # falls under the separate write() permission kind ("write(path?):
+  # matches tools that create and modify files, except shell tool
+  # invocations"), not shell(). Denying both covers whichever mechanism
+  # the model picks on a given run; denial always outranks
+  # --allow-all-tools per that doc either way.
+  try_step "Copilot: session $i real permission denial (deny rm + all writes, allow everything else)" \
+    bash -c "cd '$COPILOT_SCRATCH' && copilot -p '$TURN_DENIAL' --model '$COPILOT_MODEL' --allow-all-tools --deny-tool 'shell(rm)' --deny-tool 'write' --continue"
 
+  # FIXTURE_PNG lives under $ROOT, a sibling of $COPILOT_SCRATCH rather than
+  # inside it -- Copilot's headless path sandbox only auto-trusts the
+  # working directory, so reading it from there always denied with
+  # "Permission denied and could not request permission from user" (no
+  # human to answer the prompt), and the description turn never actually
+  # saw the image. Copying it inside the scratch dir first is the narrowest
+  # fix: no extra flag needed, since the working directory is already
+  # trusted.
+  cp "$FIXTURE_PNG" "$COPILOT_SCRATCH/fixture.png"
   try_step "Copilot: session $i attached image (continued)" \
-    bash -c "cd '$COPILOT_SCRATCH' && copilot -p '$TURN_IMAGE' --model '$COPILOT_MODEL' --allow-all-tools --attachment '$FIXTURE_PNG' --continue"
+    bash -c "cd '$COPILOT_SCRATCH' && copilot -p '$TURN_IMAGE' --model '$COPILOT_MODEL' --allow-all-tools --attachment '$COPILOT_SCRATCH/fixture.png' --continue"
 
   try_step "Copilot: session $i plan mode (documented --plan + --mode autopilot auto-approves and implements)" \
     bash -c "cd '$COPILOT_SCRATCH' && copilot -p '$TURN_PLAN' --model '$COPILOT_MODEL' --plan --mode autopilot --allow-all-tools --continue"
+
+  try_step "Copilot: session $i git commit (probing whether this populates session_refs)" \
+    bash -c "cd '$COPILOT_SCRATCH' && copilot -p '$TURN_COMMIT' --model '$COPILOT_MODEL' --allow-all-tools --continue"
 done
 
 echo "--- Copilot session files ---"
 find "$COPILOT_HOME" -maxdepth 4
 
-fi  # RUN_COPILOT
+fi  # run_harness copilot
 
 # ---------------------------------------------------------------------------
 # Immediate sanity check -- same secret/PII sweep used to clear the fixtures
@@ -588,7 +661,7 @@ fi  # RUN_COPILOT
 echo
 echo "=== Sanity grep for secret/PII patterns across everything generated ==="
 if grep -rEni '(sk-[a-z0-9]{10,}|ghp_[a-z0-9]{10,}|aws_secret|api[_-]?key|password|token"\s*:\s*"[^"]{10,}|BEGIN [A-Z]+ PRIVATE KEY|/Users/[a-zA-Z]+|@andela\.com|@gmail\.com|@[a-zA-Z0-9.-]+\.[a-z]{2,}\b)' \
-  "$CLAUDE_CONFIG_DIR/projects" "$CODEX_HOME/sessions" "${COPILOT_HOME:-/nonexistent}" 2>/dev/null; then
+  "${CLAUDE_CONFIG_DIR:-/nonexistent}/projects" "${CODEX_HOME:-/nonexistent}/sessions" "${COPILOT_HOME:-/nonexistent}" 2>/dev/null; then
   echo "^^^ grep found matches above -- check them before handing off"
 else
   echo "(clean -- no matches)"
@@ -596,10 +669,8 @@ fi
 
 echo
 echo "=== Done. Everything lives under: $ROOT ==="
-if [ "$RUN_COPILOT" != true ]; then
-  echo "Copilot was skipped (no usable token yet) -- only Claude and Codex"
-  echo "fixtures were regenerated this run. Copilot's fixture stays as-is"
-  echo "until you have a token and re-run with RUN_COPILOT=true."
+if [ "$HARNESS" != all ]; then
+  echo "Only ran: $HARNESS (pass no argument, or 'all', to run every harness)."
 fi
 if [ "${#FAILED_STEPS[@]}" -gt 0 ]; then
   echo "${#FAILED_STEPS[@]} experimental step(s) did not succeed (that's fine --"
@@ -612,6 +683,8 @@ else
 fi
 echo "Tell Claude Code that path (or just that you're done -- it's the newest"
 echo "/tmp/qual2319-fixture-gen.* directory) and it'll take it from here:"
-echo "inspect what actually got captured, copy the real files into"
-echo "tests/fixtures/, update the tests to match, and re-run its own secret"
-echo "scan before committing."
+echo "inspect what actually got captured, copy the redacted Claude/Codex files"
+echo "into tests/fixtures/{claude,codex}/, and copy the redacted Copilot"
+echo "session-store.db plus its matching session-state/<id>/events.jsonl into"
+echo "tests/fixtures/copilot/. Update fixture assertions to match the captured"
+echo "sessions, then re-run the secret scan before committing."
