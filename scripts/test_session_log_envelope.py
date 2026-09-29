@@ -11,8 +11,10 @@ import json
 import tempfile
 from pathlib import Path
 
+import session_log_envelope as envelope
 from session_log_envelope import (
     SCHEMA,
+    assistant_event,
     build_envelope,
     image_from_base64,
     image_from_bytes,
@@ -63,6 +65,9 @@ def test_image_from_base64_marks_undecodable_payload_unavailable():
 def test_unavailable_image_records_the_ref():
     img = unavailable_image("/tmp/gone.png")
     assert img == {"unavailable": True, "ref": "/tmp/gone.png"}
+    assert unavailable_image({"path": "/tmp/gone.png"})["ref"] == (
+        "{'path': '/tmp/gone.png'}"
+    )
 
 
 def test_media_type_for_ext():
@@ -99,6 +104,25 @@ def test_truncate_result_negative_budget_means_no_cap():
     out = truncate_result("A" * 9000, -1)
     assert out["result_truncated"] is False
     assert len(out["result"]) == 9000
+    assert truncate_result(None) == {
+        "result": None,
+        "result_bytes": 0,
+        "result_truncated": False,
+    }
+    assert truncate_result(123)["result"] == "123"
+
+
+def test_assistant_event_and_empty_user_images():
+    assert assistant_event(2, None, "reply") == {
+        "i": 2,
+        "ts": None,
+        "role": "assistant",
+        "text": "reply",
+    }
+    assert assistant_event(2, None, "", [{"name": "Read"}])["tool_calls"] == [
+        {"name": "Read"}
+    ]
+    assert user_event(0, None, "", [])["text"] == ""
 
 
 def test_tool_call_keeps_input_verbatim():
@@ -109,7 +133,9 @@ def test_tool_call_keeps_input_verbatim():
 
 
 def test_tool_call_coerces_unserializable_input():
-    call = tool_call("Weird", {"obj": object()}, None)
+    value = {"obj": object(), "tuple": (1, [True, None])}
+    call = tool_call("Weird", value, None)
+    assert call["input"]["tuple"] == [1, [True, None]]
     json.dumps(call)  # must not raise
 
 
@@ -152,6 +178,17 @@ def test_write_envelope_round_trips_through_json():
 def test_user_event_omits_images_key_when_there_are_none():
     assert "images" not in user_event(0, None, "text")
     assert "images" in user_event(0, None, "text", [unavailable_image("x")])
+
+
+def test_write_envelope_warns_before_upload_limit(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(envelope, "SIZE_WARN_BYTES", 1)
+    out = tmp_path / "nested" / "envelope.json"
+    size = write_envelope(out, {"text": "é"})
+    assert size == len(out.read_bytes())
+    assert "warning: envelope.json is" in capsys.readouterr().err
+    assert envelope._human_size(512) == "512 B"
+    assert envelope._human_size(2048) == "2 KB"
+    assert envelope._human_size(2 * 1024 * 1024) == "2.0 MB"
 
 
 if __name__ == "__main__":

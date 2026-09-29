@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import skill_metadata
 from skill_metadata import (
     load_command_details,
     load_skill_details,
@@ -202,6 +203,88 @@ def test_missing_definition_keeps_name_only_output():
     )
     assert details == {}
     assert render_skill_lines("unknown", details) == ["_Skill used:_ **unknown**"]
+
+
+def test_frontmatter_body_and_prose_parsers_cover_supported_shapes():
+    assert skill_metadata._frontmatter("missing delimiters") == {}
+    assert skill_metadata._frontmatter("---\nname: unfinished") == {}
+    metadata = skill_metadata._frontmatter(
+        "---\n"
+        "name: 'quoted name'\n"
+        "description: >-\n  first line\n  second line\n\n"
+        "homepage: https://example.test\n"
+        "nested:\n  ignored: value\n"
+        "---\n"
+    )
+    assert metadata == {
+        "name": "quoted name",
+        "description": "first line second line",
+        "homepage": "https://example.test",
+        "nested": "",
+    }
+    assert skill_metadata._body_lines("---\nname: sample\n---\nbody") == ["body"]
+    assert skill_metadata._heading("# Visible") == "Visible"
+    assert skill_metadata._prose_steps(
+        "---\nname: sample\n---\nFirst paragraph.\n\n!run this\n\n"
+        "```sh\n# ignored\n```\n\nSecond paragraph."
+    ) == [
+        {"heading": "First paragraph.", "summary": ""},
+        {"heading": "Second paragraph.", "summary": ""},
+    ]
+    assert skill_metadata._overview("```md\nignored\n```\n\nPurpose.\n\nMore.") == (
+        "Purpose."
+    )
+
+
+def test_skill_path_candidates_and_cached_read_failures(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    installed = (
+        home
+        / ".claude/plugins/cache/namespace/1.0/skills/ponytail/SKILL.md"
+    )
+    installed.parent.mkdir(parents=True)
+    installed.write_text("# Plugin skill\n", encoding="utf-8")
+    monkeypatch.setattr(skill_metadata.Path, "home", staticmethod(lambda: home))
+
+    details = load_skill_details(
+        "namespace:ponytail", project_root=project
+    )
+    assert details["title"] == "Plugin skill"
+    assert list(skill_metadata._candidate_paths("bad/name", None, project)) == []
+    assert list(skill_metadata._candidate_paths("..", None, project)) == []
+    assert skill_metadata._read_definition(str(tmp_path / "missing")) == {}
+    assert skill_metadata._read_definition.cache_info().currsize > 0
+
+
+def test_command_candidates_and_render_compaction(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    commands = home / ".claude/commands"
+    commands.mkdir(parents=True)
+    (commands / "simple.md").write_text("One line overview.", encoding="utf-8")
+    monkeypatch.setattr(skill_metadata.Path, "home", staticmethod(lambda: home))
+
+    details = load_command_details("plugin:simple", project_root=tmp_path / "project")
+    assert details["overview"] == "One line overview."
+    assert list(
+        skill_metadata._command_candidate_paths("nested/command", tmp_path)
+    ) == []
+    assert skill_metadata._compact(" a\n b ") == "a b"
+    rendered = render_skill_lines(
+        "simple",
+        {
+            "description": "d" * 405,
+            "title": "Different title",
+            "name": "defined name",
+            "meta": {"model": "m" * 405},
+            "overview": "purpose",
+        },
+        indent="  ",
+        kind="Command",
+    )
+    assert rendered[0].endswith("...")
+    assert "_Title:_ Different title" in rendered[1]
+    assert rendered[2].endswith("...")
 
 
 if __name__ == "__main__":
