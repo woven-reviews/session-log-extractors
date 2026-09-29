@@ -27,11 +27,14 @@
 # `claude_agent_sdk` package, not the plain CLI) IS a documented,
 # non-interactive way to answer that path -- this is what the plan-mode
 # capture below drives, in its own separate session (see that section for
-# why it can't just be `--continue`d onto the turns above). Whether the
-# resulting tool_result text matches the interactive UI's canned wording
-# exactly is NOT independently confirmed by any doc found -- hence this is
-# still a try_step, with the synthetic tests
-# (test_plan_approved_is_captured et al.) as the fallback if it doesn't.
+# why it can't just be `--continue`d onto the turns above). Confirmed by a
+# real run: the *approval* tool_result text does match the interactive UI's
+# canned "User has approved your plan..." prefix, and is now a real fixture
+# (tests/fixtures/claude/plan_session.jsonl, test_plan_approved_is_captured).
+# The *rejection* side does NOT reproduce the canned UI wording, though --
+# `PermissionResultDeny(message=...)` returns exactly that message string
+# with no boilerplate at all, so rejection stays covered only by the
+# synthetic tests (test_plan_rejected_keeps_steering_message et al.).
 #
 # Claude pasted images: the same kind of dead end, and this time it's
 # spelled out directly rather than pieced together from issue trackers.
@@ -46,6 +49,13 @@
 # capture some other real thing, such as a Read-tool-mediated image), but
 # the actual pasted-image capture further down drives streaming input mode
 # via the SDK instead, in its own session, the same way plan mode does.
+# Confirmed by a real run: this produces a genuine top-level user-message
+# image content block, now a real fixture
+# (tests/fixtures/claude/pasted_image_session.jsonl) -- and as a bonus, the
+# assistant's own Read-tool re-read of that same image is a real capture of
+# the tool-result-image case too, replacing both synthetic tests
+# (test_build_events_inlines_pasted_images_as_base64 and
+# test_build_events_inlines_images_returned_inside_a_tool_result).
 #
 # Run this in your OWN terminal (not through Claude Code) -- it invokes
 # claude/codex/copilot as live agents, which this harness itself blocks a

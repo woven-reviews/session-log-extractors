@@ -43,6 +43,21 @@ CLAUDE_SKILL_DENIAL_FIXTURE = (
     / "tests/fixtures/claude/skill_and_denial_session.jsonl"
 )
 
+# Real, trimmed, redacted transcript covering a real ExitPlanMode approval
+# (via the Agent SDK's canUseTool, driven headless -- see
+# scripts/fixtures/generate_fixtures.sh) -- see tests/fixtures/claude/.
+CLAUDE_PLAN_FIXTURE = (
+    Path(__file__).resolve().parent.parent / "tests/fixtures/claude/plan_session.jsonl"
+)
+
+# Real, trimmed, redacted transcript covering a real pasted-image attachment
+# (via the Agent SDK's streaming input mode) and the assistant reading that
+# same image back with a real Read tool call -- see tests/fixtures/claude/.
+CLAUDE_PASTED_IMAGE_FIXTURE = (
+    Path(__file__).resolve().parent.parent
+    / "tests/fixtures/claude/pasted_image_session.jsonl"
+)
+
 # 1x1 transparent PNG.
 _PNG_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9"
@@ -256,81 +271,27 @@ def _plan_entries(result_text: str, plan: str = "# Plan\n\nStep one."):
 
 
 def test_build_events_inlines_pasted_images_as_base64():
-    # No real Claude fixture captured a pasted image (see
-    # scripts/fixtures/generate_fixtures.sh's header comment on that
-    # experimental step); this stays synthetic.
-    entries = [
-        {
-            "type": "user",
-            "timestamp": "2026-08-01T10:00:00Z",
-            "message": {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "here is the mock"},
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "image/png",
-                            "data": _PNG_B64,
-                        },
-                    },
-                ],
-            },
-        }
-    ]
+    # Real fixture: an Agent SDK streaming-input pasted image (see
+    # pasted_image_session.jsonl) -- a top-level user message image block,
+    # not a tool result.
+    entries = load_entries(CLAUDE_PASTED_IMAGE_FIXTURE)
     user = build_events(entries)[0]
     assert user["role"] == "user"
-    assert user["text"] == "here is the mock"
-    assert base64.b64decode(user["images"][0]["data"]) == base64.b64decode(_PNG_B64)
+    assert user["text"] == "Describe what is in the attached image, in one sentence."
+    assert base64.b64decode(user["images"][0]["data"]).startswith(b"\x89PNG")
     assert user["images"][0]["media_type"] == "image/png"
 
 
 def test_build_events_inlines_images_returned_inside_a_tool_result():
     # `@path` (or any tool reading an image file back, e.g. Read on a
     # screenshot) returns the image nested in a tool_result's own content
-    # list, not as a top-level message image like a pasted attachment.
-    entries = [
-        {
-            "type": "assistant",
-            "timestamp": "2026-01-01T00:00:01Z",
-            "message": {
-                "content": [
-                    {
-                        "type": "tool_use",
-                        "id": "t1",
-                        "name": "Read",
-                        "input": {"file_path": "fixture.png"},
-                    }
-                ]
-            },
-        },
-        {
-            "type": "user",
-            "timestamp": "2026-01-01T00:00:02Z",
-            "message": {
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": "t1",
-                        "content": [
-                            {
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": "image/png",
-                                    "data": _PNG_B64,
-                                },
-                            }
-                        ],
-                    }
-                ]
-            },
-        },
-    ]
-    call = build_events(entries)[0]["tool_calls"][0]
+    # list, not as a top-level message image like a pasted attachment. Real
+    # fixture: the assistant re-reads the same pasted image via a real Read
+    # tool call (see pasted_image_session.jsonl).
+    entries = load_entries(CLAUDE_PASTED_IMAGE_FIXTURE)
+    call = next(c for e in build_events(entries) for c in e.get("tool_calls", []))
     assert call["name"] == "Read"
-    assert base64.b64decode(call["images"][0]["data"]) == base64.b64decode(_PNG_B64)
+    assert base64.b64decode(call["images"][0]["data"]).startswith(b"\x89PNG")
     assert call["images"][0]["media_type"] == "image/png"
 
 
@@ -401,6 +362,24 @@ def test_build_events_does_not_disturb_the_markdown_turns():
 
 
 def test_plan_approved_is_captured():
+    # Real fixture: a genuine ExitPlanMode approval via the Agent SDK's
+    # canUseTool, driven headless (see scripts/fixtures/generate_fixtures.sh
+    # and tests/fixtures/claude/plan_session.jsonl). Unedited, the real
+    # approval wording carries no "(edited by user)" heading at all.
+    turns, _ = build_turns(load_entries(CLAUDE_PLAN_FIXTURE))
+    (plan,) = turns[0].plans
+    assert "divide(a, b)" in plan["plan"]
+    assert plan["decision"] == "approved"
+    assert plan["edited_plan"] == ""
+    # The plan is rendered as its own block, not as a tool bullet.
+    assert turns[0].tool_bullets == []
+    assert turns[0].result_notes == []
+
+
+def test_plan_approved_unchanged_text_under_edited_heading_is_not_an_edit():
+    # Defensive case, not confirmed by the real fixture above (which has no
+    # "(edited by user)" heading at all when unedited): an unchanged echo of
+    # the same plan text under that heading must still collapse to "no edit".
     turns, _ = build_turns(
         _plan_entries(
             "User has approved your plan. You can now start coding.\n\n"
@@ -410,11 +389,7 @@ def test_plan_approved_is_captured():
     (plan,) = turns[0].plans
     assert plan["plan"] == "# Plan\n\nStep one."
     assert plan["decision"] == "approved"
-    # Unchanged plan echoed back under the "edited" heading is not an edit.
     assert plan["edited_plan"] == ""
-    # The plan is rendered as its own block, not as a tool bullet.
-    assert turns[0].tool_bullets == []
-    assert turns[0].result_notes == []
 
 
 def test_plan_approved_with_edit_keeps_final_version():
