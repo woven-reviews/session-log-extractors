@@ -10,6 +10,10 @@ requires-python = ">=3.11"
 
 [project.optional-dependencies]
 test = ["pytest", "pytest-cov"]
+# Only for scripts/fixtures/generate_fixtures.sh's plan-mode/pasted-image
+# captures -- the extractors themselves stay stdlib-only (see
+# scripts/Dockerfile). Not a runtime or test dependency.
+fixtures = ["claude-agent-sdk"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

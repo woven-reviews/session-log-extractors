@@ -12,13 +12,40 @@
 # CLIs itself), so each experimental step is non-fatal: if one doesn't
 # produce what we expect, the script keeps going and says so.
 #
-# Claude Plan mode is deliberately NOT attempted here: exiting plan mode is
-# an ExitPlanMode tool_use that requires a human's interactive approve/
-# reject decision, and there is no non-interactive/headless way to supply
-# that decision. A headless `-p --permission-mode plan` run just answers
-# with the plan as plain assistant text and never calls ExitPlanMode, so it
-# produces nothing the extractor doesn't already cover with synthetic
-# tests. Rely on those (test_plan_approved_is_captured et al.) instead.
+# This script prefers driving each CLI directly over its own SDK/library --
+# fewer moving parts, no extra language runtime, and it's what most users
+# will actually run. Reach for an SDK (as plan mode does below) only when
+# the CLI itself provides no non-interactive way to supply a decision a step
+# needs.
+#
+# Claude Plan mode: a bare `claude -p --permission-mode plan` run has nobody
+# to answer the ExitPlanMode approval prompt, so it never calls the tool at
+# all -- that part is a real, confirmed dead end (see
+# github.com/anthropics/claude-code/issues/3894). But ExitPlanMode's
+# approval goes through the same generic canUseTool path every other tool
+# permission does, and the Agent SDK's `canUseTool` callback (Python
+# `claude_agent_sdk` package, not the plain CLI) IS a documented,
+# non-interactive way to answer that path -- this is what the plan-mode
+# capture below drives, in its own separate session (see that section for
+# why it can't just be `--continue`d onto the turns above). Whether the
+# resulting tool_result text matches the interactive UI's canned wording
+# exactly is NOT independently confirmed by any doc found -- hence this is
+# still a try_step, with the synthetic tests
+# (test_plan_approved_is_captured et al.) as the fallback if it doesn't.
+#
+# Claude pasted images: the same kind of dead end, and this time it's
+# spelled out directly rather than pieced together from issue trackers.
+# code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode lists "Image
+# uploads: attach images directly to messages" as a Streaming Input Mode
+# benefit, and says outright that Single Message Input "does NOT support...
+# direct image attachments in messages." Every `claude -p` call in this
+# script, including the `--continue -p '... @path'` step below, IS single
+# message input -- so that step was never going to produce a real pasted-
+# image content block, independent of whether the file reference itself
+# works. It's left in below as a harmless non-fatal attempt (it may still
+# capture some other real thing, such as a Read-tool-mediated image), but
+# the actual pasted-image capture further down drives streaming input mode
+# via the SDK instead, in its own session, the same way plan mode does.
 #
 # Run this in your OWN terminal (not through Claude Code) -- it invokes
 # claude/codex/copilot as live agents, which this harness itself blocks a
@@ -42,6 +69,14 @@
 #                           (Copilot generation is currently DISABLED below --
 #                           no usable token yet. Flip RUN_COPILOT to true and
 #                           export this once you have one.)
+#
+# The Claude plan-mode and pasted-image steps also need the
+# `claude_agent_sdk` Python package: `pip install -e '.[fixtures]'` from the
+# repo root (see pyproject.toml -- it's an optional extra, not a runtime or
+# test dependency, since it's only ever needed to run this script). They
+# drive Claude through that SDK (canUseTool, and streaming input) instead of
+# the plain `claude` CLI. Missing it just fails those two try_steps; every
+# other capture is unaffected.
 #
 # Revoke all credentials once this script finishes -- they only need to
 # exist for the few minutes this takes to run.
@@ -308,14 +343,147 @@ try_step "Claude: real permission denial, no bypass, fresh session (30s timeout)
   bash -c "cd '$CLAUDE_SCRATCH_DENIAL' && claude --bare --model '$CLAUDE_MODEL' -p '$TURN_DENIAL'"
 
 # `@path` is the documented syntax for attaching a local file to a headless
-# `-p` prompt. Simpler and more likely to actually work than the previous
-# attempt, which hand-built a stream-json stdin payload (a "type":"user"
-# envelope with an inline base64 image block) and got no trace of the turn
-# in the resulting transcript at all -- no error, no image, nothing, so
-# something about that envelope/timing was wrong in a way that couldn't be
-# debugged further without live access to the CLI.
+# `-p` prompt. Left in as a harmless non-fatal attempt, but per the header
+# comment, `-p` is single message input, which is documented to not support
+# direct image attachments in messages at all -- which also explains why an
+# earlier attempt at hand-building a stream-json stdin envelope for this got
+# no trace of the turn in the transcript either: the envelope wasn't the
+# problem, single message input fundamentally can't carry an image however
+# it's framed. See the real pasted-image capture (via streaming input mode)
+# further down instead.
 try_step "Claude: attached image via @path reference (same session, continued)" \
   bash -c "cd '$CLAUDE_SCRATCH' && claude --bare --model '$CLAUDE_MODEL' --dangerously-skip-permissions --continue -p '$TURN_IMAGE @$FIXTURE_PNG'"
+
+# Plan mode: separate fresh scratch dir/session, same reasoning as the
+# denial capture above -- this can't be `--continue`d onto $CLAUDE_SCRATCH
+# because it isn't driven by the `claude` CLI at all. `--bare`'s isolation
+# (skip project/user hooks, skills, CLAUDE.md) is reproduced here with
+# setting_sources=[] since there's no CLI flag to pass through.
+# permission_mode="plan" is what routes ExitPlanMode (and any file edit)
+# through can_use_tool instead of auto-running it -- see the header comment
+# for why that's expected to work non-interactively where plain `-p` can't.
+# One session, two turns: the callback approves the first ExitPlanMode call
+# and rejects the second with a message, so both
+# test_plan_approved_is_captured and test_plan_rejected_keeps_steering_message
+# get a real counterpart to check against, if the resulting text matches.
+CLAUDE_SCRATCH_PLAN="$ROOT/claude-scratch-plan"
+new_scratch_repo "$CLAUDE_SCRATCH_PLAN"
+PLAN_CAPTURE_SCRIPT="$ROOT/plan_capture.py"
+cat > "$PLAN_CAPTURE_SCRIPT" <<PYEOF
+import asyncio
+
+from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, ResultMessage
+from claude_agent_sdk.types import HookMatcher, PermissionResultAllow, PermissionResultDeny
+
+# One ExitPlanMode call per turn below, in order: approve, then deny.
+DECISIONS = iter(["allow", "deny"])
+
+
+async def can_use_tool(tool_name, input_data, context):
+    if tool_name == "ExitPlanMode":
+        if next(DECISIONS) == "allow":
+            return PermissionResultAllow(updated_input=input_data)
+        return PermissionResultDeny(message="Not now -- keep the current file name.")
+    return PermissionResultAllow(updated_input=input_data)
+
+
+# Required workaround (documented in the SDK's own user-input guide): a
+# no-op PreToolUse hook is needed to keep the stream open for can_use_tool.
+async def dummy_hook(input_data, tool_use_id, context):
+    return {"continue_": True}
+
+
+async def main():
+    options = ClaudeAgentOptions(
+        model="$CLAUDE_MODEL",
+        cwd="$CLAUDE_SCRATCH_PLAN",
+        permission_mode="plan",
+        setting_sources=[],
+        can_use_tool=can_use_tool,
+        hooks={"PreToolUse": [HookMatcher(matcher=None, hooks=[dummy_hook])]},
+    )
+    async with ClaudeSDKClient(options=options) as client:
+        await client.query(
+            "Propose a plan to add a divide(a, b) function with a test, "
+            "but do not implement it yet."
+        )
+        async for message in client.receive_response():
+            if isinstance(message, ResultMessage):
+                print("turn 1 (expect approved):", message.result)
+
+        await client.query(
+            "Propose a plan to rename calculator.py to math_ops.py, "
+            "but do not implement it yet."
+        )
+        async for message in client.receive_response():
+            if isinstance(message, ResultMessage):
+                print("turn 2 (expect rejected):", message.result)
+
+
+asyncio.run(main())
+PYEOF
+try_step "Claude: plan mode approve + reject via Agent SDK canUseTool (own session)" \
+  python3 "$PLAN_CAPTURE_SCRIPT"
+
+# Pasted image: another separate session, for the same structural reason as
+# plan mode -- this needs streaming input mode (an async message generator),
+# which isn't something `claude -p` flags can express. No canUseTool/hooks
+# needed here (nothing to approve), so bypassPermissions keeps this step
+# simple -- same effective isolation as --dangerously-skip-permissions
+# elsewhere in this script.
+CLAUDE_SCRATCH_IMAGE="$ROOT/claude-scratch-image"
+new_scratch_repo "$CLAUDE_SCRATCH_IMAGE"
+IMAGE_CAPTURE_SCRIPT="$ROOT/image_capture.py"
+cat > "$IMAGE_CAPTURE_SCRIPT" <<PYEOF
+import asyncio
+import base64
+
+from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, ResultMessage
+
+
+async def message_generator():
+    with open("$FIXTURE_PNG", "rb") as f:
+        image_data = base64.b64encode(f.read()).decode()
+
+    # Mirrors a real interactive paste: an image content block sitting
+    # directly in the user message, not a tool result or a file reference.
+    yield {
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "$TURN_IMAGE"},
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": image_data,
+                    },
+                },
+            ],
+        },
+    }
+
+
+async def main():
+    options = ClaudeAgentOptions(
+        model="$CLAUDE_MODEL",
+        cwd="$CLAUDE_SCRATCH_IMAGE",
+        permission_mode="bypassPermissions",
+        setting_sources=[],
+    )
+    async with ClaudeSDKClient(options=options) as client:
+        await client.query(message_generator())
+        async for message in client.receive_response():
+            if isinstance(message, ResultMessage):
+                print("pasted-image turn result:", message.result)
+
+
+asyncio.run(main())
+PYEOF
+try_step "Claude: pasted image via Agent SDK streaming input (own session)" \
+  python3 "$IMAGE_CAPTURE_SCRIPT"
 
 echo "--- Claude session file(s) ---"
 find "$CLAUDE_CONFIG_DIR/projects" -name '*.jsonl'
