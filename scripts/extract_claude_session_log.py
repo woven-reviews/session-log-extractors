@@ -59,7 +59,7 @@ import re
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from session_log_envelope import (
     DEFAULT_TOOL_RESULT_MAX_BYTES,
@@ -570,12 +570,17 @@ def extract_file_path(tool_input: Any) -> Optional[str]:
     return None
 
 
-def result_note(entry: Dict[str, Any]) -> str:
+def result_note(
+    entry: Dict[str, Any], exclude_tool_use_ids: Optional[Set[str]] = None
+) -> str:
     """A terse note about a tool result (error flag / short output)."""
     is_error = False
     text_bits: List[str] = []
+    excluded = exclude_tool_use_ids or set()
     for block in _content_blocks(entry):
         if not isinstance(block, dict) or block.get("type") != "tool_result":
+            continue
+        if block.get("tool_use_id") in excluded:
             continue
         if block.get("is_error"):
             is_error = True
@@ -913,8 +918,16 @@ def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]:
                         current.permission_denials.extend(denials)
                     if qas:
                         current.option_qas.extend(qas)
-                    elif not denials:
-                        note = result_note(entry)
+                    if not denials:
+                        question_result_ids = {
+                            block.get("tool_use_id")
+                            for block in _content_blocks(entry)
+                            if isinstance(block, dict)
+                            and block.get("type") == "tool_result"
+                            and isinstance(block.get("tool_use_id"), str)
+                            and block["tool_use_id"] in pending_questions
+                        }
+                        note = result_note(entry, question_result_ids)
                         if note:
                             current.add_result_note(note)
                 continue

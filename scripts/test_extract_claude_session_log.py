@@ -7,6 +7,8 @@ Run: python3 scripts/test_extract_claude_session_log.py
 from __future__ import annotations
 
 import base64
+import json
+import pytest
 import os
 import shutil
 import tempfile
@@ -583,6 +585,387 @@ def test_real_fixture_captures_non_interactive_auto_deny():
 
     md = render(turns, [], "project", entries[0]["timestamp"])
     assert "_user denied permission:_ Bash — rm calculator.py" in md
+
+
+
+@pytest.fixture
+def claude_interaction_entries():
+    """Structured dialog fixture: option answers, meta skills, and sidechains."""
+    return [
+        {
+            "type": "user",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "message": {"content": "Choose an option"},
+        },
+        {
+            "type": "user",
+            "isSidechain": True,
+            "message": {"content": "delegate this"},
+        },
+        {
+            "type": "assistant",
+            "timestamp": "2026-01-01T00:00:01Z",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "question-1",
+                        "name": "AskUserQuestion",
+                        "input": {
+                            "questions": [
+                                {
+                                    "header": "Color",
+                                    "question": "Which color?",
+                                    "options": [
+                                        {"label": "Blue", "description": "cool"},
+                                        {"label": "Red"},
+                                    ],
+                                },
+                                "malformed-question",
+                            ]
+                        },
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "write-1",
+                        "name": "Write",
+                        "input": {"file_path": "out.txt", "content": "x"},
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "write-2",
+                        "name": "Write",
+                        "input": {"file_path": "out.txt", "content": "again"},
+                    },
+                ]
+            },
+        },
+        {
+            "type": "user",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "question-1",
+                        "content": [
+                            {"type": "text", "text": '"Which color?"="Blue"'},
+                            {"type": "image", "source": {"type": "base64", "data": "AA=="}},
+                            {"type": "image", "source": {"type": "url", "data": "ignore"}},
+                        ],
+                    },
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "write-1",
+                        "is_error": True,
+                        "content": "write failed",
+                    },
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "write-2",
+                        "content": [{"type": "text", "text": "done"}],
+                    },
+                ]
+            },
+        },
+        {
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": "Finished"}]},
+        },
+        {
+            "type": "user",
+            "isMeta": True,
+            "message": {
+                "content": "Base directory for this skill: "
+                "/repo/.agents/skills/fixture-skill\n"
+            },
+        },
+        {
+            "type": "user",
+            "isSidechain": True,
+            "message": {"content": "last delegate"},
+        },
+        {"type": "summary", "message": {"content": "ignored"}},
+        {"type": "unknown"},
+    ]
+
+
+@pytest.fixture
+def transcript_fixtures(tmp_path):
+    from test_extract_codex_session_log import CODEX_FIXTURE
+
+    claude_path = tmp_path / "claude.jsonl"
+    codex_path = tmp_path / "codex.jsonl"
+    shutil.copyfile(CLAUDE_FIXTURE, claude_path)
+    shutil.copyfile(CODEX_FIXTURE, codex_path)
+    return {"claude": claude_path, "codex": codex_path}
+
+
+def test_claude_interaction_fixture_routes_answers_results_and_subagents(
+    claude_interaction_entries,
+):
+    turns, files = claude_log.build_turns(claude_interaction_entries)
+    assert len(turns) == 1
+    turn = turns[0]
+    assert turn.subagent_count == 2
+    assert turn.skills_used == ["fixture-skill"]
+    assert files == ["out.txt"]
+    assert turn.option_qas[0]["chosen_labels"] == ["Blue"]
+    assert turn.result_notes == ["error: write failed done"]
+    assert turn.assistant_text_blocks == ["Finished"]
+    assert claude_log._is_tool_result_entry(
+        {"toolUseResult": {"stdout": "ok"}, "message": {"content": ""}}
+    )
+    assert not claude_log._is_tool_result_entry({"message": {"content": 5}})
+
+
+def test_claude_result_and_descriptor_helpers_cover_fallbacks():
+    assert claude_log._content_blocks({"message": {"content": 9}}) == []
+    assert claude_log._human_text({"message": {"content": ["raw", {"type": "text"}]}}) == (
+        "raw"
+    )
+    assert claude_log.extract_file_path(None) is None
+    assert claude_log.extract_file_path({"file_path": "", "path": "src/a.py"}) == "src/a.py"
+    assert claude_log.tool_descriptor("Tool", None) == ""
+    assert claude_log.tool_descriptor("Tool", {"file_path": 3, "query": "find me"}) == (
+        "find me"
+    )
+    assert claude_log.result_note(
+        {"toolUseResult": {"stderr": "first", "output": "second"}}
+    ) == "first"
+    assert claude_log.result_note(
+        {
+            "message": {
+                "content": [
+                    {"type": "tool_result", "is_error": True, "content": []}
+                ]
+            }
+        }
+    ) == "error"
+    assert claude_log._result_block_text({"content": 5}) == ""
+    assert claude_log._result_block_images({"content": "not a list"}) == []
+    assert claude_log._parse_chosen(
+        "question", [{"label": "A"}], 'Other="free answer'
+    ) == ("free answer", [])
+    assert claude_log.option_qa_from_result({}, {}) == []
+    assert claude_log.apply_plan_decisions({}, {}) is False
+    assert claude_log.parse_plan_decision("User has approved your plan.") == (
+        "approved",
+        "",
+        "",
+    )
+    assert claude_log.parse_plan_decision(None) == ("unknown", "", "")
+    assert claude_log._skill_from_meta_companion(
+        {"message": {"content": "Base directory for this skill:\n"}}
+    ) is None
+
+
+def test_claude_rendering_includes_all_optional_turn_sections():
+    turn = claude_log.Turn("first\n\nsecond", "unused")
+    turn.timestamp = "2026-01-01T00:00:01Z"
+    turn.command = "/review"
+    turn.command_args = "src"
+    turn.skills_used = ["skill"]
+    turn.skill_details = {"skill": {"description": "does things"}}
+    turn.option_qas = [
+        {
+            "header": "",
+            "question": "Pick one",
+            "options": [{"label": "A", "description": "alpha"}],
+            "chosen_labels": [],
+            "answer_text": "Other answer",
+        }
+    ]
+    turn.permission_denials = [{"tool": "Write", "message": "no\nthanks"}]
+    turn.plans = [
+        {
+            "plan": "step one",
+            "decision": "rejected",
+            "edited_plan": "",
+            "message": "change it",
+        }
+    ]
+    turn.result_notes = [f"result {i}" for i in range(8)]
+    turn.subagents = [
+        {
+            "agent_type": "explore",
+            "task": "inspect",
+            "tool_count": 2,
+            "tool_names": ["Read"],
+            "result": "found it",
+        },
+        {"agent_type": "task", "task": "", "tool_count": 0, "tool_names": [], "result": ""},
+    ]
+    markdown = claude_log.render([turn], ["out.py"], "project", turn.timestamp, ["model"])
+    assert "_(after editing it)_" not in markdown
+    assert "Other answer" in markdown
+    assert "change it" in markdown
+    assert "(+2 more results)" in markdown
+    assert "subagent (explore):_ inspect" in markdown
+    assert "subagent (task)_" in markdown
+    assert "## Files changed during the session" in markdown
+    assert "Model: model." in markdown
+    assert claude_log.render([], [], "project", None).find("No conversational turns") > 0
+    assert "No user inputs" in "\n".join(claude_log.render_summary([], None))
+    assert claude_log.derive_project_label(Path("/tmp/session.jsonl")) == (
+        "/tmp  (dir: tmp)"
+    )
+    assert claude_log.derive_project_label(Path("/tmp/-repo/session.jsonl"), []) == (
+        "/repo  (dir: -repo)"
+    )
+    assert claude_log.session_cwd([{"cwd": "/work"}, {"cwd": "/other"}]) == "/work"
+    assert claude_log.session_cwd([{}]) is None
+
+
+def test_claude_subagent_fixture_files_and_timestamp_fallback(tmp_path):
+    session = tmp_path / "session"
+    subdir = session / "subagents"
+    subdir.mkdir(parents=True)
+    transcript = tmp_path / "session.jsonl"
+    transcript.write_text("{}", encoding="utf-8")
+    agent = subdir / "agent-1.jsonl"
+    agent.write_text(
+        "\n".join(
+            json.dumps(item)
+            for item in [
+                {"type": "user", "timestamp": "2026-01-01T00:00:02Z", "message": {"content": "task"}},
+                {"type": "assistant", "message": {"content": [
+                    {"type": "tool_use", "name": "Read"},
+                    {"type": "text", "text": "partial"},
+                    {"type": "text", "text": "final"},
+                ]}},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (subdir / "agent-1.meta.json").write_text(
+        '{"agentType":"explore"}', encoding="utf-8"
+    )
+    (subdir / "agent-bad.jsonl").write_text("not json", encoding="utf-8")
+    (subdir / "agent-bad.meta.json").write_text("{", encoding="utf-8")
+    assert claude_log.summarize_subagent(agent) == {
+        "agent_type": "explore",
+        "start_ts": "2026-01-01T00:00:02Z",
+        "task": "task",
+        "tool_count": 1,
+        "tool_names": ["Read"],
+        "result": "final",
+    }
+    assert len(claude_log.load_subagents(transcript)) == 1
+    first = claude_log.Turn("", None)
+    second = claude_log.Turn("", "unused")
+    first.timestamp = "bad"
+    second.timestamp = "2026-01-01T00:00:03Z"
+    claude_log.attribute_subagents(
+        [first, second],
+        [{"start_ts": "invalid", "agent_type": "subagent"}],
+    )
+    assert len(first.subagents) == 1
+    assert second.subagents == []
+
+
+def test_claude_selection_loading_and_single_session_cli(
+    transcript_fixtures, monkeypatch, tmp_path, capsys
+):
+    source = transcript_fixtures["claude"]
+    assert claude_log.select_transcript(str(source), None, None) == source
+    assert claude_log.select_transcript(None, str(source), None) == source
+    with pytest.raises(FileNotFoundError):
+        claude_log.select_transcript(None, str(tmp_path / "missing.jsonl"), None)
+    assert claude_log.newest([]) is None
+
+    projects = tmp_path / "projects"
+    projects.mkdir()
+    fallback_dir = projects / "-elsewhere"
+    fallback_dir.mkdir()
+    fallback = fallback_dir / "global.jsonl"
+    shutil.copyfile(source, fallback)
+    monkeypatch.setattr(claude_log, "PROJECTS_ROOT", projects)
+    monkeypatch.setattr(Path, "cwd", staticmethod(lambda: tmp_path / "unknown"))
+    assert claude_log.select_transcript(None, None, None) == fallback
+    with pytest.raises(FileNotFoundError, match="--strict"):
+        claude_log.select_transcript(None, None, None, strict=True)
+
+    out = claude_log.main(["--transcript", str(source), "--output", "-", "--no-raw"])
+    assert out == 0
+    assert "Session Conversation Log" in capsys.readouterr().out
+
+    empty = tmp_path / "empty.jsonl"
+    empty.write_text("", encoding="utf-8")
+    assert claude_log.main(["--transcript", str(empty), "--output", "-"]) == 1
+    assert "no parseable JSON entries" in capsys.readouterr().err
+    assert claude_log.render_transcript(source, None, raw_output=tmp_path)
+    assert list(tmp_path.glob("claude_session_log_raw_*.json"))
+
+
+def test_claude_all_session_export_skips_bad_transcripts(tmp_path, capsys):
+    project = tmp_path / "project"
+    project.mkdir()
+    shutil.copyfile(CLAUDE_FIXTURE, project / "valid.jsonl")
+    (project / "empty.jsonl").write_text("", encoding="utf-8")
+    empty_dir = tmp_path / "empty-dir"
+    empty_dir.mkdir()
+    out = tmp_path / "out"
+    assert claude_log._extract_all(project, str(out), raw=False) == 0
+    assert (out / "session_log_valid.md").is_file()
+    assert "skip empty" in capsys.readouterr().err
+    assert claude_log._extract_all(project / "missing", str(out)) == 1
+    assert claude_log._extract_all(project / "empty-dir", str(out)) == 1
+
+
+def test_claude_dump_and_timing_helpers_handle_invalid_inputs(tmp_path):
+    turn = claude_log.Turn("image", "unused")
+    turn.images = [
+        {"data": "%%%", "media_type": "image/png"},
+        {"data": "QQ==", "media_type": "image/svg+xml"},
+    ]
+    dumped = claude_log.dump_images([turn], "session", tmp_path)
+    assert [path.name for path in dumped] == [
+        "session_turn1_img1.png",
+        "session_turn1_img2.img",
+    ]
+    assert dumped[0].read_bytes() == b""
+    assert "description pending" in turn.user_text
+    assert claude_log.parse_plan_decision("not a decision") == ("unknown", "", "")
+    assert claude_log.format_timestamp("not a date") == "not a date"
+    assert claude_log.format_elapsed("2026-01-01T00:00:02Z", "2026-01-01T00:00:01Z") == (
+        "+0s"
+    )
+    assert claude_log.first_timestamp([{}, {"timestamp": None}]) is None
+    assert claude_log.derive_project_label(Path("bare.jsonl"), []) == "."
+
+
+def test_result_and_tool_descriptors_reject_non_json_values():
+    import extract_codex_session_log as codex
+    import extract_copilot_session_log as copilot
+    assert copilot.tool_descriptor("tool", "not json") == "not json"
+    assert copilot.tool_descriptor("tool", {"custom": object()}) == ""
+    assert copilot.result_note(None) == ""
+    assert copilot.result_note(object()) == ""
+    assert copilot.result_note({"output": [1, 2]}) == '{"output": [1, 2]}'
+    assert codex.result_note({"output": "x"}) == '{"output": "x"}'
+    assert codex.tool_descriptor("tool", {"arg": object()}) == ""
+    assert claude_log.tool_descriptor("tool", {"arg": object()}) == ""
+    assert copilot.format_timestamp("not a date") == "not a date"
+    assert copilot.format_elapsed("bad", "2026-01-01T00:00:00Z") == ""
+    assert copilot.format_elapsed(
+        "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"
+    ) == "+0s"
+    assert copilot.format_elapsed(
+        "2026-01-01T00:00:00Z", "2026-01-01T01:00:00Z"
+    ) == "+1:00:00"
+    assert copilot.date_only(None) == "unknown"
+    turn = copilot.Turn("", "", None, 0)
+    turn.add_tool("Read", "")
+    assert turn.tool_bullets == ["- Read"]
+
+
+def test_claude_single_session_cli_reports_write_error(transcript_fixtures, tmp_path, capsys):
+    source = transcript_fixtures["claude"]
+    output_dir = tmp_path / "directory"
+    output_dir.mkdir()
+    assert claude_log.main(["--transcript", str(source), "--output", str(output_dir), "--no-raw"]) == 1
+    assert "could not write" in capsys.readouterr().err
+
 
 
 if __name__ == "__main__":
