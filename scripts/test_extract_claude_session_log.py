@@ -82,44 +82,9 @@ def test_skill_tool_use_is_recorded():
     assert turns[0].skills_used == ["documents"]
 
 
-def test_user_invoked_skill_via_slash_command_is_recorded():
-    # A user typing `/skill-name` is NOT a `tool_use` named "Skill" -- Claude
-    # Code represents it exactly like a custom slash command (a <command-name>
-    # tag), with the skill's SKILL.md injected as a companion `isMeta` entry
-    # prefixed with its base directory. Confirmed from a real captured
-    # session -- see tests/fixtures/claude/skill_and_denial_session.jsonl.
-    entries = [
-        {
-            "type": "user",
-            "timestamp": "2026-01-01T00:00:00Z",
-            "message": {
-                "content": (
-                    "<command-message>fixture-skill</command-message>\n"
-                    "<command-name>/fixture-skill</command-name>"
-                ),
-            },
-        },
-        {
-            "type": "user",
-            "timestamp": "2026-01-01T00:00:00Z",
-            "isMeta": True,
-            "message": {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": (
-                            "Base directory for this skill: /work/app/.claude/"
-                            "skills/fixture-skill\n\n# Fixture Skill\n\nSay "
-                            "hello.\n"
-                        ),
-                    }
-                ]
-            },
-        },
-    ]
-    turns, _ = build_turns(entries)
-    assert turns[0].command == "/fixture-skill"
-    assert turns[0].skills_used == ["fixture-skill"]
+# The user-typed `/skill-name` path (as opposed to the model self-invoking a
+# `Skill` tool_use above) is covered with real fixture data by
+# test_real_fixture_slash_command_invokes_a_real_skill below.
 
 
 def test_single_choice():
@@ -179,42 +144,9 @@ def test_permission_denials_from_result_names_tool():
     assert out == [{"tool": "Bash — rm -rf build", "message": "no"}]
 
 
-def test_permission_denials_from_result_detects_non_interactive_auto_deny():
-    # A headless run with no human to answer a permission prompt auto-denies
-    # with a differently-worded message and a top-level toolDenialKind field
-    # -- neither canned prefix matches this text, so toolDenialKind is the
-    # only signal. Confirmed from a real captured session (see
-    # tests/fixtures/claude/skill_and_denial_session.jsonl).
-    entry = {
-        "toolDenialKind": "user-rejected",
-        "message": {
-            "content": [
-                {
-                    "type": "tool_result",
-                    "tool_use_id": "toolu_1",
-                    "is_error": True,
-                    "content": (
-                        "rm in '/work/app/calculator.py' needs approval. The "
-                        "path is inside the working directories for this "
-                        "session, and Claude Code asks before a shell command "
-                        "creates, changes or removes files there."
-                    ),
-                }
-            ]
-        },
-    }
-    out = permission_denials_from_result(entry, {"toolu_1": "Bash — rm calculator.py"})
-    assert out == [
-        {
-            "tool": "Bash — rm calculator.py",
-            "message": (
-                "rm in '/work/app/calculator.py' needs approval. The path is "
-                "inside the working directories for this session, and Claude "
-                "Code asks before a shell command creates, changes or removes "
-                "files there."
-            ),
-        }
-    ]
+# The toolDenialKind fallback (a headless run auto-denying with no human to
+# answer) is covered with real fixture data by
+# test_real_fixture_captures_non_interactive_auto_deny below.
 
 
 def test_custom_answer_matches_no_option():
@@ -286,63 +218,6 @@ def test_dump_images_noop_without_images():
     assert turn.user_text == "no images here"
 
 
-def _conversation_entries():
-    """A user turn with a pasted image, an assistant reply, and a tool call
-    whose result arrives as its own later entry."""
-    return [
-        {
-            "type": "user",
-            "timestamp": "2026-08-01T10:00:00Z",
-            "cwd": "/work/app",
-            "message": {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "here is the mock"},
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "image/png",
-                            "data": _PNG_B64,
-                        },
-                    },
-                ],
-            },
-        },
-        {
-            "type": "assistant",
-            "timestamp": "2026-08-01T10:00:02Z",
-            "message": {
-                "role": "assistant",
-                "model": "claude-opus-4-8",
-                "content": [
-                    {"type": "text", "text": "On it."},
-                    {
-                        "type": "tool_use",
-                        "id": "t1",
-                        "name": "Read",
-                        "input": {"file_path": "/work/app/models.py"},
-                    },
-                ],
-            },
-        },
-        {
-            "type": "user",
-            "timestamp": "2026-08-01T10:00:03Z",
-            "message": {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": "t1",
-                        "content": "B" * 9000,
-                    }
-                ],
-            },
-        },
-    ]
-
-
 def _plan_entries(result_text: str, plan: str = "# Plan\n\nStep one."):
     return [
         {
@@ -381,8 +256,30 @@ def _plan_entries(result_text: str, plan: str = "# Plan\n\nStep one."):
 
 
 def test_build_events_inlines_pasted_images_as_base64():
-    events = build_events(_conversation_entries())
-    user = events[0]
+    # No real Claude fixture captured a pasted image (see
+    # scripts/fixtures/generate_fixtures.sh's header comment on that
+    # experimental step); this stays synthetic.
+    entries = [
+        {
+            "type": "user",
+            "timestamp": "2026-08-01T10:00:00Z",
+            "message": {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "here is the mock"},
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": _PNG_B64,
+                        },
+                    },
+                ],
+            },
+        }
+    ]
+    user = build_events(entries)[0]
     assert user["role"] == "user"
     assert user["text"] == "here is the mock"
     assert base64.b64decode(user["images"][0]["data"]) == base64.b64decode(_PNG_B64)
@@ -438,43 +335,36 @@ def test_build_events_inlines_images_returned_inside_a_tool_result():
 
 
 def test_build_events_attaches_tool_results_to_their_call():
-    events = build_events(_conversation_entries(), tool_result_max_bytes=100)
-    call = events[1]["tool_calls"][0]
-    assert call["name"] == "Read"
-    assert call["input"] == {"file_path": "/work/app/models.py"}
-    assert call["result_bytes"] == 9000
+    # Real fixture: a Bash call and its result (see session.jsonl). A small
+    # max forces truncation of that real (short) result.
+    entries = load_entries(CLAUDE_FIXTURE)
+    events = build_events(entries, tool_result_max_bytes=5)
+    call = next(c for e in events for c in e.get("tool_calls", []))
+    assert call["name"] == "Bash"
+    assert call["input"]["command"].startswith("ls -la .claude/agents")
     assert call["result_truncated"] is True
-    assert len(call["result"]) == 100
+    assert len(call["result"]) == 5
 
 
 def test_build_events_keeps_full_tool_input():
     # The condensed markdown truncates a tool descriptor to 100 chars; the
-    # envelope is the place the whole input survives.
-    long_path = "/work/" + ("nested/" * 40) + "file.py"
-    entries = [
-        {
-            "type": "assistant",
-            "timestamp": None,
-            "message": {
-                "role": "assistant",
-                "content": [
-                    {
-                        "type": "tool_use",
-                        "id": "t9",
-                        "name": "Read",
-                        "input": {"file_path": long_path},
-                    }
-                ],
-            },
-        }
-    ]
-    assert build_events(entries)[0]["tool_calls"][0]["input"]["file_path"] == long_path
+    # envelope is the place the whole input survives. Real fixture: the Bash
+    # command in session.jsonl is 147 chars, well past that limit.
+    entries = load_entries(CLAUDE_FIXTURE)
+    call = next(
+        c for e in build_events(entries) for c in e.get("tool_calls", [])
+    )
+    full_command = call["input"]["command"]
+    assert len(full_command) > 100
+    assert full_command == entries[3]["message"]["content"][0]["input"]["command"]
 
 
 def test_build_events_skips_sidechain_and_meta_like_build_turns():
     # Events and turns must describe the same conversation, or a grader reading
-    # the raw log sees something the markdown never showed them.
-    entries = _conversation_entries() + [
+    # the raw log sees something the markdown never showed them. No real
+    # fixture captured a subagent (isSidechain) entry, so those two noise
+    # entries stay synthetic, appended to an otherwise real transcript.
+    entries = load_entries(CLAUDE_FIXTURE) + [
         {
             "type": "user",
             "isSidechain": True,
@@ -495,31 +385,16 @@ def test_build_events_skips_sidechain_and_meta_like_build_turns():
 
 def test_build_events_surfaces_slash_command_invocations():
     # A slash command cleans to empty prose but is a real thing the human did.
-    entries = [
-        {
-            "type": "user",
-            "timestamp": None,
-            "message": {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": (
-                            "<command-name>/extract-claude-session-logs</command-name>"
-                            "<command-args>--strict</command-args>"
-                        ),
-                    }
-                ],
-            },
-        }
-    ]
+    # Real fixture: the "/fixture-skill" invocation in
+    # skill_and_denial_session.jsonl.
+    entries = load_entries(CLAUDE_SKILL_DENIAL_FIXTURE)
     events = build_events(entries)
-    assert events[0]["text"] == "/extract-claude-session-logs --strict"
+    assert events[0]["text"] == "/fixture-skill"
 
 
 def test_build_events_does_not_disturb_the_markdown_turns():
     # The whole point of a second pass: running it must not perturb build_turns.
-    entries = _conversation_entries()
+    entries = load_entries(CLAUDE_FIXTURE)
     before = [t.user_text for t in build_turns(entries)[0]]
     build_events(entries)
     assert [t.user_text for t in build_turns(entries)[0]] == before
