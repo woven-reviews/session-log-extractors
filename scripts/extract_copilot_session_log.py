@@ -525,6 +525,9 @@ def get_state_attachments(session_id: str) -> List[Dict[str, Any]]:
                 "path": path_value if isinstance(path_value, str) else "",
                 "type": mime_type if isinstance(mime_type, str) else "",
             }
+            content = data.get("content")
+            if isinstance(content, str):
+                rec["user_message"] = content
             if isinstance(data_url, str):
                 rec["data_url"] = data_url
             if isinstance(data_b64, str):
@@ -925,6 +928,29 @@ def _build_turn_objects(
                 turn.image_refs.append(ref)
             else:
                 turn.image_refs.append({"name": image_name})
+
+        referenced_names = {ref.get("name") for ref in turn.image_refs}
+        for attachment in attachments:
+            attachment_message = attachment.get("user_message")
+            if (
+                not isinstance(attachment_message, str)
+                or clean_user_text(attachment_message) != user_msg
+            ):
+                continue
+            name = attachment.get("display_name")
+            path = attachment.get("path")
+            ref_name = name if isinstance(name, str) and name else ""
+            if not ref_name and isinstance(path, str) and path:
+                ref_name = Path(path).name
+            if not ref_name or ref_name in referenced_names:
+                continue
+            ref = {"name": ref_name}
+            for key in ("path", "type", "data_url", "data", "media_type"):
+                value = attachment.get(key)
+                if isinstance(value, str):
+                    ref[key] = value
+            turn.image_refs.append(ref)
+            referenced_names.add(ref_name)
 
         for item in by_turn.get(turn.turn_index, []):
             tool_name = item.get("tool_name") or "tool"

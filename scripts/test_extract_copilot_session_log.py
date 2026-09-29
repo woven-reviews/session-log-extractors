@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+import pytest
 import sqlite3
 import tempfile
 from pathlib import Path
@@ -369,13 +370,12 @@ def test_denied_tool_calls_surface_the_real_denial_reason_real_fixture(monkeypat
     ) in markdown
 
 
-def test_real_attachment_without_bracket_token_is_not_resolved_as_image(monkeypatch):
-    # Copilot's real per-message `attachments` array is keyed by a
-    # `displayName`/`assetId`, not the `[image: name]` bracket token
-    # get_state_attachments's caller keys off of -- the checked-in session's
-    # stored user_message text ("Describe what is in the attached image...")
-    # never contains that token. A real attachment is still recorded, but it
-    # never resolves to an image_ref for any turn.
+def test_real_attachment_without_bracket_token_is_attributed_to_its_turn(
+    monkeypatch,
+):
+    # Real Copilot user.message events carry attachments alongside the exact
+    # prompt text; they do not necessarily include the synthetic [image: name]
+    # token used by older DB-only attachment records.
     monkeypatch.setattr(copilot_log, "COPILOT_STATE_ROOT", COPILOT_FIXTURE_STATE_ROOT)
     attachments = copilot_log.get_state_attachments(COPILOT_FIXTURE_SKILL_SESSION_ID)
     assert attachments == [
@@ -383,6 +383,7 @@ def test_real_attachment_without_bracket_token_is_not_resolved_as_image(monkeypa
             "display_name": "fixture.png",
             "path": "/redacted/fixture.png",
             "type": "image/png",
+            "user_message": "Describe what is in the attached image, in one sentence.",
         }
     ]
     turns_raw = [
@@ -394,7 +395,18 @@ def test_real_attachment_without_bracket_token_is_not_resolved_as_image(monkeypa
         }
     ]
     turns = copilot_log._build_turn_objects(turns_raw, [], attachments)
-    assert turns[0].image_refs == []
+    assert turns[0].image_refs == [
+        {
+            "name": "fixture.png",
+            "path": "/redacted/fixture.png",
+            "type": "image/png",
+        }
+    ]
+    # The checked-in fixture redacts the image file itself, so its reference is
+    # retained as unavailable rather than silently disappearing.
+    assert build_events(turns)[0]["images"] == [
+        {"unavailable": True, "ref": "fixture.png"}
+    ]
 
 
 def test_build_events_inlines_resolved_image_and_keeps_unavailable_reference(
@@ -1104,6 +1116,281 @@ def test_main_reports_missing_db_and_exits_nonzero(tmp_path, capsys):
     rc = main(["--db", str(missing)])
     assert rc == 1
     assert "not found" in capsys.readouterr().err
+
+
+
+@pytest.fixture
+def copilot_event_lines():
+    """Mixed valid/invalid event fixture for sidecar join behavior."""
+    events = [
+        {"type": "permission.requested", "data": {"requestId": "pending"}},
+        {
+            "type": "permission.requested",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "data": {
+                "requestId": "done",
+                "permissionRequest": {"intention": "edit"},
+            },
+        },
+        {
+            "type": "permission.completed",
+            "timestamp": "2026-01-01T00:00:01Z",
+            "data": {"requestId": "done", "result": {"kind": "approved"}},
+        },
+        {
+            "type": "permission.completed",
+            "data": {"requestId": "orphan", "result": {"kind": "denied"}},
+        },
+        {
+            "type": "skill.invoked",
+            "timestamp": "2026-01-01T00:00:02Z",
+            "data": {"name": "audit", "path": 4},
+        },
+        {
+            "type": "tool.execution_start",
+            "timestamp": "2026-01-01T00:00:03Z",
+            "data": {"toolCallId": "x", "toolName": "grep"},
+        },
+        {
+            "type": "tool.execution_complete",
+            "data": {
+                "toolCallId": "x",
+                "success": False,
+                "error": {"message": "blocked"},
+            },
+        },
+        {
+            "type": "tool.execution_start",
+            "data": {"toolCallId": "pending", "toolName": "view"},
+        },
+        {
+            "type": "tool.execution_complete",
+            "data": {
+                "toolCallId": "pending",
+                "success": True,
+                "result": {"content": "fallback content"},
+            },
+        },
+    ]
+    return ["not json", "[]", *[json.dumps(event) for event in events]]
+
+
+def test_copilot_sidecar_parser_tolerates_incomplete_and_alternate_records(
+    copilot_event_lines,
+):
+    permissions = copilot_log._permissions_from_events(copilot_event_lines)
+    assert [p["decision"] for p in permissions] == ["denied", "pending", "approved"]
+    assert copilot_log._skills_from_events(copilot_event_lines) == [
+        {
+            "name": "audit",
+            "path": None,
+            "timestamp": "2026-01-01T00:00:02Z",
+        }
+    ]
+    tools = copilot_log._tools_from_events(copilot_event_lines)
+    assert [tool["result"] for tool in tools] == ["blocked", "fallback content"]
+    assert copilot_log._result_text({"content": "fallback"}) == "fallback"
+    assert copilot_log._result_text([1, 2]) == "[1, 2]"
+    assert copilot_log._result_text(object()) == ""
+    assert copilot_log.skill_refs_from_call(
+        "mcp.skill", {"skill": "audit", "path": "/skills/audit/SKILL.md"}
+    ) == [{"name": "audit", "path": "/skills/audit/SKILL.md"}]
+    assert copilot_log.skill_refs_from_call("view", "no skill here") == []
+    assert copilot_log._attachment_lookup(
+        [{"display_name": "missing", "path": " "}, {"path": "/tmp/a.png"}]
+    ) == {"a.png": {"type": "", "path": "/tmp/a.png"}}
+
+
+def test_copilot_image_payload_decoding_and_database_schema_fallbacks(tmp_path):
+    data_url = copilot_log._image_bytes_and_ext(
+        {"data_url": "data:image/svg+xml;base64,QQ=="}
+    )
+    assert data_url == (b"A", "svg")
+    assert copilot_log._image_bytes_and_ext({"data_url": "not an image"}) is None
+    assert copilot_log._image_bytes_and_ext({"data": "%%% ", "media_type": "image/png"}) == (
+        b"",
+        "png",
+    )
+    assert copilot_log._image_bytes_and_ext({"data": "QQ==", "media_type": "custom"}) == (
+        b"A",
+        "img",
+    )
+    assert copilot_log._image_bytes_and_ext({"path": str(tmp_path / "lost.png")}) is None
+    path_without_ext = tmp_path / "image"
+    path_without_ext.write_bytes(b"raw")
+    assert copilot_log._image_bytes_and_ext(
+        {"path": str(path_without_ext), "type": "image/webp"}
+    ) == (b"raw", "webp")
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE sessions (id TEXT, cwd TEXT, repository TEXT, branch TEXT, summary TEXT, created_at TEXT, updated_at TEXT)")
+    conn.execute("INSERT INTO sessions VALUES ('one', '/work', 'repo', 'main', '', '1', '1')")
+    assert copilot_log.get_session_attachments(conn, "one") == []
+    assert copilot_log.get_session_models(conn, "one") == []
+    assert copilot_log.newest_session(conn, Path("/elsewhere"), strict=True) is None
+    assert copilot_log.newest_session(conn, Path("/elsewhere"))["id"] == "one"
+    assert not copilot_log._cwd_matches(None, Path("/work"))
+    assert copilot_log._table_columns(conn, "missing") == set()
+    conn.close()
+
+
+def test_copilot_state_reader_wrappers_and_model_lookup(monkeypatch, tmp_path):
+    state_root = tmp_path / "state"
+    event_path = state_root / "session" / "events.jsonl"
+    event_path.parent.mkdir(parents=True)
+    event_path.write_text(
+        "\n".join(
+            [
+                "{broken",
+                json.dumps({"type": "user.message", "data": {
+                    "content": "Look at this",
+                    "attachments": [
+                        {"displayName": "pic.png", "path": "/tmp/pic.png", "mimeType": "image/png", "dataUrl": "data:image/png;base64,QQ=="},
+                        "not a record",
+                        {"displayName": 3, "path": 4, "mimeType": 5, "data": "QQ==", "mediaType": "image/png"},
+                    ],
+                }}),
+                json.dumps({"type": "skill.invoked", "data": "bad"}),
+                json.dumps({"type": "permission.completed", "data": "bad"}),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(copilot_log, "COPILOT_STATE_ROOT", state_root)
+    attachments = copilot_log.get_state_attachments("session")
+    assert attachments[0]["user_message"] == "Look at this"
+    assert attachments[0]["data_url"] == "data:image/png;base64,QQ=="
+    assert attachments[1]["display_name"] == ""
+    assert attachments[1]["data"] == "QQ=="
+    assert copilot_log.get_state_attachments("missing") == []
+    assert copilot_log.get_state_permissions("missing") == []
+    assert copilot_log.get_state_skills("missing") == []
+    assert copilot_log.get_state_tools("missing") == []
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE events (session_id TEXT, usage_model TEXT, timestamp TEXT)")
+    conn.executemany(
+        "INSERT INTO events VALUES (?, ?, ?)",
+        [
+            ("session", "model-b", "1"),
+            ("session", "model-a", "2"),
+            ("session", "model-b", "3"),
+            ("session", "", "4"),
+        ],
+    )
+    assert copilot_log.get_session_models(conn, "session") == ["model-b", "model-a"]
+    conn.close()
+
+
+def test_copilot_rendering_empty_and_optional_sections():
+    empty = copilot_log.render(
+        {"id": "empty", "repository": "org/repo", "branch": "main", "summary": "done"},
+        [],
+        [],
+        [],
+        [],
+        ["model"],
+    )
+    assert "No conversational turns" in empty
+    assert "Repository: `org/repo`." in empty
+    assert "Model: model." in empty
+
+    turn = copilot_log.Turn("", "answer", None, 0)
+    turn.permission_decisions = [
+        {"decision": "approved", "tool": "shell", "feedback": "ok"}
+    ]
+    turn.result_notes = [f"result {i}" for i in range(8)]
+    rendered = copilot_log.render(
+        {"id": "one", "repository": "", "branch": "", "summary": ""},
+        [turn],
+        [{"checkpoint_number": 1, "title": "Next", "overview": "", "created_at": None}],
+        [{"file_path": "a.py"}, {"file_path": ""}],
+        [{"ref_type": "issue", "ref_value": "42", "turn_index": None}],
+    )
+    assert "no user text captured" in rendered
+    assert "_permission approved:_ shell" in rendered
+    assert "(+2 more results)" in rendered
+    assert "`42`" in rendered
+    assert "### Checkpoint 1: Next" in rendered
+
+
+def test_copilot_session_cli_selectors_stdout_and_errors(
+    monkeypatch, tmp_path, capsys
+):
+    monkeypatch.setattr(Path, "cwd", staticmethod(lambda: Path("/redacted/project")))
+    assert copilot_log.main(
+        [
+            "--db",
+            str(COPILOT_FIXTURE_DB),
+            "b10f9a1b",
+            "--output",
+            "-",
+            "--no-raw",
+        ]
+    ) == 0
+    assert "GitHub Copilot CLI Session" in capsys.readouterr().out
+
+    assert copilot_log.main(
+        ["--db", str(COPILOT_FIXTURE_DB), "missing-session"]
+    ) == 1
+    assert "no session found" in capsys.readouterr().err
+    monkeypatch.setattr(copilot_log, "newest_session", lambda *args, **kwargs: None)
+    assert copilot_log.main(
+        ["--db", str(COPILOT_FIXTURE_DB), "--strict", "--output", "-"]
+    ) == 1
+    assert "exact cwd match only" in capsys.readouterr().err
+
+
+def test_copilot_all_session_export_handles_empty_and_colliding_identifiers(
+    monkeypatch, tmp_path, capsys
+):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    sessions = [
+        {
+            "id": "abcdefgh-one",
+            "cwd": "/work",
+            "created_at": "2026-01-01",
+            "updated_at": "2026-01-01",
+        },
+        {
+            "id": "abcdefgh-copy",
+            "cwd": "/work",
+            "created_at": "2026-01-01",
+            "updated_at": "2026-01-02",
+        },
+    ]
+    monkeypatch.setattr(copilot_log, "matching_sessions", lambda *args, **kwargs: sessions)
+    monkeypatch.setattr(copilot_log, "render_session", lambda *args, **kwargs: "log")
+    out = tmp_path / "out"
+    assert copilot_log._extract_all(conn, str(out), raw=False) == 0
+    assert sorted(path.name for path in out.glob("copilot_session_log_*.md")) == [
+        "copilot_session_log_2026-01-01_abcdefgh-2.md",
+        "copilot_session_log_2026-01-01_abcdefgh.md",
+    ]
+    monkeypatch.setattr(copilot_log, "matching_sessions", lambda *args, **kwargs: [])
+    assert copilot_log._extract_all(conn, str(out)) == 1
+    assert "no Copilot sessions" in capsys.readouterr().err
+    conn.close()
+
+
+def test_copilot_single_session_cli_reports_render_and_write_errors(monkeypatch, tmp_path, capsys):
+    from test_extract_copilot_session_log import COPILOT_FIXTURE_DB
+
+    output_dir = tmp_path / "directory"
+    output_dir.mkdir()
+    monkeypatch.setattr(Path, "cwd", staticmethod(lambda: Path("/redacted/project")))
+    monkeypatch.setattr(copilot_log, "render_session", lambda *a, **k: (_ for _ in ()).throw(ValueError("bad session")))
+    assert copilot_log.main(["--db", str(COPILOT_FIXTURE_DB), "b10f9a1b", "--output", "-", "--no-raw"]) == 1
+    assert "bad session" in capsys.readouterr().err
+
+    monkeypatch.undo()
+    monkeypatch.setattr(Path, "cwd", staticmethod(lambda: Path("/redacted/project")))
+    assert copilot_log.main(["--db", str(COPILOT_FIXTURE_DB), "b10f9a1b", "--output", str(output_dir), "--no-raw"]) == 1
+    assert "could not write" in capsys.readouterr().err
+
 
 
 if __name__ == "__main__":
