@@ -172,8 +172,18 @@ def test_codex_tagged_slash_command_is_recorded():
 
 
 def test_codex_skill_md_read_is_recorded():
-    args = {"cmd": "sed -n '1,200p' /tmp/plugins/documents/skills/documents/SKILL.md"}
-    assert skill_names_from_call("exec_command", args) == ["documents"]
+    # Real capture: an `exec` call whose shell command reads a SKILL.md path
+    # (see skill_and_image_session.jsonl) -- the regex-based path match is
+    # what actually recognizes it, not a structured "skill" argument.
+    entries = load_entries(CODEX_SKILL_IMAGE_FIXTURE)
+    call = next(
+        e["payload"]
+        for e in entries
+        if e.get("type") == "response_item"
+        and e["payload"].get("type") == "custom_tool_call"
+        and "SKILL.md" in (e["payload"].get("input") or "")
+    )
+    assert skill_names_from_call(call["name"], call["input"]) == ["fixture-skill"]
 
 
 def test_codex_normalized_mcp_skill_read_is_recorded():
@@ -712,16 +722,18 @@ def test_build_events_records_an_unresolvable_image_rather_than_dropping_it():
 
 
 def test_build_events_attaches_output_to_its_function_call():
-    events = build_events(_codex_entries(_png_on_disk()), tool_result_max_bytes=100)
-    call = next(c for e in events for c in e.get("tool_calls", []))
-    assert call["name"] == "shell"
-    assert call["input"] == {"command": "ls -la"}
-    assert call["result_bytes"] == 9000
-    assert call["result_truncated"] is True
+    # Real fixture: two `exec` calls and their real (short) outputs -- a
+    # small max forces truncation without a hand-built oversized blob.
+    entries = load_entries(CODEX_SKILL_IMAGE_FIXTURE)
+    events = build_events(entries, tool_result_max_bytes=20)
+    calls = [c for e in events for c in e.get("tool_calls", [])]
+    assert [c["name"] for c in calls] == ["exec", "exec"]
+    assert [c["result_bytes"] for c in calls] == [353, 81]
+    assert all(c["result_truncated"] for c in calls)
 
 
 def test_build_events_does_not_disturb_the_markdown_turns():
-    entries = _codex_entries(_png_on_disk())
+    entries = load_entries(CODEX_SKILL_IMAGE_FIXTURE)
     before = [t.user_text for t in build_turns(entries)[0]]
     build_events(entries)
     assert [t.user_text for t in build_turns(entries)[0]] == before
