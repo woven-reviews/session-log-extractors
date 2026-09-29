@@ -32,7 +32,6 @@ from extract_claude_session_log import (
     select_transcript,
 )
 
-# Real, trimmed, redacted Claude Code transcript -- see tests/fixtures/claude/.
 CLAUDE_FIXTURE = (
     Path(__file__).resolve().parent.parent / "tests/fixtures/claude/session.jsonl"
 )
@@ -52,15 +51,11 @@ CLAUDE_PLAN_FIXTURE = (
     Path(__file__).resolve().parent.parent / "tests/fixtures/claude/plan_session.jsonl"
 )
 
-# Real, trimmed, redacted transcript covering a real pasted-image attachment
-# (via the Agent SDK's streaming input mode) and the assistant reading that
-# same image back with a real Read tool call -- see tests/fixtures/claude/.
 CLAUDE_PASTED_IMAGE_FIXTURE = (
     Path(__file__).resolve().parent.parent
     / "tests/fixtures/claude/pasted_image_session.jsonl"
 )
 
-# 1x1 transparent PNG.
 _PNG_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9"
     "awAAAABJRU5ErkJggg=="
@@ -71,7 +66,6 @@ OPTS = [
     {"label": "manufacturer_part_no", "description": "b"},
     {"label": "Neither", "description": "c"},
 ]
-
 
 def test_skill_tool_use_is_recorded():
     entries = [
@@ -98,24 +92,16 @@ def test_skill_tool_use_is_recorded():
     turns, _ = build_turns(entries)
     assert turns[0].skills_used == ["documents"]
 
-
-# The user-typed `/skill-name` path (as opposed to the model self-invoking a
-# `Skill` tool_use above) is covered with real fixture data by
-# test_real_fixture_slash_command_invokes_a_real_skill below.
-
-
 def test_single_choice():
     res = 'Your questions have been answered: "Q"="section". continue.'
     val, chosen = _parse_chosen("Q", OPTS, res)
     assert val == "section", val
     assert [o["label"] for o in chosen] == ["section"]
 
-
 def test_multiselect_comma():
     res = '"Q"="section, manufacturer_part_no". continue.'
     val, chosen = _parse_chosen("Q", OPTS, res)
     assert [o["label"] for o in chosen] == ["section", "manufacturer_part_no"], chosen
-
 
 def test_permission_denial_bare():
     c = (
@@ -126,7 +112,6 @@ def test_permission_denial_bare():
     )
     assert parse_permission_denial(c) == ""
 
-
 def test_permission_denial_with_message():
     c = (
         "Permission for this tool use was denied. The tool use was rejected (eg. "
@@ -135,11 +120,9 @@ def test_permission_denial_with_message():
     )
     assert parse_permission_denial(c) == "We need a new branch for this"
 
-
 def test_permission_denial_ignores_normal_result():
     assert parse_permission_denial("42 files changed") is None
     assert parse_permission_denial("error: file not found") is None
-
 
 def test_permission_denials_from_result_names_tool():
     entry = {
@@ -160,18 +143,15 @@ def test_permission_denials_from_result_names_tool():
     out = permission_denials_from_result(entry, {"toolu_1": "Bash — rm -rf build"})
     assert out == [{"tool": "Bash — rm -rf build", "message": "no"}]
 
-
 # The toolDenialKind fallback (a headless run auto-denying with no human to
 # answer) is covered with real fixture data by
 # test_real_fixture_captures_non_interactive_auto_deny below.
-
 
 def test_custom_answer_matches_no_option():
     res = '"Q"="something the user typed". continue.'
     val, chosen = _parse_chosen("Q", OPTS, res)
     assert val == "something the user typed"
     assert chosen == []
-
 
 def test_multi_question_anchors_on_its_own_text():
     res = '"Q1"="section", "Q2"="Neither". continue.'
@@ -180,15 +160,12 @@ def test_multi_question_anchors_on_its_own_text():
     assert [o["label"] for o in c1] == ["section"], c1
     assert [o["label"] for o in c2] == ["Neither"], c2
 
-
 def test_task_notification_is_stripped_to_empty():
     assert clean_user_text("<task-notification>\nstuff\n</task-notification>") == ""
-
 
 def test_bash_output_is_stripped_to_empty():
     msg = "<bash-stdout>some output</bash-stdout><bash-stderr>a warning</bash-stderr>"
     assert clean_user_text(msg) == ""
-
 
 def test_bash_input_survives_cleaning_for_detection():
     # The command itself must NOT be stripped; build_turns extracts it.
@@ -197,23 +174,19 @@ def test_bash_input_survives_cleaning_for_detection():
         == "<bash-input>ls -la</bash-input>"
     )
 
-
 def test_strict_candidate_dirs_skip_parents():
     cwd = Path("/Users/me/work/app/sub")
     loose = list(_candidate_project_dirs(cwd, strict=False))
     strict = list(_candidate_project_dirs(cwd, strict=True))
     assert len(strict) == 1  # only the cwd itself
-    assert len(loose) > 1  # cwd + parents
+    assert len(loose) > 1
     assert strict[0] == loose[0]
 
-
 def test_encode_project_path_does_not_collapse_runs():
-    # Windows paths have adjacent non-alnums (":" then "\") -- one dash each.
     assert (
         encode_project_path(PureWindowsPath(r"C:\Users\me\proj")) == "C--Users-me-proj"
     )
     assert encode_project_path(PurePosixPath("/Users/me/proj")) == "-Users-me-proj"
-
 
 def test_dump_images_writes_file_and_marker():
     turn = Turn("look at this", None)
@@ -227,13 +200,11 @@ def test_dump_images_writes_file_and_marker():
     assert "description pending" in turn.user_text
     assert str(p) in turn.user_text
 
-
 def test_dump_images_noop_without_images():
     turn = Turn("no images here", None)
     dump_dir = Path(tempfile.mkdtemp())
     assert dump_images([turn], "s", dump_dir=dump_dir) == []
     assert turn.user_text == "no images here"
-
 
 def _plan_entries(result_text: str, plan: str = "# Plan\n\nStep one."):
     return [
@@ -271,7 +242,6 @@ def _plan_entries(result_text: str, plan: str = "# Plan\n\nStep one."):
         },
     ]
 
-
 def test_build_events_inlines_pasted_images_as_base64():
     # Real fixture: an Agent SDK streaming-input pasted image (see
     # pasted_image_session.jsonl) -- a top-level user message image block,
@@ -282,7 +252,6 @@ def test_build_events_inlines_pasted_images_as_base64():
     assert user["text"] == "Describe what is in the attached image, in one sentence."
     assert base64.b64decode(user["images"][0]["data"]).startswith(b"\x89PNG")
     assert user["images"][0]["media_type"] == "image/png"
-
 
 def test_build_events_inlines_images_returned_inside_a_tool_result():
     # `@path` (or any tool reading an image file back, e.g. Read on a
@@ -296,10 +265,7 @@ def test_build_events_inlines_images_returned_inside_a_tool_result():
     assert base64.b64decode(call["images"][0]["data"]).startswith(b"\x89PNG")
     assert call["images"][0]["media_type"] == "image/png"
 
-
 def test_build_events_attaches_tool_results_to_their_call():
-    # Real fixture: a Bash call and its result (see session.jsonl). A small
-    # max forces truncation of that real (short) result.
     entries = load_entries(CLAUDE_FIXTURE)
     events = build_events(entries, tool_result_max_bytes=5)
     call = next(c for e in events for c in e.get("tool_calls", []))
@@ -308,11 +274,7 @@ def test_build_events_attaches_tool_results_to_their_call():
     assert call["result_truncated"] is True
     assert len(call["result"]) == 5
 
-
 def test_build_events_keeps_full_tool_input():
-    # The condensed markdown truncates a tool descriptor to 100 chars; the
-    # envelope is the place the whole input survives. Real fixture: the Bash
-    # command in session.jsonl is 147 chars, well past that limit.
     entries = load_entries(CLAUDE_FIXTURE)
     call = next(
         c for e in build_events(entries) for c in e.get("tool_calls", [])
@@ -320,7 +282,6 @@ def test_build_events_keeps_full_tool_input():
     full_command = call["input"]["command"]
     assert len(full_command) > 100
     assert full_command == entries[3]["message"]["content"][0]["input"]["command"]
-
 
 def test_build_events_skips_sidechain_and_meta_like_build_turns():
     # Events and turns must describe the same conversation, or a grader reading
@@ -345,15 +306,10 @@ def test_build_events_skips_sidechain_and_meta_like_build_turns():
         t.user_text for t in turns
     ]
 
-
 def test_build_events_surfaces_slash_command_invocations():
-    # A slash command cleans to empty prose but is a real thing the human did.
-    # Real fixture: the "/fixture-skill" invocation in
-    # skill_and_denial_session.jsonl.
     entries = load_entries(CLAUDE_SKILL_DENIAL_FIXTURE)
     events = build_events(entries)
     assert events[0]["text"] == "/fixture-skill"
-
 
 def test_build_events_does_not_disturb_the_markdown_turns():
     # The whole point of a second pass: running it must not perturb build_turns.
@@ -361,7 +317,6 @@ def test_build_events_does_not_disturb_the_markdown_turns():
     before = [t.user_text for t in build_turns(entries)[0]]
     build_events(entries)
     assert [t.user_text for t in build_turns(entries)[0]] == before
-
 
 def test_plan_approved_is_captured():
     # Real fixture: a genuine ExitPlanMode approval via the Agent SDK's
@@ -376,7 +331,6 @@ def test_plan_approved_is_captured():
     # The plan is rendered as its own block, not as a tool bullet.
     assert turns[0].tool_bullets == []
     assert turns[0].result_notes == []
-
 
 def test_plan_approved_unchanged_text_under_edited_heading_is_not_an_edit():
     # Defensive case, not confirmed by the real fixture above (which has no
@@ -393,7 +347,6 @@ def test_plan_approved_unchanged_text_under_edited_heading_is_not_an_edit():
     assert plan["decision"] == "approved"
     assert plan["edited_plan"] == ""
 
-
 def test_plan_approved_with_edit_keeps_final_version():
     turns, _ = build_turns(
         _plan_entries(
@@ -404,7 +357,6 @@ def test_plan_approved_with_edit_keeps_final_version():
     (plan,) = turns[0].plans
     assert plan["decision"] == "approved"
     assert plan["edited_plan"] == "# Plan\n\nStep one, but smaller."
-
 
 def test_plan_rejected_keeps_steering_message():
     turns, _ = build_turns(
@@ -419,9 +371,7 @@ def test_plan_rejected_keeps_steering_message():
     # Routed to the plan record, not the generic permission-denial list.
     assert turns[0].permission_denials == []
 
-
 def test_plan_rejection_reason_is_captured_and_rendered():
-    # The wording the harness actually uses when a plan is sent back in plan mode.
     turns, _ = build_turns(
         _plan_entries(
             "The user doesn't want to proceed with this tool use. The tool use "
@@ -441,25 +391,16 @@ def test_plan_rejection_reason_is_captured_and_rendered():
     assert "> wrong table, use line_items" in md
     assert "> and keep it in one migration" in md
 
-
 def test_plan_without_result_is_marked_undecided():
     entries = _plan_entries("")[:2]
     (plan,) = build_turns(entries)[0][0].plans
     assert plan["decision"] == "no decision recorded"
-
-
-# --------------------------------------------------------------------------- #
-# Fixture-driven: real (trimmed, redacted) transcript, session selection,
-# --strict, malformed input, and main() end-to-end.
-# --------------------------------------------------------------------------- #
-
 
 def test_load_entries_parses_the_real_fixture():
     entries = load_entries(CLAUDE_FIXTURE)
     assert len(entries) == 10
     assert entries[1]["type"] == "user"
     assert "subagent definition" in entries[1]["message"]["content"]
-
 
 def test_load_entries_skips_malformed_and_blank_lines(tmp_path):
     corrupted = tmp_path / "session.jsonl"
@@ -468,7 +409,6 @@ def test_load_entries_skips_malformed_and_blank_lines(tmp_path):
     entries = load_entries(corrupted)
     # The real entries all still parse; only the corrupt/blank tail is skipped.
     assert len(entries) == 10
-
 
 def test_select_transcript_project_dir_picks_newest(tmp_path):
     proj = tmp_path / "proj"
@@ -481,7 +421,6 @@ def test_select_transcript_project_dir_picks_newest(tmp_path):
     os.utime(newer, (2, 2))
     assert select_transcript(None, None, str(proj)) == newer
 
-
 def test_select_transcript_session_id_prefix_match(tmp_path):
     proj = tmp_path / "proj"
     proj.mkdir()
@@ -490,7 +429,6 @@ def test_select_transcript_session_id_prefix_match(tmp_path):
     shutil.copy(CLAUDE_FIXTURE, target)
     shutil.copy(CLAUDE_FIXTURE, other)
     assert select_transcript("cccccccc", None, str(proj)) == target
-
 
 def test_select_transcript_ambiguous_prefix_raises(tmp_path):
     proj = tmp_path / "proj"
@@ -503,7 +441,6 @@ def test_select_transcript_ambiguous_prefix_raises(tmp_path):
         assert "ambiguous" in str(exc)
     else:
         raise AssertionError("expected FileNotFoundError")
-
 
 def test_select_transcript_strict_disables_parent_walk_and_global_fallback(
     monkeypatch, tmp_path
@@ -519,7 +456,6 @@ def test_select_transcript_strict_disables_parent_walk_and_global_fallback(
     monkeypatch.setattr(claude_log, "PROJECTS_ROOT", projects_root)
     monkeypatch.setattr(Path, "cwd", staticmethod(lambda: cwd))
 
-    # Non-strict: the parent-dir walk finds the parent's transcript dir.
     assert select_transcript(None, None, None, strict=False) == (
         parent_dir / "session.jsonl"
     )
@@ -531,7 +467,6 @@ def test_select_transcript_strict_disables_parent_walk_and_global_fallback(
         assert "--strict" in str(exc)
     else:
         raise AssertionError("expected FileNotFoundError")
-
 
 def test_main_end_to_end_renders_the_real_fixture(tmp_path):
     out_path = tmp_path / "out.md"
@@ -550,13 +485,11 @@ def test_main_end_to_end_renders_the_real_fixture(tmp_path):
     assert "subagent definition" in markdown
     assert "Trade-off is cost/speed" in markdown
 
-
 def test_main_reports_missing_transcript_and_exits_nonzero(tmp_path, capsys):
     missing = tmp_path / "nope.jsonl"
     rc = main(["--transcript", str(missing)])
     assert rc == 1
     assert "does not exist" in capsys.readouterr().err
-
 
 def test_real_fixture_slash_command_invokes_a_real_skill():
     # `/fixture-skill` here is a real invocation via --add-dir (the documented
@@ -571,7 +504,6 @@ def test_real_fixture_slash_command_invokes_a_real_skill():
     assert "_Skill used:_ **fixture-skill**" in md
     assert "Welcome to the Fixture Skill" in md
 
-
 def test_real_fixture_captures_non_interactive_auto_deny():
     # A headless `-p` run with no human to answer the permission prompt --
     # confirmed to auto-deny with a message that doesn't match either canned
@@ -585,8 +517,6 @@ def test_real_fixture_captures_non_interactive_auto_deny():
 
     md = render(turns, [], "project", entries[0]["timestamp"])
     assert "_user denied permission:_ Bash — rm calculator.py" in md
-
-
 
 @pytest.fixture
 def claude_interaction_entries():
@@ -688,7 +618,6 @@ def claude_interaction_entries():
         {"type": "unknown"},
     ]
 
-
 @pytest.fixture
 def transcript_fixtures(tmp_path):
     from test_extract_codex_session_log import CODEX_FIXTURE
@@ -698,7 +627,6 @@ def transcript_fixtures(tmp_path):
     shutil.copyfile(CLAUDE_FIXTURE, claude_path)
     shutil.copyfile(CODEX_FIXTURE, codex_path)
     return {"claude": claude_path, "codex": codex_path}
-
 
 def test_claude_interaction_fixture_routes_answers_results_and_subagents(
     claude_interaction_entries,
@@ -716,7 +644,6 @@ def test_claude_interaction_fixture_routes_answers_results_and_subagents(
         {"toolUseResult": {"stdout": "ok"}, "message": {"content": ""}}
     )
     assert not claude_log._is_tool_result_entry({"message": {"content": 5}})
-
 
 def test_claude_result_and_descriptor_helpers_cover_fallbacks():
     assert claude_log._content_blocks({"message": {"content": 9}}) == []
@@ -757,7 +684,6 @@ def test_claude_result_and_descriptor_helpers_cover_fallbacks():
     assert claude_log._skill_from_meta_companion(
         {"message": {"content": "Base directory for this skill:\n"}}
     ) is None
-
 
 def test_claude_rendering_includes_all_optional_turn_sections():
     turn = claude_log.Turn("first\n\nsecond", "unused")
@@ -815,7 +741,6 @@ def test_claude_rendering_includes_all_optional_turn_sections():
     assert claude_log.session_cwd([{"cwd": "/work"}, {"cwd": "/other"}]) == "/work"
     assert claude_log.session_cwd([{}]) is None
 
-
 def test_claude_subagent_fixture_files_and_timestamp_fallback(tmp_path):
     session = tmp_path / "session"
     subdir = session / "subagents"
@@ -862,7 +787,6 @@ def test_claude_subagent_fixture_files_and_timestamp_fallback(tmp_path):
     assert len(first.subagents) == 1
     assert second.subagents == []
 
-
 def test_claude_selection_loading_and_single_session_cli(
     transcript_fixtures, monkeypatch, tmp_path, capsys
 ):
@@ -896,7 +820,6 @@ def test_claude_selection_loading_and_single_session_cli(
     assert claude_log.render_transcript(source, None, raw_output=tmp_path)
     assert list(tmp_path.glob("claude_session_log_raw_*.json"))
 
-
 def test_claude_all_session_export_skips_bad_transcripts(tmp_path, capsys):
     project = tmp_path / "project"
     project.mkdir()
@@ -910,7 +833,6 @@ def test_claude_all_session_export_skips_bad_transcripts(tmp_path, capsys):
     assert "skip empty" in capsys.readouterr().err
     assert claude_log._extract_all(project / "missing", str(out)) == 1
     assert claude_log._extract_all(project / "empty-dir", str(out)) == 1
-
 
 def test_claude_dump_and_timing_helpers_handle_invalid_inputs(tmp_path):
     turn = claude_log.Turn("image", "unused")
@@ -932,7 +854,6 @@ def test_claude_dump_and_timing_helpers_handle_invalid_inputs(tmp_path):
     )
     assert claude_log.first_timestamp([{}, {"timestamp": None}]) is None
     assert claude_log.derive_project_label(Path("bare.jsonl"), []) == "."
-
 
 def test_result_and_tool_descriptors_reject_non_json_values():
     import extract_codex_session_log as codex
@@ -958,15 +879,12 @@ def test_result_and_tool_descriptors_reject_non_json_values():
     turn.add_tool("Read", "")
     assert turn.tool_bullets == ["- Read"]
 
-
 def test_claude_single_session_cli_reports_write_error(transcript_fixtures, tmp_path, capsys):
     source = transcript_fixtures["claude"]
     output_dir = tmp_path / "directory"
     output_dir.mkdir()
     assert claude_log.main(["--transcript", str(source), "--output", str(output_dir), "--no-raw"]) == 1
     assert "could not write" in capsys.readouterr().err
-
-
 
 if __name__ == "__main__":
     import inspect
@@ -975,7 +893,7 @@ if __name__ == "__main__":
         if not (name.startswith("test_") and callable(fn)):
             continue
         if inspect.signature(fn).parameters:
-            continue  # needs pytest fixtures (monkeypatch/tmp_path/...); run via pytest
+            continue
         fn()
         print(f"ok  {name}")
     print("all passed")

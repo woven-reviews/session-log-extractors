@@ -78,12 +78,10 @@ from skill_metadata import (
     render_skill_lines,
 )
 
-
 CODEX_SESSIONS_ROOT = Path.home() / ".codex" / "sessions"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUTPUT = PROJECT_ROOT / "codex_session_log.md"
 
-# Pasted images are dumped here so an image-capable reader can describe them.
 IMAGE_DUMP_DIR = Path(tempfile.gettempdir()) / "codex_session_images"
 _IMAGE_EXT = {
     "image/png": "png",
@@ -95,8 +93,6 @@ _IMAGE_EXT = {
 TOOL_DESC_MAX = 120
 RESULT_NOTE_MAX = 160
 
-# Tools that ask the human for a direct answer. Codex has used both bare and
-# namespaced tool names in logs, so matching is suffix-based in build_turns.
 INTERACTION_TOOLS = {"request_user_input"}
 
 # Codex can maintain a structured checklist through update_plan in either mode.
@@ -144,7 +140,6 @@ _DENIAL_MESSAGE = re.compile(
     r"the user said:\s*\n?(.*?)(?:\n\nNote:|\Z)", re.DOTALL | re.IGNORECASE
 )
 
-
 def parse_permission_denial(text: Any) -> Optional[str]:
     """If ``text`` is a permission-denial message, return the human's steering
     message (``""`` if they just denied). Return ``None`` otherwise."""
@@ -156,13 +151,11 @@ def parse_permission_denial(text: Any) -> Optional[str]:
     m = _DENIAL_MESSAGE.search(stripped)
     return m.group(1).strip() if m else ""
 
-
 def _truncate(text: str, limit: int) -> str:
     text = " ".join(str(text).split())
     if len(text) <= limit:
         return text
     return text[: limit - 3].rstrip() + "..."
-
 
 def clean_user_text(text: str) -> str:
     """Strip harness-injected wrappers while keeping the human's prose."""
@@ -173,7 +166,6 @@ def clean_user_text(text: str) -> str:
     cleaned = re.sub(r"\n[ \t]*\n[ \t]*\n+", "\n\n", cleaned)
     return cleaned.strip()
 
-
 def _parse_ts(ts: Optional[str]):
     if not ts or not isinstance(ts, str):
         return None
@@ -183,7 +175,6 @@ def _parse_ts(ts: Optional[str]):
         return datetime.fromisoformat(ts.replace("Z", "+00:00"))
     except (TypeError, ValueError):
         return None
-
 
 def format_timestamp(ts: Optional[str]) -> str:
     """Render as 'YYYY-MM-DD HH:MM:SS UTC' -- always UTC, never machine-local."""
@@ -198,7 +189,6 @@ def format_timestamp(ts: Optional[str]) -> str:
         dt = dt.astimezone(timezone.utc)
     return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
 
-
 def format_elapsed(first_ts: Optional[str], ts: Optional[str]) -> str:
     a, b = _parse_ts(first_ts), _parse_ts(ts)
     if a is None or b is None:
@@ -212,26 +202,22 @@ def format_elapsed(first_ts: Optional[str], ts: Optional[str]) -> str:
         return f"+{m}:{s:02d}"
     return f"+{s}s"
 
-
 def date_only(ts: Optional[str]) -> str:
     formatted = format_timestamp(ts)
     if formatted == "(no timestamp)":
         return "unknown"
     return formatted.split(" ")[0]
 
-
 def _jsonl_files(root: Path) -> List[Path]:
     if not root.is_dir():
         return []
     return [p for p in root.rglob("*.jsonl") if p.is_file()]
-
 
 def newest(paths: Iterable[Path]) -> Optional[Path]:
     paths = list(paths)
     if not paths:
         return None
     return max(paths, key=lambda p: p.stat().st_mtime)
-
 
 def load_entries(path: Path) -> List[Dict[str, Any]]:
     entries: List[Dict[str, Any]] = []
@@ -259,11 +245,9 @@ def load_entries(path: Path) -> List[Dict[str, Any]]:
         print(f"warning: skipped {bad} malformed/blank lines total", file=sys.stderr)
     return entries
 
-
 def _payload(entry: Dict[str, Any]) -> Dict[str, Any]:
     payload = entry.get("payload")
     return payload if isinstance(payload, dict) else {}
-
 
 def session_id_from_file(path: Path) -> Optional[str]:
     try:
@@ -281,7 +265,6 @@ def session_id_from_file(path: Path) -> Optional[str]:
     except OSError:
         return None
     return None
-
 
 def session_cwd_from_file(path: Path) -> Optional[str]:
     try:
@@ -306,7 +289,6 @@ def session_cwd_from_file(path: Path) -> Optional[str]:
         return None
     return None
 
-
 def _paths_overlap(a: Path, b: Path) -> bool:
     try:
         a.resolve().relative_to(b.resolve())
@@ -319,7 +301,6 @@ def _paths_overlap(a: Path, b: Path) -> bool:
     except ValueError:
         return False
 
-
 def _cwd_matches(
     transcript_cwd: Optional[str], cwd: Path, strict: bool = False
 ) -> bool:
@@ -329,7 +310,6 @@ def _cwd_matches(
     if strict:
         return rec.resolve() == cwd.resolve()
     return _paths_overlap(rec, cwd)
-
 
 def matching_transcripts(root: Path, cwd: Path, strict: bool = False) -> List[Path]:
     """Return every Codex transcript whose recorded cwd overlaps ``cwd``.
@@ -343,7 +323,6 @@ def matching_transcripts(root: Path, cwd: Path, strict: bool = False) -> List[Pa
         if _cwd_matches(session_cwd_from_file(p), cwd, strict=strict)
     ]
 
-
 def output_identifier(transcript: Path) -> str:
     """Stable filename identifier for one transcript.
 
@@ -353,7 +332,6 @@ def output_identifier(transcript: Path) -> str:
     raw = session_id_from_file(transcript) or transcript.stem
     ident = re.sub(r"[^A-Za-z0-9_.-]+", "-", raw).strip("-")
     return ident or transcript.stem
-
 
 def select_transcript(
     selector: Optional[str],
@@ -426,7 +404,6 @@ def select_transcript(
         "pass --transcript PATH"
     )
 
-
 def _content_text(content: Any, text_keys: Tuple[str, ...]) -> str:
     parts: List[str] = []
     if isinstance(content, str):
@@ -443,18 +420,15 @@ def _content_text(content: Any, text_keys: Tuple[str, ...]) -> str:
                         break
     return "\n".join(parts)
 
-
 def user_text_from_event(payload: Dict[str, Any]) -> str:
     text = payload.get("message")
     if isinstance(text, str):
         return clean_user_text(text)
     return ""
 
-
 def user_text_from_response_item(payload: Dict[str, Any]) -> str:
     """Text from Codex's user-role response item, used for initial prompts."""
     return clean_user_text(_content_text(payload.get("content"), ("text",)).strip())
-
 
 def is_startup_context(text: str) -> bool:
     """Codex sends its plugin and workspace context as a user-role item."""
@@ -464,10 +438,8 @@ def is_startup_context(text: str) -> bool:
         and "<environment_context>" in text
     )
 
-
 def assistant_text_from_payload(payload: Dict[str, Any]) -> str:
     return _content_text(payload.get("content"), ("text", "output_text")).strip()
-
 
 def _image_ref_from_string(value: str) -> Optional[Dict[str, Any]]:
     if value.startswith("data:image/"):
@@ -475,7 +447,6 @@ def _image_ref_from_string(value: str) -> Optional[Dict[str, Any]]:
     if value.startswith("/") or value.startswith("~"):
         return {"type": "path", "path": value}
     return None
-
 
 def image_refs_from_event(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Image refs from Codex ``event_msg:user_message`` payloads."""
@@ -524,7 +495,6 @@ def image_refs_from_event(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     return refs
 
-
 def image_refs_from_user_message_payload(
     payload: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
@@ -544,7 +514,6 @@ def image_refs_from_user_message_payload(
                 refs.append(ref)
     return refs
 
-
 def _decode_arguments(arguments: Any) -> Any:
     if isinstance(arguments, str):
         try:
@@ -552,7 +521,6 @@ def _decode_arguments(arguments: Any) -> Any:
         except json.JSONDecodeError:
             return arguments
     return arguments
-
 
 def tool_descriptor(name: str, arguments: Any) -> str:
     args = _decode_arguments(arguments)
@@ -564,7 +532,6 @@ def tool_descriptor(name: str, arguments: Any) -> str:
         if isinstance(val, str) and val:
             return _truncate(val, TOOL_DESC_MAX)
 
-    # multi_tool_use.parallel stores nested recipient calls.
     tool_uses = args.get("tool_uses")
     if isinstance(tool_uses, list):
         names = []
@@ -578,7 +545,6 @@ def tool_descriptor(name: str, arguments: Any) -> str:
         return _truncate(json.dumps(args, ensure_ascii=False), TOOL_DESC_MAX)
     except (TypeError, ValueError):
         return ""
-
 
 def skill_refs_from_call(name: str, arguments: Any) -> List[Dict[str, Optional[str]]]:
     """Return skill names and definition paths evidenced by a tool call."""
@@ -620,11 +586,9 @@ def skill_refs_from_call(name: str, arguments: Any) -> List[Dict[str, Optional[s
             add(skill, match.group("path"))
     return refs
 
-
 def skill_names_from_call(name: str, arguments: Any) -> List[str]:
     """Return skill names evidenced by a call (backwards-compatible helper)."""
     return [str(ref["name"]) for ref in skill_refs_from_call(name, arguments)]
-
 
 def result_note(output: Any) -> str:
     if isinstance(output, str):
@@ -634,14 +598,11 @@ def result_note(output: Any) -> str:
     except (TypeError, ValueError):
         return ""
 
-
 def _is_interaction_tool(name: str) -> bool:
     return any(name == tool or name.endswith("." + tool) for tool in INTERACTION_TOOLS)
 
-
 def _is_plan_tool(name: str) -> bool:
     return any(name == tool or name.endswith("." + tool) for tool in PLAN_TOOLS)
-
 
 def _collaboration_mode(payload: Dict[str, Any]) -> str:
     """Return the normalized collaboration mode carried by a rollout event."""
@@ -651,7 +612,6 @@ def _collaboration_mode(payload: Dict[str, Any]) -> str:
         if isinstance(collaboration, dict):
             mode = collaboration.get("mode")
     return mode.strip().lower() if isinstance(mode, str) else ""
-
 
 def _plan_update(arguments: Any) -> Optional[Dict[str, Any]]:
     """Decode one structured update_plan call for first-class rendering."""
@@ -676,7 +636,6 @@ def _plan_update(arguments: Any) -> Optional[Dict[str, Any]]:
         "steps": steps,
     }
 
-
 def _decode_jsonish(value: Any) -> Any:
     if isinstance(value, str):
         try:
@@ -684,7 +643,6 @@ def _decode_jsonish(value: Any) -> Any:
         except json.JSONDecodeError:
             return value
     return value
-
 
 def _value_to_answer_text(value: Any) -> str:
     if isinstance(value, str):
@@ -713,7 +671,6 @@ def _value_to_answer_text(value: Any) -> str:
                     return text
     return ""
 
-
 def _extract_answer_from_item(question: Dict[str, Any], item: Any) -> str:
     if not isinstance(item, dict):
         return ""
@@ -731,7 +688,6 @@ def _extract_answer_from_item(question: Dict[str, Any], item: Any) -> str:
     if any(marker and marker in item_ids for marker in (qid, qtext, header)):
         return _value_to_answer_text(item)
     return ""
-
 
 def _structured_answer_for_question(question: Dict[str, Any], output: Any) -> str:
     output = _decode_jsonish(output)
@@ -776,7 +732,6 @@ def _structured_answer_for_question(question: Dict[str, Any], output: Any) -> st
 
     return ""
 
-
 def _flatten_result_text(output: Any) -> str:
     output = _decode_jsonish(output)
     if isinstance(output, str):
@@ -800,7 +755,6 @@ def _flatten_result_text(output: Any) -> str:
         return " ".join(parts)
     return ""
 
-
 def _parse_chosen(
     question_text: str, options: List[Dict[str, Any]], result_text: str
 ) -> Tuple[str, List[Dict[str, Any]]]:
@@ -820,7 +774,6 @@ def _parse_chosen(
             val = tail[:end] if end != -1 else tail
     chosen = [o for o in options if o.get("label") and o["label"] in val]
     return val, chosen
-
 
 def option_qa_from_output(
     output: Any, questions: Optional[List[Any]]
@@ -849,7 +802,6 @@ def option_qa_from_output(
         )
     return out
 
-
 def patch_paths(arguments: Any) -> List[str]:
     args = _decode_arguments(arguments)
     if isinstance(args, dict):
@@ -866,7 +818,6 @@ def patch_paths(arguments: Any) -> List[str]:
             paths.append(m.group(1).strip())
     return paths
 
-
 def append_unique_path(paths: List[str], seen: set, path: str) -> None:
     """Append a changed path, avoiding relative/absolute duplicates."""
     if not path:
@@ -880,7 +831,6 @@ def append_unique_path(paths: List[str], seen: set, path: str) -> None:
             return
     seen.add(path)
     paths.append(path)
-
 
 class Turn:
     def __init__(
@@ -900,7 +850,7 @@ class Turn:
         self.skill_details: Dict[str, Dict[str, Any]] = {}
         self.result_notes: List[str] = []
         self.option_qas: List[Dict[str, Any]] = []
-        self.permission_denials: List[Dict[str, Any]] = []  # denied tool + message
+        self.permission_denials: List[Dict[str, Any]] = []
         self.plan_updates: List[Dict[str, Any]] = []
 
     def add_assistant_text(self, text: str) -> None:
@@ -930,7 +880,6 @@ class Turn:
         if note:
             self.result_notes.append(note)
 
-
 def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]:
     turns: List[Turn] = []
     files_changed: List[str] = []
@@ -941,7 +890,7 @@ def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]:
     pending_plan_calls = set()
     pending_user_images: List[Dict[str, Any]] = []
     pending_response_user: Optional[Tuple[str, Optional[str], List[Dict[str, Any]]]] = None
-    last_tool = ""  # most recent tool call, to name a denied permission
+    last_tool = ""
     pending_mode = ""
 
     def start_user_turn(
@@ -1059,8 +1008,6 @@ def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]:
                     )
                 else:
                     current.add_assistant_text(text)
-            # Ignore developer/system/user context response_items. Real user turns
-            # are represented by event_msg:user_message above.
             continue
 
         if ptype in ("function_call", "custom_tool_call"):
@@ -1126,7 +1073,6 @@ def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]:
     flush_pending_response_user()
     return turns, files_changed
 
-
 def envelope_images(refs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Resolve Codex image refs to inline base64 entries.
 
@@ -1146,7 +1092,6 @@ def envelope_images(refs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         raw, ext = decoded
         images.append(image_from_bytes(raw, media_type_for_ext(ext)))
     return images
-
 
 def build_events(
     entries: List[Dict[str, Any]],
@@ -1247,7 +1192,6 @@ def build_events(
     flush_pending_response_user()
     return events
 
-
 def write_raw_envelope(
     transcript: Path,
     entries: List[Dict[str, Any]],
@@ -1272,7 +1216,6 @@ def write_raw_envelope(
     out_path = out_dir / raw_filename("codex", session_id)
     write_envelope(out_path, envelope)
     return out_path
-
 
 def _image_bytes_and_ext(ref: Dict[str, Any]) -> Optional[Tuple[bytes, str]]:
     kind = ref.get("type")
@@ -1318,7 +1261,6 @@ def _image_bytes_and_ext(ref: Dict[str, Any]) -> Optional[Tuple[bytes, str]]:
 
     return None
 
-
 def dump_images(
     turns: List[Turn], session_id: str, dump_dir: Path = IMAGE_DUMP_DIR
 ) -> List[Path]:
@@ -1343,14 +1285,12 @@ def dump_images(
             ).strip()
     return written
 
-
 def first_timestamp(entries: List[Dict[str, Any]]) -> Optional[str]:
     for entry in entries:
         ts = entry.get("timestamp")
         if isinstance(ts, str) and ts:
             return ts
     return None
-
 
 def session_models(entries: List[Dict[str, Any]]) -> List[str]:
     """Distinct model ids from turn_context payloads, in first-seen order.
@@ -1365,7 +1305,6 @@ def session_models(entries: List[Dict[str, Any]]) -> List[str]:
             models.append(model)
     return models
 
-
 def derive_project_label(transcript: Path, entries: List[Dict[str, Any]]) -> str:
     for entry in entries:
         payload = _payload(entry)
@@ -1378,7 +1317,6 @@ def derive_project_label(transcript: Path, entries: List[Dict[str, Any]]) -> str
                 return cwd
     return str(transcript)
 
-
 def _derive_context_line(turns: List[Turn]) -> str:
     for turn in turns:
         if turn.command:
@@ -1388,11 +1326,9 @@ def _derive_context_line(turns: List[Turn]) -> str:
             return f'a Codex session starting with: "{first}"'
     return "a Codex session"
 
-
 def _quote(text: str) -> List[str]:
     """Blockquote text so embedded markdown remains inside the log section."""
     return [f"> {line}" if line.strip() else ">" for line in text.splitlines()]
-
 
 def _render_plan_update(plan: Dict[str, Any]) -> List[str]:
     out: List[str] = []
@@ -1403,7 +1339,6 @@ def _render_plan_update(plan: Dict[str, Any]) -> List[str]:
         mark = "x" if status == "completed" else " "
         out.append(f"- [{mark}] {item.get('step', '')} _({status})_")
     return out
-
 
 def render_summary(turns: List[Turn], first_ts: Optional[str]) -> List[str]:
     """Render the up-front recap of every real user input."""
@@ -1483,7 +1418,6 @@ def render_summary(turns: List[Turn], first_ts: Optional[str]) -> List[str]:
 
         prev_ts = turn.timestamp
     return out
-
 
 def render(
     turns: List[Turn],
@@ -1622,7 +1556,6 @@ def render(
     out.append("")
     return "\n".join(out)
 
-
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="extract_codex_session_log.py",
@@ -1715,7 +1648,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     return parser
 
-
 def render_transcript(
     transcript: Path,
     raw_output: Optional[Path] = None,
@@ -1745,7 +1677,6 @@ def render_transcript(
             print(f"  wrote {raw_path}", file=sys.stderr)
     return markdown
 
-
 def _unique_identifier(base: str, used: set) -> str:
     ident = base
     suffix = 2
@@ -1754,7 +1685,6 @@ def _unique_identifier(base: str, used: set) -> str:
         suffix += 1
     used.add(ident)
     return ident
-
 
 def _extract_all(
     sessions_root: Optional[str],
@@ -1808,7 +1738,6 @@ def _extract_all(
     print(f"done: {written}/{len(files)} session(s) written", file=sys.stderr)
     return 0 if written else 1
 
-
 def main(argv: Optional[List[str]] = None) -> int:
     args = build_arg_parser().parse_args(argv)
 
@@ -1836,8 +1765,6 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     print(f"using transcript: {transcript}", file=sys.stderr)
 
-    # The envelope is a file, so there is nowhere to put it when the markdown is
-    # going to stdout. Write it next to the markdown otherwise.
     if not args.raw or args.output == "-":
         raw_output = None
     elif args.output is None:
@@ -1871,7 +1798,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"wrote {out_path}", file=sys.stderr)
 
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())

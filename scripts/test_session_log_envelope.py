@@ -27,12 +27,10 @@ from session_log_envelope import (
     write_envelope,
 )
 
-# 1x1 transparent PNG.
 _PNG_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9"
     "awAAAABJRU5ErkJggg=="
 )
-
 
 def test_raw_filename_prefixes_every_harness():
     # Unlike the markdown log, whose Claude variant is unprefixed, every raw
@@ -41,7 +39,6 @@ def test_raw_filename_prefixes_every_harness():
     assert raw_filename("codex", "abc") == "codex_session_log_raw_abc.json"
     assert raw_filename("copilot", "abc") == "copilot_session_log_raw_abc.json"
 
-
 def test_image_from_bytes_round_trips():
     raw = base64.b64decode(_PNG_B64)
     img = image_from_bytes(raw, "image/png")
@@ -49,18 +46,15 @@ def test_image_from_bytes_round_trips():
     assert img["bytes"] == len(raw)
     assert base64.b64decode(img["data"]) == raw
 
-
 def test_image_from_base64_keeps_payload_and_reports_decoded_size():
     img = image_from_base64(_PNG_B64, "image/png")
-    assert img["data"] == _PNG_B64  # no pointless decode/encode round trip
+    assert img["data"] == _PNG_B64
     assert img["bytes"] == len(base64.b64decode(_PNG_B64))
-
 
 def test_image_from_base64_marks_undecodable_payload_unavailable():
     img = image_from_base64("%%%not base64%%%", "image/png")
     assert img["unavailable"] is True
     assert "data" not in img
-
 
 def test_unavailable_image_records_the_ref():
     img = unavailable_image("/tmp/gone.png")
@@ -68,7 +62,6 @@ def test_unavailable_image_records_the_ref():
     assert unavailable_image({"path": "/tmp/gone.png"})["ref"] == (
         "{'path': '/tmp/gone.png'}"
     )
-
 
 def test_media_type_for_ext():
     assert media_type_for_ext("png") == "image/png"
@@ -78,18 +71,15 @@ def test_media_type_for_ext():
     assert media_type_for_ext("img") is None
     assert media_type_for_ext(None) is None
 
-
 def test_truncate_result_reports_original_size():
     out = truncate_result("A" * 9000, 100)
     assert out["result_truncated"] is True
     assert out["result_bytes"] == 9000  # the original, not the retained length
     assert len(out["result"]) == 100
 
-
 def test_truncate_result_leaves_short_results_alone():
     out = truncate_result("short", 100)
     assert out == {"result": "short", "result_bytes": 5, "result_truncated": False}
-
 
 def test_truncate_result_never_splits_a_multibyte_character():
     # A 3-byte character straddling the byte budget must not produce invalid
@@ -97,8 +87,7 @@ def test_truncate_result_never_splits_a_multibyte_character():
     out = truncate_result("€" * 100, 100)
     assert out["result_truncated"] is True
     assert len(out["result"].encode("utf-8")) <= 100
-    out["result"].encode("utf-8").decode("utf-8")  # raises if split mid-character
-
+    out["result"].encode("utf-8").decode("utf-8")
 
 def test_truncate_result_negative_budget_means_no_cap():
     out = truncate_result("A" * 9000, -1)
@@ -110,7 +99,6 @@ def test_truncate_result_negative_budget_means_no_cap():
         "result_truncated": False,
     }
     assert truncate_result(123)["result"] == "123"
-
 
 def test_assistant_event_and_empty_user_images():
     assert assistant_event(2, None, "reply") == {
@@ -124,20 +112,17 @@ def test_assistant_event_and_empty_user_images():
     ]
     assert user_event(0, None, "", [])["text"] == ""
 
-
 def test_tool_call_keeps_input_verbatim():
     call = tool_call("Read", {"file_path": "/a/b.py", "limit": 20}, "contents", 4096)
     assert call["name"] == "Read"
     assert call["input"] == {"file_path": "/a/b.py", "limit": 20}
     assert call["result"] == "contents"
 
-
 def test_tool_call_coerces_unserializable_input():
     value = {"obj": object(), "tuple": (1, [True, None])}
     call = tool_call("Weird", value, None)
     assert call["input"]["tuple"] == [1, [True, None]]
     json.dumps(call)  # must not raise
-
 
 def test_build_envelope_shape():
     env = build_envelope(
@@ -154,7 +139,6 @@ def test_build_envelope_shape():
     assert env["session_id"] == "s1"
     assert env["truncation"] == {"tool_result_max_bytes": 4096}
     assert env["events"][0]["role"] == "user"
-
 
 def test_write_envelope_round_trips_through_json():
     env = build_envelope(
@@ -174,11 +158,9 @@ def test_write_envelope_round_trips_through_json():
         reloaded["events"][0]["images"][0]["data"]
     ) == base64.b64decode(_PNG_B64)
 
-
 def test_user_event_omits_images_key_when_there_are_none():
     assert "images" not in user_event(0, None, "text")
     assert "images" in user_event(0, None, "text", [unavailable_image("x")])
-
 
 def test_write_envelope_warns_before_upload_limit(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(envelope, "SIZE_WARN_BYTES", 1)
@@ -189,7 +171,6 @@ def test_write_envelope_warns_before_upload_limit(tmp_path, monkeypatch, capsys)
     assert envelope._human_size(512) == "512 B"
     assert envelope._human_size(2048) == "2 KB"
     assert envelope._human_size(2 * 1024 * 1024) == "2.0 MB"
-
 
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):

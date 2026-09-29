@@ -31,8 +31,6 @@ from extract_copilot_session_log import (
     render_session,
 )
 
-# Real, trimmed, redacted Copilot session-store.db + events.jsonl sidecar --
-# see tests/fixtures/copilot/.
 _COPILOT_FIXTURES = Path(__file__).resolve().parent.parent / "tests/fixtures/copilot"
 COPILOT_FIXTURE_DB = _COPILOT_FIXTURES / "session-store.db"
 COPILOT_FIXTURE_STATE_ROOT = _COPILOT_FIXTURES / "session-state"
@@ -56,7 +54,6 @@ _PNG_B64 = (
     "AAAASUVORK5CYII="
 )
 
-
 def test_copilot_noise_cleaning():
     assert clean_user_text("<system-notification>test</system-notification>") == ""
     assert clean_user_text("<bash-stdout>output</bash-stdout>") == ""
@@ -66,7 +63,6 @@ def test_copilot_noise_cleaning():
         )
         == "Real text\n\nMore text"
     )
-
 
 def test_copilot_skill_definition_details_are_loaded():
     # load_skill_details always re-reads the SKILL.md off disk by path, and
@@ -98,13 +94,11 @@ def test_copilot_skill_definition_details_are_loaded():
         assert turn.skill_details[name]["description"] == description
         assert turn.skill_details[name]["path"] == str(skill_path.resolve())
 
-
 def test_copilot_format_decision():
     assert format_decision("approved") == "approved"
     assert format_decision("approved-for-location") == "approved"
     assert format_decision("denied-interactively-by-user") == "denied"
     assert format_decision("") == "unknown"
-
 
 def test_copilot_attribute_permissions_by_timestamp():
     # No real Copilot session captured a permission decision (see above) --
@@ -132,7 +126,6 @@ def test_copilot_attribute_permissions_by_timestamp():
     assert [p["tool"] for p in t0.permission_decisions] == ["a"]
     assert [p["tool"] for p in t1.permission_decisions] == ["b"]
 
-
 def test_copilot_skills_from_events_are_attributed():
     lines = [
         json.dumps(
@@ -157,7 +150,6 @@ def test_copilot_skills_from_events_are_attributed():
     turn = Turn("use the skill", "", "2026-07-01T22:00:00Z", 0)
     copilot_log.attribute_skills([turn], skills)
     assert turn.skills_used == ["fixture-skill"]
-
 
 def test_copilot_permissions_from_events_join_decisions_and_pending():
     lines = [
@@ -228,7 +220,6 @@ def test_copilot_permissions_from_events_join_decisions_and_pending():
         ("rm x", "pending", ""),
     ]
 
-
 def test_get_state_skills_real_fixture(monkeypatch):
     monkeypatch.setattr(copilot_log, "COPILOT_STATE_ROOT", COPILOT_FIXTURE_STATE_ROOT)
     skills = copilot_log.get_state_skills(COPILOT_FIXTURE_SKILL_SESSION_ID)
@@ -239,7 +230,6 @@ def test_get_state_skills_real_fixture(monkeypatch):
             "timestamp": "2026-09-29T18:28:31.428Z",
         }
     ]
-
 
 def test_get_state_permissions_real_fixture(monkeypatch):
     monkeypatch.setattr(copilot_log, "COPILOT_STATE_ROOT", COPILOT_FIXTURE_STATE_ROOT)
@@ -252,7 +242,6 @@ def test_get_state_permissions_real_fixture(monkeypatch):
             "timestamp": "2026-09-29T18:28:52.142Z",
         }
     ]
-
 
 def test_render_session_real_fixture_attributes_skill_and_permission(monkeypatch):
     # Real Copilot events carry the *completion* timestamp of the turn they
@@ -276,7 +265,6 @@ def test_render_session_real_fixture_attributes_skill_and_permission(monkeypatch
     assert "_Skill used:_" not in turn_2
     assert "_Permission denied:_ **Read file: /redacted/fixture.png**" in turn_2
     assert "_Permission denied:_" not in turn_1 and "_Permission denied:_" not in turn_3
-
 
 def test_get_session_files_and_files_changed_rendering_real_fixture(monkeypatch):
     monkeypatch.setattr(copilot_log, "COPILOT_STATE_ROOT", COPILOT_FIXTURE_STATE_ROOT)
@@ -306,10 +294,7 @@ def test_get_session_files_and_files_changed_rendering_real_fixture(monkeypatch)
     turn_2 = markdown.split("\n## Turn ")[2]
     assert "apply_patch -> /redacted/skill-project/calculator.py" in turn_2
 
-
 def test_get_session_refs_rendering_real_fixture(monkeypatch):
-    # From a session where the agent actually ran `git commit`: real
-    # confirmation that Copilot records the resulting hash in session_refs.
     monkeypatch.setattr(copilot_log, "COPILOT_STATE_ROOT", COPILOT_FIXTURE_STATE_ROOT)
     conn = get_db_connection(COPILOT_FIXTURE_DB)
     try:
@@ -329,7 +314,6 @@ def test_get_session_refs_rendering_real_fixture(monkeypatch):
         conn.close()
     assert "## References" in markdown
     assert "- **commit**: `2c8f9bb` (turn 5)" in markdown
-
 
 def test_denied_tool_calls_surface_the_real_denial_reason_real_fixture(monkeypatch):
     # A denied `tool.execution_complete` (a --deny-tool rule match) carries
@@ -369,7 +353,6 @@ def test_denied_tool_calls_surface_the_real_denial_reason_real_fixture(monkeypat
         "following rules: `shell(rm)`"
     ) in markdown
 
-
 def test_real_attachment_without_bracket_token_is_attributed_to_its_turn(
     monkeypatch,
 ):
@@ -408,7 +391,6 @@ def test_real_attachment_without_bracket_token_is_attributed_to_its_turn(
         {"unavailable": True, "ref": "fixture.png"}
     ]
 
-
 def test_build_events_inlines_resolved_image_and_keeps_unavailable_reference(
     tmp_path,
 ):
@@ -425,7 +407,6 @@ def test_build_events_inlines_resolved_image_and_keeps_unavailable_reference(
     assert user["images"][0]["media_type"] == "image/png"
     assert user["images"][1] == {"unavailable": True, "ref": "missing.png"}
 
-
 # checkpoints stayed empty across every real Copilot capture so far,
 # including a --mode autopilot plan turn and several --continue resumes --
 # `copilot <cmd> --help` has no checkpoint-related command either, so
@@ -435,7 +416,6 @@ def test_build_events_inlines_resolved_image_and_keeps_unavailable_reference(
 # session_refs and session_files, by contrast, *are* real-fixture-backed
 # now -- see test_get_session_refs_rendering_real_fixture and
 # test_get_session_files_and_files_changed_rendering_real_fixture below.
-
 
 def test_copilot_checkpoints_rendering():
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
@@ -549,9 +529,7 @@ def test_copilot_checkpoints_rendering():
     finally:
         test_db.unlink()
 
-
 def test_copilot_prefix_matching():
-    # Real fixture's session id is b10f9a1b-1803-4178-8fcc-8b2a15134624.
     conn = get_db_connection(COPILOT_FIXTURE_DB)
     try:
         session = get_session_by_id(conn, COPILOT_FIXTURE_SESSION_ID)
@@ -563,14 +541,12 @@ def test_copilot_prefix_matching():
     finally:
         conn.close()
 
-
 # Copilot's bracket-token image path -- [image: name] in the stored
 # user_message text, joined against an attachments record by display
 # name -- isn't exercised by the checked-in real fixture (see
 # test_real_attachment_without_bracket_token_is_not_resolved_as_image
 # above: real captures don't emit that bracket token). Covered here with
 # hand-built schemas instead.
-
 
 def test_copilot_image_reference_without_attachment_is_flagged():
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
@@ -641,7 +617,6 @@ def test_copilot_image_reference_without_attachment_is_flagged():
         conn.close()
     finally:
         test_db.unlink()
-
 
 def test_copilot_image_attachment_is_dumped_to_marker_path():
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
@@ -730,7 +705,6 @@ def test_copilot_image_attachment_is_dumped_to_marker_path():
             dumped.unlink()
         finally:
             test_db.unlink()
-
 
 def test_copilot_image_attachment_from_state_events_is_dumped_to_marker_path():
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
@@ -841,7 +815,6 @@ def test_copilot_image_attachment_from_state_events_is_dumped_to_marker_path():
             copilot_log.COPILOT_STATE_ROOT = original_root
             test_db.unlink()
 
-
 def test_build_events_recovers_tool_name_and_target():
     # The real fixture's turn has structured tool_calls (from the events.jsonl
     # sidecar), which build_events always prefers -- so it never exercises
@@ -854,13 +827,11 @@ def test_build_events_recovers_tool_name_and_target():
     assert call["name"] == "str_replace_editor"
     assert call["input"] == {"target": "backend/app/models.py"}
 
-
 def test_build_events_emits_an_assistant_event_for_a_reply():
     turn = Turn("look at this", "Sure, fixing.", "2026-08-01T10:00:00Z", 0)
     events = build_events([turn])
     assistant = [e for e in events if e["role"] == "assistant"]
     assert assistant and assistant[0]["text"] == "Sure, fixing."
-
 
 def test_copilot_tools_from_events_join_start_and_complete():
     lines = [
@@ -892,9 +863,7 @@ def test_copilot_tools_from_events_join_start_and_complete():
     assert tools[0]["name"] == "grep"
     assert tools[0]["arguments"] == {"pattern": "audit"}
     assert tools[0]["success"] is True
-    # detailedContent is preferred as the fuller result text.
     assert tools[0]["result"] == "x"
-
 
 def test_copilot_attribute_tools_populates_bullet_note_and_envelope():
     turn = Turn("find audits", "", "2026-07-01T22:00:00Z", 0)
@@ -910,12 +879,10 @@ def test_copilot_attribute_tools_populates_bullet_note_and_envelope():
     copilot_log.attribute_tools([turn], tools)
     assert turn.tool_bullets == ["- grep -> audit"]
     assert turn.result_notes == ["grep: backend/app/models.py"]
-    # Structured call is carried into the raw envelope with its result.
     call = next(c for e in build_events([turn]) for c in e.get("tool_calls", []))
     assert call["name"] == "grep"
     assert call["input"] == {"pattern": "audit"}
     assert call["result"] == "backend/app/models.py"
-
 
 def test_copilot_attribute_tools_flags_failure():
     turn = Turn("run it", "", "2026-07-01T22:00:00Z", 0)
@@ -933,7 +900,6 @@ def test_copilot_attribute_tools_flags_failure():
     )
     assert turn.result_notes == ["bash: error: boom"]
 
-
 def test_copilot_attribute_tools_by_timestamp():
     t0 = Turn("first", "", "2026-07-01T22:00:00Z", 0)
     t1 = Turn("second", "", "2026-07-01T22:10:00Z", 1)
@@ -949,7 +915,6 @@ def test_copilot_attribute_tools_by_timestamp():
     copilot_log.attribute_tools([t0, t1], tools)
     assert t0.tool_bullets == []
     assert t1.tool_bullets == ["- view -> a.py"]
-
 
 def test_copilot_build_events_emits_one_timestamped_event_per_tool_call():
     turn = Turn("do two things", "On it.", "2026-07-01T22:00:00Z", 0)
@@ -973,18 +938,14 @@ def test_copilot_build_events_emits_one_timestamped_event_per_tool_call():
         ],
     )
     events = build_events([turn])
-    # user + assistant prose + one event per tool call.
     assert [e["role"] for e in events] == ["user", "assistant", "assistant", "assistant"]
     tool_events = [e for e in events if e.get("tool_calls")]
     assert len(tool_events) == 2
-    # Each tool event carries exactly one call stamped with that call's own time.
     assert tool_events[0]["ts"] == "2026-07-01T22:00:01Z"
     assert tool_events[0]["tool_calls"][0]["name"] == "grep"
     assert tool_events[1]["ts"] == "2026-07-01T22:00:02Z"
     assert tool_events[1]["tool_calls"][0]["name"] == "view"
-    # Indices stay contiguous across the split-out events.
     assert [e["i"] for e in events] == [0, 1, 2, 3]
-
 
 def test_copilot_main_defaults_to_all_without_a_selector(monkeypatch, tmp_path):
     called = {}
@@ -1002,14 +963,6 @@ def test_copilot_main_defaults_to_all_without_a_selector(monkeypatch, tmp_path):
     assert rc == 0
     assert called == {"output": None, "strict": False}
 
-
-# --------------------------------------------------------------------------- #
-# Fixture-driven: real (trimmed, redacted) session-store.db + events.jsonl
-# sidecar, real cwd-overlap --strict matching (no monkeypatch), and main()
-# end-to-end.
-# --------------------------------------------------------------------------- #
-
-
 def test_matching_sessions_real_fixture_cwd_overlap_and_strict():
     conn = get_db_connection(COPILOT_FIXTURE_DB)
     try:
@@ -1025,7 +978,6 @@ def test_matching_sessions_real_fixture_cwd_overlap_and_strict():
     finally:
         conn.close()
 
-
 def test_newest_session_real_fixture():
     conn = get_db_connection(COPILOT_FIXTURE_DB)
     try:
@@ -1034,7 +986,6 @@ def test_newest_session_real_fixture():
         assert session["id"] == COPILOT_FIXTURE_SESSION_ID
     finally:
         conn.close()
-
 
 def test_state_sidecar_real_fixture_contains_tool_call(monkeypatch):
     monkeypatch.setattr(copilot_log, "COPILOT_STATE_ROOT", COPILOT_FIXTURE_STATE_ROOT)
@@ -1050,7 +1001,6 @@ def test_state_sidecar_real_fixture_contains_tool_call(monkeypatch):
         }
     ]
 
-
 def test_render_session_includes_real_events_sidecar_tool_call(monkeypatch):
     monkeypatch.setattr(copilot_log, "COPILOT_STATE_ROOT", COPILOT_FIXTURE_STATE_ROOT)
     conn = get_db_connection(COPILOT_FIXTURE_DB)
@@ -1062,7 +1012,6 @@ def test_render_session_includes_real_events_sidecar_tool_call(monkeypatch):
         conn.close()
     assert "Please run the setup in this repo" in markdown
     assert "rename_session" in markdown
-
 
 def test_main_writes_raw_envelope_from_real_events_sidecar(monkeypatch, tmp_path):
     monkeypatch.setattr(copilot_log, "COPILOT_STATE_ROOT", COPILOT_FIXTURE_STATE_ROOT)
@@ -1091,7 +1040,6 @@ def test_main_writes_raw_envelope_from_real_events_sidecar(monkeypatch, tmp_path
     assert call["input"] == {"title": "Local setup"}
     assert call["result"] == 'Renamed session to "Local setup".'
 
-
 def test_main_end_to_end_with_real_fixture(monkeypatch, tmp_path):
     monkeypatch.setattr(copilot_log, "COPILOT_STATE_ROOT", COPILOT_FIXTURE_STATE_ROOT)
     out_path = tmp_path / "out.md"
@@ -1110,14 +1058,11 @@ def test_main_end_to_end_with_real_fixture(monkeypatch, tmp_path):
     markdown = out_path.read_text(encoding="utf-8")
     assert "Please run the setup in this repo" in markdown
 
-
 def test_main_reports_missing_db_and_exits_nonzero(tmp_path, capsys):
     missing = tmp_path / "nope.db"
     rc = main(["--db", str(missing)])
     assert rc == 1
     assert "not found" in capsys.readouterr().err
-
-
 
 @pytest.fixture
 def copilot_event_lines():
@@ -1174,7 +1119,6 @@ def copilot_event_lines():
     ]
     return ["not json", "[]", *[json.dumps(event) for event in events]]
 
-
 def test_copilot_sidecar_parser_tolerates_incomplete_and_alternate_records(
     copilot_event_lines,
 ):
@@ -1199,7 +1143,6 @@ def test_copilot_sidecar_parser_tolerates_incomplete_and_alternate_records(
     assert copilot_log._attachment_lookup(
         [{"display_name": "missing", "path": " "}, {"path": "/tmp/a.png"}]
     ) == {"a.png": {"type": "", "path": "/tmp/a.png"}}
-
 
 def test_copilot_image_payload_decoding_and_database_schema_fallbacks(tmp_path):
     data_url = copilot_log._image_bytes_and_ext(
@@ -1233,7 +1176,6 @@ def test_copilot_image_payload_decoding_and_database_schema_fallbacks(tmp_path):
     assert not copilot_log._cwd_matches(None, Path("/work"))
     assert copilot_log._table_columns(conn, "missing") == set()
     conn.close()
-
 
 def test_copilot_state_reader_wrappers_and_model_lookup(monkeypatch, tmp_path):
     state_root = tmp_path / "state"
@@ -1283,7 +1225,6 @@ def test_copilot_state_reader_wrappers_and_model_lookup(monkeypatch, tmp_path):
     assert copilot_log.get_session_models(conn, "session") == ["model-b", "model-a"]
     conn.close()
 
-
 def test_copilot_rendering_empty_and_optional_sections():
     empty = copilot_log.render(
         {"id": "empty", "repository": "org/repo", "branch": "main", "summary": "done"},
@@ -1315,7 +1256,6 @@ def test_copilot_rendering_empty_and_optional_sections():
     assert "`42`" in rendered
     assert "### Checkpoint 1: Next" in rendered
 
-
 def test_copilot_session_cli_selectors_stdout_and_errors(
     monkeypatch, tmp_path, capsys
 ):
@@ -1341,7 +1281,6 @@ def test_copilot_session_cli_selectors_stdout_and_errors(
         ["--db", str(COPILOT_FIXTURE_DB), "--strict", "--output", "-"]
     ) == 1
     assert "exact cwd match only" in capsys.readouterr().err
-
 
 def test_copilot_all_session_export_handles_empty_and_colliding_identifiers(
     monkeypatch, tmp_path, capsys
@@ -1375,7 +1314,6 @@ def test_copilot_all_session_export_handles_empty_and_colliding_identifiers(
     assert "no Copilot sessions" in capsys.readouterr().err
     conn.close()
 
-
 def test_copilot_single_session_cli_reports_render_and_write_errors(monkeypatch, tmp_path, capsys):
     from test_extract_copilot_session_log import COPILOT_FIXTURE_DB
 
@@ -1391,8 +1329,6 @@ def test_copilot_single_session_cli_reports_render_and_write_errors(monkeypatch,
     assert copilot_log.main(["--db", str(COPILOT_FIXTURE_DB), "b10f9a1b", "--output", str(output_dir), "--no-raw"]) == 1
     assert "could not write" in capsys.readouterr().err
 
-
-
 if __name__ == "__main__":
     import inspect
 
@@ -1400,7 +1336,7 @@ if __name__ == "__main__":
         if not (name.startswith("test_") and callable(fn)):
             continue
         if inspect.signature(fn).parameters:
-            continue  # needs pytest fixtures (monkeypatch/tmp_path/...); run via pytest
+            continue
         fn()
         print(f"ok  {name}")
     print("all passed")

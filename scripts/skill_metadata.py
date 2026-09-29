@@ -7,11 +7,9 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-
 def _skill_slug(name: str) -> str:
     """Return the filesystem-facing portion of a possibly namespaced name."""
     return name.rsplit(":", 1)[-1].strip()
-
 
 def _candidate_paths(
     name: str, explicit_path: Optional[str], project_root: Path
@@ -34,9 +32,6 @@ def _candidate_paths(
     for root in roots:
         yield root / slug / "SKILL.md"
 
-    # Installed plugin skills (Claude or Codex) are versioned several levels
-    # below cache/. Limit the recursive scan to files whose parent dir matches
-    # the invoked name.
     namespace = name.split(":", 1)[0].casefold() if ":" in name else ""
     for cache in (
         home / ".claude" / "plugins" / "cache",
@@ -62,7 +57,6 @@ def _candidate_paths(
             yield from matches
         except OSError:
             pass
-
 
 def _frontmatter(text: str) -> Dict[str, str]:
     """Parse the simple top-level YAML fields commonly used by skills.
@@ -102,14 +96,12 @@ def _frontmatter(text: str) -> Dict[str, str]:
         i += 1
     return result
 
-
 def _heading(text: str) -> str:
     for line in text.splitlines():
         match = re.match(r"^#\s+(.+?)\s*$", line)
         if match:
             return match.group(1)
     return ""
-
 
 def _body_lines(text: str) -> List[str]:
     """The markdown body with any leading ``---`` frontmatter block removed."""
@@ -120,9 +112,7 @@ def _body_lines(text: str) -> List[str]:
             return lines[end + 1 :]
     return lines
 
-
 _LIST_MARKER = re.compile(r"^(?:[-*+]|\d+[.)])\s+")
-
 
 def _sections(text: str) -> List[Dict[str, str]]:
     """``##`` sections as an annotated outline of the skill's steps.
@@ -145,8 +135,6 @@ def _sections(text: str) -> List[Dict[str, str]]:
         if match:
             steps.append({"heading": match.group(1).strip(), "summary": ""})
             continue
-        # First prose line after a heading becomes that step's summary. Skip
-        # markdown table rows/separators — a table header reads as noise here.
         stripped = line.strip()
         if steps and not steps[-1]["summary"] and stripped and stripped[0] not in "#|":
             summary = _LIST_MARKER.sub("", stripped)
@@ -154,7 +142,6 @@ def _sections(text: str) -> List[Dict[str, str]]:
                 summary = summary[:117].rstrip() + "..."
             steps[-1]["summary"] = summary
     return steps
-
 
 def _prose_steps(text: str) -> List[Dict[str, str]]:
     """Fallback step outline for definitions with no ``##`` headings.
@@ -192,15 +179,12 @@ def _prose_steps(text: str) -> List[Dict[str, str]]:
     flush()
     return steps
 
-
-# Frontmatter fields worth surfacing, in display order, with their log labels.
 _META_FIELDS = (
     ("argument-hint", "Arguments"),
     ("allowed-tools", "Allowed tools"),
     ("model", "Model"),
     ("homepage", "Homepage"),
 )
-
 
 def _overview(text: str) -> str:
     """The first body paragraph — a fallback purpose line for heading-less defs
@@ -223,7 +207,6 @@ def _overview(text: str) -> str:
         para.append(stripped)
     return " ".join(para).strip()
 
-
 @lru_cache(maxsize=256)
 def _read_definition(path_text: str) -> Dict[str, Any]:
     path = Path(path_text)
@@ -232,8 +215,6 @@ def _read_definition(path_text: str) -> Dict[str, Any]:
     except (OSError, UnicodeError):
         return {}
     metadata = _frontmatter(text)
-    # Prefer ``##`` headings; fall back to prose paragraphs (2+ only, so a
-    # one-line body still reads as a single overview).
     sections = _sections(text)
     if not sections:
         prose = _prose_steps(text)
@@ -248,7 +229,6 @@ def _read_definition(path_text: str) -> Dict[str, Any]:
         "overview": _overview(text),
         "meta": {key: metadata[key] for key, _ in _META_FIELDS if metadata.get(key)},
     }
-
 
 @lru_cache(maxsize=256)
 def _load_skill_details_cached(
@@ -267,15 +247,12 @@ def _load_skill_details_cached(
                 return details
     return {}
 
-
 def load_skill_details(
     name: str, explicit_path: Optional[str] = None, project_root: Optional[Path] = None
 ) -> Dict[str, Any]:
     """Return concise details from the first matching local skill definition."""
     root = (project_root or Path.cwd()).resolve()
-    # Return a copy so callers cannot mutate the cached representation.
     return dict(_load_skill_details_cached(name, explicit_path, str(root)))
-
 
 def _command_candidate_paths(name: str, project_root: Path) -> Iterable[Path]:
     """Slash commands live as ``<slug>.md`` under a ``commands/`` dir, project
@@ -287,7 +264,6 @@ def _command_candidate_paths(name: str, project_root: Path) -> Iterable[Path]:
     for root in (project_root / ".claude" / "commands", home / ".claude" / "commands"):
         yield root / f"{slug}.md"
 
-
 @lru_cache(maxsize=256)
 def _load_command_details_cached(name: str, root_text: str) -> Dict[str, Any]:
     root = Path(root_text)
@@ -298,7 +274,6 @@ def _load_command_details_cached(name: str, root_text: str) -> Dict[str, Any]:
                 return details
     return {}
 
-
 def load_command_details(
     name: str, project_root: Optional[Path] = None
 ) -> Dict[str, Any]:
@@ -306,11 +281,9 @@ def load_command_details(
     root = (project_root or Path.cwd()).resolve()
     return dict(_load_command_details_cached(name, str(root)))
 
-
 def _compact(text: str, limit: int = 400) -> str:
     out = " ".join(text.split())
     return out if len(out) <= limit else out[: limit - 3].rstrip() + "..."
-
 
 def render_skill_lines(
     name: str,

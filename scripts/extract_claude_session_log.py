@@ -78,19 +78,11 @@ from skill_metadata import (
     render_skill_lines,
 )
 
-# --------------------------------------------------------------------------- #
-# Constants
-# --------------------------------------------------------------------------- #
-
 PROJECTS_ROOT = Path.home() / ".claude" / "projects"
 
-# This script lives at ``<project_root>/scripts/extract_claude_session_log.py``, so the
-# project root is two levels up. The log is always written here by default,
-# regardless of the current working directory.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUTPUT = PROJECT_ROOT / "session_log.md"
 
-# Pasted images are dumped here so an image-capable reader can describe them.
 IMAGE_DUMP_DIR = Path(tempfile.gettempdir()) / "claude_session_images"
 _IMAGE_EXT = {
     "image/png": "png",
@@ -99,7 +91,6 @@ _IMAGE_EXT = {
     "image/webp": "webp",
 }
 
-# Tool calls whose inputs touch files we want to collect for "Files changed".
 FILE_WRITING_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "Create"}
 
 # Tools that prompt the human for a direct answer (pop-up questions, etc.). Their
@@ -107,17 +98,11 @@ FILE_WRITING_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "Create"}
 # interaction rather than folding it into the generic result notes.
 INTERACTION_TOOLS = {"AskUserQuestion"}
 
-# Plan mode: the assistant presents a plan via ExitPlanMode and the human either
-# approves it (optionally after editing it in the approval dialog) or rejects it
-# with a steering message. Both the plan and the decision are surfaced.
 PLAN_TOOLS = {"ExitPlanMode", "exit_plan_mode"}
 
-# Keys that, across tool versions, hold a target file path.
 FILE_PATH_KEYS = ("file_path", "path", "notebook_path", "filePath")
 
-# Max length for a condensed tool descriptor before it gets an ellipsis.
 TOOL_DESC_MAX = 100
-# Max length for a condensed tool-result note.
 RESULT_NOTE_MAX = 120
 
 # Patterns for harness noise embedded in user-message text. These wrappers are
@@ -130,7 +115,6 @@ _NOISE_TAG_BLOCK = re.compile(
     r"</\1>",
     re.DOTALL | re.IGNORECASE,
 )
-# Self-closing / unmatched variants and bare opening tags of the same family.
 _NOISE_TAG_LOOSE = re.compile(
     r"</?(system-reminder|local-command-stdout|local-command-stderr|command-stdout|"
     r"command-stderr|command-name|command-message|command-args|task-notification|"
@@ -144,10 +128,6 @@ _NOISE_TAG_LOOSE = re.compile(
 # as a separate user message and is stripped as noise above.)
 _BASH_INPUT = re.compile(r"<bash-input>(.*?)</bash-input>", re.DOTALL | re.IGNORECASE)
 
-# A slash-command invocation (e.g. `/extract-claude-session-logs`) is recorded as
-# a user message wrapping <command-name>…</command-name> (plus command-message and
-# command-args). clean_user_text strips those tags to nothing, so we pull the
-# command name from the raw text *before* cleaning and surface it as its own turn.
 _COMMAND_NAME = re.compile(
     r"<command-name>\s*(.*?)\s*</command-name>", re.DOTALL | re.IGNORECASE
 )
@@ -163,7 +143,6 @@ _COMMAND_ARGS = re.compile(
 # prefixed with its directory. That prefix is the only signal distinguishing a
 # skill from an ordinary custom command.
 _SKILL_BASE_DIR_PREFIX = "Base directory for this skill:"
-
 
 def _skill_from_meta_companion(entry: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     """(name, path) from a skill's isMeta companion entry, or None."""
@@ -184,15 +163,10 @@ _PERMISSION_DENIAL_PREFIXES = (
     "The user doesn't want to proceed with this tool use.",
     "Permission for this tool use was denied.",
 )
-# Optional steering message the human typed when denying, e.g.
-# "…the user said:\nWe need a new branch for this". A plan sent back in plan mode
-# uses a different lead-in ("…reason for the rejection: …") for the same thing.
-# Captured up to the trailing "Note:" hint block (or end of string).
 _DENIAL_MESSAGE = re.compile(
     r"(?:the user said|reason for the rejection):\s*\n?(.*?)(?:\n\nNote:|\Z)",
     re.DOTALL | re.IGNORECASE,
 )
-
 
 def parse_permission_denial(content: str) -> Optional[str]:
     """If ``content`` is a permission-denial tool_result, return the human's
@@ -204,16 +178,10 @@ def parse_permission_denial(content: str) -> Optional[str]:
     m = _DENIAL_MESSAGE.search(content)
     return m.group(1).strip() if m else ""
 
-
-# An approved plan comes back as a tool_result opening with this preamble. When
-# the human edited the plan in the approval dialog, the *edited* text follows an
-# "## Approved Plan (edited by user):" heading — that version is what the
-# assistant actually works from, so it supersedes the proposed one.
 _PLAN_APPROVAL_PREFIX = "User has approved your plan"
 _PLAN_EDITED = re.compile(
     r"^##\s*Approved Plan \(edited by user\):\s*\n(.*)\Z", re.DOTALL | re.MULTILINE
 )
-
 
 def parse_plan_decision(content: str) -> Tuple[str, str, str]:
     """Classify an ExitPlanMode tool_result.
@@ -233,12 +201,6 @@ def parse_plan_decision(content: str) -> Tuple[str, str, str]:
         return "rejected", "", denial
     return "unknown", "", ""
 
-
-# --------------------------------------------------------------------------- #
-# Transcript discovery
-# --------------------------------------------------------------------------- #
-
-
 def encode_project_path(path: Path) -> str:
     """Encode a filesystem path the way Claude Code names its project dirs.
 
@@ -247,7 +209,6 @@ def encode_project_path(path: Path) -> str:
     """
     raw = str(path)
     return re.sub(r"[^A-Za-z0-9]", "-", raw)
-
 
 def _candidate_project_dirs(cwd: Path, strict: bool = False) -> Iterable[Path]:
     """Yield plausible encoded-project dirs for ``cwd``, most specific first.
@@ -264,7 +225,6 @@ def _candidate_project_dirs(cwd: Path, strict: bool = False) -> Iterable[Path]:
         if d not in seen:
             seen.add(d)
             yield d
-
 
 def resolve_project_dir(
     explicit: Optional[str], cwd: Path, strict: bool = False
@@ -283,19 +243,16 @@ def resolve_project_dir(
             return d
     return None
 
-
 def _jsonl_files(directory: Path) -> List[Path]:
     if not directory.is_dir():
         return []
     return [p for p in directory.iterdir() if p.is_file() and p.suffix == ".jsonl"]
-
 
 def newest(paths: Iterable[Path]) -> Optional[Path]:
     paths = list(paths)
     if not paths:
         return None
     return max(paths, key=lambda p: p.stat().st_mtime)
-
 
 def select_transcript(
     selector: Optional[str],
@@ -327,7 +284,6 @@ def select_transcript(
             raise FileNotFoundError(f"--transcript path does not exist: {p}")
         return p
 
-    # A positional selector that points directly at a file.
     if selector:
         as_path = Path(selector).expanduser()
         if as_path.is_file():
@@ -335,13 +291,11 @@ def select_transcript(
 
     proj = resolve_project_dir(project_dir, cwd, strict=strict)
 
-    # A positional selector treated as a session id within the project dir.
     if selector and proj is not None:
         for name in (selector, f"{selector}.jsonl"):
             candidate = proj / name
             if candidate.is_file():
                 return candidate
-        # Allow a prefix match on the session id (ids are long UUIDs).
         prefix_matches = [p for p in _jsonl_files(proj) if p.stem.startswith(selector)]
         if len(prefix_matches) == 1:
             return prefix_matches[0]
@@ -351,7 +305,6 @@ def select_transcript(
                 f"session id {selector!r} is ambiguous; matches:\n  {joined}"
             )
 
-    # Newest in the resolved project dir.
     if proj is not None:
         picked = newest(_jsonl_files(proj))
         if picked is not None:
@@ -383,12 +336,6 @@ def select_transcript(
         "could not locate any Claude Code transcript "
         f"(looked under {PROJECTS_ROOT}); pass --transcript PATH"
     )
-
-
-# --------------------------------------------------------------------------- #
-# JSONL loading
-# --------------------------------------------------------------------------- #
-
 
 def load_entries(path: Path) -> List[Dict[str, Any]]:
     """Load a JSONL transcript, skipping blank/malformed lines.
@@ -424,16 +371,9 @@ def load_entries(path: Path) -> List[Dict[str, Any]]:
         )
     return entries
 
-
-# --------------------------------------------------------------------------- #
-# Content-block helpers
-# --------------------------------------------------------------------------- #
-
-
 def _get_message(entry: Dict[str, Any]) -> Dict[str, Any]:
     msg = entry.get("message")
     return msg if isinstance(msg, dict) else {}
-
 
 def _content_blocks(entry: Dict[str, Any]) -> List[Any]:
     """Return the message content as a list of blocks.
@@ -450,18 +390,14 @@ def _content_blocks(entry: Dict[str, Any]) -> List[Any]:
         return content
     return []
 
-
 def _is_tool_result_entry(entry: Dict[str, Any]) -> bool:
     """True if this user-role entry is a tool result, not a human message."""
     for block in _content_blocks(entry):
         if isinstance(block, dict) and block.get("type") == "tool_result":
             return True
-    # Some versions stash the result under a top-level toolUseResult and leave
-    # content empty; treat those as tool results too.
     if entry.get("toolUseResult") is not None and not _human_text(entry).strip():
         return True
     return False
-
 
 def _human_text(entry: Dict[str, Any]) -> str:
     """Concatenate the text blocks of a (user or assistant) message."""
@@ -474,7 +410,6 @@ def _human_text(entry: Dict[str, Any]) -> str:
         elif isinstance(block, str):
             parts.append(block)
     return "\n".join(parts)
-
 
 def _image_sources(entry: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Base64 image ``source`` dicts attached to a message, in order."""
@@ -489,7 +424,6 @@ def _image_sources(entry: Dict[str, Any]) -> List[Dict[str, Any]]:
             ):
                 out.append(src)
     return out
-
 
 def _result_block_images(block: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Base64 image ``source`` dicts nested inside a tool_result block.
@@ -515,40 +449,33 @@ def _result_block_images(block: Dict[str, Any]) -> List[Dict[str, Any]]:
             out.append(src)
     return out
 
-
 def clean_user_text(text: str) -> str:
     """Strip harness-injected wrappers while keeping the human's prose."""
     if not text:
         return ""
     cleaned = _NOISE_TAG_BLOCK.sub("", text)
     cleaned = _NOISE_TAG_LOOSE.sub("", cleaned)
-    # Collapse the blank-line runs that removal can leave behind.
     cleaned = re.sub(r"\n[ \t]*\n[ \t]*\n+", "\n\n", cleaned)
     return cleaned.strip()
 
-
 def _truncate(text: str, limit: int) -> str:
-    text = " ".join(text.split())  # flatten whitespace/newlines for one-liners
+    text = " ".join(text.split())
     if len(text) <= limit:
         return text
-    return text[: limit - 1].rstrip() + "…"  # ellipsis
-
+    return text[: limit - 1].rstrip() + "…"
 
 def tool_descriptor(name: str, tool_input: Any) -> str:
     """Build a short one-line descriptor for a tool_use block."""
     if not isinstance(tool_input, dict):
         return _truncate(str(tool_input), TOOL_DESC_MAX) if tool_input else ""
 
-    # File-oriented tools: show the path.
     for key in FILE_PATH_KEYS:
         if key in tool_input and isinstance(tool_input[key], str):
             return _truncate(tool_input[key], TOOL_DESC_MAX)
 
-    # Shell.
     if "command" in tool_input and isinstance(tool_input["command"], str):
         return _truncate(tool_input["command"], TOOL_DESC_MAX)
 
-    # Common search/agent tools.
     for key in ("pattern", "query", "url", "prompt", "description"):
         if key in tool_input and isinstance(tool_input[key], str):
             return _truncate(tool_input[key], TOOL_DESC_MAX)
@@ -559,7 +486,6 @@ def tool_descriptor(name: str, tool_input: Any) -> str:
     except (TypeError, ValueError):
         return ""
 
-
 def extract_file_path(tool_input: Any) -> Optional[str]:
     if not isinstance(tool_input, dict):
         return None
@@ -568,7 +494,6 @@ def extract_file_path(tool_input: Any) -> Optional[str]:
         if isinstance(val, str) and val:
             return val
     return None
-
 
 def result_note(
     entry: Dict[str, Any], exclude_tool_use_ids: Optional[Set[str]] = None
@@ -608,7 +533,6 @@ def result_note(
         return f"error: {blob}" if blob else "error"
     return blob
 
-
 def _result_block_text(block: Dict[str, Any]) -> str:
     """Flatten a tool_result block's content to a string."""
     content = block.get("content")
@@ -621,7 +545,6 @@ def _result_block_text(block: Dict[str, Any]) -> str:
             if isinstance(c, dict) and isinstance(c.get("text"), str)
         )
     return ""
-
 
 def _parse_chosen(
     question_text: str, options: List[Dict[str, Any]], result_text: str
@@ -651,7 +574,6 @@ def _parse_chosen(
             val = tail[:end] if end != -1 else tail
     chosen = [o for o in options if o.get("label") and o["label"] in val]
     return val, chosen
-
 
 def option_qa_from_result(
     entry: Dict[str, Any], pending_questions: Dict[str, Any]
@@ -685,7 +607,6 @@ def option_qa_from_result(
             )
     return out
 
-
 def apply_plan_decisions(
     entry: Dict[str, Any], pending_plans: Dict[str, Dict[str, Any]]
 ) -> bool:
@@ -716,7 +637,6 @@ def apply_plan_decisions(
         record["message"] = message
         handled = True
     return handled
-
 
 def permission_denials_from_result(
     entry: Dict[str, Any], tool_uses: Dict[str, str]
@@ -756,12 +676,6 @@ def permission_denials_from_result(
         )
     return out
 
-
-# --------------------------------------------------------------------------- #
-# Timestamp formatting
-# --------------------------------------------------------------------------- #
-
-
 def _parse_ts(ts: Optional[str]):
     """Parse an ISO-8601 timestamp to a datetime, or None if unparseable."""
     if not ts or not isinstance(ts, str):
@@ -769,11 +683,9 @@ def _parse_ts(ts: Optional[str]):
     try:
         from datetime import datetime
 
-        # Python's fromisoformat dislikes a trailing 'Z' before 3.11.
         return datetime.fromisoformat(ts.replace("Z", "+00:00"))
     except (ValueError, TypeError):
         return None
-
 
 def format_timestamp(ts: Optional[str]) -> str:
     """Render an ISO-8601 timestamp as 'YYYY-MM-DD HH:MM:SS UTC'.
@@ -792,7 +704,6 @@ def format_timestamp(ts: Optional[str]) -> str:
         dt = dt.astimezone(timezone.utc)
     return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
 
-
 def format_elapsed(first_ts: Optional[str], ts: Optional[str]) -> str:
     """Time since session start, as '+H:MM:SS' / '+M:SS' / '+Ns'. '' if unknown."""
     a, b = _parse_ts(first_ts), _parse_ts(ts)
@@ -807,18 +718,11 @@ def format_elapsed(first_ts: Optional[str], ts: Optional[str]) -> str:
         return f"+{m}:{s:02d}"
     return f"+{s}s"
 
-
 def date_only(ts: Optional[str]) -> str:
     formatted = format_timestamp(ts)
     if formatted in ("(no timestamp)",):
         return "unknown"
     return formatted.split(" ")[0]
-
-
-# --------------------------------------------------------------------------- #
-# Turn assembly
-# --------------------------------------------------------------------------- #
-
 
 class Turn:
     """One human message and the assistant activity that followed it."""
@@ -826,24 +730,22 @@ class Turn:
     def __init__(self, user_text: str, timestamp: Optional[str]):
         self.user_text = user_text
         self.timestamp = timestamp
-        self.images: List[Dict[str, Any]] = []  # base64 source dicts, in order
-        # Set when the user's input was a `!`-prefixed shell command.
+        self.images: List[Dict[str, Any]] = []
         self.shell_command: Optional[str] = None
-        # Set when the user's input was a `/`-prefixed slash command.
         self.command: Optional[str] = None
         self.command_args: Optional[str] = None
         self.command_details: Dict[str, Any] = {}
         self.assistant_text_blocks: List[str] = []
-        self.tool_bullets: List[str] = []  # already-rendered "- Name — desc"
+        self.tool_bullets: List[str] = []
         self.skills_used: List[str] = []
         self.skill_details: Dict[str, Dict[str, Any]] = {}
         self.result_notes: List[str] = []
         self.option_qas: List[
             Dict[str, Any]
-        ] = []  # AskUserQuestion: Q + options + choice
-        self.permission_denials: List[Dict[str, Any]] = []  # denied tool + message
-        self.plans: List[Dict[str, Any]] = []  # plan mode: plan text + decision
-        self.subagents: List[Dict[str, Any]] = []  # folded subagent summaries
+        ] = []
+        self.permission_denials: List[Dict[str, Any]] = []
+        self.plans: List[Dict[str, Any]] = []
+        self.subagents: List[Dict[str, Any]] = []
         self.subagent_count = 0
 
     def add_assistant_text(self, text: str) -> None:
@@ -873,17 +775,16 @@ class Turn:
         if note:
             self.result_notes.append(note)
 
-
 def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]:
     """Walk entries in order, producing turns and the changed-files list."""
     turns: List[Turn] = []
     files_changed: List[str] = []
     files_seen = set()
     current: Optional[Turn] = None
-    pending_subagents = 0  # sidechain entries seen since the last real user msg
-    pending_questions: Dict[str, Any] = {}  # tool_use id -> AskUserQuestion questions
-    pending_plans: Dict[str, Dict[str, Any]] = {}  # tool_use id -> plan record
-    tool_uses: Dict[str, str] = {}  # tool_use id -> "Name — descriptor" label
+    pending_subagents = 0
+    pending_questions: Dict[str, Any] = {}
+    pending_plans: Dict[str, Dict[str, Any]] = {}
+    tool_uses: Dict[str, str] = {}
 
     for entry in entries:
         etype = entry.get("type")
@@ -908,7 +809,6 @@ def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]:
 
         if etype == "user":
             if _is_tool_result_entry(entry):
-                # Fold the result into the current turn, condensed.
                 if current is not None:
                     if apply_plan_decisions(entry, pending_plans):
                         continue
@@ -931,7 +831,6 @@ def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]:
                         if note:
                             current.add_result_note(note)
                 continue
-            # A real human message: start a new turn.
             raw = _human_text(entry)
             text = clean_user_text(raw)
             images = _image_sources(entry)
@@ -961,7 +860,6 @@ def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]:
 
         elif etype == "assistant":
             if current is None:
-                # Assistant activity before any human turn (rare); make a stub.
                 current = Turn("", entry.get("timestamp"))
                 turns.append(current)
             for block in _content_blocks(entry):
@@ -1012,13 +910,10 @@ def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]:
                             files_changed.append(fp)
         # Unknown types are ignored silently (robust to schema additions).
 
-    # If subagents were spawned at the very end with no following user turn,
-    # attribute them to the last real turn.
     if pending_subagents and turns:
         turns[-1].subagent_count += pending_subagents
 
     return turns, files_changed
-
 
 def build_events(
     entries: List[Dict[str, Any]],
@@ -1038,7 +933,7 @@ def build_events(
     the candidate's words nor useful context, and they dwarf everything else.
     """
     events: List[Dict[str, Any]] = []
-    pending_calls: Dict[str, Dict[str, Any]] = {}  # tool_use id -> call awaiting result
+    pending_calls: Dict[str, Dict[str, Any]] = {}
     index = 0
 
     for entry in entries:
@@ -1053,9 +948,6 @@ def build_events(
 
         if etype == "user":
             if _is_tool_result_entry(entry):
-                # Attach each result to the call it answers. Results arrive as
-                # their own user-role entry, well after the assistant event was
-                # emitted, so the call dict is mutated in place.
                 for block in _content_blocks(entry):
                     if (
                         not isinstance(block, dict)
@@ -1087,8 +979,6 @@ def build_events(
                 for src in _image_sources(entry)
             ]
 
-            # A slash command cleans to nothing (its text lives entirely in
-            # harness tags), but invoking one is a real thing the human did.
             cmd_match = _COMMAND_NAME.search(raw)
             command = cmd_match.group(1).strip() if cmd_match else ""
             if command.startswith("/") and not text:
@@ -1140,12 +1030,6 @@ def build_events(
 
     return events
 
-
-# --------------------------------------------------------------------------- #
-# Rendering
-# --------------------------------------------------------------------------- #
-
-
 def _derive_context_line(turns: List[Turn]) -> str:
     """A brief context line from the first human message, if usable."""
     for t in turns:
@@ -1154,11 +1038,9 @@ def _derive_context_line(turns: List[Turn]) -> str:
             return f"a Claude Code working session starting with: “{first}”"
     return "a Claude Code working session"
 
-
 def _quote(text: str) -> List[str]:
     """Blockquote a block of text so embedded markdown can't break the log."""
     return [f"> {line}" if line.strip() else ">" for line in text.splitlines()]
-
 
 def render_summary(turns: List[Turn], first_ts: Optional[str]) -> List[str]:
     """The up-front recap: every turn that carried real user input.
@@ -1242,7 +1124,6 @@ def render_summary(turns: List[Turn], first_ts: Optional[str]) -> List[str]:
         prev_ts = turn.timestamp
     return out
 
-
 def render(
     turns: List[Turn],
     files_changed: List[str],
@@ -1268,7 +1149,6 @@ def render(
         out.append("")
         return "\n".join(out)
 
-    # Summary first, then the full detail.
     out.append("")
     out.extend(render_summary(turns, first_ts))
     out.append("---")
@@ -1331,7 +1211,6 @@ def render(
                 )
 
         if turn.result_notes:
-            # Keep results compact: one summarizing line.
             notes = "; ".join(turn.result_notes[:6])
             extra = len(turn.result_notes) - 6
             if extra > 0:
@@ -1410,7 +1289,6 @@ def render(
     out.append("")
     return "\n".join(out)
 
-
 def derive_project_label(
     transcript: Path, entries: Optional[List[Dict[str, Any]]] = None
 ) -> str:
@@ -1422,18 +1300,15 @@ def derive_project_label(
     separators can't be recovered).
     """
     encoded = transcript.parent.name
-    # Accurate path from the transcript itself, when available.
     if entries:
         for entry in entries:
             cwd = entry.get("cwd")
             if isinstance(cwd, str) and cwd:
                 return f"{cwd}  (dir: {encoded})" if encoded else cwd
-    # Encoded dirs typically begin with a leading dash (from the leading '/').
     decoded = "/" + encoded.lstrip("-").replace("-", "/") if encoded else encoded
     if encoded:
         return f"{decoded}  (dir: {encoded})"
     return str(transcript.parent)
-
 
 def first_timestamp(entries: List[Dict[str, Any]]) -> Optional[str]:
     for entry in entries:
@@ -1441,7 +1316,6 @@ def first_timestamp(entries: List[Dict[str, Any]]) -> Optional[str]:
         if isinstance(ts, str) and ts:
             return ts
     return None
-
 
 def session_models(entries: List[Dict[str, Any]]) -> List[str]:
     """Distinct model ids used by assistant messages, in first-seen order.
@@ -1451,7 +1325,6 @@ def session_models(entries: List[Dict[str, Any]]) -> List[str]:
     models: List[str] = []
     for entry in entries:
         model = _get_message(entry).get("model")
-        # Synthetic/no-model assistant turns report "<synthetic>"; skip those.
         if (
             isinstance(model, str)
             and model
@@ -1461,7 +1334,6 @@ def session_models(entries: List[Dict[str, Any]]) -> List[str]:
             models.append(model)
     return models
 
-
 def session_cwd(entries: List[Dict[str, Any]]) -> Optional[str]:
     """The working directory the session ran in, from the first entry carrying it."""
     for entry in entries:
@@ -1469,7 +1341,6 @@ def session_cwd(entries: List[Dict[str, Any]]) -> Optional[str]:
         if isinstance(cwd, str) and cwd:
             return cwd
     return None
-
 
 def write_raw_envelope(
     transcript: Path,
@@ -1496,7 +1367,6 @@ def write_raw_envelope(
     out_path = out_dir / raw_filename("claude", session_id)
     write_envelope(out_path, envelope)
     return out_path
-
 
 def dump_images(
     turns: List[Turn], session_id: str, dump_dir: Path = IMAGE_DUMP_DIR
@@ -1525,12 +1395,6 @@ def dump_images(
             ).strip()
     return written
 
-
-# --------------------------------------------------------------------------- #
-# Subagents (current format: a sibling <session-id>/subagents/agent-*.jsonl dir)
-# --------------------------------------------------------------------------- #
-
-
 def summarize_subagent(path: Path) -> Optional[Dict[str, Any]]:
     """Condense one subagent transcript into task / tools / result.
 
@@ -1552,7 +1416,6 @@ def summarize_subagent(path: Path) -> Optional[Dict[str, Any]]:
         except (OSError, ValueError):
             pass
 
-    # The spawning prompt is the first real (non-tool-result) user message.
     task = ""
     for e in entries:
         if e.get("type") == "user" and not _is_tool_result_entry(e):
@@ -1561,7 +1424,6 @@ def summarize_subagent(path: Path) -> Optional[Dict[str, Any]]:
                 task = t
                 break
 
-    # Tool calls and the final assistant text, in one pass.
     tools: List[str] = []
     result = ""
     for e in entries:
@@ -1575,7 +1437,7 @@ def summarize_subagent(path: Path) -> Optional[Dict[str, Any]]:
             elif b.get("type") == "text":
                 txt = b.get("text")
                 if isinstance(txt, str) and txt.strip():
-                    result = txt.strip()  # keep the last one
+                    result = txt.strip()
 
     return {
         "agent_type": agent_type,
@@ -1585,7 +1447,6 @@ def summarize_subagent(path: Path) -> Optional[Dict[str, Any]]:
         "tool_names": sorted(set(tools)),
         "result": result,
     }
-
 
 def load_subagents(transcript: Path) -> List[Dict[str, Any]]:
     """Summarize every subagent transcript for this session, oldest first."""
@@ -1600,7 +1461,6 @@ def load_subagents(transcript: Path) -> List[Dict[str, Any]]:
     subs.sort(key=lambda s: s.get("start_ts") or "")
     return subs
 
-
 def attribute_subagents(turns: List[Turn], subs: List[Dict[str, Any]]) -> None:
     """Fold each subagent under the latest turn that started at or before it."""
     parsed = [(_parse_ts(t.timestamp), t) for t in turns]
@@ -1608,19 +1468,13 @@ def attribute_subagents(turns: List[Turn], subs: List[Dict[str, Any]]) -> None:
         st = _parse_ts(s.get("start_ts"))
         target: Optional[Turn] = None
         if st is not None:
-            for ts, t in parsed:  # turns are in order; last match wins
+            for ts, t in parsed:
                 if ts is not None and ts <= st:
                     target = t
         if target is None and turns:
             target = turns[0]
         if target is not None:
             target.subagents.append(s)
-
-
-# --------------------------------------------------------------------------- #
-# CLI
-# --------------------------------------------------------------------------- #
-
 
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
@@ -1716,7 +1570,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     return p
 
-
 def render_transcript(
     transcript: Path,
     project_label_override: Optional[str],
@@ -1753,7 +1606,6 @@ def render_transcript(
         if raw_path is not None:
             print(f"  wrote {raw_path}", file=sys.stderr)
     return markdown
-
 
 def _extract_all(
     project_dir: Optional[Path],
@@ -1810,11 +1662,9 @@ def _extract_all(
     print(f"done: {written}/{len(files)} session(s) written", file=sys.stderr)
     return 0 if written else 1
 
-
 def main(argv: Optional[List[str]] = None) -> int:
     args = build_arg_parser().parse_args(argv)
 
-    # all-sessions is the default; a session id, --transcript or stdout opts out
     if args.all or not (args.session or args.transcript or args.output == "-"):
         proj = Path(args.project_dir).expanduser() if args.project_dir else None
         out = None if args.output == "-" else args.output
@@ -1839,8 +1689,6 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     print(f"using transcript: {transcript}", file=sys.stderr)
 
-    # The envelope is a file, so there is nowhere to put it when the markdown is
-    # going to stdout. Write it next to the markdown otherwise.
     if not args.raw or args.output == "-":
         raw_output = None
     elif args.output is None:
@@ -1875,7 +1723,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"wrote {out_path}", file=sys.stderr)
 
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())

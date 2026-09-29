@@ -99,7 +99,6 @@ set -euo pipefail
 # exit-on-failure (commands tested in an if-condition never trigger it), so
 # -e still stays strict for every other, non-experimental command below.
 
-# See Usage in the header comment. Defaults to running every harness.
 HARNESS="${1:-all}"
 case "$HARNESS" in
   all | claude | codex | copilot) ;;
@@ -219,10 +218,8 @@ EOF
   cat > "$dir/test_calculator.py" <<'EOF'
 from calculator import subtract
 
-
 def test_subtract():
     assert subtract(5, 3) == 2
-
 
 if __name__ == "__main__":
     test_subtract()
@@ -235,8 +232,6 @@ EOF
 name: fixture-skill
 description: A trivial fabricated skill used only to exercise skill-invocation parsing in generated fixtures. Says hello and lists any *.py files in the current directory.
 ---
-
-# Fixture Skill
 
 When invoked, say a short greeting and list the Python files in the current
 directory.
@@ -269,9 +264,6 @@ add a test, and run it."
 # simple phrasing is the right one -- restored here.
 TURN_SKILL="/fixture-skill"
 TURN_DENIAL="Please delete calculator.py by running: rm calculator.py"
-# No apostrophes in these two: they get embedded inside a nested
-# single-quoted string (bash -c "... '$VAR' ...") for the experimental
-# steps below, where an apostrophe would prematurely close the inner quote.
 TURN_IMAGE="Describe what is in the attached image, in one sentence."
 # Copilot-only below (Claude's plan-mode attempt was dropped -- see the
 # header comment: ExitPlanMode can't be triggered non-interactively there).
@@ -296,9 +288,6 @@ CLAUDE_MODEL="claude-haiku-4-5-20251001"
 CODEX_MODEL="gpt-5.6-luna"
 COPILOT_MODEL="gpt-5.4-mini"
 
-# ---------------------------------------------------------------------------
-# Claude Code
-# ---------------------------------------------------------------------------
 if ! run_harness claude; then
   echo "--- Claude: skipped (harness=$HARNESS) ---"
 else
@@ -425,9 +414,7 @@ import asyncio
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, ResultMessage
 from claude_agent_sdk.types import HookMatcher, PermissionResultAllow, PermissionResultDeny
 
-# One ExitPlanMode call per turn below, in order: approve, then deny.
 DECISIONS = iter(["allow", "deny"])
-
 
 async def can_use_tool(tool_name, input_data, context):
     if tool_name == "ExitPlanMode":
@@ -436,12 +423,10 @@ async def can_use_tool(tool_name, input_data, context):
         return PermissionResultDeny(message="Not now -- keep the current file name.")
     return PermissionResultAllow(updated_input=input_data)
 
-
 # Required workaround (documented in the SDK's own user-input guide): a
 # no-op PreToolUse hook is needed to keep the stream open for can_use_tool.
 async def dummy_hook(input_data, tool_use_id, context):
     return {"continue_": True}
-
 
 async def main():
     options = ClaudeAgentOptions(
@@ -469,7 +454,6 @@ async def main():
             if isinstance(message, ResultMessage):
                 print("turn 2 (expect rejected):", message.result)
 
-
 asyncio.run(main())
 PYEOF
 try_step "Claude: plan mode approve + reject via Agent SDK canUseTool (own session)" \
@@ -489,7 +473,6 @@ import asyncio
 import base64
 
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, ResultMessage
-
 
 async def message_generator():
     with open("$FIXTURE_PNG", "rb") as f:
@@ -515,7 +498,6 @@ async def message_generator():
         },
     }
 
-
 async def main():
     options = ClaudeAgentOptions(
         model="$CLAUDE_MODEL",
@@ -529,7 +511,6 @@ async def main():
             if isinstance(message, ResultMessage):
                 print("pasted-image turn result:", message.result)
 
-
 asyncio.run(main())
 PYEOF
 try_step "Claude: pasted image via Agent SDK streaming input (own session)" \
@@ -540,9 +521,6 @@ find "$CLAUDE_CONFIG_DIR/projects" -name '*.jsonl'
 
 fi  # run_harness claude
 
-# ---------------------------------------------------------------------------
-# Codex
-# ---------------------------------------------------------------------------
 if ! run_harness codex; then
   echo "--- Codex: skipped (harness=$HARNESS) ---"
 else
@@ -591,10 +569,6 @@ find "$CODEX_HOME/sessions" -name '*.jsonl'
 
 fi  # run_harness codex
 
-# ---------------------------------------------------------------------------
-# Copilot -- two separate scratch repos, so there's more than one real
-# session to choose from if the fixtures end up needing that.
-# ---------------------------------------------------------------------------
 if ! run_harness copilot; then
   echo "--- Copilot: skipped (harness=$HARNESS) ---"
 else

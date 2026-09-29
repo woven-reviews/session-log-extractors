@@ -40,13 +40,8 @@ SCHEMA = "raw-session-log/1"
 # recorded so a truncation is never mistaken for a short result.
 DEFAULT_TOOL_RESULT_MAX_BYTES = 4096
 
-# Qualified stores solution files inside a single Mongo document, and MongoDB
-# caps a BSON document at 16 MB. The drag-and-drop upload allows session logs up
-# to 10 MB; warn well before that so an oversized envelope is noticed here rather
-# than as a failed upload.
 SIZE_WARN_BYTES = 8 * 1024 * 1024
 
-# Extension by media type, mirroring the _IMAGE_EXT maps in the extractors.
 _MEDIA_TYPE_BY_EXT = {
     "png": "image/png",
     "jpg": "image/jpeg",
@@ -56,7 +51,6 @@ _MEDIA_TYPE_BY_EXT = {
     "bmp": "image/bmp",
     "svg": "image/svg+xml",
 }
-
 
 def raw_filename(harness: str, session_id: str) -> str:
     """Filename for a harness's raw envelope.
@@ -68,7 +62,6 @@ def raw_filename(harness: str, session_id: str) -> str:
     """
     return f"{harness}_session_log_raw_{session_id}.json"
 
-
 def media_type_for_ext(ext: Optional[str]) -> Optional[str]:
     """Best-effort media type from a file extension, for image refs that only
     carried a path. Returns None when the extension is unknown, which is honest:
@@ -77,7 +70,6 @@ def media_type_for_ext(ext: Optional[str]) -> Optional[str]:
         return None
     return _MEDIA_TYPE_BY_EXT.get(ext.lower().lstrip("."))
 
-
 def image_from_bytes(raw: bytes, media_type: Optional[str]) -> Dict[str, Any]:
     """An inline image entry from decoded bytes (Codex / Copilot path)."""
     return {
@@ -85,7 +77,6 @@ def image_from_bytes(raw: bytes, media_type: Optional[str]) -> Dict[str, Any]:
         "data": base64.b64encode(raw).decode("ascii"),
         "bytes": len(raw),
     }
-
 
 def image_from_base64(data: str, media_type: Optional[str]) -> Dict[str, Any]:
     """An inline image entry from an already-base64 payload (Claude path).
@@ -106,7 +97,6 @@ def image_from_base64(data: str, media_type: Optional[str]) -> Dict[str, Any]:
         "bytes": size,
     }
 
-
 def unavailable_image(ref: Any) -> Dict[str, Any]:
     """An image the extractor knew about but could not resolve to bytes.
 
@@ -115,7 +105,6 @@ def unavailable_image(ref: Any) -> Dict[str, Any]:
     from one where they pasted nothing, and silently dropping it erases that.
     """
     return {"unavailable": True, "ref": ref if isinstance(ref, str) else repr(ref)}
-
 
 def truncate_result(
     text: Any, max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES
@@ -138,7 +127,6 @@ def truncate_result(
     clipped = encoded[:max_bytes].decode("utf-8", errors="ignore")
     return {"result": clipped, "result_bytes": total, "result_truncated": True}
 
-
 def user_event(
     index: int,
     timestamp: Optional[str],
@@ -154,7 +142,6 @@ def user_event(
     if images:
         event["images"] = images
     return event
-
 
 def assistant_event(
     index: int,
@@ -172,7 +159,6 @@ def assistant_event(
         event["tool_calls"] = tool_calls
     return event
 
-
 def tool_call(
     name: str,
     tool_input: Any,
@@ -187,7 +173,6 @@ def tool_call(
     call: Dict[str, Any] = {"name": name, "input": _jsonable(tool_input)}
     call.update(truncate_result(result, max_bytes))
     return call
-
 
 def build_envelope(
     harness: str,
@@ -209,7 +194,6 @@ def build_envelope(
         "events": events,
     }
 
-
 def write_envelope(path: Path, envelope: Dict[str, Any]) -> int:
     """Write the envelope and return its size in bytes.
 
@@ -229,14 +213,12 @@ def write_envelope(path: Path, envelope: Dict[str, Any]) -> int:
         )
     return size
 
-
 def _human_size(size: int) -> str:
     if size >= 1024 * 1024:
         return f"{size / (1024 * 1024):.1f} MB"
     if size >= 1024:
         return f"{size / 1024:.0f} KB"
     return f"{size} B"
-
 
 def _jsonable(value: Any) -> Any:
     """Coerce a tool input to something json.dumps can handle.

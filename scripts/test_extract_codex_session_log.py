@@ -28,24 +28,19 @@ from extract_codex_session_log import (
     skill_names_from_call,
 )
 
-# Real, trimmed, redacted Codex transcript -- see tests/fixtures/codex/.
 CODEX_FIXTURE = (
     Path(__file__).resolve().parent.parent / "tests/fixtures/codex/session.jsonl"
 )
 
-# Real, trimmed, redacted Codex transcript covering a real /fixture-skill
-# invocation and a real attached-image turn -- see tests/fixtures/codex/.
 CODEX_SKILL_IMAGE_FIXTURE = (
     Path(__file__).resolve().parent.parent
     / "tests/fixtures/codex/skill_and_image_session.jsonl"
 )
 
-# 1x1 transparent PNG.
 _PNG_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9"
     "awAAAABJRU5ErkJggg=="
 )
-
 
 QUESTIONS = [
     {
@@ -58,7 +53,6 @@ QUESTIONS = [
         ],
     }
 ]
-
 
 def test_codex_structured_skill_call_is_recorded():
     entries = [
@@ -80,7 +74,6 @@ def test_codex_structured_skill_call_is_recorded():
     ]
     turns, _ = build_turns(entries)
     assert turns[0].skills_used == ["pdf:pdf"]
-
 
 def test_codex_initial_response_item_user_message_is_exported_once():
     entries = [
@@ -125,7 +118,6 @@ def test_codex_initial_response_item_user_message_is_exported_once():
         "Follow up",
     ]
 
-
 def test_codex_slash_command_is_recorded_and_rendered_like_claude():
     entries = [
         {
@@ -150,7 +142,6 @@ def test_codex_slash_command_is_recorded_and_rendered_like_claude():
     assert "_Command used:_ **/work-ticket**" in md
     assert "**User invoked command:** /work-ticket `QUAL-2012`" in md
 
-
 def test_codex_tagged_slash_command_is_recorded():
     entries = [
         {
@@ -172,7 +163,6 @@ def test_codex_tagged_slash_command_is_recorded():
     assert turns[0].command == "/review"
     assert turns[0].command_args == "frontend src"
 
-
 def test_codex_skill_md_read_is_recorded():
     # Real capture: an `exec` call whose shell command reads a SKILL.md path
     # (see skill_and_image_session.jsonl) -- the regex-based path match is
@@ -187,13 +177,11 @@ def test_codex_skill_md_read_is_recorded():
     )
     assert skill_names_from_call(call["name"], call["input"]) == ["fixture-skill"]
 
-
 def test_codex_normalized_mcp_skill_read_is_recorded():
     args = {"package": "presentations:Presentations"}
     assert skill_names_from_call("mcp__skills__read", args) == [
         "presentations:Presentations"
     ]
-
 
 def test_codex_permission_denial_strips_external_prefix():
     c = (
@@ -202,7 +190,6 @@ def test_codex_permission_denial_strips_external_prefix():
     )
     assert parse_permission_denial(c) == ""
 
-
 def test_codex_permission_denial_with_message():
     c = (
         "[external_agent_tool_result: error]\nPermission for this tool use was "
@@ -210,13 +197,11 @@ def test_codex_permission_denial_with_message():
     )
     assert parse_permission_denial(c) == "use a branch"
 
-
 def test_codex_permission_denial_ignores_normal_text():
     assert (
         parse_permission_denial("[external_agent_tool_result]\nfile contents") is None
     )
     assert parse_permission_denial("Sure, I'll do that.") is None
-
 
 def test_codex_denial_recorded_on_turn_not_as_prose():
     entries = [
@@ -259,7 +244,6 @@ def test_codex_denial_recorded_on_turn_not_as_prose():
     ]
     # The canned denial text must not leak into assistant prose.
     assert turns[0].assistant_text_blocks == []
-
 
 def test_codex_plan_mode_turn_and_structured_plan_are_rendered():
     entries = [
@@ -333,7 +317,6 @@ def test_codex_plan_mode_turn_and_structured_plan_are_rendered():
     assert "- [ ] Design change _(in_progress)_" in md
     assert "Here is the plan." in md
 
-
 def test_codex_default_mode_update_plan_remains_execution_tool():
     entries = [
         {
@@ -366,14 +349,12 @@ def test_codex_default_mode_update_plan_remains_execution_tool():
     assert turns[0].plan_updates == []
     assert turns[0].tool_bullets[0].startswith("- update_plan")
 
-
 def test_codex_noise_cleaning():
     assert clean_user_text("<bash-stdout>output</bash-stdout>") == ""
     assert (
         clean_user_text("<bash-input>ls -la</bash-input>")
         == "<bash-input>ls -la</bash-input>"
     )
-
 
 def test_codex_summary_options_and_shell_command():
     entries = [
@@ -431,7 +412,6 @@ def test_codex_summary_options_and_shell_command():
     assert "- [x] **QUAL**" in md
     assert "```sh\nls -la\n```" in md
 
-
 def test_codex_dumps_local_images_from_user_event():
     with tempfile.TemporaryDirectory() as tmp_name:
         tmp = Path(tmp_name)
@@ -461,7 +441,6 @@ def test_codex_dumps_local_images_from_user_event():
         assert written[0].read_bytes() == source.read_bytes()
         assert "description pending" in turns[0].user_text
         assert str(written[0]) in turns[0].user_text
-
 
 def test_codex_dumps_base64_image_from_response_item_user_message():
     entries = [
@@ -503,14 +482,12 @@ def test_codex_dumps_base64_image_from_response_item_user_message():
         assert written[0].read_bytes() == base64.b64decode(_PNG_B64)
         assert "description pending" in turns[0].user_text
 
-
 def _write_jsonl(path: Path, entries):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         "\n".join(json.dumps(entry) for entry in entries) + "\n",
         encoding="utf-8",
     )
-
 
 def _session_entries(session_id: str, cwd: Path, message: str):
     return [
@@ -525,7 +502,6 @@ def _session_entries(session_id: str, cwd: Path, message: str):
             "payload": {"type": "user_message", "message": message},
         },
     ]
-
 
 def test_codex_all_extracts_matching_sessions_to_unique_files():
     with tempfile.TemporaryDirectory() as tmp_name:
@@ -576,7 +552,6 @@ def test_codex_all_extracts_matching_sessions_to_unique_files():
         )
         assert not (out / "codex_session_log_session-other.md").exists()
 
-
 def test_codex_no_selector_extracts_all_by_default():
     with tempfile.TemporaryDirectory() as tmp_name:
         tmp = Path(tmp_name)
@@ -615,7 +590,6 @@ def test_codex_no_selector_extracts_all_by_default():
             "codex_session_log_session-two.md",
         ]
 
-
 def test_codex_strict_requires_exact_cwd():
     with tempfile.TemporaryDirectory() as tmp_name:
         tmp = Path(tmp_name)
@@ -624,7 +598,6 @@ def test_codex_strict_requires_exact_cwd():
         out = tmp / "out"
         project.mkdir()
 
-        # Exact-cwd session and a descendant-cwd session.
         _write_jsonl(
             sessions / "rollout-one.jsonl",
             _session_entries("session-one", project, "Exact match"),
@@ -654,7 +627,6 @@ def test_codex_strict_requires_exact_cwd():
         # Strict drops the descendant; only the exact-cwd session survives.
         written = sorted(path.name for path in out.glob("codex_session_log_*.md"))
         assert written == ["codex_session_log_session-one.md"]
-
 
 def _codex_entries(image_path, missing_path="/gone/missing.png"):
     return [
@@ -698,22 +670,17 @@ def _codex_entries(image_path, missing_path="/gone/missing.png"):
         },
     ]
 
-
 def _png_on_disk():
     path = Path(tempfile.mkdtemp()) / "shot.png"
     path.write_bytes(base64.b64decode(_PNG_B64))
     return path
 
-
 def test_build_events_inlines_an_image_stored_as_a_path():
-    # Codex keeps images out of band, so the envelope is where they become
-    # portable.
     img = _png_on_disk()
     user = build_events(_codex_entries(img))[0]
     assert user["role"] == "user"
     assert base64.b64decode(user["images"][0]["data"]) == base64.b64decode(_PNG_B64)
     assert user["images"][0]["media_type"] == "image/png"
-
 
 def test_build_events_records_an_unresolvable_image_rather_than_dropping_it():
     # dump_images silently skips these; the envelope must not, or "pasted a
@@ -722,10 +689,7 @@ def test_build_events_records_an_unresolvable_image_rather_than_dropping_it():
     user = build_events(_codex_entries(_png_on_disk()))[0]
     assert user["images"][1] == {"unavailable": True, "ref": "/gone/missing.png"}
 
-
 def test_build_events_attaches_output_to_its_function_call():
-    # Real fixture: two `exec` calls and their real (short) outputs -- a
-    # small max forces truncation without a hand-built oversized blob.
     entries = load_entries(CODEX_SKILL_IMAGE_FIXTURE)
     events = build_events(entries, tool_result_max_bytes=20)
     calls = [c for e in events for c in e.get("tool_calls", [])]
@@ -733,19 +697,11 @@ def test_build_events_attaches_output_to_its_function_call():
     assert [c["result_bytes"] for c in calls] == [353, 81]
     assert all(c["result_truncated"] for c in calls)
 
-
 def test_build_events_does_not_disturb_the_markdown_turns():
     entries = load_entries(CODEX_SKILL_IMAGE_FIXTURE)
     before = [t.user_text for t in build_turns(entries)[0]]
     build_events(entries)
     assert [t.user_text for t in build_turns(entries)[0]] == before
-
-
-# --------------------------------------------------------------------------- #
-# Fixture-driven: real (trimmed, redacted) transcript, session selection,
-# --strict, malformed input, and main() end-to-end.
-# --------------------------------------------------------------------------- #
-
 
 def test_load_entries_parses_the_real_fixture():
     entries = load_entries(CODEX_FIXTURE)
@@ -753,14 +709,12 @@ def test_load_entries_parses_the_real_fixture():
     assert entries[0]["type"] == "session_meta"
     assert entries[0]["payload"]["cwd"] == "/redacted/project"
 
-
 def test_load_entries_skips_malformed_and_blank_lines(tmp_path):
     corrupted = tmp_path / "session.jsonl"
     real_text = CODEX_FIXTURE.read_text(encoding="utf-8")
     corrupted.write_text(real_text + "\n{this is not json\n\n", encoding="utf-8")
     entries = load_entries(corrupted)
     assert len(entries) == 6
-
 
 def test_select_transcript_sessions_root_picks_newest(tmp_path):
     older = tmp_path / "rollout-a.jsonl"
@@ -771,19 +725,14 @@ def test_select_transcript_sessions_root_picks_newest(tmp_path):
     os.utime(newer, (2, 2))
     assert select_transcript(None, None, str(tmp_path)) == newer
 
-
 def test_select_transcript_session_id_prefix_match(tmp_path):
     target = tmp_path / "rollout-target.jsonl"
     shutil.copy(CODEX_FIXTURE, target)
-    # The real fixture's session id is 01a0c43e-367f-7833-91d9-4d9283a3fbd5.
     assert select_transcript("01a0c43e", None, str(tmp_path)) == target
-
 
 def test_select_transcript_ambiguous_session_id_raises(tmp_path):
     shutil.copy(CODEX_FIXTURE, tmp_path / "rollout-a.jsonl")
     shutil.copy(CODEX_FIXTURE, tmp_path / "rollout-b.jsonl")
-    # Two files sharing the same real session id (e.g. one copied as a
-    # backup) -- the prefix match is ambiguous between them.
     try:
         select_transcript("01a0c43e", None, str(tmp_path))
     except FileNotFoundError as exc:
@@ -791,13 +740,11 @@ def test_select_transcript_ambiguous_session_id_raises(tmp_path):
     else:
         raise AssertionError("expected FileNotFoundError")
 
-
 def test_select_transcript_strict_requires_exact_cwd_and_disables_fallback(
     monkeypatch, tmp_path
 ):
     shutil.copy(CODEX_FIXTURE, tmp_path / "rollout.jsonl")
 
-    # Exact cwd match: found both strict and non-strict.
     monkeypatch.setattr(Path, "cwd", staticmethod(lambda: Path("/redacted/project")))
     assert select_transcript(None, None, str(tmp_path), strict=True) == (
         tmp_path / "rollout.jsonl"
@@ -817,7 +764,6 @@ def test_select_transcript_strict_requires_exact_cwd_and_disables_fallback(
     else:
         raise AssertionError("expected FileNotFoundError")
 
-
 def test_main_end_to_end_renders_the_real_fixture(tmp_path):
     out_path = tmp_path / "out.md"
     rc = main(
@@ -835,13 +781,11 @@ def test_main_end_to_end_renders_the_real_fixture(tmp_path):
     assert "What does this skill do?" in markdown
     assert "relentless interview" in markdown
 
-
 def test_main_reports_missing_transcript_and_exits_nonzero(tmp_path, capsys):
     missing = tmp_path / "nope.jsonl"
     rc = main(["--transcript", str(missing)])
     assert rc == 1
     assert "does not exist" in capsys.readouterr().err
-
 
 def test_real_fixture_slash_command_invokes_a_real_skill():
     # /fixture-skill triggered an actual `exec` read of that skill's SKILL.md,
@@ -855,7 +799,6 @@ def test_real_fixture_slash_command_invokes_a_real_skill():
     assert "_Skill used:_ **fixture-skill**" in md
     assert "Hello! Python files here:" in md
 
-
 def test_real_fixture_attached_image_is_captured_and_inlined():
     # A real `codex exec --image` attachment, not a synthetic input_image block.
     entries = load_entries(CODEX_SKILL_IMAGE_FIXTURE)
@@ -866,8 +809,6 @@ def test_real_fixture_attached_image_is_captured_and_inlined():
     user = next(e for e in events if e["role"] == "user" and e.get("images"))
     assert user["images"][0]["media_type"] == "image/png"
     assert base64.b64decode(user["images"][0]["data"]).startswith(b"\x89PNG")
-
-
 
 @pytest.fixture
 def codex_answer_questions():
@@ -884,13 +825,11 @@ def codex_answer_questions():
         "bad question",
     ]
 
-
 @pytest.fixture
 def transcript_fixtures(tmp_path):
     codex_path = tmp_path / "codex.jsonl"
     shutil.copyfile(CODEX_FIXTURE, codex_path)
     return {"codex": codex_path}
-
 
 def test_codex_transcript_metadata_and_cli_edge_cases(
     transcript_fixtures, monkeypatch, tmp_path, capsys
@@ -934,7 +873,6 @@ def test_codex_transcript_metadata_and_cli_edge_cases(
     assert codex.main(["--transcript", str(empty), "--output", "-"]) == 1
     assert "no parseable JSON entries" in capsys.readouterr().err
 
-
 def test_codex_all_session_export_uses_unique_ids_and_skips_failed_parse(
     transcript_fixtures, monkeypatch, tmp_path, capsys
 ):
@@ -958,7 +896,6 @@ def test_codex_all_session_export_uses_unique_ids_and_skips_failed_parse(
     assert codex._extract_all(str(root), str(out), raw=False) == 0
     assert len(list(out.glob("codex_session_log_*.md"))) == 1
     assert "skip" in capsys.readouterr().err
-
 
 def test_codex_answer_and_patch_fixtures_cover_fallback_shapes(
     codex_answer_questions,
@@ -1001,7 +938,6 @@ def test_codex_answer_and_patch_fixtures_cover_fallback_shapes(
     codex.append_unique_path(paths, seen, "")
     assert paths == ["src/old.py", "src/new.py"]
 
-
 def test_codex_image_extraction_accepts_paths_urls_and_inline_payloads(tmp_path):
     image = tmp_path / "photo.png"
     image.write_bytes(b"png bytes")
@@ -1033,7 +969,6 @@ def test_codex_image_extraction_accepts_paths_urls_and_inline_payloads(tmp_path)
     assert codex._plan_update(
         {"plan": [{"step": "valid"}], "explanation": 5}
     ) == {"explanation": "", "steps": [{"step": "valid", "status": "pending"}]}
-
 
 def test_codex_turn_builder_handles_startup_context_patch_and_denials():
     startup = (
@@ -1120,7 +1055,6 @@ def test_codex_turn_builder_handles_startup_context_patch_and_denials():
     assert codex.is_startup_context(startup)
     assert not codex.is_startup_context("ordinary user text")
 
-
 def test_codex_helper_fallbacks_cover_timestamps_arguments_and_answers():
     assert codex.parse_permission_denial(None) is None
     assert codex.clean_user_text("") == ""
@@ -1155,7 +1089,6 @@ def test_codex_helper_fallbacks_cover_timestamps_arguments_and_answers():
     )
     assert codex._derive_context_line([]) == "a Codex session"
 
-
 def test_codex_image_resolution_keeps_unavailable_refs_and_dump_names(tmp_path):
     image = tmp_path / "input"
     image.write_bytes(b"raw")
@@ -1186,7 +1119,6 @@ def test_codex_image_resolution_keeps_unavailable_refs_and_dump_names(tmp_path):
     assert [path.name for path in dumped] == ["sid_turn1_img2.img"]
     assert "description pending" in turn.user_text
 
-
 def test_jsonl_warning_rate_limit_and_non_object_records(tmp_path, capsys):
     import extract_claude_session_log as claude
     path = tmp_path / "damaged.jsonl"
@@ -1199,7 +1131,6 @@ def test_jsonl_warning_rate_limit_and_non_object_records(tmp_path, capsys):
     warning_output = capsys.readouterr().err
     assert warning_output.count("warning: skipping malformed JSON") == 10
     assert warning_output.count("warning: skipped 8 malformed/blank lines total") == 2
-
 
 def test_render_summaries_cover_shell_skills_and_feedback():
     import extract_copilot_session_log as copilot
@@ -1227,15 +1158,12 @@ def test_render_summaries_cover_shell_skills_and_feedback():
     assert "- [ ] B _(in_progress)_" in summary
     assert "> thanks" in summary
 
-
 def test_codex_single_session_cli_reports_write_error(transcript_fixtures, tmp_path, capsys):
     source = transcript_fixtures["codex"]
     output_dir = tmp_path / "directory"
     output_dir.mkdir()
     assert codex.main(["--transcript", str(source), "--output", str(output_dir), "--no-raw"]) == 1
     assert "could not write" in capsys.readouterr().err
-
-
 
 if __name__ == "__main__":
     import inspect
@@ -1244,7 +1172,7 @@ if __name__ == "__main__":
         if not (name.startswith("test_") and callable(fn)):
             continue
         if inspect.signature(fn).parameters:
-            continue  # needs pytest fixtures (monkeypatch/tmp_path/...); run via pytest
+            continue
         fn()
         print(f"ok  {name}")
     print("all passed")
