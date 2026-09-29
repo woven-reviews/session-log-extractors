@@ -715,7 +715,19 @@ def _tools_from_events(lines: List[str]) -> List[Dict[str, Any]]:
             if rec is None:
                 continue
             rec["success"] = data.get("success")
-            rec["result"] = _result_text(data.get("result"))
+            result_text = _result_text(data.get("result"))
+            # A denied call (--deny-tool rule, not the separate
+            # permission.requested/completed approval flow) carries no
+            # "result" at all -- only "error" -- so falling back to it here
+            # is the only way the denial reason survives instead of
+            # rendering as a bare, unexplained "error".
+            if not result_text and rec["success"] is False:
+                error = data.get("error")
+                if isinstance(error, dict):
+                    message = error.get("message")
+                    if isinstance(message, str) and message:
+                        result_text = message
+            rec["result"] = result_text
 
     return [starts[cid] for cid in order]
 

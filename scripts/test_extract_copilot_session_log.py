@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import sqlite3
 import tempfile
 from pathlib import Path
@@ -17,10 +18,12 @@ from extract_copilot_session_log import (
     Turn,
     build_events,
     attribute_permissions,
+    attribute_skills,
     clean_user_text,
     format_decision,
     get_db_connection,
     get_session_by_id,
+    get_session_turns,
     main,
     matching_sessions,
     newest_session,
@@ -33,6 +36,19 @@ _COPILOT_FIXTURES = Path(__file__).resolve().parent.parent / "tests/fixtures/cop
 COPILOT_FIXTURE_DB = _COPILOT_FIXTURES / "session-store.db"
 COPILOT_FIXTURE_STATE_ROOT = _COPILOT_FIXTURES / "session-state"
 COPILOT_FIXTURE_SESSION_ID = "b10f9a1b-1803-4178-8fcc-8b2a15134624"
+# Second real session: captures a skill invocation and a real permission
+# denial (Copilot's headless fallback denying a read it couldn't ask a human
+# about). See scripts/fixtures/generate_fixtures.sh.
+COPILOT_FIXTURE_SKILL_SESSION_ID = "7fc0ab52-6795-49e8-8ab9-5048733e64bc"
+# Third real session, captured after fixing the image-attachment path (it
+# now lives inside the scratch repo, so it's no longer denied) and the
+# --deny-tool pattern bugs (bare '*' isn't a wildcard; the model deletes via
+# apply_patch's write() kind, not just shell()). This one real turn hit
+# BOTH deny rules in a row -- apply_patch denied by `write`, then a bash
+# `rm` denied by `shell(rm)` -- and the model gave up, so it's the richest
+# real denial capture we have. Also carries a real session_refs commit row
+# and (again) a real skill invocation.
+COPILOT_FIXTURE_DENIAL_SESSION_ID = "5ff8ca94-46ab-42fb-b09b-a48620524ac4"
 
 _PNG_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/ax6fN8A"
@@ -51,145 +67,35 @@ def test_copilot_noise_cleaning():
     )
 
 
-# Copilot fixture generation for skill invocation was skipped (no usable
-# COPILOT_GITHUB_TOKEN yet -- see scripts/fixtures/generate_fixtures.sh,
-# RUN_COPILOT=false); the real fixture's session never invokes a skill. These
-# two tests would need that capture, so they're commented out rather than
-# left running against fabricated `skill.invoked` events. Re-enable once a
-# real Copilot session with a skill invocation is captured.
-#
-# def test_copilot_skill_invocation_is_recorded_and_attributed():
-#     lines = [
-#         json.dumps(
-#             {
-#                 "type": "skill.invoked",
-#                 "timestamp": "2026-07-01T22:05:00Z",
-#                 "data": {
-#                     "name": "extract-copilot-session-logs",
-#                     "path": "/repo/.agents/skills/extract-copilot-session-logs/SKILL.md",
-#                 },
-#             }
-#         ),
-#         json.dumps({"type": "assistant.message", "data": {}}),
-#     ]
-#     skills = _skills_from_events(lines)
-#     assert skills == [
-#         {
-#             "name": "extract-copilot-session-logs",
-#             "path": "/repo/.agents/skills/extract-copilot-session-logs/SKILL.md",
-#             "timestamp": "2026-07-01T22:05:00Z",
-#         }
-#     ]
-#     turn = Turn("export logs", "", "2026-07-01T22:00:00Z", 0)
-#     attribute_skills([turn], skills)
-#     assert turn.skills_used == ["extract-copilot-session-logs"]
-#
-#
-# def test_copilot_skill_definition_details_are_loaded():
-#     with tempfile.TemporaryDirectory() as tmp_name:
-#         skill_path = Path(tmp_name) / "demo" / "SKILL.md"
-#         skill_path.parent.mkdir()
-#         skill_path.write_text(
-#             "---\nname: demo\ndescription: Explains the demo workflow.\n---\n\n"
-#             "# Demo Skill\n",
-#             encoding="utf-8",
-#         )
-#         turn = Turn("use demo", "", "2026-07-01T22:00:00Z", 0)
-#         attribute_skills(
-#             [turn],
-#             [
-#                 {
-#                     "name": "demo",
-#                     "path": str(skill_path),
-#                     "timestamp": "2026-07-01T22:05:00Z",
-#                 }
-#             ],
-#         )
-#         assert turn.skill_details["demo"]["description"] == (
-#             "Explains the demo workflow."
-#         )
-#         assert turn.skill_details["demo"]["path"] == str(skill_path.resolve())
+def test_copilot_skill_definition_details_are_loaded():
+    # load_skill_details always re-reads the SKILL.md off disk by path, and
+    # the real fixture-skill's original path (under the now-deleted scratch
+    # repo) no longer exists -- so this still needs a file on disk. But its
+    # *content* is the real captured skill.invoked event's own fields, not a
+    # fabricated one, matching the SKILL.md that scripts/fixtures/
+    # generate_fixtures.sh actually seeded to produce that real capture.
+    lines = (
+        (COPILOT_FIXTURE_STATE_ROOT / COPILOT_FIXTURE_SKILL_SESSION_ID / "events.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    skill = copilot_log._skills_from_events(lines)[0]
+    raw_event = next(json.loads(line) for line in lines if '"skill.invoked"' in line)
+    name = raw_event["data"]["name"]
+    description = raw_event["data"]["description"]
+    body = raw_event["data"]["content"]
 
-
-# No real Copilot session captured a permission prompt (RUN_COPILOT=false
-# during fixture generation, and the one real session that was captured never
-# hit one). These would need that capture, so they're commented out rather
-# than run against fabricated `permission.requested`/`permission.completed`
-# events. Re-enable once a real Copilot session with a permission decision is
-# captured.
-#
-# def test_copilot_permissions_join_approval_and_denial():
-#     lines = [
-#         json.dumps(
-#             {
-#                 "type": "permission.requested",
-#                 "timestamp": "2026-07-01T22:03:50Z",
-#                 "data": {
-#                     "requestId": "r1",
-#                     "permissionRequest": {"kind": "shell", "fullCommandText": "pytest"},
-#                 },
-#             }
-#         ),
-#         json.dumps(
-#             {
-#                 "type": "permission.completed",
-#                 "timestamp": "2026-07-01T22:04:04Z",
-#                 "data": {"requestId": "r1", "result": {"kind": "approved"}},
-#             }
-#         ),
-#         json.dumps(
-#             {
-#                 "type": "permission.requested",
-#                 "timestamp": "2026-07-01T22:05:00Z",
-#                 "data": {
-#                     "requestId": "r2",
-#                     "permissionRequest": {"kind": "write", "intention": "edit crud.py"},
-#                 },
-#             }
-#         ),
-#         json.dumps(
-#             {
-#                 "type": "permission.completed",
-#                 "timestamp": "2026-07-01T22:05:30Z",
-#                 "data": {
-#                     "requestId": "r2",
-#                     "result": {
-#                         "kind": "denied-interactively-by-user",
-#                         "feedback": "not like that",
-#                     },
-#                 },
-#             }
-#         ),
-#     ]
-#     perms = _permissions_from_events(lines)
-#     assert [(p["tool"], p["decision"], p["feedback"]) for p in perms] == [
-#         ("pytest", "approved", ""),
-#         ("edit crud.py", "denied-interactively-by-user", "not like that"),
-#     ]
-#
-#
-# def test_copilot_permission_pending_when_no_completion():
-#     lines = [
-#         json.dumps(
-#             {
-#                 "type": "permission.requested",
-#                 "timestamp": "2026-07-01T22:05:00Z",
-#                 "data": {
-#                     "requestId": "r3",
-#                     "permissionRequest": {"kind": "shell", "fullCommandText": "rm x"},
-#                 },
-#             }
-#         )
-#     ]
-#     perms = _permissions_from_events(lines)
-#     assert perms == [
-#         {
-#             "tool": "rm x",
-#             "decision": "pending",
-#             "feedback": "",
-#             "timestamp": "2026-07-01T22:05:00Z",
-#         }
-#     ]
+    with tempfile.TemporaryDirectory() as tmp_name:
+        skill_path = Path(tmp_name) / name / "SKILL.md"
+        skill_path.parent.mkdir()
+        skill_path.write_text(
+            f"---\nname: {name}\ndescription: {description}\n---\n\n{body}",
+            encoding="utf-8",
+        )
+        turn = Turn("use the skill", "", "2026-07-01T22:00:00Z", 0)
+        attribute_skills([turn], [{**skill, "path": str(skill_path)}])
+        assert turn.skill_details[name]["description"] == description
+        assert turn.skill_details[name]["path"] == str(skill_path.resolve())
 
 
 def test_copilot_format_decision():
@@ -226,192 +132,410 @@ def test_copilot_attribute_permissions_by_timestamp():
     assert [p["tool"] for p in t1.permission_decisions] == ["b"]
 
 
-# The real fixture's session_files/session_refs/checkpoints tables are all
-# empty (our one captured session never edited a file or referenced a
-# commit/PR/issue) -- rendering "Files changed", "References" and
-# "Checkpoints" would need that capture, so this hand-built-schema test is
-# commented out rather than exercised against fabricated rows. Re-enable
-# once a real Copilot session with edited files and/or refs is captured;
-# get_session_by_id/get_session_turns/matching_sessions/render_session's
-# basic turn rendering are otherwise covered against the real fixture below
-# (see test_render_session_includes_real_events_sidecar_tool_call and
-# test_matching_sessions_real_fixture_cwd_overlap_and_strict).
-#
-# def test_copilot_db_operations():
-#     """Test database operations with a temporary test database."""
-#     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
-#         test_db = Path(tf.name)
-#
-#     try:
-#         # Create test database
-#         conn = sqlite3.connect(test_db)
-#         cursor = conn.cursor()
-#
-#         # Create schema
-#         cursor.execute("""
-#             CREATE TABLE sessions (
-#                 id TEXT PRIMARY KEY,
-#                 cwd TEXT,
-#                 repository TEXT,
-#                 branch TEXT,
-#                 summary TEXT,
-#                 created_at TEXT DEFAULT (datetime('now')),
-#                 updated_at TEXT DEFAULT (datetime('now'))
-#             )
-#         """)
-#
-#         cursor.execute("""
-#             CREATE TABLE turns (
-#                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-#                 session_id TEXT NOT NULL REFERENCES sessions(id),
-#                 turn_index INTEGER NOT NULL,
-#                 user_message TEXT,
-#                 assistant_response TEXT,
-#                 timestamp TEXT DEFAULT (datetime('now')),
-#                 UNIQUE(session_id, turn_index)
-#             )
-#         """)
-#
-#         cursor.execute("""
-#             CREATE TABLE session_files (
-#                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-#                 session_id TEXT NOT NULL REFERENCES sessions(id),
-#                 file_path TEXT NOT NULL,
-#                 tool_name TEXT,
-#                 turn_index INTEGER,
-#                 first_seen_at TEXT DEFAULT (datetime('now')),
-#                 UNIQUE(session_id, file_path)
-#             )
-#         """)
-#
-#         cursor.execute("""
-#             CREATE TABLE session_refs (
-#                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-#                 session_id TEXT NOT NULL REFERENCES sessions(id),
-#                 ref_type TEXT NOT NULL,
-#                 ref_value TEXT NOT NULL,
-#                 turn_index INTEGER,
-#                 created_at TEXT DEFAULT (datetime('now'))
-#             )
-#         """)
-#
-#         cursor.execute("""
-#             CREATE TABLE checkpoints (
-#                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-#                 session_id TEXT NOT NULL REFERENCES sessions(id),
-#                 checkpoint_number INTEGER NOT NULL,
-#                 title TEXT,
-#                 overview TEXT,
-#                 created_at TEXT DEFAULT (datetime('now')),
-#                 UNIQUE(session_id, checkpoint_number)
-#             )
-#         """)
-#
-#         # Insert test data
-#         test_cwd = str(Path.cwd())
-#         cursor.execute(
-#             """
-#             INSERT INTO sessions (id, cwd, repository, branch, summary, created_at, updated_at)
-#             VALUES (?, ?, ?, ?, ?, ?, ?)
-#         """,
-#             (
-#                 "test-session-1",
-#                 test_cwd,
-#                 "test/repo",
-#                 "main",
-#                 "Test session",
-#                 "2026-01-01T12:00:00Z",
-#                 "2026-01-01T12:30:00Z",
-#             ),
-#         )
-#
-#         cursor.execute(
-#             """
-#             INSERT INTO turns (session_id, turn_index, user_message, assistant_response, timestamp)
-#             VALUES (?, ?, ?, ?, ?)
-#         """,
-#             (
-#                 "test-session-1",
-#                 0,
-#                 "Hello, can you help?",
-#                 "Of course! What do you need?",
-#                 "2026-01-01T12:00:05Z",
-#             ),
-#         )
-#
-#         cursor.execute(
-#             """
-#             INSERT INTO turns (session_id, turn_index, user_message, assistant_response, timestamp)
-#             VALUES (?, ?, ?, ?, ?)
-#         """,
-#             (
-#                 "test-session-1",
-#                 1,
-#                 "Create a test file",
-#                 "I'll create that for you.",
-#                 "2026-01-01T12:10:00Z",
-#             ),
-#         )
-#
-#         cursor.execute(
-#             """
-#             INSERT INTO session_files (session_id, file_path, tool_name, turn_index)
-#             VALUES (?, ?, ?, ?)
-#         """,
-#             ("test-session-1", "/tmp/test.py", "create", 1),
-#         )
-#
-#         cursor.execute(
-#             """
-#             INSERT INTO session_refs (session_id, ref_type, ref_value, turn_index)
-#             VALUES (?, ?, ?, ?)
-#         """,
-#             ("test-session-1", "commit", "abc123", 1),
-#         )
-#
-#         conn.commit()
-#         conn.close()
-#
-#         # Test database operations
-#         conn = get_db_connection(test_db)
-#
-#         # Test session retrieval
-#         session = get_session_by_id(conn, "test-session-1")
-#         assert session is not None
-#         assert session["id"] == "test-session-1"
-#         assert session["repository"] == "test/repo"
-#         assert session["summary"] == "Test session"
-#
-#         # Test turns retrieval
-#         turns = get_session_turns(conn, "test-session-1")
-#         assert len(turns) == 2
-#         assert turns[0]["user_message"] == "Hello, can you help?"
-#         assert turns[1]["assistant_response"] == "I'll create that for you."
-#
-#         # Test matching sessions
-#         sessions = matching_sessions(conn, Path.cwd(), strict=False)
-#         assert len(sessions) >= 1
-#         found = any(s["id"] == "test-session-1" for s in sessions)
-#         assert found
-#
-#         # Test render
-#         markdown = render_session(conn, session)
-#         assert "test-session-1" in markdown
-#         assert "test/repo" in markdown
-#         assert "Hello, can you help?" in markdown
-#         assert "## Summary - user inputs" in markdown
-#         assert "# Full turn-by-turn detail" in markdown
-#         assert "Turn 1 -" in markdown
-#         assert "Turn 2 -" in markdown
-#         assert "/tmp/test.py" in markdown
-#         assert "- create -> /tmp/test.py" in markdown
-#         assert "abc123" in markdown
-#
-#         conn.close()
-#
-#     finally:
-#         # Cleanup
-#         test_db.unlink()
+def test_copilot_skills_from_events_are_attributed():
+    lines = [
+        json.dumps(
+            {
+                "type": "skill.invoked",
+                "timestamp": "2026-07-01T22:05:00Z",
+                "data": {
+                    "name": "fixture-skill",
+                    "path": "/repo/.agents/skills/fixture-skill/SKILL.md",
+                },
+            }
+        )
+    ]
+    skills = copilot_log._skills_from_events(lines)
+    assert skills == [
+        {
+            "name": "fixture-skill",
+            "path": "/repo/.agents/skills/fixture-skill/SKILL.md",
+            "timestamp": "2026-07-01T22:05:00Z",
+        }
+    ]
+    turn = Turn("use the skill", "", "2026-07-01T22:00:00Z", 0)
+    copilot_log.attribute_skills([turn], skills)
+    assert turn.skills_used == ["fixture-skill"]
+
+
+def test_copilot_permissions_from_events_join_decisions_and_pending():
+    lines = [
+        json.dumps(
+            {
+                "type": "permission.requested",
+                "timestamp": "2026-07-01T22:03:50Z",
+                "data": {
+                    "requestId": "r1",
+                    "permissionRequest": {
+                        "kind": "shell",
+                        "fullCommandText": "pytest",
+                    },
+                },
+            }
+        ),
+        json.dumps(
+            {
+                "type": "permission.completed",
+                "timestamp": "2026-07-01T22:04:04Z",
+                "data": {"requestId": "r1", "result": {"kind": "approved"}},
+            }
+        ),
+        json.dumps(
+            {
+                "type": "permission.requested",
+                "timestamp": "2026-07-01T22:05:00Z",
+                "data": {
+                    "requestId": "r2",
+                    "permissionRequest": {
+                        "kind": "write",
+                        "intention": "edit crud.py",
+                    },
+                },
+            }
+        ),
+        json.dumps(
+            {
+                "type": "permission.completed",
+                "timestamp": "2026-07-01T22:05:30Z",
+                "data": {
+                    "requestId": "r2",
+                    "result": {
+                        "kind": "denied-interactively-by-user",
+                        "feedback": "not like that",
+                    },
+                },
+            }
+        ),
+        json.dumps(
+            {
+                "type": "permission.requested",
+                "timestamp": "2026-07-01T22:06:00Z",
+                "data": {
+                    "requestId": "r3",
+                    "permissionRequest": {
+                        "kind": "shell",
+                        "fullCommandText": "rm x",
+                    },
+                },
+            }
+        ),
+    ]
+    perms = copilot_log._permissions_from_events(lines)
+    assert [(p["tool"], p["decision"], p["feedback"]) for p in perms] == [
+        ("pytest", "approved", ""),
+        ("edit crud.py", "denied-interactively-by-user", "not like that"),
+        ("rm x", "pending", ""),
+    ]
+
+
+def test_get_state_skills_real_fixture(monkeypatch):
+    monkeypatch.setattr(copilot_log, "COPILOT_STATE_ROOT", COPILOT_FIXTURE_STATE_ROOT)
+    skills = copilot_log.get_state_skills(COPILOT_FIXTURE_SKILL_SESSION_ID)
+    assert skills == [
+        {
+            "name": "fixture-skill",
+            "path": "/redacted/skill-project/.github/skills/fixture-skill/SKILL.md",
+            "timestamp": "2026-09-29T18:28:31.428Z",
+        }
+    ]
+
+
+def test_get_state_permissions_real_fixture(monkeypatch):
+    monkeypatch.setattr(copilot_log, "COPILOT_STATE_ROOT", COPILOT_FIXTURE_STATE_ROOT)
+    perms = copilot_log.get_state_permissions(COPILOT_FIXTURE_SKILL_SESSION_ID)
+    assert perms == [
+        {
+            "tool": "Read file: /redacted/fixture.png",
+            "decision": "denied-no-approval-rule-and-could-not-request-from-user",
+            "feedback": "",
+            "timestamp": "2026-09-29T18:28:52.142Z",
+        }
+    ]
+
+
+def test_render_session_real_fixture_attributes_skill_and_permission(monkeypatch):
+    # Real Copilot events carry the *completion* timestamp of the turn they
+    # belong to, but a skill/permission event fires mid-turn -- before that
+    # completion timestamp is written. attribute_skills/attribute_permissions
+    # fold each event under the latest turn whose timestamp is <= the event's,
+    # so both land one turn earlier than where a human would place them: the
+    # skill invoked during turn 2 ("/fixture-skill") is attributed to turn 1,
+    # and the permission decision made while handling turn 3 (the image
+    # request) is attributed to turn 2. Real, verified behavior -- not a bug
+    # this test is asserting around.
+    monkeypatch.setattr(copilot_log, "COPILOT_STATE_ROOT", COPILOT_FIXTURE_STATE_ROOT)
+    conn = get_db_connection(COPILOT_FIXTURE_DB)
+    try:
+        session = get_session_by_id(conn, COPILOT_FIXTURE_SKILL_SESSION_ID)
+        markdown = render_session(conn, session)
+    finally:
+        conn.close()
+    turn_1, turn_2, turn_3, _ = markdown.split("### Turn ")[1:5]
+    assert "_Skill used:_ **fixture-skill**" in turn_1
+    assert "_Skill used:_" not in turn_2
+    assert "_Permission denied:_ **Read file: /redacted/fixture.png**" in turn_2
+    assert "_Permission denied:_" not in turn_1 and "_Permission denied:_" not in turn_3
+
+
+def test_get_session_files_and_files_changed_rendering_real_fixture(monkeypatch):
+    monkeypatch.setattr(copilot_log, "COPILOT_STATE_ROOT", COPILOT_FIXTURE_STATE_ROOT)
+    conn = get_db_connection(COPILOT_FIXTURE_DB)
+    try:
+        files = copilot_log.get_session_files(conn, COPILOT_FIXTURE_SKILL_SESSION_ID)
+        assert [f["file_path"] for f in files] == [
+            "/redacted/skill-project/calculator.py",
+            "/redacted/skill-project/test_calculator.py",
+            "/redacted/copilot-home/session-state/"
+            "7fc0ab52-6795-49e8-8ab9-5048733e64bc/plan.md",
+        ]
+
+        session = get_session_by_id(conn, COPILOT_FIXTURE_SKILL_SESSION_ID)
+        markdown = render_session(conn, session)
+    finally:
+        conn.close()
+    assert "## Files changed during the session" in markdown
+    assert "/redacted/skill-project/calculator.py" in markdown
+    # session_files' turn_index (1) lands the file-edit bullet under turn 2
+    # ("/fixture-skill") in the detailed section, even though the edit was
+    # actually restoring calculator.py during a later, unrecorded turn --
+    # Copilot's "turns" table doesn't get a row for every user message (only
+    # 4 rows exist here for 7 real prompts sent), so turn_index in
+    # session_files can reference a turn the turns table never separately
+    # recorded.
+    turn_2 = markdown.split("\n## Turn ")[2]
+    assert "apply_patch -> /redacted/skill-project/calculator.py" in turn_2
+
+
+def test_get_session_refs_rendering_real_fixture(monkeypatch):
+    # From a session where the agent actually ran `git commit`: real
+    # confirmation that Copilot records the resulting hash in session_refs.
+    monkeypatch.setattr(copilot_log, "COPILOT_STATE_ROOT", COPILOT_FIXTURE_STATE_ROOT)
+    conn = get_db_connection(COPILOT_FIXTURE_DB)
+    try:
+        refs = copilot_log.get_session_refs(conn, COPILOT_FIXTURE_DENIAL_SESSION_ID)
+        assert refs == [
+            {
+                "ref_type": "commit",
+                "ref_value": "2c8f9bb",
+                "turn_index": 5,
+                "created_at": "2026-09-29T20:06:39.776Z",
+            }
+        ]
+
+        session = get_session_by_id(conn, COPILOT_FIXTURE_DENIAL_SESSION_ID)
+        markdown = render_session(conn, session)
+    finally:
+        conn.close()
+    assert "## References" in markdown
+    assert "- **commit**: `2c8f9bb` (turn 5)" in markdown
+
+
+def test_denied_tool_calls_surface_the_real_denial_reason_real_fixture(monkeypatch):
+    # A denied `tool.execution_complete` (a --deny-tool rule match) carries
+    # no "result" field at all -- only "error" -- unlike a normal failure,
+    # which does. _tools_from_events used to drop that error silently,
+    # rendering just the bare word "error" with no explanation. Real
+    # capture: one turn hit two different deny rules in a row (apply_patch
+    # denied by `write`, then bash `rm` denied by `shell(rm)`), so this
+    # checks both the raw parse and the rendered markdown.
+    monkeypatch.setattr(copilot_log, "COPILOT_STATE_ROOT", COPILOT_FIXTURE_STATE_ROOT)
+    tools = copilot_log.get_state_tools(COPILOT_FIXTURE_DENIAL_SESSION_ID)
+    assert [(t["name"], t["success"], t["result"]) for t in tools] == [
+        (
+            "apply_patch",
+            False,
+            "Permission to run this tool was denied due to the following rules: `write`",
+        ),
+        (
+            "bash",
+            False,
+            "Permission to run this tool was denied due to the following rules: `shell(rm)`",
+        ),
+    ]
+
+    conn = get_db_connection(COPILOT_FIXTURE_DB)
+    try:
+        session = get_session_by_id(conn, COPILOT_FIXTURE_DENIAL_SESSION_ID)
+        markdown = render_session(conn, session)
+    finally:
+        conn.close()
+    assert (
+        "apply_patch: error: Permission to run this tool was denied due to "
+        "the following rules: `write`"
+    ) in markdown
+    assert (
+        "bash: error: Permission to run this tool was denied due to the "
+        "following rules: `shell(rm)`"
+    ) in markdown
+
+
+def test_real_attachment_without_bracket_token_is_not_resolved_as_image(monkeypatch):
+    # Copilot's real per-message `attachments` array is keyed by a
+    # `displayName`/`assetId`, not the `[image: name]` bracket token
+    # get_state_attachments's caller keys off of -- the checked-in session's
+    # stored user_message text ("Describe what is in the attached image...")
+    # never contains that token. A real attachment is still recorded, but it
+    # never resolves to an image_ref for any turn.
+    monkeypatch.setattr(copilot_log, "COPILOT_STATE_ROOT", COPILOT_FIXTURE_STATE_ROOT)
+    attachments = copilot_log.get_state_attachments(COPILOT_FIXTURE_SKILL_SESSION_ID)
+    assert attachments == [
+        {
+            "display_name": "fixture.png",
+            "path": "/redacted/fixture.png",
+            "type": "image/png",
+        }
+    ]
+    turns_raw = [
+        {
+            "turn_index": 2,
+            "user_message": "Describe what is in the attached image, in one sentence.",
+            "assistant_response": "x",
+            "timestamp": "2026-09-29T18:28:54.115Z",
+        }
+    ]
+    turns = copilot_log._build_turn_objects(turns_raw, [], attachments)
+    assert turns[0].image_refs == []
+
+
+def test_build_events_inlines_resolved_image_and_keeps_unavailable_reference(
+    tmp_path,
+):
+    image_path = tmp_path / "attached.png"
+    image_path.write_bytes(base64.b64decode(_PNG_B64))
+    turn = Turn("look at these", "", "2026-07-01T22:00:00Z", 0)
+    turn.image_refs = [
+        {"name": "attached.png", "path": str(image_path), "type": "image/png"},
+        {"name": "missing.png"},
+    ]
+
+    user = build_events([turn])[0]
+    assert base64.b64decode(user["images"][0]["data"]) == base64.b64decode(_PNG_B64)
+    assert user["images"][0]["media_type"] == "image/png"
+    assert user["images"][1] == {"unavailable": True, "ref": "missing.png"}
+
+
+# checkpoints stayed empty across every real Copilot capture so far,
+# including a --mode autopilot plan turn and several --continue resumes --
+# `copilot <cmd> --help` has no checkpoint-related command either, so
+# whatever triggers a numbered checkpoint looks to be an interactive-only
+# feature not reachable from these headless -p runs. Hand-built schema is
+# the only option until that changes.
+# session_refs and session_files, by contrast, *are* real-fixture-backed
+# now -- see test_get_session_refs_rendering_real_fixture and
+# test_get_session_files_and_files_changed_rendering_real_fixture below.
+
+
+def test_copilot_checkpoints_rendering():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
+        test_db = Path(tf.name)
+
+    try:
+        conn = sqlite3.connect(test_db)
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                cwd TEXT,
+                repository TEXT,
+                branch TEXT,
+                summary TEXT,
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE turns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL REFERENCES sessions(id),
+                turn_index INTEGER NOT NULL,
+                user_message TEXT,
+                assistant_response TEXT,
+                timestamp TEXT DEFAULT (datetime('now')),
+                UNIQUE(session_id, turn_index)
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE session_files (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL REFERENCES sessions(id),
+                file_path TEXT NOT NULL,
+                tool_name TEXT,
+                turn_index INTEGER,
+                first_seen_at TEXT DEFAULT (datetime('now')),
+                UNIQUE(session_id, file_path)
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE session_refs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL REFERENCES sessions(id),
+                ref_type TEXT NOT NULL,
+                ref_value TEXT NOT NULL,
+                turn_index INTEGER,
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE checkpoints (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL REFERENCES sessions(id),
+                checkpoint_number INTEGER NOT NULL,
+                title TEXT,
+                overview TEXT,
+                created_at TEXT DEFAULT (datetime('now')),
+                UNIQUE(session_id, checkpoint_number)
+            )
+        """)
+
+        cursor.execute(
+            "INSERT INTO sessions (id, cwd, repository, branch, summary, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                "test-session-1",
+                str(Path.cwd()),
+                "test/repo",
+                "main",
+                "Test session",
+                "2026-01-01T12:00:00Z",
+                "2026-01-01T12:30:00Z",
+            ),
+        )
+        cursor.execute(
+            "INSERT INTO turns (session_id, turn_index, user_message, assistant_response, timestamp) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                "test-session-1",
+                0,
+                "Hello, can you help?",
+                "Of course! What do you need?",
+                "2026-01-01T12:00:05Z",
+            ),
+        )
+        cursor.execute(
+            "INSERT INTO checkpoints "
+            "(session_id, checkpoint_number, title, overview, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                "test-session-1",
+                1,
+                "Add a test file",
+                "Created a test file and confirmed it passes.",
+                "2026-01-01T12:15:00Z",
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        conn = get_db_connection(test_db)
+        session = get_session_by_id(conn, "test-session-1")
+        markdown = render_session(conn, session)
+        conn.close()
+
+        assert "## Checkpoints (1)" in markdown
+        assert "### Checkpoint 1: Add a test file" in markdown
+        assert "Created a test file and confirmed it passes." in markdown
+    finally:
+        test_db.unlink()
 
 
 def test_copilot_prefix_matching():
@@ -428,311 +552,282 @@ def test_copilot_prefix_matching():
         conn.close()
 
 
-# No real Copilot session captured an image attachment (RUN_COPILOT=false
-# during fixture generation). These three would need that capture, so
-# they're commented out rather than run against a fabricated attachments
-# table / events.jsonl attachment record. Re-enable once a real Copilot
-# session with an attached image is captured.
-#
-# def test_copilot_image_reference_without_attachment_is_flagged():
-#     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
-#         test_db = Path(tf.name)
-#
-#     try:
-#         conn = sqlite3.connect(test_db)
-#         cursor = conn.cursor()
-#         cursor.execute("""
-#             CREATE TABLE sessions (
-#                 id TEXT PRIMARY KEY,
-#                 cwd TEXT,
-#                 repository TEXT,
-#                 branch TEXT,
-#                 summary TEXT,
-#                 created_at TEXT,
-#                 updated_at TEXT
-#             )
-#         """)
-#         cursor.execute("""
-#             CREATE TABLE turns (
-#                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-#                 session_id TEXT NOT NULL REFERENCES sessions(id),
-#                 turn_index INTEGER NOT NULL,
-#                 user_message TEXT,
-#                 assistant_response TEXT,
-#                 timestamp TEXT
-#             )
-#         """)
-#         cursor.execute(
-#             "CREATE TABLE session_files (session_id TEXT, file_path TEXT, tool_name TEXT, turn_index INTEGER, first_seen_at TEXT)"
-#         )
-#         cursor.execute(
-#             "CREATE TABLE session_refs (session_id TEXT, ref_type TEXT, ref_value TEXT, turn_index INTEGER, created_at TEXT)"
-#         )
-#         cursor.execute(
-#             "CREATE TABLE checkpoints (session_id TEXT, checkpoint_number INTEGER, title TEXT, overview TEXT, created_at TEXT)"
-#         )
-#
-#         cursor.execute(
-#             "INSERT INTO sessions (id, cwd, repository, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-#             (
-#                 "img-session",
-#                 str(Path.cwd()),
-#                 "test/repo",
-#                 "2026-01-01T12:00:00Z",
-#                 "2026-01-01T12:00:00Z",
-#             ),
-#         )
-#         cursor.execute(
-#             "INSERT INTO turns (session_id, turn_index, user_message, assistant_response, timestamp) VALUES (?, ?, ?, ?, ?)",
-#             (
-#                 "img-session",
-#                 0,
-#                 "[image: copilot-image-test.png] please summarize",
-#                 "Done",
-#                 "2026-01-01T12:00:05Z",
-#             ),
-#         )
-#         conn.commit()
-#         conn.close()
-#
-#         conn = get_db_connection(test_db)
-#         session = get_session_by_id(conn, "img-session")
-#         assert session is not None
-#         markdown = render_session(conn, session)
-#         assert "source file unavailable; description pending" in markdown
-#         conn.close()
-#     finally:
-#         test_db.unlink()
-#
-#
-# def test_copilot_image_attachment_is_dumped_to_marker_path():
-#     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
-#         test_db = Path(tf.name)
-#
-#     with tempfile.TemporaryDirectory() as tmpdir:
-#         img_path = Path(tmpdir) / "copilot-image-test.png"
-#         img_path.write_bytes(base64.b64decode(_PNG_B64))
-#
-#         try:
-#             conn = sqlite3.connect(test_db)
-#             cursor = conn.cursor()
-#             cursor.execute("""
-#                 CREATE TABLE sessions (
-#                     id TEXT PRIMARY KEY,
-#                     cwd TEXT,
-#                     repository TEXT,
-#                     branch TEXT,
-#                     summary TEXT,
-#                     created_at TEXT,
-#                     updated_at TEXT
-#                 )
-#             """)
-#             cursor.execute("""
-#                 CREATE TABLE turns (
-#                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-#                     session_id TEXT NOT NULL REFERENCES sessions(id),
-#                     turn_index INTEGER NOT NULL,
-#                     user_message TEXT,
-#                     assistant_response TEXT,
-#                     timestamp TEXT
-#                 )
-#             """)
-#             cursor.execute(
-#                 "CREATE TABLE session_files (session_id TEXT, file_path TEXT, tool_name TEXT, turn_index INTEGER, first_seen_at TEXT)"
-#             )
-#             cursor.execute(
-#                 "CREATE TABLE session_refs (session_id TEXT, ref_type TEXT, ref_value TEXT, turn_index INTEGER, created_at TEXT)"
-#             )
-#             cursor.execute(
-#                 "CREATE TABLE checkpoints (session_id TEXT, checkpoint_number INTEGER, title TEXT, overview TEXT, created_at TEXT)"
-#             )
-#             cursor.execute(
-#                 "CREATE TABLE attachments (session_id TEXT, display_name TEXT, path TEXT, type TEXT)"
-#             )
-#
-#             cursor.execute(
-#                 "INSERT INTO sessions (id, cwd, repository, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-#                 (
-#                     "img-session-2",
-#                     str(Path.cwd()),
-#                     "test/repo",
-#                     "2026-01-01T12:00:00Z",
-#                     "2026-01-01T12:00:00Z",
-#                 ),
-#             )
-#             cursor.execute(
-#                 "INSERT INTO turns (session_id, turn_index, user_message, assistant_response, timestamp) VALUES (?, ?, ?, ?, ?)",
-#                 (
-#                     "img-session-2",
-#                     0,
-#                     "[image: copilot-image-test.png] please summarize",
-#                     "Done",
-#                     "2026-01-01T12:00:05Z",
-#                 ),
-#             )
-#             cursor.execute(
-#                 "INSERT INTO attachments (session_id, display_name, path, type) VALUES (?, ?, ?, ?)",
-#                 ("img-session-2", "copilot-image-test.png", str(img_path), "image/png"),
-#             )
-#             conn.commit()
-#             conn.close()
-#
-#             conn = get_db_connection(test_db)
-#             session = get_session_by_id(conn, "img-session-2")
-#             assert session is not None
-#             markdown = render_session(conn, session)
-#             conn.close()
-#
-#             marker = re.search(
-#                 r"\[Image dumped to `([^`]+)` — description pending\]", markdown
-#             )
-#             assert marker is not None
-#             dumped = Path(marker.group(1))
-#             assert dumped.exists()
-#             dumped.unlink()
-#         finally:
-#             test_db.unlink()
-#
-#
-# def test_copilot_image_attachment_from_state_events_is_dumped_to_marker_path():
-#     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
-#         test_db = Path(tf.name)
-#
-#     with tempfile.TemporaryDirectory() as tmpdir:
-#         img_path = Path(tmpdir) / "copilot-image-test.png"
-#         img_path.write_bytes(base64.b64decode(_PNG_B64))
-#
-#         state_root = Path(tmpdir) / "state-root"
-#         session_dir = state_root / "img-session-3"
-#         session_dir.mkdir(parents=True, exist_ok=True)
-#         events_path = session_dir / "events.jsonl"
-#         events_path.write_text(
-#             json.dumps(
-#                 {
-#                     "type": "user.message",
-#                     "data": {
-#                         "content": "[image: copilot-image-test.png] please summarize",
-#                         "attachments": [
-#                             {
-#                                 "type": "file",
-#                                 "path": str(img_path),
-#                                 "displayName": "copilot-image-test.png",
-#                                 "mimeType": "image/png",
-#                             }
-#                         ],
-#                     },
-#                 }
-#             )
-#             + "\n",
-#             encoding="utf-8",
-#         )
-#
-#         original_root = copilot_log.COPILOT_STATE_ROOT
-#         copilot_log.COPILOT_STATE_ROOT = state_root
-#         try:
-#             conn = sqlite3.connect(test_db)
-#             cursor = conn.cursor()
-#             cursor.execute("""
-#                 CREATE TABLE sessions (
-#                     id TEXT PRIMARY KEY,
-#                     cwd TEXT,
-#                     repository TEXT,
-#                     branch TEXT,
-#                     summary TEXT,
-#                     created_at TEXT,
-#                     updated_at TEXT
-#                 )
-#             """)
-#             cursor.execute("""
-#                 CREATE TABLE turns (
-#                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-#                     session_id TEXT NOT NULL REFERENCES sessions(id),
-#                     turn_index INTEGER NOT NULL,
-#                     user_message TEXT,
-#                     assistant_response TEXT,
-#                     timestamp TEXT
-#                 )
-#             """)
-#             cursor.execute(
-#                 "CREATE TABLE session_files (session_id TEXT, file_path TEXT, tool_name TEXT, turn_index INTEGER, first_seen_at TEXT)"
-#             )
-#             cursor.execute(
-#                 "CREATE TABLE session_refs (session_id TEXT, ref_type TEXT, ref_value TEXT, turn_index INTEGER, created_at TEXT)"
-#             )
-#             cursor.execute(
-#                 "CREATE TABLE checkpoints (session_id TEXT, checkpoint_number INTEGER, title TEXT, overview TEXT, created_at TEXT)"
-#             )
-#
-#             cursor.execute(
-#                 "INSERT INTO sessions (id, cwd, repository, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-#                 (
-#                     "img-session-3",
-#                     str(Path.cwd()),
-#                     "test/repo",
-#                     "2026-01-01T12:00:00Z",
-#                     "2026-01-01T12:00:00Z",
-#                 ),
-#             )
-#             cursor.execute(
-#                 "INSERT INTO turns (session_id, turn_index, user_message, assistant_response, timestamp) VALUES (?, ?, ?, ?, ?)",
-#                 (
-#                     "img-session-3",
-#                     0,
-#                     "[image: copilot-image-test.png] please summarize",
-#                     "Done",
-#                     "2026-01-01T12:00:05Z",
-#                 ),
-#             )
-#             conn.commit()
-#             conn.close()
-#
-#             conn = get_db_connection(test_db)
-#             session = get_session_by_id(conn, "img-session-3")
-#             assert session is not None
-#             markdown = render_session(conn, session)
-#             conn.close()
-#
-#             marker = re.search(
-#                 r"\[Image dumped to `([^`]+)` — description pending\]", markdown
-#             )
-#             assert marker is not None
-#             dumped = Path(marker.group(1))
-#             assert dumped.exists()
-#             dumped.unlink()
-#         finally:
-#             copilot_log.COPILOT_STATE_ROOT = original_root
-#             test_db.unlink()
+# Copilot's bracket-token image path -- [image: name] in the stored
+# user_message text, joined against an attachments record by display
+# name -- isn't exercised by the checked-in real fixture (see
+# test_real_attachment_without_bracket_token_is_not_resolved_as_image
+# above: real captures don't emit that bracket token). Covered here with
+# hand-built schemas instead.
 
 
-def _copilot_turn_with_image():
-    # Only used by the commented-out image tests above -- kept so they stay
-    # runnable once re-enabled against a real captured attachment.
-    img = Path(tempfile.mkdtemp()) / "a.png"
-    img.write_bytes(base64.b64decode(_PNG_B64))
-    turn = Turn(
-        "look at [image: a.png] and fix it",
-        "Sure, fixing.",
-        "2026-08-01T10:00:00Z",
-        0,
-    )
-    turn.image_refs = [
-        {"name": "a.png", "path": str(img), "type": "image/png"},
-        {"name": "ghost.png"},
-    ]
-    turn.add_tool("str_replace_editor", "backend/app/models.py")
-    return turn
+def test_copilot_image_reference_without_attachment_is_flagged():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
+        test_db = Path(tf.name)
+
+    try:
+        conn = sqlite3.connect(test_db)
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                cwd TEXT,
+                repository TEXT,
+                branch TEXT,
+                summary TEXT,
+                created_at TEXT,
+                updated_at TEXT
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE turns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL REFERENCES sessions(id),
+                turn_index INTEGER NOT NULL,
+                user_message TEXT,
+                assistant_response TEXT,
+                timestamp TEXT
+            )
+        """)
+        cursor.execute(
+            "CREATE TABLE session_files (session_id TEXT, file_path TEXT, tool_name TEXT, turn_index INTEGER, first_seen_at TEXT)"
+        )
+        cursor.execute(
+            "CREATE TABLE session_refs (session_id TEXT, ref_type TEXT, ref_value TEXT, turn_index INTEGER, created_at TEXT)"
+        )
+        cursor.execute(
+            "CREATE TABLE checkpoints (session_id TEXT, checkpoint_number INTEGER, title TEXT, overview TEXT, created_at TEXT)"
+        )
+
+        cursor.execute(
+            "INSERT INTO sessions (id, cwd, repository, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            (
+                "img-session",
+                str(Path.cwd()),
+                "test/repo",
+                "2026-01-01T12:00:00Z",
+                "2026-01-01T12:00:00Z",
+            ),
+        )
+        cursor.execute(
+            "INSERT INTO turns (session_id, turn_index, user_message, assistant_response, timestamp) VALUES (?, ?, ?, ?, ?)",
+            (
+                "img-session",
+                0,
+                "[image: copilot-image-test.png] please summarize",
+                "Done",
+                "2026-01-01T12:00:05Z",
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        conn = get_db_connection(test_db)
+        session = get_session_by_id(conn, "img-session")
+        assert session is not None
+        markdown = render_session(conn, session)
+        assert "source file unavailable; description pending" in markdown
+        conn.close()
+    finally:
+        test_db.unlink()
 
 
-# def test_build_events_inlines_an_attachment_resolved_from_disk():
-#     user = build_events([_copilot_turn_with_image()])[0]
-#     assert base64.b64decode(user["images"][0]["data"]) == base64.b64decode(_PNG_B64)
-#
-#
-# def test_build_events_records_an_inline_token_with_no_attachment():
-#     # A [image: name] token with no matching attachment record is common in
-#     # Copilot logs; it has to stay visible.
-#     user = build_events([_copilot_turn_with_image()])[0]
-#     assert user["images"][1] == {"unavailable": True, "ref": "ghost.png"}
+def test_copilot_image_attachment_is_dumped_to_marker_path():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
+        test_db = Path(tf.name)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        img_path = Path(tmpdir) / "copilot-image-test.png"
+        img_path.write_bytes(base64.b64decode(_PNG_B64))
+
+        try:
+            conn = sqlite3.connect(test_db)
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY,
+                    cwd TEXT,
+                    repository TEXT,
+                    branch TEXT,
+                    summary TEXT,
+                    created_at TEXT,
+                    updated_at TEXT
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE turns (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL REFERENCES sessions(id),
+                    turn_index INTEGER NOT NULL,
+                    user_message TEXT,
+                    assistant_response TEXT,
+                    timestamp TEXT
+                )
+            """)
+            cursor.execute(
+                "CREATE TABLE session_files (session_id TEXT, file_path TEXT, tool_name TEXT, turn_index INTEGER, first_seen_at TEXT)"
+            )
+            cursor.execute(
+                "CREATE TABLE session_refs (session_id TEXT, ref_type TEXT, ref_value TEXT, turn_index INTEGER, created_at TEXT)"
+            )
+            cursor.execute(
+                "CREATE TABLE checkpoints (session_id TEXT, checkpoint_number INTEGER, title TEXT, overview TEXT, created_at TEXT)"
+            )
+            cursor.execute(
+                "CREATE TABLE attachments (session_id TEXT, display_name TEXT, path TEXT, type TEXT)"
+            )
+
+            cursor.execute(
+                "INSERT INTO sessions (id, cwd, repository, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                (
+                    "img-session-2",
+                    str(Path.cwd()),
+                    "test/repo",
+                    "2026-01-01T12:00:00Z",
+                    "2026-01-01T12:00:00Z",
+                ),
+            )
+            cursor.execute(
+                "INSERT INTO turns (session_id, turn_index, user_message, assistant_response, timestamp) VALUES (?, ?, ?, ?, ?)",
+                (
+                    "img-session-2",
+                    0,
+                    "[image: copilot-image-test.png] please summarize",
+                    "Done",
+                    "2026-01-01T12:00:05Z",
+                ),
+            )
+            cursor.execute(
+                "INSERT INTO attachments (session_id, display_name, path, type) VALUES (?, ?, ?, ?)",
+                ("img-session-2", "copilot-image-test.png", str(img_path), "image/png"),
+            )
+            conn.commit()
+            conn.close()
+
+            conn = get_db_connection(test_db)
+            session = get_session_by_id(conn, "img-session-2")
+            assert session is not None
+            markdown = render_session(conn, session)
+            conn.close()
+
+            marker = re.search(
+                r"\[Image dumped to `([^`]+)` — description pending\]", markdown
+            )
+            assert marker is not None
+            dumped = Path(marker.group(1))
+            assert dumped.exists()
+            dumped.unlink()
+        finally:
+            test_db.unlink()
+
+
+def test_copilot_image_attachment_from_state_events_is_dumped_to_marker_path():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
+        test_db = Path(tf.name)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        img_path = Path(tmpdir) / "copilot-image-test.png"
+        img_path.write_bytes(base64.b64decode(_PNG_B64))
+
+        state_root = Path(tmpdir) / "state-root"
+        session_dir = state_root / "img-session-3"
+        session_dir.mkdir(parents=True, exist_ok=True)
+        events_path = session_dir / "events.jsonl"
+        events_path.write_text(
+            json.dumps(
+                {
+                    "type": "user.message",
+                    "data": {
+                        "content": "[image: copilot-image-test.png] please summarize",
+                        "attachments": [
+                            {
+                                "type": "file",
+                                "path": str(img_path),
+                                "displayName": "copilot-image-test.png",
+                                "mimeType": "image/png",
+                            }
+                        ],
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        original_root = copilot_log.COPILOT_STATE_ROOT
+        copilot_log.COPILOT_STATE_ROOT = state_root
+        try:
+            conn = sqlite3.connect(test_db)
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY,
+                    cwd TEXT,
+                    repository TEXT,
+                    branch TEXT,
+                    summary TEXT,
+                    created_at TEXT,
+                    updated_at TEXT
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE turns (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL REFERENCES sessions(id),
+                    turn_index INTEGER NOT NULL,
+                    user_message TEXT,
+                    assistant_response TEXT,
+                    timestamp TEXT
+                )
+            """)
+            cursor.execute(
+                "CREATE TABLE session_files (session_id TEXT, file_path TEXT, tool_name TEXT, turn_index INTEGER, first_seen_at TEXT)"
+            )
+            cursor.execute(
+                "CREATE TABLE session_refs (session_id TEXT, ref_type TEXT, ref_value TEXT, turn_index INTEGER, created_at TEXT)"
+            )
+            cursor.execute(
+                "CREATE TABLE checkpoints (session_id TEXT, checkpoint_number INTEGER, title TEXT, overview TEXT, created_at TEXT)"
+            )
+
+            cursor.execute(
+                "INSERT INTO sessions (id, cwd, repository, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                (
+                    "img-session-3",
+                    str(Path.cwd()),
+                    "test/repo",
+                    "2026-01-01T12:00:00Z",
+                    "2026-01-01T12:00:00Z",
+                ),
+            )
+            cursor.execute(
+                "INSERT INTO turns (session_id, turn_index, user_message, assistant_response, timestamp) VALUES (?, ?, ?, ?, ?)",
+                (
+                    "img-session-3",
+                    0,
+                    "[image: copilot-image-test.png] please summarize",
+                    "Done",
+                    "2026-01-01T12:00:05Z",
+                ),
+            )
+            conn.commit()
+            conn.close()
+
+            conn = get_db_connection(test_db)
+            session = get_session_by_id(conn, "img-session-3")
+            assert session is not None
+            markdown = render_session(conn, session)
+            conn.close()
+
+            marker = re.search(
+                r"\[Image dumped to `([^`]+)` — description pending\]", markdown
+            )
+            assert marker is not None
+            dumped = Path(marker.group(1))
+            assert dumped.exists()
+            dumped.unlink()
+        finally:
+            copilot_log.COPILOT_STATE_ROOT = original_root
+            test_db.unlink()
 
 
 def test_build_events_recovers_tool_name_and_target():
@@ -746,17 +841,6 @@ def test_build_events_recovers_tool_name_and_target():
     call = next(c for e in events for c in e.get("tool_calls", []))
     assert call["name"] == "str_replace_editor"
     assert call["input"] == {"target": "backend/app/models.py"}
-
-
-# def test_build_events_must_run_before_dump_images_mutates_user_text():
-#     # dump_images appends "[Image ... description pending]" markers to
-#     # turn.user_text in place. The envelope carries the candidate's text, not
-#     # the markdown's annotation of it — so ordering is load-bearing.
-#     turn = _copilot_turn_with_image()
-#     events = build_events([turn])
-#     copilot_log.dump_images([turn], "sess", dump_dir=Path(tempfile.mkdtemp()))
-#     assert "description pending" in turn.user_text
-#     assert "description pending" not in events[0]["text"]
 
 
 def test_build_events_emits_an_assistant_event_for_a_reply():
@@ -940,6 +1024,21 @@ def test_newest_session_real_fixture():
         conn.close()
 
 
+def test_state_sidecar_real_fixture_contains_tool_call(monkeypatch):
+    monkeypatch.setattr(copilot_log, "COPILOT_STATE_ROOT", COPILOT_FIXTURE_STATE_ROOT)
+    tools = copilot_log.get_state_tools(COPILOT_FIXTURE_SESSION_ID)
+    assert tools == [
+        {
+            "call_id": "call_gIWXOf0L79g8MtDAXdmEOQRB",
+            "name": "rename_session",
+            "arguments": {"title": "Local setup"},
+            "timestamp": "2026-09-16T18:35:49.000Z",
+            "success": True,
+            "result": 'Renamed session to "Local setup".',
+        }
+    ]
+
+
 def test_render_session_includes_real_events_sidecar_tool_call(monkeypatch):
     monkeypatch.setattr(copilot_log, "COPILOT_STATE_ROOT", COPILOT_FIXTURE_STATE_ROOT)
     conn = get_db_connection(COPILOT_FIXTURE_DB)
@@ -951,6 +1050,34 @@ def test_render_session_includes_real_events_sidecar_tool_call(monkeypatch):
         conn.close()
     assert "Please run the setup in this repo" in markdown
     assert "rename_session" in markdown
+
+
+def test_main_writes_raw_envelope_from_real_events_sidecar(monkeypatch, tmp_path):
+    monkeypatch.setattr(copilot_log, "COPILOT_STATE_ROOT", COPILOT_FIXTURE_STATE_ROOT)
+    out_path = tmp_path / "out.md"
+    rc = main(
+        [
+            "--db",
+            str(COPILOT_FIXTURE_DB),
+            COPILOT_FIXTURE_SESSION_ID,
+            "--output",
+            str(out_path),
+        ]
+    )
+    assert rc == 0
+    envelopes = list(tmp_path.glob("copilot_session_log_raw_*.json"))
+    assert len(envelopes) == 1
+    envelope = json.loads(envelopes[0].read_text(encoding="utf-8"))
+    assert envelope["harness"] == "copilot"
+    assert envelope["session_id"] == "2026-09-16_b10f9a1b"
+    call = next(
+        call
+        for event in envelope["events"]
+        for call in event.get("tool_calls", [])
+    )
+    assert call["name"] == "rename_session"
+    assert call["input"] == {"title": "Local setup"}
+    assert call["result"] == 'Renamed session to "Local setup".'
 
 
 def test_main_end_to_end_with_real_fixture(monkeypatch, tmp_path):
