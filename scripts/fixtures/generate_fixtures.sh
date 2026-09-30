@@ -6,11 +6,12 @@
 #
 # Beyond a basic coding task, this also makes a best-effort attempt at real
 # (not synthetic-Python) coverage of: skill invocation, a real permission
-# denial, and pasted/attached images -- using documented CLI flags for each.
-# A few of these are confirmed-to-exist flags whose exact resulting
-# transcript shape hasn't been verified (this session can't invoke these
-# CLIs itself), so each experimental step is non-fatal: if one doesn't
-# produce what we expect, the script keeps going and says so.
+# denial, pasted/attached images, a spawned subagent, and an AskUserQuestion
+# clarifying question -- using documented CLI/SDK mechanisms for each. A few
+# of these are confirmed-to-exist flags whose exact resulting transcript
+# shape hasn't been verified (this session can't invoke these CLIs itself),
+# so each experimental step is non-fatal: if one doesn't produce what we
+# expect, the script keeps going and says so.
 #
 # This script prefers driving each CLI directly over its own SDK/library --
 # fewer moving parts, no extra language runtime, and it's what most users
@@ -56,6 +57,44 @@
 # the tool-result-image case too, replacing both synthetic tests
 # (test_build_events_inlines_pasted_images_as_base64 and
 # test_build_events_inlines_images_returned_inside_a_tool_result).
+#
+# Claude subagents (Task tool): a real, confirmed dead end under --bare, the
+# same flag every other step in this script (except plan mode/pasted images,
+# which are their own SDK sessions) relies on for isolation. --bare's own
+# docs (code.claude.com/docs/en/headless) and a live report
+# (github.com/anthropics/claude-code/issues/60547) agree it loads only the
+# core tool set (Bash/Read/Edit) and drops the Task tool and all subagent
+# types with it -- so a Task-tool prompt inside the shared --bare
+# CLAUDE_SCRATCH session above would just get "I don't have the Agent tool
+# available", not a real subagent transcript. This step therefore runs in
+# its OWN fresh session with --bare dropped instead. That's still safe for
+# the same credential isolation --bare exists for here: per
+# code.claude.com/docs/en/headless's own credential precedence, an
+# ANTHROPIC_API_KEY environment variable outranks OAuth/keychain regardless
+# of --bare, so this session still authenticates with only the dedicated
+# key -- it just also picks up project skill/hook/CLAUDE.md discovery from
+# its scratch dir, which new_scratch_repo never populates with anything
+# beyond the fixture skill, so there's nothing real to leak. What's still
+# unverified is the on-disk shape extract_claude_session_log.py already
+# assumes (`<session>/subagents/agent-<id>.jsonl` + a sibling `.meta.json`
+# carrying `agentType`, read by summarize_subagent/load_subagents) -- this
+# step exists to confirm or correct that assumption against a real capture,
+# since no fixture has exercised it yet (test_claude_subagent_fixture_files_
+# and_timestamp_fallback only ever hand-builds this directory shape in
+# scripts/test_extract_claude_session_log.py, it doesn't check it against
+# anything real).
+#
+# Claude AskUserQuestion: also routed through canUseTool like plan mode, but
+# NOT a dead end -- code.claude.com/docs/en/agent-sdk/user-input documents
+# the exact non-interactive answer shape: `PermissionResultAllow(updated_
+# input={"questions": ..., "answers": {"<question text>": "<chosen label>"}})`.
+# That's what the capture below drives, in its own SDK session (same
+# structural reason as plan mode: needs canUseTool, which the plain CLI
+# can't do). If the resulting tool_result matches the format
+# option_qa_from_result/_parse_chosen already expect (`Your questions have
+# been answered: "<question>"="<label>"`), this replaces the hand-built
+# AskUserQuestion entries inside claude_interaction_entries in
+# scripts/test_extract_claude_session_log.py with a real fixture.
 #
 # Run this in your OWN terminal (not through Claude Code) -- it invokes
 # claude/codex/copilot as live agents, which this harness itself blocks a
@@ -265,6 +304,9 @@ add a test, and run it."
 TURN_SKILL="/fixture-skill"
 TURN_DENIAL="Please delete calculator.py by running: rm calculator.py"
 TURN_IMAGE="Describe what is in the attached image, in one sentence."
+TURN_SUBAGENT="Use the Task tool to launch a subagent (general-purpose type) \
+that reads calculator.py and reports back, in one sentence, which functions \
+it defines."
 # Copilot-only below (Claude's plan-mode attempt was dropped -- see the
 # header comment: ExitPlanMode can't be triggered non-interactively there).
 TURN_PLAN="Propose a plan to add a divide(a, b) function with a test, but do not implement it yet."
@@ -380,6 +422,17 @@ new_scratch_repo "$CLAUDE_SCRATCH_DENIAL"
 try_step "Claude: real permission denial, no bypass, fresh session (30s timeout)" \
   run_with_timeout 30 \
   bash -c "cd '$CLAUDE_SCRATCH_DENIAL' && claude --bare --model '$CLAUDE_MODEL' -p '$TURN_DENIAL'"
+
+# Task tool / subagents: fresh session, --bare dropped -- see the header
+# comment for why --bare itself is a confirmed dead end for this one, and
+# why dropping it here doesn't reopen the credential-isolation hole --bare
+# exists to close (ANTHROPIC_API_KEY still outranks OAuth/keychain either
+# way). No --continue: a brand new session keeps this capture isolated from
+# every --bare-only step above.
+CLAUDE_SCRATCH_SUBAGENT="$ROOT/claude-scratch-subagent"
+new_scratch_repo "$CLAUDE_SCRATCH_SUBAGENT"
+try_step "Claude: subagent spawn via Task tool (--bare dropped; fresh session)" \
+  bash -c "cd '$CLAUDE_SCRATCH_SUBAGENT' && claude --model '$CLAUDE_MODEL' --dangerously-skip-permissions -p '$TURN_SUBAGENT'"
 
 # `@path` is the documented syntax for attaching a local file to a headless
 # `-p` prompt. Left in as a harmless non-fatal attempt, but per the header
@@ -515,6 +568,64 @@ asyncio.run(main())
 PYEOF
 try_step "Claude: pasted image via Agent SDK streaming input (own session)" \
   python3 "$IMAGE_CAPTURE_SCRIPT"
+
+# AskUserQuestion: same structural reason as plan mode (needs canUseTool,
+# which plain `claude -p` can't drive), but NOT a dead end like plan
+# rejection/pasted images above -- code.claude.com/docs/en/agent-sdk/
+# user-input documents the exact non-interactive answer shape used below
+# (updated_input carrying an "answers" map keyed by question text). See the
+# header comment for what a successful capture here would replace.
+CLAUDE_SCRATCH_QUESTION="$ROOT/claude-scratch-question"
+new_scratch_repo "$CLAUDE_SCRATCH_QUESTION"
+QUESTION_CAPTURE_SCRIPT="$ROOT/question_capture.py"
+cat > "$QUESTION_CAPTURE_SCRIPT" <<PYEOF
+import asyncio
+
+from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, ResultMessage
+from claude_agent_sdk.types import HookMatcher, PermissionResultAllow
+
+async def can_use_tool(tool_name, input_data, context):
+    if tool_name == "AskUserQuestion":
+        questions = input_data.get("questions", [])
+        answers = {}
+        for q in questions:
+            options = q.get("options", [])
+            if options:
+                answers[q.get("question", "")] = options[0].get("label", "")
+        return PermissionResultAllow(
+            updated_input={"questions": questions, "answers": answers}
+        )
+    return PermissionResultAllow(updated_input=input_data)
+
+# Required workaround (documented in the SDK's own user-input guide): a
+# no-op PreToolUse hook is needed to keep the stream open for can_use_tool.
+async def dummy_hook(input_data, tool_use_id, context):
+    return {"continue_": True}
+
+async def main():
+    options = ClaudeAgentOptions(
+        model="$CLAUDE_MODEL",
+        cwd="$CLAUDE_SCRATCH_QUESTION",
+        permission_mode="bypassPermissions",
+        setting_sources=[],
+        can_use_tool=can_use_tool,
+        hooks={"PreToolUse": [HookMatcher(matcher=None, hooks=[dummy_hook])]},
+    )
+    async with ClaudeSDKClient(options=options) as client:
+        await client.query(
+            "Before adding a divide(a, b) function to calculator.py, use "
+            "AskUserQuestion to ask me whether it should raise ZeroDivisionError "
+            "or return None on division by zero -- wait for my answer, then "
+            "implement whichever I pick."
+        )
+        async for message in client.receive_response():
+            if isinstance(message, ResultMessage):
+                print("AskUserQuestion turn result:", message.result)
+
+asyncio.run(main())
+PYEOF
+try_step "Claude: AskUserQuestion answered via Agent SDK canUseTool (own session)" \
+  python3 "$QUESTION_CAPTURE_SCRIPT"
 
 echo "--- Claude session file(s) ---"
 find "$CLAUDE_CONFIG_DIR/projects" -name '*.jsonl'
@@ -660,5 +771,9 @@ echo "/tmp/qual2319-fixture-gen.* directory) and it'll take it from here:"
 echo "inspect what actually got captured, copy the redacted Claude/Codex files"
 echo "into tests/fixtures/{claude,codex}/, and copy the redacted Copilot"
 echo "session-store.db plus its matching session-state/<id>/events.jsonl into"
-echo "tests/fixtures/copilot/. Update fixture assertions to match the captured"
-echo "sessions, then re-run the secret scan before committing."
+echo "tests/fixtures/copilot/. For the Claude subagent-spawn capture, copy"
+echo "the whole <session-id>/subagents/ directory (agent-*.jsonl AND their"
+echo "agent-*.meta.json sidecars) alongside its main transcript, matching the"
+echo "layout extract_claude_session_log.py's load_subagents expects. Update"
+echo "fixture assertions to match the captured sessions, then re-run the"
+echo "secret scan before committing."

@@ -56,6 +56,22 @@ CLAUDE_PASTED_IMAGE_FIXTURE = (
     / "tests/fixtures/claude/pasted_image_session.jsonl"
 )
 
+# Real, redacted transcript covering a real subagent spawn (the "Agent" tool,
+# general-purpose type, run as an async background task -- see
+# scripts/fixtures/generate_fixtures.sh). Its sibling
+# tests/fixtures/claude/subagent_session/subagents/ directory is the real
+# on-disk shape load_subagents expects. Confirmed by this real capture: the
+# background-task completion never sets isSidechain on any main-transcript
+# entry (it only arrives as a <task-notification> block that clean_user_text
+# already strips as noise), so subagent_count stays 0 even though a real
+# subagent ran -- turn.subagents (populated separately, from the subagents/
+# directory scan) is what actually carries it. See
+# test_real_fixture_captures_subagent_spawn.
+CLAUDE_SUBAGENT_FIXTURE = (
+    Path(__file__).resolve().parent.parent
+    / "tests/fixtures/claude/subagent_session.jsonl"
+)
+
 _PNG_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9"
     "awAAAABJRU5ErkJggg=="
@@ -741,7 +757,35 @@ def test_claude_rendering_includes_all_optional_turn_sections():
     assert claude_log.session_cwd([{"cwd": "/work"}, {"cwd": "/other"}]) == "/work"
     assert claude_log.session_cwd([{}]) is None
 
-def test_claude_subagent_fixture_files_and_timestamp_fallback(tmp_path):
+def test_real_fixture_captures_subagent_spawn():
+    # Real capture: a genuine "Agent" tool spawn (general-purpose type), run
+    # as Claude's async background-task path -- see CLAUDE_SUBAGENT_FIXTURE
+    # above for what this confirms and the one real nuance it exposes.
+    entries = claude_log.load_entries(CLAUDE_SUBAGENT_FIXTURE)
+    turns, files = claude_log.build_turns(entries)
+    subs = claude_log.load_subagents(CLAUDE_SUBAGENT_FIXTURE)
+    claude_log.attribute_subagents(turns, subs)
+
+    assert len(turns) == 1
+    turn = turns[0]
+    # The confirmed nuance: subagent_count (isSidechain-based) stays 0 for
+    # this real background-task shape; turn.subagents (directory-scan-based)
+    # is what actually reflects the real subagent run.
+    assert turn.subagent_count == 0
+    assert len(turn.subagents) == 1
+    subagent = turn.subagents[0]
+    assert subagent["agent_type"] == "general-purpose"
+    assert subagent["tool_names"] == ["Read"]
+    assert "subtract" in subagent["result"]
+
+    md = claude_log.render(turns, files, "project", entries[0]["timestamp"])
+    assert "_subagent (general-purpose):_" in md
+
+def test_claude_subagent_malformed_files_and_timestamp_fallback(tmp_path):
+    # Defensive/error-handling paths not exercised by the real fixture above
+    # (a malformed subagent file, and an unparseable start_ts during
+    # attribution) -- kept synthetic since these are edge cases, not a real
+    # captured shape.
     session = tmp_path / "session"
     subdir = session / "subagents"
     subdir.mkdir(parents=True)
@@ -786,6 +830,7 @@ def test_claude_subagent_fixture_files_and_timestamp_fallback(tmp_path):
     )
     assert len(first.subagents) == 1
     assert second.subagents == []
+
 
 def test_claude_selection_loading_and_single_session_cli(
     transcript_fixtures, monkeypatch, tmp_path, capsys
