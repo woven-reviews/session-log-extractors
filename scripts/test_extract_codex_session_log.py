@@ -56,6 +56,7 @@ from extract_codex_session_log import (
     session_id_from_file,
     session_models,
     skill_names_from_call,
+    skill_refs_from_call,
     tool_descriptor,
     user_text_from_event,
     user_text_from_response_item,
@@ -2067,8 +2068,8 @@ def test_skill_refs_from_call_backfills_path_for_already_seen_skill():
         "skill": "pdf",
         "cmd": "/plugins/documents/skills/pdf/SKILL.md",
     }
-    refs = skill_names_from_call("skill", args)
-    assert refs == ["pdf"]
+    refs = skill_refs_from_call("skill", args)
+    assert refs == [{"name": "pdf", "path": "/plugins/documents/skills/pdf/SKILL.md"}]
 
 
 def test_skill_refs_from_call_unserializable_args_skips_regex_scan():
