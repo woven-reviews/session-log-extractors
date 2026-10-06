@@ -14,3 +14,6 @@ jobs:
           python-version: "3.11"
       - run: pip install .[test]
       - run: pytest
+      - run: >
+          pytest scripts/test_extract_claude_session_log.py
+          --cov=extract_claude_session_log --cov-fail-under=95
