@@ -1904,7 +1904,7 @@ def test_extract_all_reports_error_when_nothing_matches():
         assert rc == 1
 
 
-def test_extract_all_skips_unparseable_transcript_and_still_succeeds():
+def test_extract_all_skips_unparseable_transcript_and_still_succeeds(monkeypatch):
     import extract_codex_session_log as mod
 
     with tempfile.TemporaryDirectory() as tmp_name:
@@ -1931,14 +1931,9 @@ def test_extract_all_skips_unparseable_transcript_and_still_succeeds():
                 raise ValueError("boom")
             return original_render_transcript(transcript, **kwargs)
 
-        old_cwd = os.getcwd()
-        try:
-            mod.render_transcript = flaky_render_transcript
-            os.chdir(project)
-            rc = mod._extract_all(str(sessions), str(out))
-        finally:
-            mod.render_transcript = original_render_transcript
-            os.chdir(old_cwd)
+        monkeypatch.setattr(mod, "render_transcript", flaky_render_transcript)
+        monkeypatch.chdir(project)
+        rc = mod._extract_all(str(sessions), str(out))
 
         assert rc == 0
         written = sorted(p.name for p in out.glob("codex_session_log_*.md"))
@@ -2180,7 +2175,7 @@ def test_extract_all_write_failure_is_skipped():
         assert rc == 1
 
 
-def test_main_default_output_path_and_no_trailing_newline_write():
+def test_main_default_output_path_and_no_trailing_newline_write(monkeypatch):
     import extract_codex_session_log as mod
 
     with tempfile.TemporaryDirectory() as tmp_name:
@@ -2199,20 +2194,14 @@ def test_main_default_output_path_and_no_trailing_newline_write():
         )
 
         fake_default = tmp / "default_out.md"
-        original_default = mod.DEFAULT_OUTPUT
-        original_render_transcript = mod.render_transcript
-        try:
-            mod.DEFAULT_OUTPUT = fake_default
-            mod.render_transcript = lambda *a, **k: "no trailing newline"
-            rc = mod.main(["--transcript", str(transcript)])
-            assert rc == 0
-            assert fake_default.read_text(encoding="utf-8") == "no trailing newline"
-        finally:
-            mod.DEFAULT_OUTPUT = original_default
-            mod.render_transcript = original_render_transcript
+        monkeypatch.setattr(mod, "DEFAULT_OUTPUT", fake_default)
+        monkeypatch.setattr(mod, "render_transcript", lambda *a, **k: "no trailing newline")
+        rc = mod.main(["--transcript", str(transcript)])
+        assert rc == 0
+        assert fake_default.read_text(encoding="utf-8") == "no trailing newline"
 
 
-def test_main_stdout_adds_trailing_newline_when_missing():
+def test_main_stdout_adds_trailing_newline_when_missing(monkeypatch):
     import contextlib
     import io
 
@@ -2222,19 +2211,15 @@ def test_main_stdout_adds_trailing_newline_when_missing():
         transcript = Path(tmp_name) / "t.jsonl"
         transcript.write_text(json.dumps({"type": "session_meta", "payload": {}}))
 
-        original_render_transcript = mod.render_transcript
-        try:
-            mod.render_transcript = lambda *a, **k: "no newline here"
-            captured = io.StringIO()
-            with contextlib.redirect_stdout(captured):
-                rc = mod.main(["--transcript", str(transcript), "--output", "-"])
-            assert rc == 0
-            assert captured.getvalue() == "no newline here\n"
-        finally:
-            mod.render_transcript = original_render_transcript
+        monkeypatch.setattr(mod, "render_transcript", lambda *a, **k: "no newline here")
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            rc = mod.main(["--transcript", str(transcript), "--output", "-"])
+        assert rc == 0
+        assert captured.getvalue() == "no newline here\n"
 
 
-def test_main_write_failure_for_explicit_output_path():
+def test_main_write_failure_for_explicit_output_path(monkeypatch):
     import extract_codex_session_log as mod
 
     with tempfile.TemporaryDirectory() as tmp_name:
@@ -2244,25 +2229,13 @@ def test_main_write_failure_for_explicit_output_path():
         out_dir_as_file_target = tmp / "out.md"
         out_dir_as_file_target.mkdir()  # a directory, so write_text() raises OSError
 
-        original_render_transcript = mod.render_transcript
-        try:
-            mod.render_transcript = lambda *a, **k: "content\n"
-            rc = mod.main(
-                [
-                    "--transcript",
-                    str(transcript),
-                    "--output",
-                    str(out_dir_as_file_target),
-                ]
-            )
-            assert rc == 1
-        finally:
-            mod.render_transcript = original_render_transcript
-
-
-if __name__ == "__main__":
-    for name, fn in sorted(globals().items()):
-        if name.startswith("test_") and callable(fn):
-            fn()
-            print(f"ok  {name}")
-    print("all passed")
+        monkeypatch.setattr(mod, "render_transcript", lambda *a, **k: "content\n")
+        rc = mod.main(
+            [
+                "--transcript",
+                str(transcript),
+                "--output",
+                str(out_dir_as_file_target),
+            ]
+        )
+        assert rc == 1
