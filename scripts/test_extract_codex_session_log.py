@@ -725,7 +725,7 @@ def _png_on_disk():
     return path
 
 
-def test_build_events_inlines_an_image_stored_as_a_path():
+def test_build_events_keeps_local_and_unresolvable_images():
     # Codex keeps images out of band, so the envelope is where they become
     # portable.
     img = _png_on_disk()
@@ -733,13 +733,7 @@ def test_build_events_inlines_an_image_stored_as_a_path():
     assert user["role"] == "user"
     assert base64.b64decode(user["images"][0]["data"]) == base64.b64decode(_PNG_B64)
     assert user["images"][0]["media_type"] == "image/png"
-
-
-def test_build_events_records_an_unresolvable_image_rather_than_dropping_it():
-    # dump_images silently skips these; the envelope must not, or "pasted a
-    # screenshot we can no longer read" becomes indistinguishable from "pasted
-    # nothing".
-    user = build_events(_codex_entries(_png_on_disk()))[0]
+    # A missing screenshot must remain distinguishable from no screenshot.
     assert user["images"][1] == {"unavailable": True, "ref": "/gone/missing.png"}
 
 
