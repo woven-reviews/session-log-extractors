@@ -1880,6 +1880,16 @@ def test_extract_all_skips_unparseable_transcript_and_still_succeeds(monkeypatch
 # --- main() CLI paths ---------------------------------------
 
 
+_CLI_ENTRIES = [
+    {"type": "session_meta", "payload": {"id": "s1"}},
+    {
+        "type": "event_msg",
+        "timestamp": "2026-01-01T00:00:00Z",
+        "payload": {"type": "user_message", "message": "hi"},
+    },
+]
+
+
 def test_main_errors_when_transcript_not_found():
     rc = main(["--transcript", "/no/such/file.jsonl"])
     assert rc == 1
@@ -1891,19 +1901,7 @@ def test_main_single_session_to_stdout():
 
     with tempfile.TemporaryDirectory() as tmp_name:
         path = Path(tmp_name) / "t.jsonl"
-        path.write_text(
-            "\n".join(
-                json.dumps(e)
-                for e in [
-                    {"type": "session_meta", "payload": {"id": "s1"}},
-                    {
-                        "type": "event_msg",
-                        "timestamp": "2026-01-01T00:00:00Z",
-                        "payload": {"type": "user_message", "message": "hi"},
-                    },
-                ]
-            )
-        )
+        _write_jsonl(path, _CLI_ENTRIES)
         captured = io.StringIO()
         with contextlib.redirect_stdout(captured):
             rc = main(["--transcript", str(path), "--output", "-"])
@@ -1915,19 +1913,7 @@ def test_main_single_session_writes_markdown_and_raw_file():
     with tempfile.TemporaryDirectory() as tmp_name:
         tmp = Path(tmp_name)
         transcript = tmp / "t.jsonl"
-        transcript.write_text(
-            "\n".join(
-                json.dumps(e)
-                for e in [
-                    {"type": "session_meta", "payload": {"id": "s1"}},
-                    {
-                        "type": "event_msg",
-                        "timestamp": "2026-01-01T00:00:00Z",
-                        "payload": {"type": "user_message", "message": "hi"},
-                    },
-                ]
-            )
-        )
+        _write_jsonl(transcript, _CLI_ENTRIES)
         out_md = tmp / "out.md"
         rc = main(["--transcript", str(transcript), "--output", str(out_md)])
         assert rc == 0
@@ -1939,19 +1925,7 @@ def test_main_single_session_no_raw_skips_raw_file():
     with tempfile.TemporaryDirectory() as tmp_name:
         tmp = Path(tmp_name)
         transcript = tmp / "t.jsonl"
-        transcript.write_text(
-            "\n".join(
-                json.dumps(e)
-                for e in [
-                    {"type": "session_meta", "payload": {"id": "s1"}},
-                    {
-                        "type": "event_msg",
-                        "timestamp": "2026-01-01T00:00:00Z",
-                        "payload": {"type": "user_message", "message": "hi"},
-                    },
-                ]
-            )
-        )
+        _write_jsonl(transcript, _CLI_ENTRIES)
         out_md = tmp / "out.md"
         rc = main(
             ["--transcript", str(transcript), "--output", str(out_md), "--no-raw"]
