@@ -83,7 +83,7 @@ QUESTIONS = [
 ]
 
 
-def test_codex_structured_skill_call_is_recorded():
+def test_codex_structured_skill_call_is_recorded_and_rendered():
     entries = [
         {
             "type": "event_msg",
@@ -101,8 +101,10 @@ def test_codex_structured_skill_call_is_recorded():
             },
         },
     ]
-    turns, _ = build_turns(entries)
+    turns, files_changed = build_turns(entries)
     assert turns[0].skills_used == ["pdf:pdf"]
+    md = render(turns, files_changed, "project", "2026-01-01T00:00:00Z")
+    assert "pdf:pdf" in md
 
 
 def test_codex_initial_response_item_user_message_is_exported_once():
@@ -1675,29 +1677,6 @@ def test_render_no_user_text_placeholder_in_full_detail():
     turns, files_changed = build_turns(entries)
     md = render(turns, files_changed, "project", "2026-01-01T00:00:00Z")
     assert "**User:** _(no user text - pre-conversation activity)_" in md
-
-
-def test_render_summary_renders_skill_use_on_input_turn():
-    entries = [
-        {
-            "type": "event_msg",
-            "timestamp": "2026-01-01T00:00:00Z",
-            "payload": {"type": "user_message", "message": "Make a PDF"},
-        },
-        {
-            "type": "response_item",
-            "timestamp": "2026-01-01T00:00:01Z",
-            "payload": {
-                "type": "function_call",
-                "name": "skills.read",
-                "call_id": "skill-1",
-                "arguments": json.dumps({"package": "pdf:pdf"}),
-            },
-        },
-    ]
-    turns, files_changed = build_turns(entries)
-    md = render(turns, files_changed, "project", "2026-01-01T00:00:00Z")
-    assert "pdf:pdf" in md
 
 
 def test_render_custom_answer_without_chosen_label():
