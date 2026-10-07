@@ -1,8 +1,4 @@
-#!/usr/bin/env python3
-"""Minimal asserts for extract_copilot_session_log.
-
-Run: python3 scripts/test_extract_copilot_session_log.py
-(a handful of tests need pytest fixtures and only run under pytest; see below)
+"""Tests for extract_copilot_session_log.
 
 Coverage: pytest --cov=scripts --cov-report=term-missing \
     scripts/test_extract_copilot_session_log.py
@@ -15,6 +11,7 @@ import json
 import re
 import sqlite3
 import tempfile
+from functools import partial
 from pathlib import Path
 
 import extract_copilot_session_log as copilot_log
@@ -610,7 +607,12 @@ def test_copilot_image_reference_without_attachment_is_flagged():
         test_db.unlink()
 
 
-def test_copilot_image_attachment_is_dumped_to_marker_path():
+def test_copilot_image_attachment_is_dumped_to_marker_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        copilot_log,
+        "dump_images",
+        partial(copilot_log.dump_images, dump_dir=tmp_path / "images"),
+    )
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
         test_db = Path(tf.name)
 
@@ -693,13 +695,18 @@ def test_copilot_image_attachment_is_dumped_to_marker_path():
             )
             assert marker is not None
             dumped = Path(marker.group(1))
+            assert dumped.parent == tmp_path / "images"
             assert dumped.exists()
-            dumped.unlink()
         finally:
             test_db.unlink()
 
 
-def test_copilot_image_attachment_from_state_events_is_dumped_to_marker_path():
+def test_copilot_image_attachment_from_state_events_is_dumped_to_marker_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        copilot_log,
+        "dump_images",
+        partial(copilot_log.dump_images, dump_dir=tmp_path / "images"),
+    )
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
         test_db = Path(tf.name)
 
@@ -802,15 +809,15 @@ def test_copilot_image_attachment_from_state_events_is_dumped_to_marker_path():
             )
             assert marker is not None
             dumped = Path(marker.group(1))
+            assert dumped.parent == tmp_path / "images"
             assert dumped.exists()
-            dumped.unlink()
         finally:
             copilot_log.COPILOT_STATE_ROOT = original_root
             test_db.unlink()
 
 
-def _copilot_turn_with_image():
-    img = Path(tempfile.mkdtemp()) / "a.png"
+def _copilot_turn_with_image(tmp_path):
+    img = tmp_path / "a.png"
     img.write_bytes(base64.b64decode(_PNG_B64))
     turn = Turn(
         "look at [image: a.png] and fix it",
@@ -826,38 +833,38 @@ def _copilot_turn_with_image():
     return turn
 
 
-def test_build_events_inlines_an_attachment_resolved_from_disk():
-    user = build_events([_copilot_turn_with_image()])[0]
+def test_build_events_inlines_an_attachment_resolved_from_disk(tmp_path):
+    user = build_events([_copilot_turn_with_image(tmp_path)])[0]
     assert base64.b64decode(user["images"][0]["data"]) == base64.b64decode(_PNG_B64)
 
 
-def test_build_events_records_an_inline_token_with_no_attachment():
+def test_build_events_records_an_inline_token_with_no_attachment(tmp_path):
     # A [image: name] token with no matching attachment record is common in
     # Copilot logs; it has to stay visible.
-    user = build_events([_copilot_turn_with_image()])[0]
+    user = build_events([_copilot_turn_with_image(tmp_path)])[0]
     assert user["images"][1] == {"unavailable": True, "ref": "ghost.png"}
 
 
-def test_build_events_recovers_tool_name_and_target():
-    events = build_events([_copilot_turn_with_image()])
+def test_build_events_recovers_tool_name_and_target(tmp_path):
+    events = build_events([_copilot_turn_with_image(tmp_path)])
     call = next(c for e in events for c in e.get("tool_calls", []))
     assert call["name"] == "str_replace_editor"
     assert call["input"] == {"target": "backend/app/models.py"}
 
 
-def test_build_events_must_run_before_dump_images_mutates_user_text():
+def test_build_events_must_run_before_dump_images_mutates_user_text(tmp_path):
     # dump_images appends "[Image ... description pending]" markers to
     # turn.user_text in place. The envelope carries the candidate's text, not
     # the markdown's annotation of it — so ordering is load-bearing.
-    turn = _copilot_turn_with_image()
+    turn = _copilot_turn_with_image(tmp_path)
     events = build_events([turn])
-    copilot_log.dump_images([turn], "sess", dump_dir=Path(tempfile.mkdtemp()))
+    copilot_log.dump_images([turn], "sess", dump_dir=tmp_path / "dumped")
     assert "description pending" in turn.user_text
     assert "description pending" not in events[0]["text"]
 
 
-def test_build_events_emits_an_assistant_event_for_a_reply():
-    events = build_events([_copilot_turn_with_image()])
+def test_build_events_emits_an_assistant_event_for_a_reply(tmp_path):
+    events = build_events([_copilot_turn_with_image(tmp_path)])
     assistant = [e for e in events if e["role"] == "assistant"]
     assert assistant and assistant[0]["text"] == "Sure, fixing."
 
@@ -1408,9 +1415,9 @@ def test_copilot_build_turn_objects_ignores_blank_image_token():
 # -- raw envelope writing and image byte resolution --------------------------
 
 
-def test_copilot_write_raw_envelope_returns_none_without_events():
+def test_copilot_write_raw_envelope_returns_none_without_events(tmp_path):
     assert (
-        copilot_log.write_raw_envelope({"id": "s1"}, [], [], Path(tempfile.mkdtemp()))
+        copilot_log.write_raw_envelope({"id": "s1"}, [], [], tmp_path)
         is None
     )
 
@@ -1933,24 +1940,3 @@ def test_copilot_main_reports_output_write_error(monkeypatch, tmp_path, capsys):
     captured = capsys.readouterr()
     assert rc == 1
     assert "error" in captured.err
-
-
-if __name__ == "__main__":
-    # Auto-discover every zero-argument test, same as the Claude/Codex sibling
-    # files. Unlike those files, a handful of tests here need pytest fixtures
-    # (monkeypatch/tmp_path/capsys) to exercise main()/_extract_all() error
-    # paths without touching real files; those only run under pytest (see the
-    # module docstring for the coverage command) and are skipped here rather
-    # than crashing a plain `python3` invocation.
-    import inspect
-
-    skipped = 0
-    for name, fn in sorted(globals().items()):
-        if not (name.startswith("test_") and callable(fn)):
-            continue
-        if inspect.signature(fn).parameters:
-            skipped += 1
-            continue
-        fn()
-        print(f"ok  {name}")
-    print(f"all passed ({skipped} fixture-based tests skipped; run via pytest for those)")
