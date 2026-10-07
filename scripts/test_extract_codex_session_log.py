@@ -233,7 +233,7 @@ def test_codex_permission_denial_ignores_normal_text():
     assert parse_permission_denial("Sure, I'll do that.") is None
 
 
-def test_codex_denial_recorded_on_turn_not_as_prose():
+def test_codex_denial_recorded_and_rendered_without_prose():
     entries = [
         {
             "type": "event_msg",
@@ -267,13 +267,18 @@ def test_codex_denial_recorded_on_turn_not_as_prose():
             },
         },
     ]
-    turns, _ = build_turns(entries)
+    turns, files_changed = build_turns(entries)
     assert len(turns) == 1
     assert turns[0].permission_denials == [
         {"tool": "external_agent", "message": "not like that"}
     ]
     # The canned denial text must not leak into assistant prose.
     assert turns[0].assistant_text_blocks == []
+
+    md = render(turns, files_changed, "project", "2026-01-01T00:00:00Z")
+    assert "_Denied permission:_ **external_agent**" in md
+    assert "> not like that" in md
+    assert '_user denied permission:_ external_agent -> "not like that"' in md
 
 
 def test_codex_plan_mode_turn_and_structured_plan_are_rendered():
@@ -1717,47 +1722,6 @@ def test_render_custom_answer_without_chosen_label():
     turns, files_changed = build_turns(entries)
     md = render(turns, files_changed, "project", "2026-01-01T00:00:00Z")
     assert "_(custom answer)_ Something else entirely" in md
-
-
-def test_render_permission_denial_in_summary_and_detail():
-    entries = [
-        {
-            "type": "event_msg",
-            "timestamp": "2026-01-01T00:00:00Z",
-            "payload": {"type": "user_message", "message": "do the thing"},
-        },
-        {
-            "type": "response_item",
-            "payload": {
-                "type": "function_call",
-                "name": "external_agent",
-                "call_id": "c1",
-                "arguments": "{}",
-            },
-        },
-        {
-            "type": "response_item",
-            "payload": {
-                "type": "message",
-                "role": "assistant",
-                "content": [
-                    {
-                        "type": "output_text",
-                        "text": (
-                            "[external_agent_tool_result: error]\nThe user doesn't "
-                            "want to proceed with this tool use. The tool use was "
-                            "rejected. The user said:\nnot like that"
-                        ),
-                    }
-                ],
-            },
-        },
-    ]
-    turns, files_changed = build_turns(entries)
-    md = render(turns, files_changed, "project", "2026-01-01T00:00:00Z")
-    assert "_Denied permission:_ **external_agent**" in md
-    assert "> not like that" in md
-    assert '_user denied permission:_ external_agent -> "not like that"' in md
 
 
 def test_render_truncates_many_result_notes():
