@@ -164,7 +164,12 @@ def test_native_dont_ask_denial_documents_current_parser_limit():
     result = entries[2]["message"]["content"][0]["content"]
     assert "Permission to use Bash has been denied" in result
     assert parse_permission_denial(result) is None
-    assert build_turns(entries)[0][0].permission_denials == []
+    turns, _ = build_turns(entries)
+    assert turns[0].permission_denials == []
+    assert any(
+        "Permission to use Bash has been denied" in note
+        for note in turns[0].result_notes
+    )
 
 
 def test_permission_denials_from_result_names_tool():
@@ -358,14 +363,19 @@ def _plan_entries(result_text: str, plan: str = "# Plan\n\nStep one."):
 
 
 def test_build_events_inlines_pasted_images_as_base64():
-    events = build_events(_fixture_entries("images.jsonl"))
+    entries = _fixture_entries("images.jsonl")
+    events = build_events(entries)
     user = events[0]
     assert user["role"] == "user"
     assert user["text"] == "Compare these four tiny images"
     assert [image["media_type"] for image in user["images"]] == [
         "image/png", "image/jpeg", "image/gif", "image/webp"
     ]
-    assert all(base64.b64decode(image["data"]) for image in user["images"])
+    assert [image["data"] for image in user["images"]] == [
+        block["source"]["data"]
+        for block in entries[0]["message"]["content"]
+        if block["type"] == "image"
+    ]
 
 
 def test_build_events_attaches_tool_results_to_their_call():
@@ -1244,7 +1254,11 @@ def test_native_subagent_sidecar_is_attributed_to_turn():
     assert "4" in subs[0]["result"]
     turns, _ = build_turns(load_entries(transcript))
     attribute_subagents(turns, subs)
-    assert sum(len(turn.subagents) for turn in turns) == 1
+    assert turns[0].subagents == subs
+    assert subs[0]["agent_type"] == "general-purpose"
+    assert "_subagent (general-purpose):_" in render(
+        turns, [], "fixture project", turns[0].timestamp
+    )
 
 
 def test_attribute_subagents_assigns_by_start_time_and_falls_back():
@@ -1288,8 +1302,15 @@ def test_render_transcript_writes_markdown_and_raw_envelope():
     buf = io.StringIO()
     with contextlib.redirect_stderr(buf):
         md = render_transcript(transcript, None, raw_output=out_dir)
-    assert "# Session Conversation Log" in md
-    assert (out_dir / "claude_session_log_raw_baseline.json").exists()
+    assert "**User:** Reply with BASELINE_FIXTURE_MARKER and nothing else." in md
+    assert "**Assistant:** BASELINE_FIXTURE_MARKER" in md
+    envelope = json.loads(
+        (out_dir / "claude_session_log_raw_baseline.json").read_text()
+    )
+    assert [(event["role"], event["text"]) for event in envelope["events"]] == [
+        ("user", "Reply with BASELINE_FIXTURE_MARKER and nothing else."),
+        ("assistant", "BASELINE_FIXTURE_MARKER"),
+    ]
     assert "wrote" in buf.getvalue()
 
 
