@@ -15,6 +15,7 @@ import tempfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import extract_claude_session_log as eclog
+from session_log_envelope import SIZE_WARN_BYTES, build_envelope, write_envelope
 from extract_claude_session_log import (
     Turn,
     _candidate_project_dirs,
@@ -71,6 +72,12 @@ OPTS = [
     {"label": "Neither", "description": "c"},
 ]
 
+FIXTURES = Path(__file__).parent / "fixtures" / "claude"
+
+
+def _fixture_entries(name):
+    return load_entries(FIXTURES / name)
+
 
 def test_skill_tool_use_is_recorded():
     entries = [
@@ -98,6 +105,22 @@ def test_skill_tool_use_is_recorded():
     assert turns[0].skills_used == ["documents"]
 
 
+def test_native_skill_and_command_use_checked_in_definitions():
+    project_root = eclog.PROJECT_ROOT
+    eclog.PROJECT_ROOT = FIXTURES / "project"
+    try:
+        turns, _ = build_turns(_fixture_entries("skill_command.jsonl"))
+    finally:
+        eclog.PROJECT_ROOT = project_root
+    assert turns[0].skills_used == ["fixture-skill"]
+    assert turns[0].skill_details["fixture-skill"]["overview"] == "Say SKILL_FIXTURE_MARKER."
+    assert turns[1].command == "/fixture-command"
+    assert turns[1].command_details["overview"] == "Say COMMAND_FIXTURE_MARKER."
+    markdown = render(turns, [], "fixture project", turns[0].timestamp)
+    assert "_Overview:_ Say SKILL_FIXTURE_MARKER." in markdown
+    assert "_Overview:_ Say COMMAND_FIXTURE_MARKER." in markdown
+
+
 def test_single_choice():
     res = 'Your questions have been answered: "Q"="section". continue.'
     val, chosen = _parse_chosen("Q", OPTS, res)
@@ -106,9 +129,10 @@ def test_single_choice():
 
 
 def test_multiselect_comma():
-    res = '"Q"="section, manufacturer_part_no". continue.'
-    val, chosen = _parse_chosen("Q", OPTS, res)
-    assert [o["label"] for o in chosen] == ["section", "manufacturer_part_no"], chosen
+    turns, _ = build_turns(_fixture_entries("questions.jsonl"))
+    qa = turns[0].option_qas[0]
+    assert qa["answer_text"] == "section, manufacturer_part_no"
+    assert qa["chosen_labels"] == ["section", "manufacturer_part_no"]
 
 
 def test_permission_denial_bare():
@@ -135,6 +159,14 @@ def test_permission_denial_ignores_normal_result():
     assert parse_permission_denial("error: file not found") is None
 
 
+def test_native_dont_ask_denial_documents_current_parser_limit():
+    entries = _fixture_entries("permission_denial.jsonl")
+    result = entries[2]["message"]["content"][0]["content"]
+    assert "Permission to use Bash has been denied" in result
+    assert parse_permission_denial(result) is None
+    assert build_turns(entries)[0][0].permission_denials == []
+
+
 def test_permission_denials_from_result_names_tool():
     entry = {
         "message": {
@@ -156,18 +188,16 @@ def test_permission_denials_from_result_names_tool():
 
 
 def test_custom_answer_matches_no_option():
-    res = '"Q"="something the user typed". continue.'
-    val, chosen = _parse_chosen("Q", OPTS, res)
-    assert val == "something the user typed"
-    assert chosen == []
+    turns, _ = build_turns(_fixture_entries("questions.jsonl"))
+    qa = turns[1].option_qas[0]
+    assert qa["answer_text"] == "custom_value"
+    assert qa["chosen_labels"] == []
 
 
 def test_multi_question_anchors_on_its_own_text():
-    res = '"Q1"="section", "Q2"="Neither". continue.'
-    _, c1 = _parse_chosen("Q1", OPTS, res)
-    _, c2 = _parse_chosen("Q2", OPTS, res)
-    assert [o["label"] for o in c1] == ["section"], c1
-    assert [o["label"] for o in c2] == ["Neither"], c2
+    turns, _ = build_turns(_fixture_entries("questions.jsonl"))
+    assert [qa["answer_text"] for qa in turns[1].option_qas] == ["custom_value", "JSON"]
+    assert turns[1].option_qas[1]["chosen_labels"] == ["JSON"]
 
 
 def test_task_notification_is_stripped_to_empty():
@@ -222,6 +252,15 @@ def test_dump_images_noop_without_images():
     dump_dir = Path(tempfile.mkdtemp())
     assert dump_images([turn], "s", dump_dir=dump_dir) == []
     assert turn.user_text == "no images here"
+
+
+def test_dump_fixture_images_preserves_media_types():
+    turns, _ = build_turns(_fixture_entries("images.jsonl"))
+    with tempfile.TemporaryDirectory() as directory:
+        written = dump_images(turns, "images", dump_dir=Path(directory))
+        assert [path.suffix for path in written] == [".png", ".jpg", ".gif", ".webp"]
+        for path, image in zip(written, turns[0].images):
+            assert path.read_bytes() == base64.b64decode(image["data"])
 
 
 def _conversation_entries():
@@ -319,22 +358,37 @@ def _plan_entries(result_text: str, plan: str = "# Plan\n\nStep one."):
 
 
 def test_build_events_inlines_pasted_images_as_base64():
-    events = build_events(_conversation_entries())
+    events = build_events(_fixture_entries("images.jsonl"))
     user = events[0]
     assert user["role"] == "user"
-    assert user["text"] == "here is the mock"
-    assert base64.b64decode(user["images"][0]["data"]) == base64.b64decode(_PNG_B64)
-    assert user["images"][0]["media_type"] == "image/png"
+    assert user["text"] == "Compare these four tiny images"
+    assert [image["media_type"] for image in user["images"]] == [
+        "image/png", "image/jpeg", "image/gif", "image/webp"
+    ]
+    assert all(base64.b64decode(image["data"]) for image in user["images"])
 
 
 def test_build_events_attaches_tool_results_to_their_call():
-    events = build_events(_conversation_entries(), tool_result_max_bytes=100)
+    events = build_events(_fixture_entries("large_result.jsonl"), tool_result_max_bytes=100)
     call = events[1]["tool_calls"][0]
     assert call["name"] == "Read"
-    assert call["input"] == {"file_path": "/work/app/models.py"}
-    assert call["result_bytes"] == 9000
+    assert call["input"]["file_path"] == "/workspace/large.txt"
+    assert call["result_bytes"] > 10_000
     assert call["result_truncated"] is True
     assert len(call["result"]) == 100
+
+
+def test_large_native_result_reaches_envelope_size_warning():
+    events = build_events(_fixture_entries("large_result.jsonl"), tool_result_max_bytes=100_000)
+    # Repeated native Read results simulate a long session without checking in 8 MB.
+    copies = SIZE_WARN_BYTES // len(json.dumps(events).encode()) + 2
+    envelope = build_envelope("claude", "large-session", events * copies)
+    out = Path(tempfile.mkdtemp()) / "large.json"
+    stderr = io.StringIO()
+    with contextlib.redirect_stderr(stderr):
+        size = write_envelope(out, envelope)
+    assert size > SIZE_WARN_BYTES
+    assert "session-log uploads are capped" in stderr.getvalue()
 
 
 def test_build_events_keeps_full_tool_input():
@@ -416,12 +470,7 @@ def test_build_events_does_not_disturb_the_markdown_turns():
 
 
 def test_plan_approved_is_captured():
-    turns, _ = build_turns(
-        _plan_entries(
-            "User has approved your plan. You can now start coding.\n\n"
-            "## Approved Plan (edited by user):\n# Plan\n\nStep one."
-        )
-    )
+    turns, _ = build_turns(_fixture_entries("plan_modes.jsonl"))
     (plan,) = turns[0].plans
     assert plan["plan"] == "# Plan\n\nStep one."
     assert plan["decision"] == "approved"
@@ -433,29 +482,19 @@ def test_plan_approved_is_captured():
 
 
 def test_plan_approved_with_edit_keeps_final_version():
-    turns, _ = build_turns(
-        _plan_entries(
-            "User has approved your plan.\n\n"
-            "## Approved Plan (edited by user):\n# Plan\n\nStep one, but smaller."
-        )
-    )
-    (plan,) = turns[0].plans
+    turns, _ = build_turns(_fixture_entries("plan_modes.jsonl"))
+    (plan,) = turns[1].plans
     assert plan["decision"] == "approved"
     assert plan["edited_plan"] == "# Plan\n\nStep one, but smaller."
 
 
 def test_plan_rejected_keeps_steering_message():
-    turns, _ = build_turns(
-        _plan_entries(
-            "The user doesn't want to proceed with this tool use. The tool use "
-            "was rejected. the user said:\nToo big, split it up"
-        )
-    )
-    (plan,) = turns[0].plans
+    turns, _ = build_turns(_fixture_entries("plan_modes.jsonl"))
+    (plan,) = turns[2].plans
     assert plan["decision"] == "rejected"
     assert plan["message"] == "Too big, split it up"
     # Routed to the plan record, not the generic permission-denial list.
-    assert turns[0].permission_denials == []
+    assert turns[2].permission_denials == []
 
 
 def test_plan_rejection_reason_is_captured_and_rendered():
@@ -645,19 +684,11 @@ def test_select_transcript_global_fallback_picks_newest_anywhere():
 
 
 def test_load_entries_skips_malformed_lines_with_warning():
-    tmp = Path(tempfile.mkdtemp()) / "t.jsonl"
-    tmp.write_text(
-        '{"type": "user"}\n'
-        "not json\n"
-        "\n"
-        "42\n"  # valid JSON, not a dict -- counted as bad
-        '{"type": "assistant"}\n'
-    )
     buf = io.StringIO()
     with contextlib.redirect_stderr(buf):
-        entries = load_entries(tmp)
+        entries = _fixture_entries("truncated.jsonl")
     assert [e["type"] for e in entries] == ["user", "assistant"]
-    assert "skipping malformed JSON on line 2" in buf.getvalue()
+    assert "skipping malformed JSON on line 3" in buf.getvalue()
 
 
 def test_load_entries_warns_once_for_many_bad_lines():
@@ -991,6 +1022,32 @@ def test_first_timestamp_session_models_and_cwd():
     assert session_cwd([]) is None
 
 
+def test_native_resumed_session_lists_both_models():
+    entries = _fixture_entries("model.jsonl")
+    assert session_models(entries) == [
+        "claude-haiku-4-5-20251001", "claude-sonnet-5-5"
+    ]
+    turns, _ = build_turns(entries)
+    assert any(turn.command == "/model" and turn.command_args == "sonnet" for turn in turns)
+
+
+def test_native_continued_conversation_keeps_follow_up_in_one_session():
+    entries = _fixture_entries("continued.jsonl")
+    assert len({entry["sessionId"] for entry in entries}) == 1
+    turns, _ = build_turns(entries)
+    assert len(turns) == 2
+    assert "Read" in turns[0].tool_bullets[0]
+    assert "RED-FOX-23" in " ".join(turns[0].assistant_text_blocks)
+    assert "previous answer" in turns[1].user_text
+    assert "RED-FOX-23" in " ".join(turns[1].assistant_text_blocks)
+    events = build_events(entries)
+    assert [event["role"] for event in events] == [
+        "user", "assistant", "assistant", "user", "assistant"
+    ]
+    assert "RED-FOX-23" in events[1]["tool_calls"][0]["result"]
+    assert events[4].get("tool_calls", []) == []
+
+
 def test_write_raw_envelope_writes_file_and_returns_path():
     out_dir = Path(tempfile.mkdtemp())
     path = write_raw_envelope(
@@ -1179,6 +1236,17 @@ def test_load_subagents_reads_sidecar_dir():
     assert subs[0]["task"] == "task"
 
 
+def test_native_subagent_sidecar_is_attributed_to_turn():
+    transcript = FIXTURES / "subagent.jsonl"
+    subs = load_subagents(transcript)
+    assert len(subs) == 1
+    assert "2 + 2" in subs[0]["task"]
+    assert "4" in subs[0]["result"]
+    turns, _ = build_turns(load_entries(transcript))
+    attribute_subagents(turns, subs)
+    assert sum(len(turn.subagents) for turn in turns) == 1
+
+
 def test_attribute_subagents_assigns_by_start_time_and_falls_back():
     t1 = Turn("first", "2026-01-01T00:00:00Z")
     t2 = Turn("second", "2026-01-01T00:10:00Z")
@@ -1215,14 +1283,13 @@ def test_render_transcript_raises_for_empty_file():
 
 
 def test_render_transcript_writes_markdown_and_raw_envelope():
-    transcript = Path(tempfile.mkdtemp()) / "sess123.jsonl"
-    _write_jsonl(transcript, _conversation_entries())
+    transcript = FIXTURES / "baseline.jsonl"
     out_dir = Path(tempfile.mkdtemp())
     buf = io.StringIO()
     with contextlib.redirect_stderr(buf):
         md = render_transcript(transcript, None, raw_output=out_dir)
     assert "# Session Conversation Log" in md
-    assert (out_dir / "claude_session_log_raw_sess123.json").exists()
+    assert (out_dir / "claude_session_log_raw_baseline.json").exists()
     assert "wrote" in buf.getvalue()
 
 
