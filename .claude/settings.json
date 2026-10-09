@@ -1,0 +1,14 @@
+{
+  "extraKnownMarketplaces": {
+    "assessment-team": {
+      "source": {
+        "source": "github",
+        "repo": "andela-technology/assessment-monorepo"
+      },
+      "autoUpdate": true
+    }
+  },
+  "enabledPlugins": {
+    "assessments-workflows@assessment-team": true
+  }
+}
