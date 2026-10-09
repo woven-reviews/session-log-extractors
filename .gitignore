@@ -6,5 +6,6 @@ __pycache__/
 .
 .claude/*
 !.claude/skills/
+!.claude/settings.json
 .coverage
 
