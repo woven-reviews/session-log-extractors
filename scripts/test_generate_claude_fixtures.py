@@ -50,10 +50,3 @@ def test_clean_rejects_leftover_private_temp_path():
         assert str(exc) == "private path remains after sanitizing"
     else:
         raise AssertionError("encoded temp path must be rejected")
-
-
-if __name__ == "__main__":
-    test_clean_preserves_records_blocks_and_ids()
-    test_clean_rejects_unknown_thinking_shape()
-    test_clean_redacts_encoded_project_dir()
-    test_clean_rejects_leftover_private_temp_path()
