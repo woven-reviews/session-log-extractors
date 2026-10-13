@@ -1437,11 +1437,3 @@ def test_extract_all_skips_unparseable_file():
         rc = _extract_all(proj, str(out_dir))
     assert rc == 1
     assert "skip bad" in err.getvalue()
-
-
-if __name__ == "__main__":
-    for name, fn in sorted(globals().items()):
-        if name.startswith("test_") and callable(fn):
-            fn()
-            print(f"ok  {name}")
-    print("all passed")
