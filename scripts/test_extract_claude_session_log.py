@@ -1268,9 +1268,20 @@ def test_native_subagent_sidecar_is_attributed_to_turn():
     assert len(subs) == 1
     assert "2 + 2" in subs[0]["task"]
     assert "4" in subs[0]["result"]
-    turns, _ = build_turns(load_entries(transcript))
+    # Surround the native turn with earlier and later turns so attribution must
+    # use the sidecar's real start time rather than the first-turn fallback.
+    def turn(text, ts):
+        return {"type": "user", "timestamp": ts, "message": {"content": text}}
+
+    entries = [
+        turn("earlier", "2000-01-01T00:00:00Z"),
+        *load_entries(transcript),
+        turn("later", "2999-01-01T00:00:00Z"),
+    ]
+    turns, _ = build_turns(entries)
+    assert [t.subagents for t in turns] == [[], [], []]
     attribute_subagents(turns, subs)
-    assert turns[0].subagents == subs
+    assert [t.subagents for t in turns] == [[], subs, []]
     meta = json.loads((FIXTURES / "subagent/subagents/agent-fixture.meta.json").read_text())
     assert subs[0]["agent_type"] == meta["agentType"]
     assert f"_subagent ({meta['agentType']}):_" in render(
