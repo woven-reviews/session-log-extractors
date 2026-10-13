@@ -37,6 +37,23 @@ def test_clean_rejects_unknown_thinking_shape():
         raise AssertionError("unknown thinking format must be reviewed")
 
 
+def test_clean_redacts_encoded_project_dir():
+    entries = [{"text": "/home/x/.claude/projects/-srv-fixture-project/memory/"}]
+    assert "-workspace/memory/" in clean(entries, Path("/srv/fixture-project"))
+
+
+def test_clean_rejects_leftover_private_temp_path():
+    entries = [{"text": "-private-var-folders-ab-T-other"}]
+    try:
+        clean(entries, Path("/tmp/fixture-project"))
+    except RuntimeError as exc:
+        assert str(exc) == "private path remains after sanitizing"
+    else:
+        raise AssertionError("encoded temp path must be rejected")
+
+
 if __name__ == "__main__":
     test_clean_preserves_records_blocks_and_ids()
     test_clean_rejects_unknown_thinking_shape()
+    test_clean_redacts_encoded_project_dir()
+    test_clean_rejects_leftover_private_temp_path()

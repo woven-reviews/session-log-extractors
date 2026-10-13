@@ -35,11 +35,16 @@ def clean(entries: list[dict], workspace: Path) -> str:
                         raise RuntimeError("unexpected thinking block format")
                     block["thinking"] = "[redacted]"
     text = "\n".join(json.dumps(entry, ensure_ascii=False) for entry in entries)
+    # Claude also names the project dir by the path with non-alphanumerics dashed.
+    encoded = re.sub(r"[^A-Za-z0-9]", "-", str(workspace.resolve()))
+    encoded_home = re.sub(r"[^A-Za-z0-9]", "-", str(Path.home()))
     text = text.replace(str(workspace.resolve()), "/workspace")
     text = text.replace(str(workspace), "/workspace")
+    text = text.replace(encoded, "-workspace")
     text = text.replace(str(Path.home()), "/home/fixture-user")
     text = EMAIL.sub("fixture@example.invalid", text)
-    if any(path in text for path in (str(workspace), str(Path.home()), "/private/var/")):
+    private = (str(workspace), str(Path.home()), encoded_home, "/private/var/", "-private-var-")
+    if any(path in text for path in private):
         raise RuntimeError("private path remains after sanitizing")
     return text + "\n"
 
