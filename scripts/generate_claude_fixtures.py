@@ -21,32 +21,24 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent / "fixtures" / "claude"
 PROJECTS = Path.home() / ".claude" / "projects"
-UUID = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
 EMAIL = re.compile(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}")
 
 
 def clean(entries: list[dict], workspace: Path) -> str:
-    entries = [entry for entry in entries if entry.get("type") in {"user", "assistant"}]
     for entry in entries:
-        content = entry.get("message", {}).get("content")
+        message = entry.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
         if isinstance(content, list):
-            entry["message"]["content"] = [
-                block for block in content
-                if not isinstance(block, dict) or block.get("type") != "thinking"
-            ]
-    entries = [entry for entry in entries if entry.get("message", {}).get("content")]
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "thinking":
+                    if not isinstance(block.get("thinking"), str):
+                        raise RuntimeError("unexpected thinking block format")
+                    block["thinking"] = "[redacted]"
     text = "\n".join(json.dumps(entry, ensure_ascii=False) for entry in entries)
     text = text.replace(str(workspace.resolve()), "/workspace")
     text = text.replace(str(workspace), "/workspace")
     text = text.replace(str(Path.home()), "/home/fixture-user")
     text = EMAIL.sub("fixture@example.invalid", text)
-    ids: dict[str, str] = {}
-    text = UUID.sub(
-        lambda match: ids.setdefault(
-            match.group(), f"00000000-0000-4000-8000-{len(ids) + 1:012d}"
-        ),
-        text,
-    )
     if any(path in text for path in (str(workspace), str(Path.home()), "/private/var/")):
         raise RuntimeError("private path remains after sanitizing")
     return text + "\n"
@@ -183,8 +175,8 @@ def run_case(name: str, prompt: str, *, tools: str = "") -> dict[str, str]:
             output["subagent/subagents/agent-fixture.jsonl"] = clean(
                 agent_entries, workspace
             )
-            output["subagent/subagents/agent-fixture.meta.json"] = (
-                json.dumps(json.loads(meta.read_text()), ensure_ascii=False) + "\n"
+            output["subagent/subagents/agent-fixture.meta.json"] = clean(
+                [json.loads(meta.read_text())], workspace
             )
         return output
 

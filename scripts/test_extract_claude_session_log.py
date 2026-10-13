@@ -161,7 +161,12 @@ def test_permission_denial_ignores_normal_result():
 
 def test_native_dont_ask_denial_documents_current_parser_limit():
     entries = _fixture_entries("permission_denial.jsonl")
-    result = entries[2]["message"]["content"][0]["content"]
+    result = next(
+        block["content"]
+        for entry in entries
+        for block in _content_blocks(entry)
+        if isinstance(block, dict) and block.get("type") == "tool_result"
+    )
     assert "Permission to use Bash has been denied" in result
     assert parse_permission_denial(result) is None
     turns, _ = build_turns(entries)
@@ -1255,8 +1260,9 @@ def test_native_subagent_sidecar_is_attributed_to_turn():
     turns, _ = build_turns(load_entries(transcript))
     attribute_subagents(turns, subs)
     assert turns[0].subagents == subs
-    assert subs[0]["agent_type"] == "general-purpose"
-    assert "_subagent (general-purpose):_" in render(
+    meta = json.loads((FIXTURES / "subagent/subagents/agent-fixture.meta.json").read_text())
+    assert subs[0]["agent_type"] == meta["agentType"]
+    assert f"_subagent ({meta['agentType']}):_" in render(
         turns, [], "fixture project", turns[0].timestamp
     )
 

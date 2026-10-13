@@ -1,1 +1,1 @@
-{"agentType": "general-purpose", "description": "Simple math calculation", "toolUseId": "toolu_018gdYkk2snS3KrAQUafSccz", "spawnDepth": 1, "requestShape": "background", "requestNonInteractive": true}
+{"agentType": "claude", "description": "Simple math calculation", "toolUseId": "toolu_01AVS9NuDbknB6aWdD9fXVXN", "spawnDepth": 1, "requestShape": "foreground", "requestNonInteractive": true}

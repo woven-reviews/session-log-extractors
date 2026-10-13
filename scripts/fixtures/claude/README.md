@@ -1,6 +1,6 @@
 # Claude Code fixture provenance
 
-These fixtures exercise the log shapes listed in [QUAL-2399](https://linear.app/andela/issue/QUAL-2399/claude-code-test-coverage). Native captures used Claude Code 2.1.292 (`claude --version` on 2026-10-08). Tests read only files here and never invoke Claude Code or require `~/.claude`.
+These fixtures exercise the log shapes listed in [QUAL-2399](https://linear.app/andela/issue/QUAL-2399/claude-code-test-coverage). Native captures were regenerated with Claude Code 2.1.292 (`claude --version` on 2026-10-09). Tests read only files here and never invoke Claude Code or require `~/.claude`.
 
 Regenerate the seven native captures manually with `python3 scripts/generate_claude_fixtures.py` from the repository root. The script runs `claude --print <prompt> --output-format json --model <model> --session-id <uuid> --max-budget-usd 0.25 --permission-mode dontAsk --permission-prompts none --setting-sources project --strict-mcp-config --no-chrome`, adding `--tools <name>` for tool cases and replacing `--session-id` with `--resume` for second turns. It prints the exact commands it executes. It uses a temporary project and the operator's existing Claude login, then sanitizes and stages the resulting files before replacement. Regeneration makes paid model calls and is never part of the test run.
 
@@ -18,6 +18,6 @@ Regenerate the seven native captures manually with `python3 scripts/generate_cla
 | 10. Windows encoded project path | Unsupported on this macOS host | Native `C--Users-...` project encoding requires a Windows Claude Code run. Capture there and copy the native project directory, or use an explicitly hand-authored path fixture if Windows is unavailable; a macOS headless run cannot establish Windows path provenance. |
 | Continued conversation | Headless-generatable | `continued.jsonl` records a Read call and a later prompt that asks about the previous answer. Both turns share one resumed session; the second answer depends on the first. |
 
-The classification concerns native transcript generation through this host's bare print-mode CLI. The generator removes private paths and email addresses, strips thinking blocks, and renumbers UUIDs; review regenerated output for other secrets before committing. Capture content and model IDs can change with CLI release and account.
+The classification concerns native transcript generation through this host's bare print-mode CLI. The generator preserves every JSONL record, content block, and identifier. It redacts thinking text, private workspace and home paths, and email addresses without removing their containing records; the subagent metadata receives the same path and email redaction. Review regenerated output for other secrets before committing. Capture content and model IDs can change with CLI release and account.
 
 CLI reference: <https://code.claude.com/docs/en/cli-reference>. Print-mode behavior: <https://code.claude.com/docs/en/headless>. SDK user input: <https://code.claude.com/docs/en/agent-sdk/user-input>.
