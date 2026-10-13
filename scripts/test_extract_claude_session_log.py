@@ -159,7 +159,7 @@ def test_permission_denial_ignores_normal_result():
     assert parse_permission_denial("error: file not found") is None
 
 
-def test_native_dont_ask_denial_documents_current_parser_limit():
+def test_native_dont_ask_denial_is_recorded():
     entries = _fixture_entries("permission_denial.jsonl")
     result = next(
         block["content"]
@@ -168,13 +168,14 @@ def test_native_dont_ask_denial_documents_current_parser_limit():
         if isinstance(block, dict) and block.get("type") == "tool_result"
     )
     assert "Permission to use Bash has been denied" in result
-    assert parse_permission_denial(result) is None
+    assert parse_permission_denial(result) == ""
     turns, _ = build_turns(entries)
-    assert turns[0].permission_denials == []
-    assert any(
-        "Permission to use Bash has been denied" in note
-        for note in turns[0].result_notes
-    )
+    assert [d["tool"].split(" — ")[0] for d in turns[0].permission_denials] == ["Bash"]
+    assert not any("has been denied" in note for note in turns[0].result_notes)
+
+
+def test_permission_denial_ignores_isc_license_text():
+    assert parse_permission_denial("Permission to use, copy, modify, and/or distribute") is None
 
 
 def test_permission_denials_from_result_names_tool():
