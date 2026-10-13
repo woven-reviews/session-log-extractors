@@ -1,0 +1,19 @@
+{
+  "name": "assessment-team",
+  "plugins": [
+    {
+      "name": "assessments-workflows",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/andela-technology/assessment-monorepo.git",
+        "path": "./plugins/assessments-workflows",
+        "ref": "main"
+      },
+      "policy": {
+        "installation": "INSTALLED_BY_DEFAULT",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

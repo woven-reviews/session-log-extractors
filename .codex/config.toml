@@ -1,0 +1,3 @@
+
+[plugins."assessments-workflows@assessment-team"]
+enabled = true
