@@ -706,6 +706,16 @@ def test_load_entries_skips_malformed_lines_with_warning():
     assert "skipping malformed JSON on line 3" in buf.getvalue()
 
 
+def test_load_entries_counts_non_dict_and_skips_blank_lines():
+    tmp = Path(tempfile.mkdtemp()) / "t.jsonl"
+    tmp.write_text('{"type": "user"}\n\n42\n[]\n' + "bad\n" * 4)
+    buf = io.StringIO()
+    with contextlib.redirect_stderr(buf):
+        entries = load_entries(tmp)
+    assert [e["type"] for e in entries] == ["user"]
+    assert "skipped 6 malformed/blank lines total" in buf.getvalue()
+
+
 def test_load_entries_warns_once_for_many_bad_lines():
     tmp = Path(tempfile.mkdtemp()) / "t.jsonl"
     tmp.write_text("bad\n" * 7)
