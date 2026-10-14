@@ -1,0 +1,4 @@
+{"type": "user.message", "data": {"content": "[image: pixel.png]", "attachments": [{"type": "file", "displayName": "pixel.png", "path": "/workspace/pixel.png", "mimeType": "image/png"}]}}
+{"type": "user.message", "data": {"content": "[image: url.png]", "attachments": [{"displayName": "url.png", "dataUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/ax6fN8AAAAASUVORK5CYII=", "mimeType": "image/png"}]}}
+{"type": "user.message", "data": {"content": "[image: inline.png]", "attachments": [{"displayName": "inline.png", "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/ax6fN8AAAAASUVORK5CYII=", "mediaType": "image/png"}]}}
+{"type": "user.message", "data": {"content": "no attachment"}}
