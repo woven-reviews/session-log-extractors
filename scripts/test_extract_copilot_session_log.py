@@ -15,6 +15,8 @@ import tempfile
 from functools import partial
 from pathlib import Path
 
+import pytest
+
 import extract_copilot_session_log as copilot_log
 from extract_copilot_session_log import (
     Turn,
@@ -48,6 +50,11 @@ def _native_db():
 
 def _hand_lines(name: str) -> list[str]:
     return (FIXTURES / "hand-authored" / name).read_text(encoding="utf-8").splitlines()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_copilot_state(tmp_path, monkeypatch):
+    monkeypatch.setattr(copilot_log, "COPILOT_STATE_ROOT", tmp_path / "session-state")
 
 
 def _make_test_db(
@@ -216,8 +223,7 @@ def test_copilot_attribute_permissions_by_timestamp():
     assert [p["tool"] for p in t1.permission_decisions] == ["b"]
 
 
-def test_copilot_db_operations(tmp_path, monkeypatch):
-    monkeypatch.setattr(copilot_log, "COPILOT_STATE_ROOT", tmp_path)
+def test_copilot_db_operations():
     with _native_db() as conn:
         session = get_session_by_id(conn, NATIVE_IDS["continued"])
         assert session is not None
@@ -1031,7 +1037,6 @@ def test_copilot_extract_all_writes_one_file_per_session(tmp_path, monkeypatch, 
     with sqlite3.connect(db_path) as conn:
         conn.execute("UPDATE sessions SET cwd=?", (str(tmp_path),))
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(copilot_log, "COPILOT_STATE_ROOT", tmp_path / "state")
     output = tmp_path / "output"
     with get_db_connection(db_path) as conn:
         rc = copilot_log._extract_all(conn, str(output), raw=False)
