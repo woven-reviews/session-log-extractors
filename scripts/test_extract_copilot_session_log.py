@@ -216,7 +216,8 @@ def test_copilot_attribute_permissions_by_timestamp():
     assert [p["tool"] for p in t1.permission_decisions] == ["b"]
 
 
-def test_copilot_db_operations():
+def test_copilot_db_operations(tmp_path, monkeypatch):
+    monkeypatch.setattr(copilot_log, "COPILOT_STATE_ROOT", tmp_path)
     with _native_db() as conn:
         session = get_session_by_id(conn, NATIVE_IDS["continued"])
         assert session is not None
@@ -1030,6 +1031,7 @@ def test_copilot_extract_all_writes_one_file_per_session(tmp_path, monkeypatch, 
     with sqlite3.connect(db_path) as conn:
         conn.execute("UPDATE sessions SET cwd=?", (str(tmp_path),))
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(copilot_log, "COPILOT_STATE_ROOT", tmp_path / "state")
     output = tmp_path / "output"
     with get_db_connection(db_path) as conn:
         rc = copilot_log._extract_all(conn, str(output), raw=False)

@@ -123,3 +123,13 @@ def test_main_stages_all_six_native_cases(monkeypatch, tmp_path):
         assert conn.execute("SELECT count(*) FROM turns").fetchone()[0] == 7
     assert "user.message" in (output / "image" / "events.jsonl").read_text()
     assert str(tmp_path) not in (output / "image" / "events.jsonl").read_text()
+
+
+def test_clean_rejects_other_private_temp_paths(tmp_path):
+    line = json.dumps({"type": "user.message", "data": {"content": "/private/var/other/file"}})
+    try:
+        clean_event_lines([line], tmp_path)
+    except RuntimeError as exc:
+        assert "private path" in str(exc)
+    else:
+        raise AssertionError("unexpected private path must block capture")
