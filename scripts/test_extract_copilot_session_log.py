@@ -903,6 +903,21 @@ def test_copilot_timestamped_attachment_belongs_to_second_turn():
     assert turns[1].image_refs == [{"name": "later.png", "path": "/tmp/later.png"}]
 
 
+def test_copilot_attachments_sharing_a_display_name_are_both_kept():
+    turns = copilot_log._build_turn_objects(
+        # Native turn text carries no image token (see the image fixture).
+        [{"user_message": "compare these", "timestamp": "2026-01-01T00:00:05Z"}],
+        [],
+        [
+            {"display_name": "image.png", "path": "/tmp/a/image.png",
+             "timestamp": "2026-01-01T00:00:01Z"},
+            {"display_name": "image.png", "path": "/tmp/b/image.png",
+             "timestamp": "2026-01-01T00:00:02Z"},
+        ],
+    )
+    assert [r["path"] for r in turns[0].image_refs] == ["/tmp/a/image.png", "/tmp/b/image.png"]
+
+
 def test_copilot_timestamped_attachment_does_not_duplicate_image_token():
     turns = copilot_log._build_turn_objects(
         [{"user_message": "[image: pixel.png]", "timestamp": "2026-01-01T00:00:05Z"}],

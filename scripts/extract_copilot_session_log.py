@@ -949,15 +949,24 @@ def _build_turn_objects(
         ):
             continue
         target = _turn_for(built, attachment.get("timestamp"))
-        if any(ref["name"] == name for ref in target.image_refs):
-            continue
         ref = {"name": name}
         for key in ("path", "type", "data_url", "data", "media_type"):
             if attachment.get(key):
                 ref[key] = attachment[key]
+        # Two different files can share a display name, so match on the image itself.
+        source = _image_source(ref)
+        if any(
+            _image_source(r) == source if source else r["name"] == name
+            for r in target.image_refs
+        ):
+            continue
         if len(ref) > 1:
             target.image_refs.append(ref)
     return built
+
+
+def _image_source(ref: Dict[str, Any]) -> Optional[str]:
+    return ref.get("path") or ref.get("data_url") or ref.get("data")
 
 
 def envelope_images(refs: List[Dict[str, str]]) -> List[Dict[str, Any]]:
