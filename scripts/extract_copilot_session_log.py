@@ -811,6 +811,20 @@ def format_decision(kind: str) -> str:
     return kind or "unknown"
 
 
+def decision_label(kind: str) -> str:
+    """Summary-line label for a permission decision.
+
+    The harness log parser reads "user denied permission" as a candidate action,
+    so only a denial the human made interactively may carry it.
+    """
+    if kind == "denied-interactively-by-user":
+        return "user denied permission"
+    # ponytail: any other denied-* kind is assumed to be a rule/policy refusal.
+    if kind.startswith("denied"):
+        return "settings denied permission"
+    return f"permission {format_decision(kind)}"
+
+
 def get_session_models(conn: sqlite3.Connection, session_id: str) -> List[str]:
     """Distinct model ids seen in events for the session, if available."""
     cols = _table_columns(conn, "events")
@@ -1285,7 +1299,7 @@ def render(
         if turn.permission_decisions:
             out.append("")
             for p in turn.permission_decisions:
-                line = f"  _permission {format_decision(p['decision'])}:_ {_truncate(p['tool'], 120)}"
+                line = f"  _{decision_label(p['decision'])}:_ {_truncate(p['tool'], 120)}"
                 if p.get("feedback"):
                     line += f' -> "{_truncate(p["feedback"], 160)}"'
                 out.append(line)

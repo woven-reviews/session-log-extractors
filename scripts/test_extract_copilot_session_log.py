@@ -211,6 +211,13 @@ def test_copilot_format_decision():
     assert format_decision("") == "unknown"
 
 
+def test_copilot_decision_label_reserves_user_wording_for_user_denials():
+    assert copilot_log.decision_label("denied-interactively-by-user") == "user denied permission"
+    assert copilot_log.decision_label("denied-by-rules") == "settings denied permission"
+    assert copilot_log.decision_label("approved-for-location") == "permission approved"
+    assert copilot_log.decision_label("pending") == "permission pending"
+
+
 def test_copilot_attribute_permissions_by_timestamp():
     t0 = Turn("first", "", "2026-07-01T22:00:00Z", 0)
     t1 = Turn("second", "", "2026-07-01T22:10:00Z", 1)
