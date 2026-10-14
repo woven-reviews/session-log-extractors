@@ -1,11 +1,11 @@
 {
   "cli_version": "GitHub Copilot CLI 1.0.90-5.",
   "cases": {
-    "baseline": "ddeb882c-ae46-4b4f-b640-c977546efd79",
-    "continued": "4ea7c1bb-d724-4bd5-a22b-6c7a809f8924",
-    "tool_success": "62b36b62-63f2-4209-88a1-69d4a27d67cc",
-    "tool_failure": "0f676e33-b839-4090-93b8-7177c1a3a100",
-    "skill": "b96a2291-79fd-4335-97cf-ff20be727e6f",
-    "image": "3765c7e4-2ac0-43df-8c2d-3dc7a8110441"
+    "baseline": "7e20450a-af9e-45a5-9aac-be9dcf027221",
+    "continued": "d2678089-9245-4ba4-be07-514b007b8018",
+    "tool_success": "5128fab5-b65a-4e92-99c5-aee41c8ad2ba",
+    "tool_failure": "01da5c29-e36a-4532-88bb-902ff28d1825",
+    "skill": "de61af7f-add9-40f0-b9ae-2fc221472eb2",
+    "image": "de9997e0-6069-4282-a256-9bef0be54f7e"
   }
 }
