@@ -103,7 +103,13 @@ def test_main_stages_all_six_native_cases(monkeypatch, tmp_path):
             {"type": "assistant.message", "data": {"content": response}},
         ]
         if name.startswith("tool_"):
-            rows.append({"type": "tool.execution_start", "data": {"toolName": "bash"}})
+            command = "printf TOOL_FIXTURE_MARKER" if name == "tool_success" else "false"
+            rows.extend([
+                {"type": "tool.execution_start", "data": {
+                    "toolCallId": "call-1", "toolName": "bash", "arguments": {"command": command}}},
+                {"type": "tool.execution_complete", "data": {
+                    "toolCallId": "call-1", "result": {"content": response}}},
+            ])
         if name == "skill":
             rows.append({"type": "skill.invoked", "data": {"name": "fixture-skill"}})
         events_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")

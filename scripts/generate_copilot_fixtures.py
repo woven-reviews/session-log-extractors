@@ -143,8 +143,17 @@ def main() -> None:
                 raise RuntimeError(f"{name}: incomplete native event log")
             if name == "continued" and event_types.count("user.message") < 2:
                 raise RuntimeError("continued: resume did not produce a second turn")
-            if name.startswith("tool_") and "tool.execution_start" not in event_types:
-                raise RuntimeError(f"{name}: no native tool execution")
+            if name.startswith("tool_"):
+                command = "printf TOOL_FIXTURE_MARKER" if name == "tool_success" else "false"
+                starts = [record["data"] for record in records
+                          if record.get("type") == "tool.execution_start"]
+                completes = [record["data"] for record in records
+                             if record.get("type") == "tool.execution_complete"]
+                if not any(call.get("toolName") == "bash"
+                           and call.get("arguments", {}).get("command") == command
+                           and any(done.get("toolCallId") == call.get("toolCallId")
+                                   for done in completes) for call in starts):
+                    raise RuntimeError(f"{name}: missing native {command} execution")
             if name == "skill" and not any(
                 record.get("type") == "skill.invoked"
                 and record.get("data", {}).get("name") == "fixture-skill"
@@ -156,15 +165,19 @@ def main() -> None:
                 and record.get("data", {}).get("attachments") for record in records
             ):
                 raise RuntimeError("image: attachment was not recorded")
-            marker = {"baseline": "BASELINE_FIXTURE_MARKER",
-                      "continued": "BLUE-WREN-17",
-                      "tool_success": "TOOL_FIXTURE_MARKER",
+            expected = {"baseline": "BASELINE_FIXTURE_MARKER",
+                        "continued": "BLUE-WREN-17"}.get(name)
+            replies = [record.get("data", {}).get("content", "") for record in records
+                       if record.get("type") == "assistant.message"]
+            if expected and (not replies or expected not in replies[-1]):
+                raise RuntimeError(f"{name}: missing expected reply {expected}")
+            result = {"tool_success": "TOOL_FIXTURE_MARKER",
                       "tool_failure": "exit code 1"}.get(name)
-            if marker and not any(
-                marker in str(record.get("data", {})) for record in records
-                if record.get("type") in ("assistant.message", "tool.execution_complete")
+            if result and not any(
+                result in str(record.get("data", {}).get("result", ""))
+                for record in records if record.get("type") == "tool.execution_complete"
             ):
-                raise RuntimeError(f"{name}: missing expected {marker}")
+                raise RuntimeError(f"{name}: missing native result {result}")
             copy_session(STORE, session_id, db, workspace)
             output = stage / name / "events.jsonl"
             output.write_text(clean_event_lines(lines, workspace), encoding="utf-8")
