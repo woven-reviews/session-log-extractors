@@ -219,13 +219,13 @@ def test_copilot_attribute_permissions_by_timestamp():
             "tool": "a",
             "decision": "approved",
             "feedback": "",
-            "timestamp": "2026-07-01T22:05:00Z",
+            "timestamp": "2026-07-01T21:55:00Z",
         },
         {
             "tool": "b",
             "decision": "denied",
             "feedback": "no",
-            "timestamp": "2026-07-01T22:15:00Z",
+            "timestamp": "2026-07-01T22:05:00Z",
         },
     ]
     attribute_permissions([t0, t1], perms)
@@ -477,6 +477,19 @@ def test_copilot_attribute_tools_by_timestamp():
     copilot_log.attribute_tools([t0, t1], tools)
     assert t0.tool_bullets == []
     assert t1.tool_bullets == ["- view -> a.py"]
+
+
+def test_copilot_attribute_tools_uses_turn_completion_time():
+    # DB turn timestamps mark completion (see the continued fixture), so a call
+    # between two completions belongs to the later turn.
+    t0 = Turn("first", "", "2026-01-01T00:00:05Z", 0)
+    t1 = Turn("second", "", "2026-01-01T00:00:15Z", 1)
+    copilot_log.attribute_tools(
+        [t0, t1],
+        [{"name": "bash", "arguments": {"command": "ls"}, "timestamp": "2026-01-01T00:00:10Z"}],
+    )
+    assert [c["name"] for c in t0.tool_calls] == []
+    assert [c["name"] for c in t1.tool_calls] == ["bash"]
 
 
 def test_copilot_build_events_emits_one_timestamped_event_per_tool_call():

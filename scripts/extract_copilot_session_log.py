@@ -733,22 +733,32 @@ def get_state_tools(session_id: str) -> List[Dict[str, Any]]:
     return _tools_from_events(lines)
 
 
+def _turn_for(turns: List[Turn], ts: Optional[str]) -> Optional[Turn]:
+    """The turn an event at ts belongs to.
+
+    DB turn timestamps mark completion, so that is the first turn ending at or
+    after the event; later events go to the last turn, untimed ones to the first.
+    """
+    if not turns:
+        return None
+    at = _parse_ts(ts)
+    if at is None:
+        return turns[0]
+    for turn in turns:
+        turn_at = _parse_ts(turn.timestamp)
+        if turn_at is not None and at <= turn_at:
+            return turn
+    return turns[-1]
+
+
 def attribute_tools(turns: List[Turn], tools: List[Dict[str, Any]]) -> None:
-    """Fold each tool call under the latest turn at or before its timestamp.
+    """Fold each tool call under the turn it happened in.
 
     Populates the markdown bullet, a structured record for the raw envelope, a
     result note, and any skill evidenced by the call's arguments.
     """
-    parsed = [(_parse_ts(t.timestamp), t) for t in turns]
     for tool in tools:
-        called_at = _parse_ts(tool.get("timestamp"))
-        target: Optional[Turn] = None
-        if called_at is not None:
-            for turn_ts, turn in parsed:
-                if turn_ts is not None and turn_ts <= called_at:
-                    target = turn
-        if target is None and turns:
-            target = turns[0]
+        target = _turn_for(turns, tool.get("timestamp"))
         if target is None:
             continue
 
@@ -775,17 +785,9 @@ def attribute_tools(turns: List[Turn], tools: List[Dict[str, Any]]) -> None:
 
 
 def attribute_skills(turns: List[Turn], skills: List[Dict[str, Any]]) -> None:
-    """Fold each skill invocation under the latest turn at or before its time."""
-    parsed = [(_parse_ts(t.timestamp), t) for t in turns]
+    """Fold each skill invocation under the turn it happened in."""
     for skill in skills:
-        invoked_at = _parse_ts(skill.get("timestamp"))
-        target: Optional[Turn] = None
-        if invoked_at is not None:
-            for turn_ts, turn in parsed:
-                if turn_ts is not None and turn_ts <= invoked_at:
-                    target = turn
-        if target is None and turns:
-            target = turns[0]
+        target = _turn_for(turns, skill.get("timestamp"))
         name = skill.get("name")
         if target is not None and isinstance(name, str):
             path = skill.get("path")
@@ -793,17 +795,9 @@ def attribute_skills(turns: List[Turn], skills: List[Dict[str, Any]]) -> None:
 
 
 def attribute_permissions(turns: List[Turn], perms: List[Dict[str, Any]]) -> None:
-    """Fold each permission decision under the latest turn at or before its time."""
-    parsed = [(_parse_ts(t.timestamp), t) for t in turns]
+    """Fold each permission decision under the turn it happened in."""
     for p in perms:
-        pt = _parse_ts(p.get("timestamp"))
-        target: Optional[Turn] = None
-        if pt is not None:
-            for ts, t in parsed:  # turns are in order; last match wins
-                if ts is not None and ts <= pt:
-                    target = t
-        if target is None and turns:
-            target = turns[0]
+        target = _turn_for(turns, p.get("timestamp"))
         if target is not None:
             target.permission_decisions.append(p)
 
@@ -940,13 +934,7 @@ def _build_turn_objects(
             or isinstance(data_url, str) and _DATA_IMAGE_URL.match(data_url)
         ):
             continue
-        # DB turn timestamps mark completion; use the first turn ending after the attachment.
-        target = built[-1]
-        for turn in built:
-            turn_at = _parse_ts(turn.timestamp)
-            if turn_at is not None and attached_at <= turn_at:
-                target = turn
-                break
+        target = _turn_for(built, attachment.get("timestamp"))
         if any(ref["name"] == name for ref in target.image_refs):
             continue
         ref = {"name": name}
