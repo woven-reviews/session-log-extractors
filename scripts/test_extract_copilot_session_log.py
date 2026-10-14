@@ -48,6 +48,16 @@ def _native_db():
     return get_db_connection(FIXTURES / "session-store.db")
 
 
+def _install_native_events(case: str) -> None:
+    lines = _native_lines(case)
+    if case == "image":
+        image_path = copilot_log.COPILOT_STATE_ROOT / "pixel.png"
+        image_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(FIXTURES / "pixel.png", image_path)
+        lines = [line.replace("/workspace/pixel.png", str(image_path)) for line in lines]
+    _write_events_log(copilot_log.COPILOT_STATE_ROOT, NATIVE_IDS[case], lines)
+
+
 def _hand_lines(name: str) -> list[str]:
     return (FIXTURES / "hand-authored" / name).read_text(encoding="utf-8").splitlines()
 
@@ -224,6 +234,7 @@ def test_copilot_attribute_permissions_by_timestamp():
 
 
 def test_copilot_db_operations():
+    _install_native_events("continued")
     with _native_db() as conn:
         session = get_session_by_id(conn, NATIVE_IDS["continued"])
         assert session is not None
@@ -238,6 +249,19 @@ def test_copilot_db_operations():
         assert "BLUE-WREN-17" in markdown
         assert "Turn 1 -" in markdown
         assert "Turn 2 -" in markdown
+
+def test_copilot_native_fixture_ids_match_db_and_events():
+    with _native_db() as conn:
+        assert {row["id"] for row in conn.execute("SELECT id FROM sessions")} == set(NATIVE_IDS.values())
+    with _native_db() as conn:
+        for case, session_id in NATIVE_IDS.items():
+            events = [json.loads(line) for line in _native_lines(case)]
+            assert events[0]["type"] == "session.start"
+            assert events[0]["data"]["sessionId"] == session_id
+            assert sum(event["type"] == "user.message" for event in events) == len(
+                get_session_turns(conn, session_id)
+            )
+
 
 def test_copilot_prefix_matching():
     session_id = NATIVE_IDS["baseline"]
@@ -283,30 +307,22 @@ def test_copilot_image_attachment_is_dumped_to_marker_path(tmp_path, monkeypatch
     finally:
         db_path.unlink()
 
-def test_copilot_image_attachment_from_state_events_is_dumped_to_marker_path(tmp_path, monkeypatch):
+def test_copilot_native_image_attachment_is_dumped_and_inlined(tmp_path, monkeypatch):
     monkeypatch.setattr(copilot_log, "dump_images",
                         partial(copilot_log.dump_images, dump_dir=tmp_path / "images"))
-    img_path = tmp_path / "pixel.png"
-    shutil.copyfile(FIXTURES / "pixel.png", img_path)
-    state_root = tmp_path / "state-root"
-    monkeypatch.setattr(copilot_log, "COPILOT_STATE_ROOT", state_root)
-    lines = [line.replace("/workspace/pixel.png", str(img_path)) for line in _native_lines("image")]
-    _write_events_log(state_root, "img-session-3", lines)
-    db_path = _make_test_db(
-        session_id="img-session-3",
-        turns=[{"turn_index": 0, "user_message": "[image: pixel.png] please summarize",
-                "assistant_response": "Done", "timestamp": "2026-01-01T12:00:05Z"}],
-    )
-    try:
-        with get_db_connection(db_path) as conn:
-            markdown = render_session(conn, get_session_by_id(conn, "img-session-3"))
-        marker = re.search(r"\[Image dumped to `([^`]+)` — description pending\]", markdown)
-        assert marker is not None
-        dumped = Path(marker.group(1))
-        assert dumped.parent == tmp_path / "images"
-        assert dumped.exists()
-    finally:
-        db_path.unlink()
+    _install_native_events("image")
+    with _native_db() as conn:
+        session = get_session_by_id(conn, NATIVE_IDS["image"])
+        markdown = render_session(conn, session, raw_output=tmp_path)
+    marker = re.search(r"\[Image dumped to `([^`]+)` — description pending\]", markdown)
+    assert marker is not None
+    dumped = Path(marker.group(1))
+    assert dumped.parent == tmp_path / "images"
+    assert dumped.read_bytes() == PNG
+    envelope = json.loads(next(tmp_path.glob("copilot_session_log_raw_*.json")).read_text())
+    user = next(event for event in envelope["events"] if event["role"] == "user")
+    assert base64.b64decode(user["images"][0]["data"]) == PNG
+
 
 def _copilot_turn_with_image(tmp_path):
     img = tmp_path / "a.png"
@@ -368,6 +384,45 @@ def test_copilot_tools_from_events_join_start_and_complete():
     assert calls[0]["arguments"]["command"] == "printf TOOL_FIXTURE_MARKER"
     assert calls[0]["success"] is True
     assert "TOOL_FIXTURE_MARKER" in calls[0]["result"]
+
+def test_copilot_native_tool_success_renders_markdown_and_raw_call(tmp_path):
+    _install_native_events("tool_success")
+    with _native_db() as conn:
+        session = get_session_by_id(conn, NATIVE_IDS["tool_success"])
+        markdown = render_session(conn, session, raw_output=tmp_path)
+    assert "- bash -> printf TOOL_FIXTURE_MARKER" in markdown
+    assert "bash: TOOL_FIXTURE_MARKER" in markdown
+    envelope = json.loads(next(tmp_path.glob("copilot_session_log_raw_*.json")).read_text())
+    calls = [call for event in envelope["events"] for call in event.get("tool_calls", [])]
+    assert len(calls) == 1
+    assert calls[0]["name"] == "bash"
+    assert calls[0]["input"]["command"] == "printf TOOL_FIXTURE_MARKER"
+    assert "TOOL_FIXTURE_MARKER" in calls[0]["result"]
+
+
+def test_copilot_native_tool_failure_keeps_shell_exit_code(tmp_path):
+    _install_native_events("tool_failure")
+    with _native_db() as conn:
+        session = get_session_by_id(conn, NATIVE_IDS["tool_failure"])
+        markdown = render_session(conn, session, raw_output=tmp_path)
+    assert "- bash -> false" in markdown
+    assert "exit code 1" in markdown
+    assert copilot_log.get_state_tools(NATIVE_IDS["tool_failure"])[0]["success"] is True
+    envelope = json.loads(next(tmp_path.glob("copilot_session_log_raw_*.json")).read_text())
+    calls = [call for event in envelope["events"] for call in event.get("tool_calls", [])]
+    assert len(calls) == 1
+    assert calls[0]["input"]["command"] == "false"
+    assert "exit code 1" in calls[0]["result"]
+
+
+def test_copilot_native_skill_is_rendered_on_its_turn():
+    _install_native_events("skill")
+    with _native_db() as conn:
+        session = get_session_by_id(conn, NATIVE_IDS["skill"])
+        markdown = render_session(conn, session)
+    assert "SKILL_FIXTURE_MARKER" in markdown
+    assert "_Skill used:_ **fixture-skill**" in markdown
+
 
 def test_copilot_attribute_tools_populates_bullet_note_and_envelope():
     turn = Turn("find audits", "", "2026-07-01T22:00:00Z", 0)
@@ -810,6 +865,35 @@ def test_copilot_build_turn_objects_ignores_blank_image_token():
     assert turns[0].image_refs == []
 
 
+def test_copilot_timestamped_attachment_belongs_to_second_turn():
+    turns = copilot_log._build_turn_objects(
+        [
+            {"user_message": "first", "timestamp": "2026-01-01T00:00:05Z"},
+            {"user_message": "second", "timestamp": "2026-01-01T00:00:15Z"},
+        ],
+        [],
+        [
+            {"display_name": "later.png", "path": "/tmp/later.png",
+             "timestamp": "2026-01-01T00:00:10Z"},
+            {"display_name": "notes.png", "path": "/tmp/notes.png",
+             "type": "text/plain", "timestamp": "2026-01-01T00:00:10Z"},
+        ],
+    )
+    assert turns[0].image_refs == []
+    assert turns[1].image_refs == [{"name": "later.png", "path": "/tmp/later.png"}]
+
+
+def test_copilot_timestamped_attachment_does_not_duplicate_image_token():
+    turns = copilot_log._build_turn_objects(
+        [{"user_message": "[image: pixel.png]", "timestamp": "2026-01-01T00:00:05Z"}],
+        [],
+        [{"display_name": "pixel.png", "path": "/tmp/pixel.png",
+          "timestamp": "2026-01-01T00:00:01Z"}],
+    )
+    assert turns[0].image_refs == [{"name": "pixel.png", "path": "/tmp/pixel.png",
+                                     "type": ""}]
+
+
 # -- raw envelope writing and image byte resolution --------------------------
 
 
@@ -1032,6 +1116,10 @@ def test_copilot_extract_all_reports_error_when_no_sessions(tmp_path, capsys):
     assert "no Copilot sessions" in capsys.readouterr().err
 
 def test_copilot_extract_all_writes_one_file_per_session(tmp_path, monkeypatch, capsys):
+    for case in NATIVE_IDS:
+        _install_native_events(case)
+    monkeypatch.setattr(copilot_log, "dump_images",
+                        partial(copilot_log.dump_images, dump_dir=tmp_path / "images"))
     db_path = tmp_path / "sessions.db"
     shutil.copyfile(FIXTURES / "session-store.db", db_path)
     with sqlite3.connect(db_path) as conn:
@@ -1043,6 +1131,16 @@ def test_copilot_extract_all_writes_one_file_per_session(tmp_path, monkeypatch, 
     assert rc == 0
     written = sorted(output.glob("copilot_session_log_*.md"))
     assert len(written) == len(NATIVE_IDS)
+    outputs = {
+        case: next(output.glob(f"*_{session_id[:8]}.md")).read_text()
+        for case, session_id in NATIVE_IDS.items()
+    }
+    assert "BASELINE_FIXTURE_MARKER" in outputs["baseline"]
+    assert "BLUE-WREN-17" in outputs["continued"]
+    assert "- bash -> printf TOOL_FIXTURE_MARKER" in outputs["tool_success"]
+    assert "exit code 1" in outputs["tool_failure"]
+    assert "_Skill used:_ **fixture-skill**" in outputs["skill"]
+    assert "Image dumped to" in outputs["image"]
     assert f"done: {len(NATIVE_IDS)}/{len(NATIVE_IDS)} session(s) written" in capsys.readouterr().err
 
 def test_copilot_extract_all_skips_session_that_fails_to_render(

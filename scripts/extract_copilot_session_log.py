@@ -524,6 +524,7 @@ def get_state_attachments(session_id: str) -> List[Dict[str, Any]]:
                 "display_name": display_name if isinstance(display_name, str) else "",
                 "path": path_value if isinstance(path_value, str) else "",
                 "type": mime_type if isinstance(mime_type, str) else "",
+                "timestamp": obj.get("timestamp"),
             }
             if isinstance(data_url, str):
                 rec["data_url"] = data_url
@@ -920,18 +921,49 @@ def _build_turn_objects(
             turn.add_tool(str(tool_name), str(file_path))
 
         built.append(turn)
+
+    for attachment in attachments:
+        attached_at = _parse_ts(attachment.get("timestamp"))
+        if attached_at is None or not built:
+            continue
+        path = attachment.get("path")
+        name = attachment.get("display_name")
+        if not isinstance(name, str) or not name:
+            name = Path(path).name if isinstance(path, str) else ""
+        media_type = attachment.get("type") or attachment.get("media_type")
+        data_url = attachment.get("data_url")
+        if isinstance(media_type, str) and media_type and not media_type.startswith("image/"):
+            continue
+        if not name or not (
+            isinstance(media_type, str) and media_type.startswith("image/")
+            or isinstance(path, str) and media_type_for_ext(Path(path).suffix)
+            or isinstance(data_url, str) and _DATA_IMAGE_URL.match(data_url)
+        ):
+            continue
+        # DB turn timestamps mark completion; use the first turn ending after the attachment.
+        target = built[-1]
+        for turn in built:
+            turn_at = _parse_ts(turn.timestamp)
+            if turn_at is not None and attached_at <= turn_at:
+                target = turn
+                break
+        if any(ref["name"] == name for ref in target.image_refs):
+            continue
+        ref = {"name": name}
+        for key in ("path", "type", "data_url", "data", "media_type"):
+            if attachment.get(key):
+                ref[key] = attachment[key]
+        if len(ref) > 1:
+            target.image_refs.append(ref)
     return built
 
 
 def envelope_images(refs: List[Dict[str, str]]) -> List[Dict[str, Any]]:
     """Resolve Copilot image refs to inline base64 entries.
 
-    Copilot records an image as a ``[image: name]`` token in the message text and
-    keeps the payload elsewhere — the SQLite ``attachments`` table or the
-    per-session events log — so a ref only resolves if that correlation found
-    something readable. Refs that do not resolve are recorded as unavailable,
-    which for Copilot is common enough to matter: an inline token with no
-    matching attachment record is exactly the case the markdown already flags.
+    Copilot stores image payloads outside DB turns. Image tokens and timestamped
+    event attachments both become refs; missing sources remain visible as
+    unavailable images.
     """
     images: List[Dict[str, Any]] = []
     for ref in refs:
