@@ -1,2 +1,0 @@
-{"type": "session_meta", "timestamp": "2026-01-01T00:00:00Z", "payload": {"id": "fixture-session", "cwd": "/workspace"}}
-{"type": "event_msg", "timestamp": "2026-01-01T00:00:01Z", "payload": {"type": "user_message", "message": "Fixture session"}}

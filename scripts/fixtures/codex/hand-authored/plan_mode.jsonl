@@ -1,8 +1,0 @@
-{"type": "event_msg", "timestamp": "2026-08-05T10:00:00Z", "payload": {"type": "task_started", "collaboration_mode_kind": "plan"}}
-{"type": "turn_context", "timestamp": "2026-08-05T10:00:01Z", "payload": {"collaboration_mode": {"mode": "plan"}}}
-{"type": "event_msg", "timestamp": "2026-01-01T00:00:00Z", "payload": {"type": "user_message", "message": "Plan the change"}}
-{"type": "response_item", "payload": {"type": "function_call", "name": "functions.update_plan", "call_id": "plan-1", "arguments": "{\"explanation\": \"Start with the schema.\", \"plan\": [{\"step\": \"Inspect schema\", \"status\": \"completed\"}, {\"step\": \"Design change\", \"status\": \"in_progress\"}]}"}}
-{"type": "response_item", "payload": {"type": "function_call_output", "call_id": "plan-1", "output": "Plan updated"}}
-{"type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Here is the plan."}]}}
-{"type": "event_msg", "payload": {"type": "task_started", "collaboration_mode_kind": "default"}}
-{"type": "event_msg", "timestamp": "2026-01-01T00:00:00Z", "payload": {"type": "user_message", "message": "Proceed with the change"}}

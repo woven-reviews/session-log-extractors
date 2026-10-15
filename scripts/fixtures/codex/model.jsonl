@@ -1,0 +1,9 @@
+{"timestamp": "2026-10-15T17:31:55.510Z", "type": "session_meta", "payload": {"id": "01a1409e-dcb2-7691-a481-7e273052e95e", "cwd": "/workspace"}}
+{"timestamp": "2026-10-15T17:31:55.511Z", "type": "event_msg", "payload": {"type": "task_started", "collaboration_mode_kind": "default"}}
+{"timestamp": "2026-10-15T17:31:58.498Z", "type": "turn_context", "payload": {"cwd": "/workspace", "model": "gpt-6.1-sol", "collaboration_mode": {"mode": "default", "settings": {"model": "gpt-6.1-sol", "reasoning_effort": null, "developer_instructions": null}}}}
+{"timestamp": "2026-10-15T17:31:58.500Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Reply with FIRST_MODEL_FIXTURE_MARKER."}]}}
+{"timestamp": "2026-10-15T17:32:00.335Z", "type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "FIRST_MODEL_FIXTURE_MARKER"}]}}
+{"timestamp": "2026-10-15T17:32:01.183Z", "type": "event_msg", "payload": {"type": "task_started", "collaboration_mode_kind": "default"}}
+{"timestamp": "2026-10-15T17:32:02.865Z", "type": "turn_context", "payload": {"cwd": "/workspace", "model": "gpt-6-luna", "collaboration_mode": {"mode": "default", "settings": {"model": "gpt-6-luna", "reasoning_effort": "medium", "developer_instructions": null}}}}
+{"timestamp": "2026-10-15T17:32:03.260Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Reply with SECOND_MODEL_FIXTURE_MARKER."}]}}
+{"timestamp": "2026-10-15T17:32:04.491Z", "type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "SECOND_MODEL_FIXTURE_MARKER"}]}}
