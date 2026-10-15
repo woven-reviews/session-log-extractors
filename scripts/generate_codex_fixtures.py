@@ -24,7 +24,8 @@ PROMPTS = {
         "Then use the shell tool to print fixture.txt 30 times."
     ),
     "slash": "/review fixture",
-    "image": "Describe the attached one-pixel image briefly.",
+    "image": "Describe the attached 64-by-64 test image briefly.",
+    "model": "Reply with FIRST_MODEL_FIXTURE_MARKER.",
 }
 
 
@@ -108,8 +109,16 @@ def validate(name: str, rows: list[dict]) -> None:
         if "/review fixture" not in json.dumps(payloads):
             raise RuntimeError("slash: missing user command")
     elif name == "image":
-        if "/workspace/pixel.png" not in json.dumps(payloads):
-            raise RuntimeError("image: missing native image path")
+        if not any(
+            block.get("type") == "input_image"
+            for payload in payloads for block in payload.get("content", [])
+            if isinstance(block, dict)
+        ):
+            raise RuntimeError("image: missing native image payload")
+    elif name == "model":
+        models = {payload.get("model") for payload in payloads if "model" in payload}
+        if len(models) < 2:
+            raise RuntimeError("model: resume did not switch models")
 
 
 def capture(name: str, prompt: str, workspace: Path, image: Path | None = None) -> list[dict]:
@@ -117,6 +126,8 @@ def capture(name: str, prompt: str, workspace: Path, image: Path | None = None) 
         "codex", "exec", "-C", str(workspace), "--skip-git-repo-check",
         "--ignore-user-config", "--sandbox", "workspace-write", "--json",
     ]
+    if name == "model":
+        args += ["-m", "gpt-6.1-sol"]
     if image:
         args += ["-i", str(image), "--"]
     args.append(prompt)
@@ -129,6 +140,15 @@ def capture(name: str, prompt: str, workspace: Path, image: Path | None = None) 
                if event.get("type") == "thread.started"]
     if len(started) != 1:
         raise RuntimeError(f"{name}: expected one Codex thread")
+    if name == "model":
+        resumed = subprocess.run(
+            ["codex", "-C", str(workspace), "-s", "workspace-write", "exec",
+             "--skip-git-repo-check", "resume", "-m", "gpt-6-luna", "--json",
+             started[0], "Reply with SECOND_MODEL_FIXTURE_MARKER."],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True,
+        )
+        if resumed.returncode:
+            raise RuntimeError(f"model: Codex resume exited {resumed.returncode}: {resumed.stderr.strip()}")
     matches = list(SESSIONS.rglob(f"*{started[0]}.jsonl"))
     if len(matches) != 1:
         raise RuntimeError(f"{name}: expected one native transcript, found {len(matches)}")
@@ -146,7 +166,7 @@ def main() -> None:
             tempfile.TemporaryDirectory(prefix="codex-fixture-stage-", dir=ROOT.parent) as staging:
         workspace = Path(temporary)
         stage = Path(staging)
-        image = ROOT.parent / "copilot" / "pixel.png"
+        image = ROOT / "pixel.png"
         for name, prompt in PROMPTS.items():
             work = workspace / name
             work.mkdir()

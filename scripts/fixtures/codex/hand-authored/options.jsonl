@@ -1,3 +1,0 @@
-{"type": "event_msg", "timestamp": "2026-01-01T00:00:00Z", "payload": {"type": "user_message", "message": "Need help\nnow"}}
-{"type": "response_item", "payload": {"type": "function_call", "name": "functions.request_user_input", "call_id": "options-1", "arguments": "{\"questions\": [{\"id\": \"team\", \"header\": \"Team\", \"question\": \"Pick a team\", \"options\": [{\"label\": \"QUAL\", \"description\": \"qualification\"}, {\"label\": \"SE\", \"description\": \"solutions\"}]}]}"}}
-{"type": "response_item", "payload": {"type": "function_call_output", "call_id": "options-1", "output": "{\"answers\": {\"team\": \"QUAL\"}}"}}

@@ -73,6 +73,19 @@ _PNG_B64 = (
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "codex"
 
 
+QUESTIONS = [
+    {
+        "id": "team",
+        "header": "Team",
+        "question": "Pick a team",
+        "options": [
+            {"label": "QUAL", "description": "qualification"},
+            {"label": "SE", "description": "solutions"},
+        ],
+    }
+]
+
+
 def test_codex_structured_skill_call_is_recorded_and_rendered():
     entries = [
         {
@@ -142,7 +155,6 @@ def test_codex_initial_response_item_user_message_is_exported_once():
 
 
 def test_codex_slash_command_is_recorded_and_rendered_like_claude():
-
     entries = load_entries(FIXTURES / "slash.jsonl")
     turns, files_changed = build_turns(entries)
     assert len(turns) == 1
@@ -155,8 +167,23 @@ def test_codex_slash_command_is_recorded_and_rendered_like_claude():
 
 
 def test_codex_tagged_slash_command_is_recorded():
+    entries = [
+        {
+            "type": "event_msg",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "payload": {
+                "type": "user_message",
+                "message": (
+                    "<command-name>/review</command-name>\n"
+                    "<command-message>review</command-message>\n"
+                    "<command-args>frontend src</command-args>"
+                ),
+            },
+        }
+    ]
 
-    turns, _ = build_turns(load_entries(FIXTURES / "hand-authored/slash_tagged.jsonl"))
+    turns, _ = build_turns(entries)
+
     assert turns[0].command == "/review"
     assert turns[0].command_args == "frontend src"
 
@@ -197,31 +224,123 @@ def test_codex_permission_denial_ignores_normal_text():
 
 
 def test_codex_denial_recorded_and_rendered_without_prose():
-
-    entries = load_entries(FIXTURES / "hand-authored/permission_denial.jsonl")
+    entries = [
+        {
+            "type": "event_msg",
+            "timestamp": "2026-07-17T10:00:00Z",
+            "payload": {"type": "user_message", "message": "do the thing"},
+        },
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "external_agent",
+                "call_id": "c1",
+                "arguments": "{}",
+            },
+        },
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": (
+                            "[external_agent_tool_result: error]\nThe user doesn't "
+                            "want to proceed with this tool use. The tool use was "
+                            "rejected. The user said:\nnot like that"
+                        ),
+                    }
+                ],
+            },
+        },
+    ]
     turns, files_changed = build_turns(entries)
     assert len(turns) == 1
     assert turns[0].permission_denials == [
         {"tool": "external_agent", "message": "not like that"}
     ]
+    # The canned denial text must not leak into assistant prose.
     assert turns[0].assistant_text_blocks == []
-    md = render(turns, files_changed, "project", first_timestamp(entries))
+
+    md = render(turns, files_changed, "project", "2026-01-01T00:00:00Z")
     assert "_Denied permission:_ **external_agent**" in md
     assert "> not like that" in md
+    assert '_user denied permission:_ external_agent -> "not like that"' in md
 
 
 def test_codex_plan_mode_turn_and_structured_plan_are_rendered():
+    entries = [
+        {
+            "type": "event_msg",
+            "timestamp": "2026-08-05T10:00:00Z",
+            "payload": {
+                "type": "task_started",
+                "collaboration_mode_kind": "plan",
+            },
+        },
+        {
+            "type": "turn_context",
+            "timestamp": "2026-08-05T10:00:01Z",
+            "payload": {"collaboration_mode": {"mode": "plan"}},
+        },
+        {
+            "type": "event_msg",
+            "timestamp": "2026-08-05T10:00:02Z",
+            "payload": {"type": "user_message", "message": "Plan the change"},
+        },
+        {
+            "type": "response_item",
+            "timestamp": "2026-08-05T10:00:03Z",
+            "payload": {
+                "type": "function_call",
+                "name": "functions.update_plan",
+                "call_id": "plan-1",
+                "arguments": json.dumps(
+                    {
+                        "explanation": "Start with the schema.",
+                        "plan": [
+                            {"step": "Inspect schema", "status": "completed"},
+                            {"step": "Design change", "status": "in_progress"},
+                        ],
+                    }
+                ),
+            },
+        },
+        {
+            "type": "response_item",
+            "timestamp": "2026-08-05T10:00:04Z",
+            "payload": {
+                "type": "function_call_output",
+                "call_id": "plan-1",
+                "output": "Plan updated",
+            },
+        },
+        {
+            "type": "response_item",
+            "timestamp": "2026-08-05T10:00:05Z",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "Here is the plan."}],
+            },
+        },
+    ]
 
-    entries = load_entries(FIXTURES / "hand-authored/plan_mode.jsonl")
     turns, files_changed = build_turns(entries)
     assert turns[0].collaboration_mode == "plan"
     assert turns[0].tool_bullets == []
+    assert turns[0].result_notes == []
     assert turns[0].plan_updates[0]["steps"][1]["step"] == "Design change"
-    assert turns[1].collaboration_mode == "default"
-    md = render(turns, files_changed, "project", first_timestamp(entries))
+
+    md = render(turns, files_changed, "project", "2026-08-05T10:00:00Z")
     assert "_Codex Plan mode turn._" in md
-    assert "Inspect schema" in md
-    assert "Design change" in md
+    assert "**Mode:** Plan" in md
+    assert "**Assistant updated the Plan mode plan:**" in md
+    assert "- [x] Inspect schema _(completed)_" in md
+    assert "- [ ] Design change _(in_progress)_" in md
     assert "Here is the plan." in md
 
 
@@ -267,19 +386,58 @@ def test_codex_noise_cleaning():
 
 
 def test_codex_summary_options_and_shell_command():
+    entries = [
+        {
+            "type": "event_msg",
+            "timestamp": "2026-01-01T00:00:01Z",
+            "payload": {"type": "user_message", "message": "Need help\nnow"},
+        },
+        {
+            "type": "response_item",
+            "timestamp": "2026-01-01T00:00:02Z",
+            "payload": {
+                "type": "function_call",
+                "name": "functions.request_user_input",
+                "call_id": "call-1",
+                "arguments": json.dumps({"questions": QUESTIONS}),
+            },
+        },
+        {
+            "type": "response_item",
+            "timestamp": "2026-01-01T00:00:03Z",
+            "payload": {
+                "type": "function_call_output",
+                "call_id": "call-1",
+                "output": json.dumps({"answers": {"team": "QUAL"}}),
+            },
+        },
+        {
+            "type": "event_msg",
+            "timestamp": "2026-01-01T00:00:04Z",
+            "payload": {
+                "type": "user_message",
+                "message": "<bash-stdout>ignored</bash-stdout>",
+            },
+        },
+        {
+            "type": "event_msg",
+            "timestamp": "2026-01-01T00:00:05Z",
+            "payload": {
+                "type": "user_message",
+                "message": "<bash-input>ls -la</bash-input>",
+            },
+        },
+    ]
 
-    entries = load_entries(FIXTURES / "hand-authored/options.jsonl")
-    entries.append({
-        "type": "event_msg", "payload": {
-            "type": "user_message", "message": "<bash-input>ls -la</bash-input>"
-        }
-    })
     turns, files_changed = build_turns(entries)
     assert files_changed == []
     assert len(turns) == 2
     assert turns[0].option_qas[0]["chosen_labels"] == ["QUAL"]
     assert turns[1].shell_command == "ls -la"
-    md = render(turns, files_changed, "project", first_timestamp(entries))
+
+    md = render(turns, files_changed, "project", "2026-01-01T00:00:00Z")
+    assert md.index("## Summary - user inputs") < md.index("# Full turn-by-turn detail")
+    assert "> Need help" in md
     assert "- [x] **QUAL**" in md
     assert "```sh\nls -la\n```" in md
 
@@ -316,15 +474,14 @@ def test_codex_dumps_local_images_from_user_event():
 
 
 def test_codex_dumps_base64_image_from_response_item_user_message():
-
-    entries = load_entries(FIXTURES / "hand-authored/images.jsonl")[:2]
+    entries = load_entries(FIXTURES / "image.jsonl")
     with tempfile.TemporaryDirectory() as tmp_name:
         turns, _ = build_turns(entries)
         written = dump_images(turns, "sess123", dump_dir=Path(tmp_name))
         assert len(turns) == 1
         assert len(written) == 1
         assert written[0].name == "sess123_turn1_img1.png"
-        assert written[0].read_bytes() == (FIXTURES.parent / "copilot/pixel.png").read_bytes()
+        assert written[0].read_bytes() == (FIXTURES / "pixel.png").read_bytes()
         assert "description pending" in turns[0].user_text
 
 
@@ -337,10 +494,18 @@ def _write_jsonl(path: Path, entries):
 
 
 def _session_entries(session_id: str, cwd: Path, message: str):
-    entries = load_entries(FIXTURES / "hand-authored/session.jsonl")
-    entries[0]["payload"].update(id=session_id, cwd=str(cwd))
-    entries[1]["payload"]["message"] = message
-    return entries
+    return [
+        {
+            "type": "session_meta",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "payload": {"id": session_id, "cwd": str(cwd)},
+        },
+        {
+            "type": "event_msg",
+            "timestamp": "2026-01-01T00:00:01Z",
+            "payload": {"type": "user_message", "message": message},
+        },
+    ]
 
 
 def test_codex_all_extracts_matching_sessions_to_unique_files():
@@ -472,30 +637,78 @@ def test_codex_strict_requires_exact_cwd():
         assert written == ["codex_session_log_session-one.md"]
 
 
+def _codex_entries(image_path, missing_path="/gone/missing.png"):
+    return [
+        {"type": "session_meta", "payload": {"id": "sess-1", "cwd": "/work/app"}},
+        {
+            "type": "event_msg",
+            "timestamp": "2026-08-01T10:00:00Z",
+            "payload": {
+                "type": "user_message",
+                "message": "here is the mock",
+                "images": [str(image_path), missing_path],
+            },
+        },
+        {
+            "type": "response_item",
+            "timestamp": "2026-08-01T10:00:02Z",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "On it."}],
+            },
+        },
+        {
+            "type": "response_item",
+            "timestamp": "2026-08-01T10:00:03Z",
+            "payload": {
+                "type": "function_call",
+                "name": "shell",
+                "call_id": "c1",
+                "arguments": json.dumps({"command": "ls -la"}),
+            },
+        },
+        {
+            "type": "response_item",
+            "timestamp": "2026-08-01T10:00:04Z",
+            "payload": {
+                "type": "function_call_output",
+                "call_id": "c1",
+                "output": "A" * 9000,
+            },
+        },
+    ]
+
+
+def _png_on_disk():
+    path = Path(tempfile.mkdtemp()) / "shot.png"
+    path.write_bytes(base64.b64decode(_PNG_B64))
+    return path
+
+
 def test_build_events_keeps_local_and_unresolvable_images():
-    events = build_events(load_entries(FIXTURES / "hand-authored/images.jsonl"))
-    assert events[0]["role"] == "user"
-    assert base64.b64decode(events[0]["images"][0]["data"]) == (
-        FIXTURES.parent / "copilot/pixel.png"
-    ).read_bytes()
-    assert events[0]["images"][0]["media_type"] == "image/png"
-    assert events[1]["images"][0] == {
-        "unavailable": True, "ref": "/missing/pixel.png"
-    }
+    # Codex keeps images out of band, so the envelope is where they become
+    # portable.
+    img = _png_on_disk()
+    user = build_events(_codex_entries(img))[0]
+    assert user["role"] == "user"
+    assert base64.b64decode(user["images"][0]["data"]) == base64.b64decode(_PNG_B64)
+    assert user["images"][0]["media_type"] == "image/png"
+    # A missing screenshot must remain distinguishable from no screenshot.
+    assert user["images"][1] == {"unavailable": True, "ref": "/gone/missing.png"}
 
 
 def test_build_events_attaches_output_to_its_function_call():
-    entries = load_entries(FIXTURES / "hand-authored/tool_patch_large.jsonl")
-    events = build_events(entries, tool_result_max_bytes=100)
-    call = next(c for e in events for c in e.get("tool_calls", [])
-                if c["name"] == "exec_command")
-    assert call["input"] == {"cmd": "cat fixture.txt"}
-    assert call["result_bytes"] == 630
+    events = build_events(_codex_entries(_png_on_disk()), tool_result_max_bytes=100)
+    call = next(c for e in events for c in e.get("tool_calls", []))
+    assert call["name"] == "shell"
+    assert call["input"] == {"command": "ls -la"}
+    assert call["result_bytes"] == 9000
     assert call["result_truncated"] is True
 
 
 def test_build_events_does_not_disturb_the_markdown_turns():
-    entries = load_entries(FIXTURES / "hand-authored/tool_patch_large.jsonl")
+    entries = _codex_entries(_png_on_disk())
     before = [t.user_text for t in build_turns(entries)[0]]
     build_events(entries)
     assert [t.user_text for t in build_turns(entries)[0]] == before
@@ -559,9 +772,20 @@ def test_newest_returns_none_for_empty_and_picks_max_mtime():
 
 
 def test_load_entries_skips_blank_and_malformed_lines():
-    entries = load_entries(FIXTURES / "hand-authored/malformed.jsonl")
-    assert len(entries) == 1
-    assert entries[0]["payload"]["message"] == "valid turn"
+    with tempfile.TemporaryDirectory() as tmp_name:
+        path = Path(tmp_name) / "log.jsonl"
+        path.write_text(
+            "\n".join(
+                [
+                    "",
+                    "not json",
+                    json.dumps({"type": "a"}),
+                    "[1, 2]",
+                ]
+            )
+        )
+        entries = load_entries(path)
+        assert entries == [{"type": "a"}]
 
 
 def test_load_entries_warns_once_past_five_bad_lines():
@@ -1339,7 +1563,7 @@ def test_first_timestamp_empty_entries_returns_none():
 
 
 def test_session_models_dedupes_and_ignores_missing():
-    entries = load_entries(FIXTURES / "hand-authored/model_switch.jsonl")
+    entries = load_entries(FIXTURES / "model.jsonl")
     entries += [
         {"type": "turn_context", "payload": {"model": "gpt-6-luna"}},
         {"type": "turn_context", "payload": {}},

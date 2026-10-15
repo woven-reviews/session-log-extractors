@@ -1,26 +1,22 @@
 # Codex fixture provenance
 
-These fixtures cover the ten shapes recorded in [QUAL-2400](https://linear.app/andela/issue/QUAL-2400/codex-test-coverage). Native logs were captured on 2026-10-15 with Codex CLI 0.162.1 through `codex exec --json --ignore-user-config`. The committed tests read only files here; no Codex login or local session directory is required.
+These native fixtures cover the headless-generatable portions of the ten shapes recorded in [QUAL-2400](https://linear.app/andela/issue/QUAL-2400/codex-test-coverage). Captured on 2026-10-15 with Codex CLI 0.162.1. There are **no hand-authored JSONL fixtures**. Tests read committed files and require no local Codex login or session directory.
 
-## Regeneration
+## Regenerate
 
-Run `python3 scripts/generate_codex_fixtures.py` from the repository root with a logged-in Codex CLI. It makes model calls and replaces the three native JSONL files only after all captures succeed. It creates separate temporary workspaces, locates each new transcript by the CLI's thread ID, retains extractor-relevant native records, removes startup instructions and unrelated tool output, replaces workspace and home paths, and rejects remaining private paths. Session IDs and timestamps vary. Review the diff and all captured content before committing. The one-pixel input comes from the already committed `scripts/fixtures/copilot/pixel.png`.
+Run `python3 scripts/generate_codex_fixtures.py` from the repository root with a logged-in `codex` CLI. It makes model calls. Each case runs in a temporary workspace with `codex exec --json --ignore-user-config`. The model case resumes its first thread under `gpt-6-luna`. The image case attaches `pixel.png`, a 64×64 synthetic test asset enlarged from the existing one-pixel Copilot fixture; the 1×1 source was too small for this Codex CLI to process. The script finds only the new thread IDs, retains relevant native records, strips startup instructions and unrelated tool output, redacts home/workspace paths, checks each capture's shape, and stages all outputs before replacement. Session IDs and timestamps vary on regeneration. Review the diff before committing.
 
-The native files are `slash.jsonl`, `tool_patch_large.jsonl`, and `image.jsonl`. They show what the current CLI actually writes. In 0.162.1, headless tools are `custom_tool_call` records and patches appear as `FileChange` items; the extractor's audited legacy branches expect `function_call` and `patch_apply_end`. The image attempt logged a path and “image content omitted because it could not be processed,” so it is evidence of the headless limit, not a successful image payload.
+| QUAL-2400 shape | Classification and evidence |
+| --- | --- |
+| 1. Slash commands | **Headless-generatable:** bare `/review fixture` in `slash.jsonl`. **Fixture-only:** the interactive `<command-name>` wrapper cannot be emitted by `codex exec`; its narrow parser test remains inline. |
+| 2. Plan mode | **Fixture-only:** headless exec has no Plan-to-Default UI transition or structured `update_plan` exchange. Existing inline test covers it. |
+| 3. Permission denial | **Fixture-only:** an unattended run cannot supply a human rejection with feedback. Existing inline test covers it. |
+| 4. `request_user_input` answer | **Fixture-only:** headless execution cannot answer an interactive options prompt. Existing inline test covers it. |
+| 5. Pasted images | **Headless-generatable:** `image.jsonl` contains a native base64 `input_image` block and image path; tests decode it using committed `pixel.png`. **Fixture-only:** a deleted backing file requires deliberate mutation; the missing-path test stays inline. |
+| 6. `apply_patch` changes | **Headless-generatable:** `tool_patch_large.jsonl` contains the native `FileChange` and `custom_tool_call` records. **Unsupported by the current extractor:** its audited `patch_apply_end` and `function_call` branches describe an older schema, so their parser tests stay inline as behavior checks. |
+| 7. Model switch | **Headless-generatable:** `model.jsonl` has two turns and two native `turn_context.model` values after `codex exec resume -m gpt-6-luna`. |
+| 8. Multi-session scan | **Headless-generatable:** the four captures have distinct native session IDs and cwd metadata. **Fixture-only:** literal `~`, symlink, overlap, and nonmatch arrangements need controlled path values; the selection tests retain their temporary paths. |
+| 9. Malformed JSONL | **Fixture-only:** a completed headless run cannot intentionally end with a truncated line. The loader test keeps its small inline partial line. |
+| 10. Large tool result | **Headless-generatable:** `tool_patch_large.jsonl` contains thirty repeated tool-output lines. **Unsupported by the current extractor:** truncation currently consumes legacy `function_call_output`, so its small inline test remains. |
 
-| QUAL-2400 shape | Classification and reason | Committed data |
-| --- | --- | --- |
-| 1. Bare and tagged slash commands | **Fixture-only as a pair.** Headless `/review fixture` is recorded as an ordinary user message; it does not emit the interactive `<command-name>` wrapper. | Native `slash.jsonl`; `hand-authored/slash_tagged.jsonl` for the wrapper. |
-| 2. Plan mode enter/update/exit | **Fixture-only.** `codex exec` has no interactive Plan mode transition or structured `update_plan` exchange. | `hand-authored/plan_mode.jsonl`. |
-| 3. Permission denial | **Fixture-only.** Unattended execution cannot provide a human denial with feedback. | `hand-authored/permission_denial.jsonl`. |
-| 4. `request_user_input` answer | **Fixture-only.** Headless runs cannot answer an interactive options prompt. | `hand-authored/options.jsonl`. |
-| 5. Local, base64, and missing pasted images | **Fixture-only for the audited variants.** The headless `-i` attempt recorded a path and omitted image content; a deleted source cannot be created by a completed run. | Native `image.jsonl` shows the limit; `hand-authored/images.jsonl` uses the committed one-pixel PNG bytes and a missing path. |
-| 6. `apply_patch` file changes | **Fixture-only for the audited legacy schema.** Headless generated a real patch, but 0.162.1 logged `FileChange` and `custom_tool_call`, which the current extractor does not interpret. | Native `tool_patch_large.jsonl`; `hand-authored/tool_patch_large.jsonl` exercises the audited schema. |
-| 7. Model switch mid-session | **Fixture-only.** A first model turn was headless-generatable, but resuming it under a second model failed in this CLI environment's sandbox before a second turn was written. | `hand-authored/model_switch.jsonl`. |
-| 8. Multi-session scan with path variants | **Fixture-only for exact path variants.** Headless runs produce separate native session IDs and cwd values, but literal `~`, symlinked paths, and the required overlap/nonmatch arrangement need controlled fixture edits. | Three native session metadata records; `hand-authored/session.jsonl` is copied with deterministic cwd edits for selection tests. |
-| 9. Malformed or truncated JSONL | **Fixture-only.** A successful headless run cannot intentionally end in a partial JSON write. | `hand-authored/malformed.jsonl`. |
-| 10. Large tool result | **Fixture-only for the audited legacy schema.** A headless tool produced repeated output, but 0.162.1 records it as `custom_tool_call_output`; the extractor's truncation branch consumes `function_call_output`. | Native `tool_patch_large.jsonl`; `hand-authored/tool_patch_large.jsonl`. |
-
-No complete audited shape is purely headless-generatable on this CLI version; three have native subsets. None are unsupported because fixture-only data covers the remaining extractor behavior.
-
-The hand-authored files are intentionally small and use the shapes the extractor already supports. Inline tests remain for narrow error paths, temporary filesystem behavior, and helper fallbacks. Verify with `pytest -q scripts/test_extract_codex_session_log.py scripts/test_generate_codex_fixtures.py` and the repository's coverage commands in `AGENTS.md`.
+The current CLI's tool and patch records differ from the extractor's legacy parser schema. This ticket preserves extractor behavior; supporting those newer records is separate work. Verify with `pytest -q scripts/test_extract_codex_session_log.py scripts/test_generate_codex_fixtures.py` and both coverage gates in `AGENTS.md`.

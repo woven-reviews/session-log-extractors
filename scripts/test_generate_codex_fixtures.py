@@ -17,30 +17,16 @@ def test_native_fixtures_record_headless_codex_shapes():
     tool = load_entries(FIXTURES / "tool_patch_large.jsonl")
     assert any(row["payload"].get("type") == "custom_tool_call" for row in tool)
     assert any(row["payload"].get("item", {}).get("type") == "FileChange" for row in tool)
-    assert build_turns(tool)[1] == []  # Current extractor does not interpret this CLI schema.
+    assert build_turns(tool)[1] == []  # The extractor's legacy tool schema is tested inline.
 
     slash = load_entries(FIXTURES / "slash.jsonl")
-    assert any("/review fixture" in str(row["payload"]) for row in slash)
+    assert build_turns(slash)[0][0].command == "/review"
 
     image = load_entries(FIXTURES / "image.jsonl")
-    assert any("image content omitted" in str(row["payload"]) for row in image)
+    assert build_events(image)[0]["images"][0]["bytes"] == (FIXTURES / "pixel.png").stat().st_size
 
-
-def test_fixture_only_shapes_keep_audited_behavior():
-    source = FIXTURES / "hand-authored"
-    tool = load_entries(source / "tool_patch_large.jsonl")
-    turns, changed = build_turns(tool)
-    events = build_events(tool, tool_result_max_bytes=100)
-    assert changed == ["fixture.txt"]
-    assert any(call.get("result_truncated") for event in events
-               for call in event.get("tool_calls", []))
-    assert any(turn.tool_bullets for turn in turns)
-    assert session_models(load_entries(source / "model_switch.jsonl")) == [
-        "gpt-6.1-sol", "gpt-6-luna"
-    ]
-    assert any(event.get("images") for event in build_events(
-        load_entries(source / "images.jsonl")
-    ))
+    model = load_entries(FIXTURES / "model.jsonl")
+    assert session_models(model) == ["gpt-6.1-sol", "gpt-6-luna"]
 
 
 def test_sanitizer_keeps_native_shape_and_hides_private_data():
@@ -102,19 +88,19 @@ def test_clean_rejects_unredacted_private_path():
 
 
 def test_select_and_validate_captured_shapes():
-    for name in ("tool_patch_large", "slash", "image"):
+    for name in ("tool_patch_large", "slash", "image", "model"):
         rows = [json.loads(line) for line in (FIXTURES / f"{name}.jsonl").read_text().splitlines()]
         generator.validate(name, rows)
     tool = [json.loads(line) for line in (FIXTURES / "tool_patch_large.jsonl").read_text().splitlines()]
     selected = generator.select("slash", tool)
     assert not any(r["payload"].get("type") == "custom_tool_call" for r in selected)
-    for name in ("tool_patch_large", "slash", "image"):
+    for name in ("tool_patch_large", "slash", "image", "model"):
         with pytest.raises(RuntimeError):
             generator.validate(name, [])
 
 
 def _fake_codex(monkeypatch, tmp_path, *, error=None, no_thread=False,
-                no_transcript=False, no_assistant=False):
+                no_transcript=False, no_assistant=False, resume_error=False):
     sessions = tmp_path / "sessions"
     sessions.mkdir()
     monkeypatch.setattr(generator, "SESSIONS", sessions)
@@ -122,10 +108,22 @@ def _fake_codex(monkeypatch, tmp_path, *, error=None, no_thread=False,
 
     def fake_run(args, **kwargs):
         calls.append((args, kwargs))
-        if error:
+        if error or (resume_error and "resume" in args):
             return SimpleNamespace(returncode=1, stderr="boom", stdout="")
         name = Path(args[args.index("-C") + 1]).name
         sid = f"fixture-{name}"
+        if "resume" in args:
+            transcript = sessions / f"rollout-{sid}.jsonl"
+            rows = [json.loads(line) for line in transcript.read_text().splitlines()]
+            rows += [
+                {"type": "turn_context", "payload": {"model": "gpt-6-luna"}},
+                {"type": "response_item", "payload": {"type": "message", "role": "user",
+                    "content": [{"type": "input_text", "text": "second turn"}]}},
+                {"type": "response_item", "payload": {"type": "message", "role": "assistant",
+                    "content": [{"type": "output_text", "text": "SECOND_MODEL_FIXTURE_MARKER"}]}}
+            ]
+            transcript.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+            return SimpleNamespace(returncode=0, stderr="", stdout="")
         rows = [
             {"type": "session_meta", "payload": {"id": sid,
                                                  "cwd": args[args.index("-C") + 1]}},
@@ -134,6 +132,12 @@ def _fake_codex(monkeypatch, tmp_path, *, error=None, no_thread=False,
                     "/review fixture" if name == "slash" else
                     "/workspace/pixel.png" if name == "image" else "run tool"}]}},
         ]
+        if name == "image":
+            rows[1]["payload"]["content"].append({
+                "type": "input_image", "image_url": "data:image/png;base64,AAAA"
+            })
+        if name == "model":
+            rows.insert(1, {"type": "turn_context", "payload": {"model": "gpt-6.1-sol"}})
         if not no_assistant:
             rows.append({"type": "response_item", "payload": {
                 "type": "message", "role": "assistant",
@@ -164,18 +168,17 @@ def _fake_codex(monkeypatch, tmp_path, *, error=None, no_thread=False,
 
 def test_main_regenerates_with_fake_cli_only(monkeypatch, tmp_path):
     output = tmp_path / "repo" / "codex"
-    output.parent.mkdir()
-    copilot = output.parent / "copilot"
-    copilot.mkdir()
-    (copilot / "pixel.png").write_bytes((FIXTURES.parent / "copilot/pixel.png").read_bytes())
+    output.mkdir(parents=True)
+    (output / "pixel.png").write_bytes((FIXTURES / "pixel.png").read_bytes())
     monkeypatch.setattr(generator, "ROOT", output)
     calls = _fake_codex(monkeypatch, tmp_path)
     generator.main()
     assert sorted(p.name for p in output.glob("*.jsonl")) == [
-        "image.jsonl", "slash.jsonl", "tool_patch_large.jsonl"
+        "image.jsonl", "model.jsonl", "slash.jsonl", "tool_patch_large.jsonl"
     ]
-    assert len(calls) == 3
-    assert all(call[0][0:2] == ["codex", "exec"] for call in calls)
+    assert len(calls) == 5
+    assert all(call[0][0] == "codex" for call in calls)
+    assert sum("resume" in call[0] for call in calls) == 1
     assert all(call[1]["stdin"] == generator.subprocess.DEVNULL for call in calls)
     assert not list(output.parent.glob("codex-fixture-stage-*"))
 
@@ -192,3 +195,12 @@ def test_capture_rejects_incomplete_cli_run(monkeypatch, tmp_path, options, mess
     workspace.mkdir()
     with pytest.raises(RuntimeError, match=message):
         generator.capture("slash", "/review fixture", workspace)
+
+
+
+def test_capture_rejects_failed_model_resume(monkeypatch, tmp_path):
+    _fake_codex(monkeypatch, tmp_path, resume_error=True)
+    workspace = tmp_path / "model"
+    workspace.mkdir()
+    with pytest.raises(RuntimeError, match="resume exited 1"):
+        generator.capture("model", "FIRST_MODEL_FIXTURE_MARKER", workspace)
