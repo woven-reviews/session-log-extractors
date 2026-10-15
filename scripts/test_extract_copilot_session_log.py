@@ -265,12 +265,10 @@ def test_copilot_native_image_attachment_is_dumped_and_inlined(tmp_path, monkeyp
 
 
 def test_copilot_attachment_without_its_binary_asset_keeps_the_path():
-    message = {"type": "user.message", "timestamp": "2026-01-01T00:00:01Z", "data": {
-        "attachments": [{"type": "file", "path": "/tmp/shot.png", "displayName": "shot.png",
-                         "assetId": "sha256:missing", "mimeType": "image/png"}]}}
-    _write_events_log("sess-asset", [json.dumps(message)])
+    lines = [line for line in _native_lines("image") if '"session.binary_asset"' not in line]
+    _write_events_log("sess-asset", lines)
     [record] = copilot_log.get_state_attachments("sess-asset")
-    assert record["path"] == "/tmp/shot.png"
+    assert record["path"] == "/workspace/pixel.png"
     assert "data" not in record
 
 
