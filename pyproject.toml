@@ -11,5 +11,9 @@ requires-python = ">=3.11"
 [project.optional-dependencies]
 test = ["pytest", "pytest-cov"]
 
+[tool.coverage.run]
+source = ["scripts", "src"]
+omit = ["scripts/test_*.py"]
+
 [tool.setuptools.packages.find]
 where = ["src"]

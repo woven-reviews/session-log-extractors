@@ -152,11 +152,3 @@ def test_write_envelope_round_trips_through_json():
 def test_user_event_omits_images_key_when_there_are_none():
     assert "images" not in user_event(0, None, "text")
     assert "images" in user_event(0, None, "text", [unavailable_image("x")])
-
-
-if __name__ == "__main__":
-    for name, fn in sorted(globals().items()):
-        if name.startswith("test_") and callable(fn):
-            fn()
-            print(f"ok  {name}")
-    print("all passed")

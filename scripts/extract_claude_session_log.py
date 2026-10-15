@@ -22,8 +22,8 @@ the preceding assistant activity. Subagent / sidechain entries
 (``isSidechain == true``) and meta entries (``isMeta == true``) are kept out of
 the main flow.
 
-When the human denies a tool's permission prompt, the harness records a canned
-error tool_result; those are surfaced as "permission denied" decisions (the tool
+When the human denies a tool's permission prompt (or settings such as don't-ask
+mode deny it), the harness records a canned error tool_result; those are surfaced as "permission denied" decisions (the tool
 that was denied, plus any steering message the human typed). Approvals leave no
 distinct record -- an approved tool just runs -- so only denials are captured.
 
@@ -164,6 +164,9 @@ _PERMISSION_DENIAL_PREFIXES = (
     "The user doesn't want to proceed with this tool use.",
     "Permission for this tool use was denied.",
 )
+# Settings-driven denials (e.g. don't-ask mode) name the tool instead. Anchored on
+# "has been denied" so reading an ISC LICENSE ("Permission to use, copy…") can't match.
+_PERMISSION_DENIED_TOOL = re.compile(r"Permission to use \S+ has been denied\b")
 # Optional steering message the human typed when denying, e.g.
 # "…the user said:\nWe need a new branch for this". A plan sent back in plan mode
 # uses a different lead-in ("…reason for the rejection: …") for the same thing.
@@ -177,8 +180,9 @@ _DENIAL_MESSAGE = re.compile(
 def parse_permission_denial(content: str) -> Optional[str]:
     """If ``content`` is a permission-denial tool_result, return the human's
     steering message (``""`` if they just denied). Return ``None`` otherwise."""
-    if not isinstance(content, str) or not content.startswith(
-        _PERMISSION_DENIAL_PREFIXES
+    if not isinstance(content, str) or not (
+        content.startswith(_PERMISSION_DENIAL_PREFIXES)
+        or _PERMISSION_DENIED_TOOL.match(content)
     ):
         return None
     m = _DENIAL_MESSAGE.search(content)
