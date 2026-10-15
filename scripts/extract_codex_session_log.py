@@ -1008,6 +1008,10 @@ def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]:
                         for fp in changes:
                             if isinstance(fp, str):
                                 append_unique_path(files_changed, files_seen, fp)
+                    if current is not None:
+                        note = result_note(item.get("stdout") or item.get("stderr"))
+                        if note:
+                            current.add_result_note("apply_patch: " + note)
                 continue
             if ptype == "user_message":
                 text = user_text_from_event(payload)
