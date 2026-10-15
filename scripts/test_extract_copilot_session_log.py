@@ -49,13 +49,7 @@ def _native_db():
 
 
 def _install_native_events(case: str) -> None:
-    lines = _native_lines(case)
-    if case == "image":
-        image_path = copilot_log.COPILOT_STATE_ROOT / "pixel.png"
-        image_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(FIXTURES / "pixel.png", image_path)
-        lines = [line.replace("/workspace/pixel.png", str(image_path)) for line in lines]
-    _write_events_log(copilot_log.COPILOT_STATE_ROOT, NATIVE_IDS[case], lines)
+    _write_events_log(copilot_log.COPILOT_STATE_ROOT, NATIVE_IDS[case], _native_lines(case))
 
 
 def _hand_lines(name: str) -> list[str]:
@@ -315,6 +309,9 @@ def test_copilot_image_attachment_is_dumped_to_marker_path(tmp_path, monkeypatch
         db_path.unlink()
 
 def test_copilot_native_image_attachment_is_dumped_and_inlined(tmp_path, monkeypatch):
+    # The attached file (/workspace/pixel.png) does not exist here; the bytes come
+    # from the event log's session.binary_asset.
+    assert not Path("/workspace/pixel.png").exists()
     monkeypatch.setattr(copilot_log, "dump_images",
                         partial(copilot_log.dump_images, dump_dir=tmp_path / "images"))
     _install_native_events("image")
@@ -329,6 +326,17 @@ def test_copilot_native_image_attachment_is_dumped_and_inlined(tmp_path, monkeyp
     envelope = json.loads(next(tmp_path.glob("copilot_session_log_raw_*.json")).read_text())
     user = next(event for event in envelope["events"] if event["role"] == "user")
     assert base64.b64decode(user["images"][0]["data"]) == PNG
+
+
+def test_copilot_attachment_without_its_binary_asset_keeps_the_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(copilot_log, "COPILOT_STATE_ROOT", tmp_path)
+    message = {"type": "user.message", "timestamp": "2026-01-01T00:00:01Z", "data": {
+        "attachments": [{"type": "file", "path": "/tmp/shot.png", "displayName": "shot.png",
+                         "assetId": "sha256:missing", "mimeType": "image/png"}]}}
+    _write_events_log(tmp_path, "sess-asset", [json.dumps(message)])
+    [record] = copilot_log.get_state_attachments("sess-asset")
+    assert record["path"] == "/tmp/shot.png"
+    assert "data" not in record
 
 
 def _copilot_turn_with_image(tmp_path):

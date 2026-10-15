@@ -494,12 +494,23 @@ def get_state_attachments(session_id: str) -> List[Dict[str, Any]]:
     except OSError:
         return []
 
+    events = []
     for line in lines:
         try:
-            obj = json.loads(line)
+            events.append(json.loads(line))
         except ValueError:
             continue
 
+    # Copilot logs each attached image's bytes as a session.binary_asset keyed by
+    # assetId, so the image survives even after its source file is deleted.
+    assets: Dict[str, tuple] = {}
+    for obj in events:
+        if isinstance(obj, dict) and obj.get("type") == "session.binary_asset":
+            asset = obj.get("data")
+            if isinstance(asset, dict) and isinstance(asset.get("data"), str):
+                assets[asset.get("assetId")] = (asset["data"], asset.get("mimeType"))
+
+    for obj in events:
         if not isinstance(obj, dict) or obj.get("type") != "user.message":
             continue
 
@@ -519,6 +530,9 @@ def get_state_attachments(session_id: str) -> List[Dict[str, Any]]:
             data_url = item.get("dataUrl")
             data_b64 = item.get("data")
             media_type = item.get("mediaType")
+            asset_id = item.get("assetId")
+            if not isinstance(data_b64, str) and isinstance(asset_id, str) and asset_id in assets:
+                data_b64, media_type = assets[asset_id]
 
             rec: Dict[str, Any] = {
                 "display_name": display_name if isinstance(display_name, str) else "",
