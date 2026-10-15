@@ -84,7 +84,10 @@ def test_main_stages_all_six_native_cases(monkeypatch, tmp_path):
         stdout="GitHub Copilot CLI 1.0.90-5.\n", returncode=0
     ))
 
+    seen = []
+
     def fake_run(prompt, workspace, session_id, *, resume=False, attachment=None):
+        seen.append((workspace, list(tmp_path.glob("copilot-fixture-staging-*"))))
         name = workspace.parent.name
         events_path = state / session_id / "events.jsonl"
         events_path.parent.mkdir(parents=True, exist_ok=True)
@@ -129,6 +132,10 @@ def test_main_stages_all_six_native_cases(monkeypatch, tmp_path):
         assert conn.execute("SELECT count(*) FROM turns").fetchone()[0] == 7
     assert "user.message" in (output / "image" / "events.jsonl").read_text()
     assert str(tmp_path) not in (output / "image" / "events.jsonl").read_text()
+    # The CLI runs outside the repo; outputs stage beside ROOT, on its filesystem.
+    assert all(tmp_path not in workspace.parents for workspace, _ in seen)
+    assert all(len(staging) == 1 for _, staging in seen)
+    assert not list(tmp_path.glob("copilot-fixture-staging-*"))
 
 
 def test_clean_rejects_other_private_temp_paths(tmp_path):

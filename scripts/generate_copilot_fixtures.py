@@ -109,12 +109,16 @@ def main() -> None:
         "skill": "Read and invoke the fixture-skill skill, then report its marker.",
         "image": "Describe the attached one-pixel image in one sentence.",
     }
-    with tempfile.TemporaryDirectory(prefix="copilot-fixture-") as temporary:
-        stage = Path(temporary)
+    ROOT.mkdir(parents=True, exist_ok=True)
+    # The CLI runs outside the repo; outputs stage beside ROOT so replace() stays on one filesystem.
+    with tempfile.TemporaryDirectory(prefix="copilot-fixture-") as temporary, \
+            tempfile.TemporaryDirectory(prefix="copilot-fixture-staging-", dir=ROOT.parent) as staging:
+        work = Path(temporary)
+        stage = Path(staging)
         db = stage / "session-store.db"
         manifest: dict[str, object] = {"cli_version": version, "cases": {}}
         for name, prompt in cases.items():
-            workspace = stage / name / "workspace"
+            workspace = work / name / "workspace"
             workspace.mkdir(parents=True)
             attachment = None
             if name == "skill":
@@ -180,12 +184,12 @@ def main() -> None:
                 raise RuntimeError(f"{name}: missing native result {result}")
             copy_session(STORE, session_id, db, workspace)
             output = stage / name / "events.jsonl"
+            output.parent.mkdir()
             output.write_text(clean_event_lines(lines, workspace), encoding="utf-8")
             manifest["cases"][name] = session_id
 
         (stage / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
         target = ROOT
-        target.mkdir(parents=True, exist_ok=True)
         for name in cases:
             dest = target / name
             dest.mkdir(exist_ok=True)
