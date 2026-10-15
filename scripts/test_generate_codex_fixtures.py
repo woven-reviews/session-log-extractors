@@ -148,7 +148,7 @@ def _fake_codex(monkeypatch, tmp_path, *, error=None, no_thread=False,
                                                       "changes": ["fixture.txt"]}}},
                 {"type": "response_item", "payload": {
                     "type": "custom_tool_call_output", "call_id": "c1",
-                    "output": [{"type": "input_text", "text": "PATCH_FIXTURE_MARKER"}]}}
+                    "output": [{"type": "input_text", "text": "PATCH_FIXTURE_MARKER\n" * 30}]}}
             ]
         if not no_transcript:
             (sessions / f"rollout-{sid}.jsonl").write_text(

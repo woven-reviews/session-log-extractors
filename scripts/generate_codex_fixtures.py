@@ -98,7 +98,11 @@ def validate(name: str, rows: list[dict]) -> None:
     if name == "tool_patch_large":
         if not any(p.get("type") == "custom_tool_call" for p in payloads) or not any(
             p.get("item", {}).get("type") == "FileChange" for p in payloads
-        ) or "PATCH_FIXTURE_MARKER" not in json.dumps(payloads):
+        ) or not any(
+            p.get("type") == "custom_tool_call_output"
+            and str(p.get("output", "")).count("PATCH_FIXTURE_MARKER") >= 20
+            for p in payloads
+        ):
             raise RuntimeError("tool_patch_large: incomplete native tool or patch")
     elif name == "slash":
         if "/review fixture" not in json.dumps(payloads):
