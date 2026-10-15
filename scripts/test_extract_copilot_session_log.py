@@ -11,7 +11,6 @@ import json
 import re
 import shutil
 import sqlite3
-import tempfile
 from functools import partial
 from pathlib import Path
 
@@ -37,7 +36,6 @@ from extract_copilot_session_log import (
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "copilot"
 NATIVE_IDS = json.loads((FIXTURES / "manifest.json").read_text())["cases"]
 PNG = (FIXTURES / "pixel.png").read_bytes()
-_PNG_B64 = base64.b64encode(PNG).decode("ascii")
 
 
 def _native_lines(case: str) -> list[str]:
@@ -59,7 +57,7 @@ def _native_db_copy(tmp_path: Path, sql: str = "", params=()) -> Path:
 
 
 def _install_native_events(case: str) -> None:
-    _write_events_log(copilot_log.COPILOT_STATE_ROOT, NATIVE_IDS[case], _native_lines(case))
+    _write_events_log(NATIVE_IDS[case], _native_lines(case))
 
 
 def _hand_lines(name: str) -> list[str]:
@@ -71,14 +69,9 @@ def _isolate_copilot_state(tmp_path, monkeypatch):
     monkeypatch.setattr(copilot_log, "COPILOT_STATE_ROOT", tmp_path / "session-state")
 
 
-def _make_test_db(session_id, turns):
-    """Copy the native DB schema with one session holding the given turns.
-
-    Returns the DB's path; the caller is responsible for unlinking it.
-    """
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
-        db_path = Path(tf.name)
-    shutil.copyfile(FIXTURES / "session-store.db", db_path)
+def _make_test_db(tmp_path, session_id, turns):
+    """Copy the native DB schema with one session holding the given turns."""
+    db_path = _native_db_copy(tmp_path)
     with sqlite3.connect(db_path) as conn:
         for table in ("sessions", "turns", "checkpoints", "session_files", "session_refs", "assistant_usage_events"):
             conn.execute(f"DELETE FROM {table}")
@@ -96,9 +89,9 @@ def _make_test_db(session_id, turns):
     return db_path
 
 
-def _write_events_log(root: Path, session_id: str, lines) -> Path:
-    """Write raw JSONL lines to <root>/<session_id>/events.jsonl."""
-    session_dir = root / session_id
+def _write_events_log(session_id: str, lines) -> Path:
+    """Write raw JSONL lines to the isolated state root's events.jsonl."""
+    session_dir = copilot_log.COPILOT_STATE_ROOT / session_id
     session_dir.mkdir(parents=True, exist_ok=True)
     path = session_dir / "events.jsonl"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -138,17 +131,12 @@ def test_copilot_skill_definition_details_are_loaded(tmp_path):
     assert turn.skill_details["fixture-skill"]["path"] == str(skill_path.resolve())
 
 
-def test_copilot_permissions_join_approval_and_denial():
-    perms = _permissions_from_events(_hand_lines("permissions.jsonl")[:4])
-    assert [(p["tool"], p["decision"], p["feedback"]) for p in perms] == [
-        ("pytest", "approved", ""),
-        ("edit crud.py", "denied-interactively-by-user", "not like that"),
-    ]
-
-def test_copilot_permission_pending_when_no_completion():
-    assert _permissions_from_events(_hand_lines("permissions.jsonl")[-1:]) == [
-        {"tool": "rm x", "decision": "pending", "feedback": "",
-         "timestamp": "2026-07-01T22:06:00Z"}
+def test_copilot_permissions_join_approval_denial_and_pending():
+    perms = _permissions_from_events(_hand_lines("permissions.jsonl"))
+    assert [(p["tool"], p["decision"], p["feedback"], p["timestamp"]) for p in perms] == [
+        ("pytest", "approved", "", "2026-07-01T22:04:04Z"),
+        ("edit crud.py", "denied-interactively-by-user", "not like that", "2026-07-01T22:05:30Z"),
+        ("rm x", "pending", "", "2026-07-01T22:06:00Z"),
     ]
 
 def test_copilot_format_decision():
@@ -207,7 +195,6 @@ def test_copilot_db_operations():
 def test_copilot_native_fixture_ids_match_db_and_events():
     with _native_db() as conn:
         assert {row["id"] for row in conn.execute("SELECT id FROM sessions")} == set(NATIVE_IDS.values())
-    with _native_db() as conn:
         for case, session_id in NATIVE_IDS.items():
             events = [json.loads(line) for line in _native_lines(case)]
             assert events[0]["type"] == "session.start"
@@ -223,18 +210,16 @@ def test_copilot_prefix_matching():
         assert get_session_by_id(conn, session_id)["id"] == session_id
         assert get_session_by_id(conn, session_id[:8])["id"] == session_id
 
-def test_copilot_image_reference_without_attachment_is_flagged():
+def test_copilot_image_reference_without_attachment_is_flagged(tmp_path):
     db_path = _make_test_db(
+        tmp_path,
         session_id="img-session",
         turns=[{"turn_index": 0, "user_message": "[image: pixel.png] please summarize",
                 "assistant_response": "Done", "timestamp": "2026-01-01T12:00:05Z"}],
     )
-    try:
-        with get_db_connection(db_path) as conn:
-            session = get_session_by_id(conn, "img-session")
-            assert "source file unavailable; description pending" in render_session(conn, session)
-    finally:
-        db_path.unlink()
+    with get_db_connection(db_path) as conn:
+        session = get_session_by_id(conn, "img-session")
+        assert "source file unavailable; description pending" in render_session(conn, session)
 
 def test_copilot_image_attachment_is_dumped_to_marker_path(tmp_path, monkeypatch):
     monkeypatch.setattr(copilot_log, "dump_images",
@@ -242,24 +227,22 @@ def test_copilot_image_attachment_is_dumped_to_marker_path(tmp_path, monkeypatch
     img_path = tmp_path / "pixel.png"
     shutil.copyfile(FIXTURES / "pixel.png", img_path)
     db_path = _make_test_db(
+        tmp_path,
         session_id="img-session-2",
         turns=[{"turn_index": 0, "user_message": "[image: pixel.png] please summarize",
                 "assistant_response": "Done", "timestamp": "2026-01-01T12:00:05Z"}],
     )
-    try:
-        with sqlite3.connect(db_path) as conn:
-            conn.execute("CREATE TABLE attachments (session_id TEXT, display_name TEXT, path TEXT, type TEXT)")
-            conn.execute("INSERT INTO attachments VALUES (?, ?, ?, ?)",
-                         ("img-session-2", "pixel.png", str(img_path), "image/png"))
-        with get_db_connection(db_path) as conn:
-            markdown = render_session(conn, get_session_by_id(conn, "img-session-2"))
-        marker = re.search(r"\[Image dumped to `([^`]+)` — description pending\]", markdown)
-        assert marker is not None
-        dumped = Path(marker.group(1))
-        assert dumped.parent == tmp_path / "images"
-        assert dumped.exists()
-    finally:
-        db_path.unlink()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE attachments (session_id TEXT, display_name TEXT, path TEXT, type TEXT)")
+        conn.execute("INSERT INTO attachments VALUES (?, ?, ?, ?)",
+                     ("img-session-2", "pixel.png", str(img_path), "image/png"))
+    with get_db_connection(db_path) as conn:
+        markdown = render_session(conn, get_session_by_id(conn, "img-session-2"))
+    marker = re.search(r"\[Image dumped to `([^`]+)` — description pending\]", markdown)
+    assert marker is not None
+    dumped = Path(marker.group(1))
+    assert dumped.parent == tmp_path / "images"
+    assert dumped.exists()
 
 def test_copilot_native_image_attachment_is_dumped_and_inlined(tmp_path, monkeypatch):
     # The attached file (/workspace/pixel.png) does not exist here; the bytes come
@@ -281,12 +264,11 @@ def test_copilot_native_image_attachment_is_dumped_and_inlined(tmp_path, monkeyp
     assert base64.b64decode(user["images"][0]["data"]) == PNG
 
 
-def test_copilot_attachment_without_its_binary_asset_keeps_the_path(tmp_path, monkeypatch):
-    monkeypatch.setattr(copilot_log, "COPILOT_STATE_ROOT", tmp_path)
+def test_copilot_attachment_without_its_binary_asset_keeps_the_path():
     message = {"type": "user.message", "timestamp": "2026-01-01T00:00:01Z", "data": {
         "attachments": [{"type": "file", "path": "/tmp/shot.png", "displayName": "shot.png",
                          "assetId": "sha256:missing", "mimeType": "image/png"}]}}
-    _write_events_log(tmp_path, "sess-asset", [json.dumps(message)])
+    _write_events_log("sess-asset", [json.dumps(message)])
     [record] = copilot_log.get_state_attachments("sess-asset")
     assert record["path"] == "/tmp/shot.png"
     assert "data" not in record
@@ -305,13 +287,13 @@ def _copilot_turn_with_image(tmp_path):
         {"name": "a.png", "path": str(img), "type": "image/png"},
         {"name": "ghost.png"},
     ]
-    turn.add_tool("str_replace_editor", "backend/app/models.py")
+    turn.add_tool("view", "backend/app/models.py")
     return turn
 
 
 def test_build_events_inlines_an_attachment_resolved_from_disk(tmp_path):
     user = build_events([_copilot_turn_with_image(tmp_path)])[0]
-    assert base64.b64decode(user["images"][0]["data"]) == base64.b64decode(_PNG_B64)
+    assert base64.b64decode(user["images"][0]["data"]) == PNG
 
 
 def test_build_events_records_an_inline_token_with_no_attachment(tmp_path):
@@ -324,7 +306,7 @@ def test_build_events_records_an_inline_token_with_no_attachment(tmp_path):
 def test_build_events_recovers_tool_name_and_target(tmp_path):
     events = build_events([_copilot_turn_with_image(tmp_path)])
     call = next(c for e in events for c in e.get("tool_calls", []))
-    assert call["name"] == "str_replace_editor"
+    assert call["name"] == "view"
     assert call["input"] == {"target": "backend/app/models.py"}
 
 
@@ -601,39 +583,26 @@ def test_copilot_get_db_connection_missing_file_raises():
 
 
 def test_copilot_table_columns_without_row_factory():
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
-        db_path = Path(tf.name)
-    try:
-        conn = sqlite3.connect(db_path)  # no row_factory set -> plain tuples
-        conn.execute("CREATE TABLE t (id INTEGER, name TEXT)")
-        cols = copilot_log._table_columns(conn, "t")
-        assert cols == {"id", "name"}
-        conn.close()
-    finally:
-        db_path.unlink()
+    conn = sqlite3.connect(":memory:")  # no row_factory set -> plain tuples
+    conn.execute("CREATE TABLE t (id INTEGER, name TEXT)")
+    assert copilot_log._table_columns(conn, "t") == {"id", "name"}
 
 
-def test_copilot_paths_overlap_both_directions_and_neither():
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        child = root / "a" / "b"
-        child.mkdir(parents=True)
-        other = root / "c"
-        other.mkdir()
-        assert copilot_log._paths_overlap(root, child) is True
-        assert copilot_log._paths_overlap(child, root) is True
-        assert copilot_log._paths_overlap(child, other) is False
+def test_copilot_paths_overlap_both_directions_and_neither(tmp_path):
+    child = tmp_path / "a" / "b"
+    child.mkdir(parents=True)
+    other = tmp_path / "c"
+    other.mkdir()
+    assert copilot_log._paths_overlap(tmp_path, child) is True
+    assert copilot_log._paths_overlap(child, tmp_path) is True
+    assert copilot_log._paths_overlap(child, other) is False
 
 
-def test_copilot_cwd_matches_blank_and_strict():
+def test_copilot_cwd_matches_blank_and_strict(tmp_path):
     assert copilot_log._cwd_matches(None, Path.cwd()) is False
     assert copilot_log._cwd_matches("", Path.cwd()) is False
     assert copilot_log._cwd_matches(str(Path.cwd()), Path.cwd(), strict=True) is True
-    with tempfile.TemporaryDirectory() as tmp:
-        assert (
-            copilot_log._cwd_matches(str(Path(tmp) / "sub"), Path(tmp), strict=True)
-            is False
-        )
+    assert copilot_log._cwd_matches(str(tmp_path / "sub"), tmp_path, strict=True) is False
 
 
 def test_copilot_newest_session_falls_back_to_global_newest():
@@ -664,12 +633,9 @@ def test_copilot_newest_session_picks_most_recently_updated():
 # -- per-session events log edge cases ---------------------------------------
 
 
-def test_copilot_get_state_attachments_skips_malformed_and_irrelevant_lines(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setattr(copilot_log, "COPILOT_STATE_ROOT", tmp_path)
+def test_copilot_get_state_attachments_skips_malformed_and_irrelevant_lines():
     lines = _hand_lines("malformed.jsonl")
-    _write_events_log(tmp_path, "sess-attach", lines)
+    _write_events_log("sess-attach", lines)
     attachments = copilot_log.get_state_attachments("sess-attach")
     assert len(attachments) == 1
     rec = attachments[0]
@@ -679,9 +645,8 @@ def test_copilot_get_state_attachments_skips_malformed_and_irrelevant_lines(
     assert rec["media_type"] == "image/png"
 
 
-def test_copilot_state_log_readers_return_empty_on_os_error(tmp_path, monkeypatch):
-    monkeypatch.setattr(copilot_log, "COPILOT_STATE_ROOT", tmp_path)
-    _write_events_log(tmp_path, "sess-oserr", ["{}"])
+def test_copilot_state_log_readers_return_empty_on_os_error(monkeypatch):
+    _write_events_log("sess-oserr", ["{}"])
     monkeypatch.setattr(
         Path,
         "read_text",
@@ -757,16 +722,15 @@ def test_copilot_get_session_models_without_usage_table_is_empty():
     assert copilot_log.get_session_models(sqlite3.connect(":memory:"), "any") == []
 
 
-def test_copilot_attachment_lookup_skips_empty_and_captures_variants(tmp_path, monkeypatch):
-    monkeypatch.setattr(copilot_log, "COPILOT_STATE_ROOT", tmp_path)
-    _write_events_log(tmp_path, "attachments", _hand_lines("attachment_variants.jsonl"))
+def test_copilot_attachment_lookup_skips_empty_and_captures_variants():
+    _write_events_log("attachments", _hand_lines("attachment_variants.jsonl"))
     records = copilot_log.get_state_attachments("attachments")
     lookup = copilot_log._attachment_lookup(
         [{"display_name": "", "path": "", "type": "image/png"}, *records]
     )
     assert "" not in lookup
     assert lookup["url.png"]["data_url"].startswith("data:image/png;base64,")
-    assert lookup["inline.png"]["data"] == _PNG_B64
+    assert base64.b64decode(lookup["inline.png"]["data"]) == PNG
     assert lookup["inline.png"]["media_type"] == "image/png"
 
 def test_copilot_build_turn_objects_defaults_turn_index_and_parses_shell_command():
@@ -918,7 +882,7 @@ def test_copilot_image_bytes_and_ext_guesses_extension_from_type_when_no_suffix(
     img.write_bytes(PNG)
     raw, ext = copilot_log._image_bytes_and_ext({"path": str(img), "type": "image/png"})
     assert ext == "png"
-    assert raw == base64.b64decode(_PNG_B64)
+    assert raw == PNG
 
 
 # -- render() branches --------------------------------------------------------
@@ -1024,15 +988,14 @@ def test_copilot_unique_identifier_increments_on_collision():
 # -- render_session integration -----------------------------------------------
 
 
-def test_copilot_render_session_prefers_events_log_tools_over_db_files(tmp_path, monkeypatch):
-    monkeypatch.setattr(copilot_log, "COPILOT_STATE_ROOT", tmp_path)
+def test_copilot_render_session_prefers_events_log_tools_over_db_files(tmp_path):
     session_id = NATIVE_IDS["tool_success"]
-    db_path = tmp_path / "with-file.db"
-    shutil.copyfile(FIXTURES / "session-store.db", db_path)
-    with sqlite3.connect(db_path) as conn:
-        conn.execute("INSERT INTO session_files (session_id, file_path, tool_name, turn_index) "
-                     "VALUES (?, ?, ?, ?)", (session_id, "/tmp/from_db.py", "edit", 0))
-    _write_events_log(tmp_path, session_id, _native_lines("tool_success"))
+    db_path = _native_db_copy(
+        tmp_path,
+        "INSERT INTO session_files (session_id, file_path, tool_name, turn_index) VALUES (?, ?, ?, ?)",
+        (session_id, "/tmp/from_db.py", "edit", 0),
+    )
+    _install_native_events("tool_success")
     with get_db_connection(db_path) as conn:
         md = render_session(conn, get_session_by_id(conn, session_id))
     assert "- edit -> /tmp/from_db.py" not in md
