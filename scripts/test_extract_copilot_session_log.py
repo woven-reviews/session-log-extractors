@@ -66,7 +66,6 @@ def _make_test_db(
     cwd=None,
     turns=(),
     files=(),
-    events=(),
     created_at="2026-01-01T12:00:00Z",
     updated_at="2026-01-01T12:00:00Z",
     repository="test/repo",
@@ -82,8 +81,6 @@ def _make_test_db(
     cur = conn.cursor()
     for table in ("sessions", "turns", "checkpoints", "session_files", "session_refs", "assistant_usage_events"):
         cur.execute(f"DELETE FROM {table}")
-    if events:
-        cur.execute("CREATE TABLE events (session_id TEXT, usage_model TEXT, timestamp TEXT)")
 
     cur.execute(
         "INSERT INTO sessions (id, cwd, repository, created_at, updated_at) "
@@ -119,11 +116,6 @@ def _make_test_db(
                 f.get("turn_index"),
                 f.get("first_seen_at"),
             ),
-        )
-    for e in events:
-        cur.execute(
-            "INSERT INTO events (session_id, usage_model, timestamp) VALUES (?, ?, ?)",
-            (session_id, e.get("usage_model"), e.get("timestamp")),
         )
     conn.commit()
     conn.close()
@@ -833,25 +825,14 @@ def test_copilot_attribute_permissions_falls_back_to_first_turn_without_timestam
     assert [p["tool"] for p in turn.permission_decisions] == ["a"]
 
 
-def test_copilot_get_session_models_returns_distinct_models_in_order():
-    db_path = _make_test_db(
-        session_id="sess-models",
-        events=[
-            {"usage_model": "gpt-5", "timestamp": "2026-01-01T00:00:00Z"},
-            {"usage_model": "gpt-5", "timestamp": "2026-01-01T00:01:00Z"},
-            {"usage_model": "claude", "timestamp": "2026-01-01T00:02:00Z"},
-            {"usage_model": None, "timestamp": "2026-01-01T00:03:00Z"},
-        ],
-    )
-    try:
-        conn = get_db_connection(db_path)
-        assert copilot_log.get_session_models(conn, "sess-models") == [
-            "gpt-5",
-            "claude",
-        ]
-        conn.close()
-    finally:
-        db_path.unlink()
+def test_copilot_get_session_models_reads_native_usage_events():
+    # The continued session logs one usage event per turn, both on one model.
+    with _native_db() as conn:
+        assert copilot_log.get_session_models(conn, NATIVE_IDS["continued"]) == ["claude-sonnet-5"]
+
+
+def test_copilot_get_session_models_without_usage_table_is_empty():
+    assert copilot_log.get_session_models(sqlite3.connect(":memory:"), "any") == []
 
 
 def test_copilot_attachment_lookup_skips_empty_and_captures_variants(tmp_path, monkeypatch):

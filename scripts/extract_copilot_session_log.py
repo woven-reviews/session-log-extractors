@@ -840,26 +840,26 @@ def decision_label(kind: str) -> str:
 
 
 def get_session_models(conn: sqlite3.Connection, session_id: str) -> List[str]:
-    """Distinct model ids seen in events for the session, if available."""
-    cols = _table_columns(conn, "events")
-    if "session_id" not in cols or "usage_model" not in cols:
+    """Distinct model ids from the session's usage events, if available."""
+    cols = _table_columns(conn, "assistant_usage_events")
+    if "session_id" not in cols or "model" not in cols:
         return []
 
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT usage_model
-        FROM events
+        SELECT model
+        FROM assistant_usage_events
         WHERE session_id = ?
-          AND usage_model IS NOT NULL
-          AND usage_model != ''
-        ORDER BY timestamp
+          AND model IS NOT NULL
+          AND model != ''
+        ORDER BY id
     """,
         (session_id,),
     )
     models: List[str] = []
     for row in cursor:
-        model = row["usage_model"]
+        model = row["model"]
         if isinstance(model, str) and model not in models:
             models.append(model)
     return models
