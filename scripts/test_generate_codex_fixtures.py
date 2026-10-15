@@ -117,8 +117,8 @@ def test_select_and_validate_captured_shapes():
             generator.validate(name, [])
 
 
-def _fake_codex(monkeypatch, tmp_path, *, error=None, no_thread=False,
-                no_transcript=False, no_assistant=False, resume_error=False):
+def _fake_cli(monkeypatch, tmp_path, *, error=None, no_thread=False,
+              no_transcript=False, no_assistant=False, resume_error=False):
     sessions = tmp_path / "sessions"
     sessions.mkdir()
     monkeypatch.setattr(generator, "SESSIONS", sessions)
@@ -128,50 +128,16 @@ def _fake_codex(monkeypatch, tmp_path, *, error=None, no_thread=False,
         calls.append((args, kwargs))
         if error or (resume_error and "resume" in args):
             return SimpleNamespace(returncode=1, stderr="boom", stdout="")
-        name = Path(args[args.index("-C") + 1]).name
-        sid = f"fixture-{name}"
         if "resume" in args:
-            transcript = sessions / f"rollout-{sid}.jsonl"
-            rows = [json.loads(line) for line in transcript.read_text().splitlines()]
-            rows += [
-                {"type": "turn_context", "payload": {"model": "gpt-6-luna"}},
-                {"type": "response_item", "payload": {"type": "message", "role": "user",
-                    "content": [{"type": "input_text", "text": "second turn"}]}},
-                {"type": "response_item", "payload": {"type": "message", "role": "assistant",
-                    "content": [{"type": "output_text", "text": "SECOND_MODEL_FIXTURE_MARKER"}]}}
-            ]
-            transcript.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
             return SimpleNamespace(returncode=0, stderr="", stdout="")
-        rows = [
-            {"type": "session_meta", "payload": {"id": sid,
-                                                 "cwd": args[args.index("-C") + 1]}},
-            {"type": "response_item", "payload": {"type": "message", "role": "user",
-                "content": [{"type": "input_text", "text":
-                    "/review fixture" if name == "slash" else
-                    "/workspace/pixel.png" if name == "image" else "run tool"}]}},
-        ]
-        if name == "image":
-            rows[1]["payload"]["content"].append({
-                "type": "input_image", "image_url": "data:image/png;base64,AAAA"
-            })
-        if name == "model":
-            rows.insert(1, {"type": "turn_context", "payload": {"model": "gpt-6.1-sol"}})
-        if not no_assistant:
-            rows.append({"type": "response_item", "payload": {
-                "type": "message", "role": "assistant",
-                "content": [{"type": "output_text", "text": "done"}]}})
-        if name == "tool_patch_large":
-            rows += [
-                {"type": "response_item", "payload": {
-                    "type": "custom_tool_call", "name": "exec",
-                    "call_id": "c1", "input": "PATCH_FIXTURE_MARKER"}},
-                {"type": "event_msg", "payload": {
-                    "type": "item_completed", "item": {"type": "FileChange",
-                                                      "changes": ["fixture.txt"]}}},
-                {"type": "response_item", "payload": {
-                    "type": "custom_tool_call_output", "call_id": "c1",
-                    "output": [{"type": "input_text", "text": "PATCH_FIXTURE_MARKER\n" * 30}]}}
-            ]
+        name = Path(args[args.index("-C") + 1]).name
+        rows = [json.loads(line) for line in (FIXTURES / f"{name}.jsonl").read_text().splitlines()]
+        sid = rows[0]["payload"]["id"]
+        if no_assistant:
+            rows = [row for row in rows if not (
+                row["type"] == "response_item"
+                and row["payload"].get("role") == "assistant"
+            )]
         if not no_transcript:
             (sessions / f"rollout-{sid}.jsonl").write_text(
                 "\n".join(json.dumps(row) for row in rows) + "\n"
@@ -189,11 +155,15 @@ def test_main_regenerates_with_fake_cli_only(monkeypatch, tmp_path):
     output.mkdir(parents=True)
     (output / "pixel.png").write_bytes((FIXTURES / "pixel.png").read_bytes())
     monkeypatch.setattr(generator, "ROOT", output)
-    calls = _fake_codex(monkeypatch, tmp_path)
+    calls = _fake_cli(monkeypatch, tmp_path)
     generator.main()
     assert sorted(p.name for p in output.glob("*.jsonl")) == [
         "image.jsonl", "model.jsonl", "slash.jsonl", "tool_patch_large.jsonl"
     ]
+    for generated in output.glob("*.jsonl"):
+        assert [json.loads(line) for line in generated.read_text().splitlines()] == [
+            json.loads(line) for line in (FIXTURES / generated.name).read_text().splitlines()
+        ]
     assert len(calls) == 5
     assert all(call[0][0] == "codex" for call in calls)
     assert sum("resume" in call[0] for call in calls) == 1
@@ -279,7 +249,7 @@ def test_interactive_main_drives_requests_and_stages_native_rollouts(monkeypatch
     ({"no_assistant": True}, "missing assistant response"),
 ])
 def test_capture_rejects_incomplete_cli_run(monkeypatch, tmp_path, options, message):
-    _fake_codex(monkeypatch, tmp_path, **options)
+    _fake_cli(monkeypatch, tmp_path, **options)
     workspace = tmp_path / "slash"
     workspace.mkdir()
     with pytest.raises(RuntimeError, match=message):
@@ -288,7 +258,7 @@ def test_capture_rejects_incomplete_cli_run(monkeypatch, tmp_path, options, mess
 
 
 def test_capture_rejects_failed_model_resume(monkeypatch, tmp_path):
-    _fake_codex(monkeypatch, tmp_path, resume_error=True)
+    _fake_cli(monkeypatch, tmp_path, resume_error=True)
     workspace = tmp_path / "model"
     workspace.mkdir()
     with pytest.raises(RuntimeError, match="resume exited 1"):
