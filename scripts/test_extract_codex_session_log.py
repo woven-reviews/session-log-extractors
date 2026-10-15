@@ -223,7 +223,7 @@ def test_codex_permission_denial_ignores_normal_text():
     assert parse_permission_denial("Sure, I'll do that.") is None
 
 
-def test_codex_denial_recorded_and_rendered_without_prose():
+def test_codex_handwritten_assistant_denial_branch():
     entries = [
         {
             "type": "event_msg",
@@ -271,7 +271,16 @@ def test_codex_denial_recorded_and_rendered_without_prose():
     assert '_user denied permission:_ external_agent -> "not like that"' in md
 
 
-def test_codex_plan_mode_turn_and_structured_plan_are_rendered():
+def test_codex_native_denial_fixture_records_declined_command():
+    entries = load_entries(FIXTURES / "denial.jsonl")
+    turns, files_changed = build_turns(entries)
+    assert turns[0].permission_denials == [{"tool": "exec", "message": ""}]
+    assert turns[0].result_notes == []
+    md = render(turns, files_changed, "project", entries[0]["timestamp"])
+    assert "_user denied permission:_ exec" in md
+
+
+def test_codex_handwritten_plan_mode_update_plan_branch():
     entries = [
         {
             "type": "event_msg",
@@ -342,6 +351,17 @@ def test_codex_plan_mode_turn_and_structured_plan_are_rendered():
     assert "- [x] Inspect schema _(completed)_" in md
     assert "- [ ] Design change _(in_progress)_" in md
     assert "Here is the plan." in md
+
+
+def test_codex_native_plan_fixture_renders_plan_mode():
+    entries = load_entries(FIXTURES / "plan.jsonl")
+    turns, files_changed = build_turns(entries)
+    assert len(turns) == 1
+    assert turns[0].collaboration_mode == "plan"
+    assert turns[0].plan_updates == []
+    md = render(turns, files_changed, "project", entries[0]["timestamp"])
+    assert "**Mode:** Plan" in md
+    assert "<proposed_plan>" in md
 
 
 def test_codex_default_mode_update_plan_remains_execution_tool():
@@ -440,6 +460,16 @@ def test_codex_summary_options_and_shell_command():
     assert "> Need help" in md
     assert "- [x] **QUAL**" in md
     assert "```sh\nls -la\n```" in md
+
+
+def test_codex_native_question_fixture_marks_answered_option():
+    entries = load_entries(FIXTURES / "question.jsonl")
+    turns, files_changed = build_turns(entries)
+    assert turns[0].option_qas[0]["chosen_labels"] == ["QUAL"]
+    md = render(turns, files_changed, "project", entries[0]["timestamp"])
+    assert "- [x] **QUAL**" in md
+    assert "- [ ] **SE**" in md
+    assert "_user chose:_" in md and "-> QUAL" in md
 
 
 def test_codex_dumps_local_images_from_user_event():
