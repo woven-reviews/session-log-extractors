@@ -475,8 +475,7 @@ def test_codex_native_question_fixture_marks_answered_option():
 def test_codex_dumps_local_images_from_user_event():
     with tempfile.TemporaryDirectory() as tmp_name:
         tmp = Path(tmp_name)
-        source = tmp / "clip.png"
-        source.write_bytes(base64.b64decode(_PNG_B64))
+        source = FIXTURES / "pixel.png"
 
         turns, _ = build_turns(
             [
@@ -679,66 +678,36 @@ def _codex_entries(image_path, missing_path="/gone/missing.png"):
                 "images": [str(image_path), missing_path],
             },
         },
-        {
-            "type": "response_item",
-            "timestamp": "2026-08-01T10:00:02Z",
-            "payload": {
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "output_text", "text": "On it."}],
-            },
-        },
-        {
-            "type": "response_item",
-            "timestamp": "2026-08-01T10:00:03Z",
-            "payload": {
-                "type": "function_call",
-                "name": "shell",
-                "call_id": "c1",
-                "arguments": json.dumps({"command": "ls -la"}),
-            },
-        },
-        {
-            "type": "response_item",
-            "timestamp": "2026-08-01T10:00:04Z",
-            "payload": {
-                "type": "function_call_output",
-                "call_id": "c1",
-                "output": "A" * 9000,
-            },
-        },
     ]
-
-
-def _png_on_disk():
-    path = Path(tempfile.mkdtemp()) / "shot.png"
-    path.write_bytes(base64.b64decode(_PNG_B64))
-    return path
 
 
 def test_build_events_keeps_local_and_unresolvable_images():
     # Codex keeps images out of band, so the envelope is where they become
     # portable.
-    img = _png_on_disk()
+    img = FIXTURES / "pixel.png"
     user = build_events(_codex_entries(img))[0]
     assert user["role"] == "user"
-    assert base64.b64decode(user["images"][0]["data"]) == base64.b64decode(_PNG_B64)
+    assert base64.b64decode(user["images"][0]["data"]) == img.read_bytes()
     assert user["images"][0]["media_type"] == "image/png"
     # A missing screenshot must remain distinguishable from no screenshot.
     assert user["images"][1] == {"unavailable": True, "ref": "/gone/missing.png"}
 
 
 def test_build_events_attaches_output_to_its_function_call():
-    events = build_events(_codex_entries(_png_on_disk()), tool_result_max_bytes=100)
-    call = next(c for e in events for c in e.get("tool_calls", []))
-    assert call["name"] == "shell"
-    assert call["input"] == {"command": "ls -la"}
-    assert call["result_bytes"] == 9000
+    events = build_events(load_entries(FIXTURES / "tool_patch_large.jsonl"), tool_result_max_bytes=100)
+    calls = [c for e in events for c in e.get("tool_calls", [])]
+    assert len(calls) == 2
+    assert calls[0]["name"] == "exec"
+    assert "printf TOOL_FIXTURE_MARKER" in calls[0]["input"]
+    assert calls[0]["result"] == "TOOL_FIXTURE_MARKER"
+    call = calls[1]
+    assert "fixture.txt" in call["input"]
+    assert call["result_bytes"] > 100
     assert call["result_truncated"] is True
 
 
 def test_build_events_does_not_disturb_the_markdown_turns():
-    entries = _codex_entries(_png_on_disk())
+    entries = load_entries(FIXTURES / "tool_patch_large.jsonl")
     before = [t.user_text for t in build_turns(entries)[0]]
     build_events(entries)
     assert [t.user_text for t in build_turns(entries)[0]] == before
@@ -1500,31 +1469,17 @@ def test_build_events_assistant_blank_text_is_skipped():
 
 
 def test_build_events_function_call_flushes_pending_user_message():
-    entries = [
-        {
-            "type": "response_item",
-            "timestamp": "2026-01-01T00:00:00Z",
-            "payload": {
-                "type": "message",
-                "role": "user",
-                "content": [{"type": "input_text", "text": "do the thing"}],
-            },
-        },
-        {
-            "type": "response_item",
-            "timestamp": "2026-01-01T00:00:01Z",
-            "payload": {
-                "type": "function_call",
-                "name": "shell",
-                "call_id": "c1",
-                "arguments": json.dumps({"command": "ls"}),
-            },
-        },
-    ]
+    entries = load_entries(FIXTURES / "question.jsonl")
+    calls = [entry["payload"] for entry in entries
+             if entry["payload"].get("type") in ("function_call", "function_call_output")]
+    assert [call["type"] for call in calls] == ["function_call", "function_call_output"]
+    assert calls[0]["call_id"] == calls[1]["call_id"]
+
     events = build_events(entries)
     assert events[0]["role"] == "user"
-    assert events[0]["text"] == "do the thing"
-    assert events[1]["tool_calls"][0]["name"] == "shell"
+    assert "Which team" in events[1]["tool_calls"][0]["input"]["questions"][0]["question"]
+    assert events[1]["tool_calls"][0]["name"] == "request_user_input"
+    assert events[1]["tool_calls"][0]["result"] == "QUAL"
 
 
 def test_build_events_output_with_unknown_call_id_is_ignored():
@@ -1638,16 +1593,10 @@ def test_render_handles_empty_turns_list():
 
 
 def test_render_includes_models_line():
-    entries = [
-        {
-            "type": "event_msg",
-            "timestamp": "2026-01-01T00:00:00Z",
-            "payload": {"type": "user_message", "message": "hi"},
-        }
-    ]
+    entries = load_entries(FIXTURES / "model.jsonl")
     turns, files_changed = build_turns(entries)
-    md = render(turns, files_changed, "project", "2026-01-01T00:00:00Z", models=["gpt-codex"])
-    assert "Model: gpt-codex." in md
+    md = render(turns, files_changed, "project", first_timestamp(entries), models=session_models(entries))
+    assert "Model: gpt-6.1-sol, gpt-6-luna." in md
 
 
 def test_render_no_user_text_placeholder_in_full_detail():
@@ -1778,25 +1727,11 @@ def test_render_numbers_multiple_plan_updates():
 
 
 def test_render_lists_files_changed():
-    entries = [
-        {
-            "type": "event_msg",
-            "timestamp": "2026-01-01T00:00:00Z",
-            "payload": {"type": "user_message", "message": "edit"},
-        },
-        {
-            "type": "event_msg",
-            "timestamp": "2026-01-01T00:00:01Z",
-            "payload": {
-                "type": "patch_apply_end",
-                "changes": {"src/a.py": {}},
-            },
-        },
-    ]
+    entries = load_entries(FIXTURES / "tool_patch_large.jsonl")
     turns, files_changed = build_turns(entries)
-    md = render(turns, files_changed, "project", "2026-01-01T00:00:00Z")
+    md = render(turns, files_changed, "project", first_timestamp(entries))
     assert "## Files changed during the session" in md
-    assert "src/a.py" in md
+    assert "/workspace/fixture.txt" in md
 
 
 # --- render_transcript / write_raw_envelope / _extract_all / main errors ---------------------------------------
@@ -1870,16 +1805,6 @@ def test_extract_all_skips_unparseable_transcript_and_still_succeeds(monkeypatch
 # --- main() CLI paths ---------------------------------------
 
 
-_CLI_ENTRIES = [
-    {"type": "session_meta", "payload": {"id": "s1"}},
-    {
-        "type": "event_msg",
-        "timestamp": "2026-01-01T00:00:00Z",
-        "payload": {"type": "user_message", "message": "hi"},
-    },
-]
-
-
 def test_main_errors_when_transcript_not_found():
     rc = main(["--transcript", "/no/such/file.jsonl"])
     assert rc == 1
@@ -1889,40 +1814,37 @@ def test_main_single_session_to_stdout():
     import contextlib
     import io
 
-    with tempfile.TemporaryDirectory() as tmp_name:
-        path = Path(tmp_name) / "t.jsonl"
-        _write_jsonl(path, _CLI_ENTRIES)
-        captured = io.StringIO()
-        with contextlib.redirect_stdout(captured):
-            rc = main(["--transcript", str(path), "--output", "-"])
-        assert rc == 0
-        assert "# Codex Session Conversation Log" in captured.getvalue()
+    captured = io.StringIO()
+    with contextlib.redirect_stdout(captured):
+        rc = main(["--transcript", str(FIXTURES / "tool_patch_large.jsonl"), "--output", "-"])
+    assert rc == 0
+    assert "# Codex Session Conversation Log" in captured.getvalue()
+    assert "TOOL_FIXTURE_MARKER" in captured.getvalue()
+    assert "/workspace/fixture.txt" in captured.getvalue()
 
 
 def test_main_single_session_writes_markdown_and_raw_file():
     with tempfile.TemporaryDirectory() as tmp_name:
         tmp = Path(tmp_name)
-        transcript = tmp / "t.jsonl"
-        _write_jsonl(transcript, _CLI_ENTRIES)
+        transcript = FIXTURES / "model.jsonl"
         out_md = tmp / "out.md"
         rc = main(["--transcript", str(transcript), "--output", str(out_md)])
         assert rc == 0
-        assert out_md.exists()
-        assert (tmp / "codex_session_log_raw_s1.json").exists()
+        assert "SECOND_MODEL_FIXTURE_MARKER" in out_md.read_text()
+        assert (tmp / f"codex_session_log_raw_{session_id_from_file(transcript)}.json").exists()
 
 
 def test_main_single_session_no_raw_skips_raw_file():
     with tempfile.TemporaryDirectory() as tmp_name:
         tmp = Path(tmp_name)
-        transcript = tmp / "t.jsonl"
-        _write_jsonl(transcript, _CLI_ENTRIES)
+        transcript = FIXTURES / "question.jsonl"
         out_md = tmp / "out.md"
         rc = main(
             ["--transcript", str(transcript), "--output", str(out_md), "--no-raw"]
         )
         assert rc == 0
         assert out_md.exists()
-        assert not (tmp / "codex_session_log_raw_s1.json").exists()
+        assert not list(tmp.glob("codex_session_log_raw_*.json"))
 
 
 def test_main_single_session_render_error_returns_1():
