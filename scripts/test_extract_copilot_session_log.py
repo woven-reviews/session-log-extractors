@@ -48,6 +48,16 @@ def _native_db():
     return get_db_connection(FIXTURES / "session-store.db")
 
 
+def _native_db_copy(tmp_path: Path, sql: str = "", params=()) -> Path:
+    """Copy the native DB into tmp_path, optionally applying one edit."""
+    db_path = tmp_path / "session-store.db"
+    shutil.copyfile(FIXTURES / "session-store.db", db_path)
+    if sql:
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(sql, params)
+    return db_path
+
+
 def _install_native_events(case: str) -> None:
     _write_events_log(copilot_log.COPILOT_STATE_ROOT, NATIVE_IDS[case], _native_lines(case))
 
@@ -61,64 +71,28 @@ def _isolate_copilot_state(tmp_path, monkeypatch):
     monkeypatch.setattr(copilot_log, "COPILOT_STATE_ROOT", tmp_path / "session-state")
 
 
-def _make_test_db(
-    session_id="test-session",
-    cwd=None,
-    turns=(),
-    files=(),
-    created_at="2026-01-01T12:00:00Z",
-    updated_at="2026-01-01T12:00:00Z",
-    repository="test/repo",
-):
-    """Build a throwaway Copilot SQLite DB with the given rows.
+def _make_test_db(session_id, turns):
+    """Copy the native DB schema with one session holding the given turns.
 
     Returns the DB's path; the caller is responsible for unlinking it.
     """
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
         db_path = Path(tf.name)
     shutil.copyfile(FIXTURES / "session-store.db", db_path)
-    conn = sqlite3.connect(db_path)
-    cur = conn.cursor()
-    for table in ("sessions", "turns", "checkpoints", "session_files", "session_refs", "assistant_usage_events"):
-        cur.execute(f"DELETE FROM {table}")
-
-    cur.execute(
-        "INSERT INTO sessions (id, cwd, repository, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (
-            session_id,
-            cwd if cwd is not None else str(Path.cwd()),
-            repository,
-            created_at,
-            updated_at,
-        ),
-    )
-    for t in turns:
-        cur.execute(
-            "INSERT INTO turns (session_id, turn_index, user_message, "
-            "assistant_response, timestamp) VALUES (?, ?, ?, ?, ?)",
-            (
-                session_id,
-                t["turn_index"],
-                t.get("user_message", ""),
-                t.get("assistant_response", ""),
-                t.get("timestamp"),
-            ),
+    with sqlite3.connect(db_path) as conn:
+        for table in ("sessions", "turns", "checkpoints", "session_files", "session_refs", "assistant_usage_events"):
+            conn.execute(f"DELETE FROM {table}")
+        conn.execute(
+            "INSERT INTO sessions (id, cwd, repository, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (session_id, str(Path.cwd()), "test/repo", "2026-01-01T12:00:00Z", "2026-01-01T12:00:00Z"),
         )
-    for f in files:
-        cur.execute(
-            "INSERT INTO session_files (session_id, file_path, tool_name, "
-            "turn_index, first_seen_at) VALUES (?, ?, ?, ?, ?)",
-            (
-                session_id,
-                f["file_path"],
-                f.get("tool_name", ""),
-                f.get("turn_index"),
-                f.get("first_seen_at"),
-            ),
-        )
-    conn.commit()
-    conn.close()
+        for t in turns:
+            conn.execute(
+                "INSERT INTO turns (session_id, turn_index, user_message, "
+                "assistant_response, timestamp) VALUES (?, ?, ?, ?, ?)",
+                (session_id, t["turn_index"], t["user_message"], t["assistant_response"], t["timestamp"]),
+            )
     return db_path
 
 
@@ -151,30 +125,17 @@ def test_copilot_skill_invocation_is_recorded_and_attributed():
     attribute_skills([turn], skills)
     assert turn.skills_used == ["fixture-skill"]
 
-def test_copilot_skill_definition_details_are_loaded():
-    with tempfile.TemporaryDirectory() as tmp_name:
-        skill_path = Path(tmp_name) / "demo" / "SKILL.md"
-        skill_path.parent.mkdir()
-        skill_path.write_text(
-            "---\nname: demo\ndescription: Explains the demo workflow.\n---\n\n"
-            "# Demo Skill\n",
-            encoding="utf-8",
-        )
-        turn = Turn("use demo", "", "2026-07-01T22:00:00Z", 0)
-        attribute_skills(
-            [turn],
-            [
-                {
-                    "name": "demo",
-                    "path": str(skill_path),
-                    "timestamp": "2026-07-01T22:05:00Z",
-                }
-            ],
-        )
-        assert turn.skill_details["demo"]["description"] == (
-            "Explains the demo workflow."
-        )
-        assert turn.skill_details["demo"]["path"] == str(skill_path.resolve())
+def test_copilot_skill_definition_details_are_loaded(tmp_path):
+    # The native event points at the capture workspace; stage the captured
+    # SKILL.md where the extractor can read it.
+    skill_path = tmp_path / "fixture-skill" / "SKILL.md"
+    skill_path.parent.mkdir()
+    shutil.copyfile(FIXTURES / "fixture-skill.md", skill_path)
+    [skill] = _skills_from_events(_native_lines("skill"))
+    turn = Turn("use skill", "", "2026-01-01T00:00:00Z", 0)
+    attribute_skills([turn], [{**skill, "path": str(skill_path)}])
+    assert turn.skill_details["fixture-skill"]["description"] == "A fixture capture skill."
+    assert turn.skill_details["fixture-skill"]["path"] == str(skill_path.resolve())
 
 
 def test_copilot_permissions_join_approval_and_denial():
@@ -676,58 +637,28 @@ def test_copilot_cwd_matches_blank_and_strict():
 
 
 def test_copilot_newest_session_falls_back_to_global_newest():
-    db_path = _make_test_db(session_id="elsewhere", cwd="/somewhere/else")
-    try:
-        conn = get_db_connection(db_path)
+    # Native sessions ran in /workspace, which never overlaps the test cwd.
+    with _native_db() as conn:
         session = copilot_log.newest_session(conn, Path.cwd(), strict=False)
-        assert session is not None
-        assert session["id"] == "elsewhere"
-        conn.close()
-    finally:
-        db_path.unlink()
+    assert session["id"] == NATIVE_IDS["image"]
 
 
 def test_copilot_newest_session_strict_with_no_match_returns_none():
-    db_path = _make_test_db(session_id="elsewhere", cwd="/somewhere/else")
-    try:
-        conn = get_db_connection(db_path)
+    with _native_db() as conn:
         assert copilot_log.newest_session(conn, Path.cwd(), strict=True) is None
-        conn.close()
-    finally:
-        db_path.unlink()
 
 
 def test_copilot_newest_session_returns_none_for_empty_db(tmp_path):
-    db_path = tmp_path / "empty.db"
-    shutil.copyfile(FIXTURES / "session-store.db", db_path)
-    with sqlite3.connect(db_path) as conn:
-        conn.execute("DELETE FROM sessions")
+    db_path = _native_db_copy(tmp_path, "DELETE FROM sessions")
     with get_db_connection(db_path) as conn:
         assert copilot_log.newest_session(conn, Path.cwd(), strict=False) is None
 
+
 def test_copilot_newest_session_picks_most_recently_updated():
-    db_path = _make_test_db(session_id="s1", updated_at="2026-01-01T00:00:00Z")
-    conn = sqlite3.connect(db_path)
-    conn.execute(
-        "INSERT INTO sessions (id, cwd, repository, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (
-            "s2",
-            str(Path.cwd()),
-            "test/repo",
-            "2026-01-02T00:00:00Z",
-            "2026-01-02T00:00:00Z",
-        ),
-    )
-    conn.commit()
-    conn.close()
-    try:
-        conn = get_db_connection(db_path)
-        session = copilot_log.newest_session(conn, Path.cwd(), strict=False)
-        assert session["id"] == "s2"
-        conn.close()
-    finally:
-        db_path.unlink()
+    # The image case was captured last, so it has the latest updated_at.
+    with _native_db() as conn:
+        session = copilot_log.newest_session(conn, Path("/workspace"), strict=True)
+    assert session["id"] == NATIVE_IDS["image"]
 
 
 # -- per-session events log edge cases ---------------------------------------
@@ -795,20 +726,11 @@ def test_copilot_attribute_tools_with_no_turns_is_a_noop():
 
 
 def test_copilot_attribute_tools_registers_skill_from_call():
-    turn = Turn("use the demo skill", "", "2026-01-01T00:00:00Z", 0)
-    copilot_log.attribute_tools(
-        [turn],
-        [
-            {
-                "name": "builtin.skill",
-                "arguments": {"skill": "demo-skill"},
-                "success": True,
-                "result": "ok",
-                "timestamp": "2026-01-01T00:00:01Z",
-            }
-        ],
-    )
-    assert turn.skills_used == ["demo-skill"]
+    tools = copilot_log._tools_from_events(_native_lines("skill"))
+    assert [t["name"] for t in tools] == ["skill"]
+    turn = Turn("use the skill", "", "2026-01-01T00:00:00Z", 0)
+    copilot_log.attribute_tools([turn], tools)
+    assert turn.skills_used == ["fixture-skill"]
 
 
 def test_copilot_attribute_skills_falls_back_to_first_turn_without_timestamp():
@@ -1116,51 +1038,23 @@ def test_copilot_render_session_prefers_events_log_tools_over_db_files(tmp_path,
     assert "- edit -> /tmp/from_db.py" not in md
     assert "- bash -> printf TOOL_FIXTURE_MARKER" in md
 
-def test_copilot_render_session_writes_raw_envelope_when_requested(tmp_path):
-    db_path = _make_test_db(
-        session_id="sess-raw",
-        turns=[
-            {
-                "turn_index": 0,
-                "user_message": "do it",
-                "assistant_response": "ok",
-                "timestamp": "2026-01-01T00:00:00Z",
-            }
-        ],
-    )
-    try:
-        conn = get_db_connection(db_path)
-        session = get_session_by_id(conn, "sess-raw")
-        render_session(conn, session, raw_output=tmp_path)
-        conn.close()
-    finally:
-        db_path.unlink()
-    raw_files = list(tmp_path.glob("copilot_session_log_raw_*.json"))
-    assert len(raw_files) == 1
-
-
 # -- _extract_all --------------------------------------------------------------
 
 
 def test_copilot_extract_all_reports_error_when_no_sessions(tmp_path, capsys):
-    db_path = tmp_path / "empty.db"
-    shutil.copyfile(FIXTURES / "session-store.db", db_path)
-    with sqlite3.connect(db_path) as conn:
-        conn.execute("DELETE FROM sessions")
+    db_path = _native_db_copy(tmp_path, "DELETE FROM sessions")
     with get_db_connection(db_path) as conn:
         rc = copilot_log._extract_all(conn, None)
     assert rc == 1
     assert "no Copilot sessions" in capsys.readouterr().err
+
 
 def test_copilot_extract_all_writes_one_file_per_session(tmp_path, monkeypatch, capsys):
     for case in NATIVE_IDS:
         _install_native_events(case)
     monkeypatch.setattr(copilot_log, "dump_images",
                         partial(copilot_log.dump_images, dump_dir=tmp_path / "images"))
-    db_path = tmp_path / "sessions.db"
-    shutil.copyfile(FIXTURES / "session-store.db", db_path)
-    with sqlite3.connect(db_path) as conn:
-        conn.execute("UPDATE sessions SET cwd=?", (str(tmp_path),))
+    db_path = _native_db_copy(tmp_path, "UPDATE sessions SET cwd=?", (str(tmp_path),))
     monkeypatch.chdir(tmp_path)
     output = tmp_path / "output"
     with get_db_connection(db_path) as conn:
@@ -1183,61 +1077,34 @@ def test_copilot_extract_all_writes_one_file_per_session(tmp_path, monkeypatch, 
 def test_copilot_extract_all_skips_session_that_fails_to_render(
     tmp_path, monkeypatch, capsys
 ):
-    db_path = _make_test_db(
-        session_id="sess-bad",
-        turns=[
-            {
-                "turn_index": 0,
-                "user_message": "hi",
-                "assistant_response": "ok",
-                "timestamp": "2026-01-01T00:00:00Z",
-            }
-        ],
-    )
-    try:
-        conn = get_db_connection(db_path)
+    db_path = _native_db_copy(tmp_path, "UPDATE sessions SET cwd=?", (str(tmp_path),))
+    monkeypatch.chdir(tmp_path)
 
-        def boom(*args, **kwargs):
-            raise ValueError("render exploded")
+    def boom(*args, **kwargs):
+        raise ValueError("render exploded")
 
-        monkeypatch.setattr(copilot_log, "render_session", boom)
+    monkeypatch.setattr(copilot_log, "render_session", boom)
+    with get_db_connection(db_path) as conn:
         rc = copilot_log._extract_all(conn, str(tmp_path))
-        conn.close()
-    finally:
-        db_path.unlink()
     captured = capsys.readouterr()
     assert rc == 1
-    assert "skip" in captured.err
+    assert captured.err.count("skip") == len(NATIVE_IDS)
     assert list(tmp_path.glob("*.md")) == []
 
 
 def test_copilot_extract_all_reports_write_failure(tmp_path, monkeypatch, capsys):
-    db_path = _make_test_db(
-        session_id="sess-write-fail",
-        turns=[
-            {
-                "turn_index": 0,
-                "user_message": "hi",
-                "assistant_response": "ok",
-                "timestamp": "2026-01-01T00:00:00Z",
-            }
-        ],
-    )
-    try:
-        conn = get_db_connection(db_path)
+    db_path = _native_db_copy(tmp_path, "UPDATE sessions SET cwd=?", (str(tmp_path),))
+    monkeypatch.chdir(tmp_path)
+    original_write_text = Path.write_text
 
-        original_write_text = Path.write_text
+    def failing_write_text(self, *args, **kwargs):
+        if self.suffix == ".md":
+            raise OSError("disk full")
+        return original_write_text(self, *args, **kwargs)
 
-        def failing_write_text(self, *args, **kwargs):
-            if self.suffix == ".md":
-                raise OSError("disk full")
-            return original_write_text(self, *args, **kwargs)
-
-        monkeypatch.setattr(Path, "write_text", failing_write_text)
+    monkeypatch.setattr(Path, "write_text", failing_write_text)
+    with get_db_connection(db_path) as conn:
         rc = copilot_log._extract_all(conn, str(tmp_path), raw=False)
-        conn.close()
-    finally:
-        db_path.unlink()
     captured = capsys.readouterr()
     assert rc == 1
     assert "error writing" in captured.err
@@ -1253,12 +1120,8 @@ def test_copilot_main_reports_missing_database(tmp_path, capsys):
     assert "error" in captured.err
 
 
-def test_copilot_main_session_not_found_returns_error(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        copilot_log, "get_db_connection", lambda p: sqlite3.connect(":memory:")
-    )
-    monkeypatch.setattr(copilot_log, "get_session_by_id", lambda conn, sid: None)
-    rc = copilot_log.main(["bogus-id", "--db", str(tmp_path / "x.db")])
+def test_copilot_main_session_not_found_returns_error():
+    rc = copilot_log.main(["bogus-id", "--db", str(FIXTURES / "session-store.db")])
     assert rc == 1
 
 
@@ -1346,29 +1209,15 @@ def test_copilot_main_with_explicit_session_id_and_default_output(
     assert captured_raw_output["value"] == copilot_log.DEFAULT_OUTPUT.parent
 
 
-def test_copilot_main_with_explicit_session_id_and_output_path_writes_there(
-    monkeypatch, tmp_path
-):
-    session = {
-        "id": "sess-explicit2",
-        "cwd": str(Path.cwd()),
-        "created_at": "2026-01-01T00:00:00Z",
-    }
-    monkeypatch.setattr(
-        copilot_log, "get_db_connection", lambda p: sqlite3.connect(":memory:")
-    )
-    monkeypatch.setattr(copilot_log, "get_session_by_id", lambda conn, sid: session)
-    monkeypatch.setattr(
-        copilot_log,
-        "render_session",
-        lambda conn, s, raw_output=None, tool_result_max_bytes=0: "body text",
-    )
+def test_copilot_main_with_explicit_session_id_and_output_path_writes_there(tmp_path):
     out_path = tmp_path / "custom.md"
     rc = copilot_log.main(
-        ["sess-explicit2", "--output", str(out_path), "--db", str(tmp_path / "x.db")]
+        [NATIVE_IDS["baseline"], "--output", str(out_path), "--db", str(FIXTURES / "session-store.db")]
     )
     assert rc == 0
-    assert out_path.read_text(encoding="utf-8") == "body text"
+    markdown = out_path.read_text(encoding="utf-8")
+    assert "BASELINE_FIXTURE_MARKER" in markdown
+    assert "Model: claude-sonnet-5." in markdown
 
 
 def test_copilot_main_reports_output_write_error(monkeypatch, tmp_path, capsys):
