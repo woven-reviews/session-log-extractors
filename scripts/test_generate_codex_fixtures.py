@@ -1,6 +1,7 @@
 """Native Codex fixture checks; regeneration never runs in tests."""
 
 import json
+import queue
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -62,7 +63,9 @@ def test_clean_filters_startup_and_unrelated_records(tmp_path):
     rows = [
         {"type": "session_meta", "payload": {"id": "one", "cwd": str(workspace),
                                              "creator_user_id": "secret"}},
-        {"type": "turn_context", "payload": {"cwd": str(workspace), "model": "gpt-x"}},
+        {"type": "turn_context", "payload": {"cwd": str(workspace), "model": "gpt-x",
+            "collaboration_mode": {"mode": "plan", "settings": {
+                "developer_instructions": "private mode instructions"}}}},
         {"type": "response_item", "payload": {"type": "message", "role": "developer",
                                               "content": []}},
         {"type": "response_item", "payload": {"type": "message", "role": "user",
@@ -88,7 +91,9 @@ def test_clean_filters_startup_and_unrelated_records(tmp_path):
         "item_completed", "user_message"
     ]
     assert cleaned[0]["payload"]["cwd"] == "/workspace"
+    assert cleaned[1]["payload"]["collaboration_mode"] == {"mode": "plan"}
     assert "secret" not in json.dumps(cleaned)
+    assert "private mode instructions" not in json.dumps(cleaned)
 
 
 def test_clean_rejects_unredacted_private_path():
@@ -99,13 +104,15 @@ def test_clean_rejects_unredacted_private_path():
 
 
 def test_select_and_validate_captured_shapes():
-    for name in ("tool_patch_large", "slash", "image", "model"):
+    for name in ("tool_patch_large", "slash", "image", "model", "plan", "question", "denial"):
         rows = [json.loads(line) for line in (FIXTURES / f"{name}.jsonl").read_text().splitlines()]
         generator.validate(name, rows)
+        if name in ("plan", "question", "denial"):
+            assert "developer_instructions" not in json.dumps(rows)
     tool = [json.loads(line) for line in (FIXTURES / "tool_patch_large.jsonl").read_text().splitlines()]
     selected = generator.select("slash", tool)
     assert not any(r["payload"].get("type") == "custom_tool_call" for r in selected)
-    for name in ("tool_patch_large", "slash", "image", "model"):
+    for name in ("tool_patch_large", "slash", "image", "model", "plan", "question", "denial"):
         with pytest.raises(RuntimeError):
             generator.validate(name, [])
 
@@ -191,6 +198,77 @@ def test_main_regenerates_with_fake_cli_only(monkeypatch, tmp_path):
     assert all(call[0][0] == "codex" for call in calls)
     assert sum("resume" in call[0] for call in calls) == 1
     assert all(call[1]["stdin"] == generator.subprocess.DEVNULL for call in calls)
+    assert not list(output.parent.glob("codex-fixture-stage-*"))
+
+
+def test_interactive_main_drives_requests_and_stages_native_rollouts(monkeypatch, tmp_path):
+    output = tmp_path / "codex"
+    output.mkdir()
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    monkeypatch.setattr(generator, "ROOT", output)
+    monkeypatch.setattr(generator, "SESSIONS", sessions)
+    processes = []
+
+    class FakeProcess:
+        def __init__(self, *args, **kwargs):
+            assert args[0] == ["codex", "app-server"]
+            self.events = queue.Queue()
+            self.stdin = self
+            self.stdout = self
+            self.sent = []
+            self.name = None
+            processes.append(self)
+
+        def __iter__(self):
+            while (event := self.events.get()) is not None:
+                yield json.dumps(event) + "\n"
+
+        def write(self, line):
+            message = json.loads(line)
+            self.sent.append(message)
+            method = message.get("method")
+            if method == "initialize":
+                self.events.put({"id": 1, "result": {}})
+            elif method == "thread/start":
+                self.name = Path(message["params"]["cwd"]).name
+                rows = (FIXTURES / f"{self.name}.jsonl").read_text()
+                (sessions / f"rollout-fixture-{self.name}.jsonl").write_text(rows)
+                self.events.put({"id": 2, "result": {"thread": {"id": f"fixture-{self.name}"}}})
+            elif method == "turn/start":
+                self.events.put({"id": 3, "result": {}})
+                if self.name == "question":
+                    self.events.put({"id": 4, "method": "item/tool/requestUserInput",
+                                     "params": {"questions": [{"id": "fixture_owner"}]}})
+                elif self.name == "denial":
+                    self.events.put({"id": 4, "method": "item/commandExecution/requestApproval"})
+                else:
+                    self.events.put({"method": "turn/completed",
+                                     "params": {"turn": {"status": "completed"}}})
+            elif message.get("id") == 4:
+                self.events.put({"method": "turn/completed",
+                                 "params": {"turn": {"status": "completed"}}})
+
+        def flush(self):
+            pass
+
+        def terminate(self):
+            self.events.put(None)
+
+        def wait(self, timeout):
+            return 0
+
+    monkeypatch.setattr(generator.subprocess, "Popen", FakeProcess)
+    generator.interactive_main()
+    assert {p.name for p in output.glob("*.jsonl")} == {
+        "plan.jsonl", "question.jsonl", "denial.jsonl"
+    }
+    assert len(processes) == 3
+    assert any(m.get("result", {}).get("answers") == {
+        "fixture_owner": {"answers": ["QUAL"]}
+    } for m in processes[1].sent)
+    assert any(m.get("result", {}).get("decision") == "decline"
+               for m in processes[2].sent)
     assert not list(output.parent.glob("codex-fixture-stage-*"))
 
 
