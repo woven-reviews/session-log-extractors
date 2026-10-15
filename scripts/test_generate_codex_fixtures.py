@@ -21,6 +21,8 @@ def test_native_fixtures_record_headless_codex_shapes():
     assert files_changed == ["/workspace/fixture.txt"]
     assert len(turns[0].tool_bullets) == 2
     assert turns[0].result_notes[0] == "exec: TOOL_FIXTURE_MARKER"
+    assert any(note.startswith("apply_patch: Success. Updated the following files:")
+               and "/workspace/fixture.txt" in note for note in turns[0].result_notes)
     calls = [call for event in build_events(tool, tool_result_max_bytes=64)
              for call in event.get("tool_calls", [])]
     assert len(calls) == 2
