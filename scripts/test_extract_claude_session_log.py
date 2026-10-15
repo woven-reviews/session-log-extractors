@@ -171,7 +171,12 @@ def test_native_dont_ask_denial_is_recorded():
     assert parse_permission_denial(result) == ""
     turns, _ = build_turns(entries)
     assert [d["tool"].split(" — ")[0] for d in turns[0].permission_denials] == ["Bash"]
+    assert turns[0].permission_denials[0]["by"] == "settings"
     assert not any("has been denied" in note for note in turns[0].result_notes)
+    md = render(turns, [], "proj", None)
+    assert "_Denied by settings:_ **Bash" in md
+    assert "_settings denied permission:_ Bash" in md
+    assert "user denied permission" not in md
 
 
 def test_permission_denial_ignores_isc_license_text():
@@ -195,7 +200,7 @@ def test_permission_denials_from_result_names_tool():
         }
     }
     out = permission_denials_from_result(entry, {"toolu_1": "Bash — rm -rf build"})
-    assert out == [{"tool": "Bash — rm -rf build", "message": "no"}]
+    assert out == [{"tool": "Bash — rm -rf build", "message": "no", "by": "user"}]
 
 
 def test_custom_answer_matches_no_option():
@@ -956,7 +961,7 @@ def test_build_turns_covers_command_args_shell_subagents_questions_and_files():
     assert turns[0].subagent_count == 1
     assert files_changed == ["/new/file.py"]
     assert turns[0].option_qas[0]["chosen_labels"] == ["section"]
-    assert turns[0].permission_denials == [{"tool": "Bash — rm -rf build", "message": "no"}]
+    assert turns[0].permission_denials == [{"tool": "Bash — rm -rf build", "message": "no", "by": "user"}]
 
 
 def test_build_turns_makes_stub_for_leading_assistant_activity():

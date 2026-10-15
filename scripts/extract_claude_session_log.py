@@ -684,7 +684,8 @@ def permission_denials_from_result(
     for block in _content_blocks(entry):
         if not isinstance(block, dict) or block.get("type") != "tool_result":
             continue
-        message = parse_permission_denial(_result_block_text(block))
+        text = _result_block_text(block)
+        message = parse_permission_denial(text)
         if message is None:
             continue
         tuid = block.get("tool_use_id")
@@ -694,6 +695,8 @@ def permission_denials_from_result(
                 if isinstance(tuid, str)
                 else "tool",
                 "message": message,
+                # Don't-ask/deny rules refuse without a human in the loop.
+                "by": "settings" if _PERMISSION_DENIED_TOOL.match(text) else "user",
             }
         )
     return out
@@ -1157,7 +1160,8 @@ def render_summary(turns: List[Turn], first_ts: Optional[str]) -> List[str]:
                 out.extend(_quote(p["message"]))
             out.append("")
         for d in turn.permission_denials:
-            out.append(f"_Denied permission:_ **{d['tool']}**")
+            who = "by settings" if d.get("by") == "settings" else "permission"
+            out.append(f"_Denied {who}:_ **{d['tool']}**")
             if d["message"]:
                 for line in d["message"].splitlines():
                     out.append(f"> {line}" if line.strip() else ">")
@@ -1296,7 +1300,8 @@ def render(
         if turn.permission_denials:
             out.append("")
             for d in turn.permission_denials:
-                line = f"  _user denied permission:_ {d['tool']}"
+                who = "settings" if d.get("by") == "settings" else "user"
+                line = f"  _{who} denied permission:_ {d['tool']}"
                 if d["message"]:
                     line += f" → “{_truncate(d['message'], 160)}”"
                 out.append(line)

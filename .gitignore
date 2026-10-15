@@ -8,4 +8,5 @@ __pycache__/
 !.claude/skills/
 !.claude/settings.json
 .coverage
+coverage.xml
 
