@@ -996,6 +996,19 @@ def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]:
             continue
 
         if etype == "event_msg":
+            if ptype == "item_completed":
+                item = payload.get("item")
+                if (
+                    isinstance(item, dict)
+                    and item.get("type") == "FileChange"
+                    and item.get("status") == "completed"
+                ):
+                    changes = item.get("changes")
+                    if isinstance(changes, dict):
+                        for fp in changes:
+                            if isinstance(fp, str):
+                                append_unique_path(files_changed, files_seen, fp)
+                continue
             if ptype == "user_message":
                 text = user_text_from_event(payload)
                 response_images: List[Dict[str, Any]] = []
@@ -1114,7 +1127,11 @@ def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]:
             if qas:
                 current.option_qas.extend(qas)
                 continue
-            note = result_note(output)
+            note = result_note(
+                _flatten_result_text(output)
+                if ptype == "custom_tool_call_output"
+                else output
+            )
             if note:
                 current.add_result_note(prefix + note)
             continue
@@ -1150,8 +1167,7 @@ def build_events(
 ) -> List[Dict[str, Any]]:
     """Walk Codex entries in order, producing raw-envelope events.
 
-    A second pass alongside ``build_turns``, deliberately not a refactor of it,
-    so the markdown stays byte-for-byte what it was.
+    A second pass alongside ``build_turns`` for raw envelope events.
     """
     events: List[Dict[str, Any]] = []
     pending_calls: Dict[str, Dict[str, Any]] = {}

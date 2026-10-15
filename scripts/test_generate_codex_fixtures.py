@@ -17,7 +17,16 @@ def test_native_fixtures_record_headless_codex_shapes():
     tool = load_entries(FIXTURES / "tool_patch_large.jsonl")
     assert any(row["payload"].get("type") == "custom_tool_call" for row in tool)
     assert any(row["payload"].get("item", {}).get("type") == "FileChange" for row in tool)
-    assert build_turns(tool)[1] == []  # The extractor's legacy tool schema is tested inline.
+    turns, files_changed = build_turns(tool)
+    assert files_changed == ["/workspace/fixture.txt"]
+    assert len(turns[0].tool_bullets) == 2
+    assert turns[0].result_notes[0] == "exec: TOOL_FIXTURE_MARKER"
+    calls = [call for event in build_events(tool, tool_result_max_bytes=64)
+             for call in event.get("tool_calls", [])]
+    assert len(calls) == 2
+    assert calls[0]["result"] == "TOOL_FIXTURE_MARKER"
+    assert calls[1]["result_truncated"] is True
+    assert calls[1]["result_bytes"] > 64
 
     slash = load_entries(FIXTURES / "slash.jsonl")
     assert build_turns(slash)[0][0].command == "/review"
