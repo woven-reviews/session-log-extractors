@@ -1,0 +1,3 @@
+{"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_image", "image_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/ax6fN8AAAAASUVORK5CYII="}, {"type": "input_text", "text": "Look [Image #1]"}]}}
+{"type": "event_msg", "payload": {"type": "user_message", "message": "Look [Image #1]", "images": [], "local_images": []}}
+{"type": "event_msg", "payload": {"type": "user_message", "message": "Missing image [Image #1]", "images": ["/missing/pixel.png"]}}
