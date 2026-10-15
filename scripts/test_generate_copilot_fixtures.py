@@ -4,6 +4,8 @@ import json
 import sqlite3
 from types import SimpleNamespace
 
+import pytest
+
 import generate_copilot_fixtures as generator
 
 from generate_copilot_fixtures import clean_event_lines, copy_session
@@ -70,7 +72,11 @@ def test_run_uses_isolated_headless_flags_and_resume(monkeypatch, tmp_path):
     assert "--attachment" in calls[1]
 
 
-def test_main_stages_all_six_native_cases(monkeypatch, tmp_path):
+def _fake_copilot(monkeypatch, tmp_path, mutate=lambda name, resume, rows: rows):
+    """Stand in for the copilot CLI: write a minimal native event log and DB rows.
+
+    ``mutate`` may rewrite one invocation's events, or return None to write nothing.
+    """
     source = tmp_path / "source.db"
     state = tmp_path / "state"
     output = tmp_path / "output"
@@ -83,38 +89,41 @@ def test_main_stages_all_six_native_cases(monkeypatch, tmp_path):
     monkeypatch.setattr(generator.subprocess, "run", lambda *a, **k: SimpleNamespace(
         stdout="GitHub Copilot CLI 1.0.90-5.\n", returncode=0
     ))
-
     seen = []
 
     def fake_run(prompt, workspace, session_id, *, resume=False, attachment=None):
         seen.append((workspace, list(tmp_path.glob("copilot-fixture-staging-*"))))
         name = workspace.parent.name
         events_path = state / session_id / "events.jsonl"
-        events_path.parent.mkdir(parents=True, exist_ok=True)
-        rows = []
-        if events_path.exists():
-            rows = [json.loads(line) for line in events_path.read_text().splitlines()]
         response = {
             "baseline": "BASELINE_FIXTURE_MARKER",
             "continued": "BLUE-WREN-17" if resume else "READY",
             "tool_success": "TOOL_FIXTURE_MARKER",
             "tool_failure": "exit code 1",
         }.get(name, "fixture")
-        rows += [
+        new = [
             {"type": "user.message", "data": {"content": prompt,
                 "attachments": [{"path": str(attachment)}] if attachment else []}},
             {"type": "assistant.message", "data": {"content": response}},
         ]
         if name.startswith("tool_"):
             command = "printf TOOL_FIXTURE_MARKER" if name == "tool_success" else "false"
-            rows.extend([
+            new.extend([
                 {"type": "tool.execution_start", "data": {
                     "toolCallId": "call-1", "toolName": "bash", "arguments": {"command": command}}},
                 {"type": "tool.execution_complete", "data": {
                     "toolCallId": "call-1", "result": {"content": response}}},
             ])
         if name == "skill":
-            rows.append({"type": "skill.invoked", "data": {"name": "fixture-skill"}})
+            new.append({"type": "skill.invoked", "data": {"name": "fixture-skill"}})
+        new = mutate(name, resume, new)
+        if new is None:
+            return
+        events_path.parent.mkdir(parents=True, exist_ok=True)
+        rows = []
+        if events_path.exists():
+            rows = [json.loads(line) for line in events_path.read_text().splitlines()]
+        rows += new
         events_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
         with sqlite3.connect(source) as conn:
             if not resume:
@@ -122,6 +131,11 @@ def test_main_stages_all_six_native_cases(monkeypatch, tmp_path):
             conn.execute("INSERT INTO turns VALUES (?, ?)", (session_id, prompt))
 
     monkeypatch.setattr(generator, "run", fake_run)
+    return output, seen
+
+
+def test_main_stages_all_six_native_cases(monkeypatch, tmp_path):
+    output, seen = _fake_copilot(monkeypatch, tmp_path)
     generator.main()
     manifest = json.loads((output / "manifest.json").read_text())
     assert set(manifest["cases"]) == {
@@ -136,6 +150,61 @@ def test_main_stages_all_six_native_cases(monkeypatch, tmp_path):
     assert all(tmp_path not in workspace.parents for workspace, _ in seen)
     assert all(len(staging) == 1 for _, staging in seen)
     assert not list(tmp_path.glob("copilot-fixture-staging-*"))
+
+
+def _drop(event_type):
+    return lambda rows: [row for row in rows if row["type"] != event_type]
+
+
+@pytest.mark.parametrize(("case", "breakage", "message"), [
+    ("baseline", lambda rows: None, "baseline: missing native event log"),
+    ("baseline", _drop("assistant.message"), "baseline: incomplete native event log"),
+    ("continued", _drop("user.message"), "continued: resume did not produce a second turn"),
+    ("tool_success", _drop("tool.execution_complete"),
+     "tool_success: missing native printf TOOL_FIXTURE_MARKER execution"),
+    ("skill", _drop("skill.invoked"), "skill: no native skill invocation"),
+    ("image", lambda rows: [{**row, "data": {**row["data"], "attachments": []}}
+                            if row["type"] == "user.message" else row for row in rows],
+     "image: attachment was not recorded"),
+    ("baseline", lambda rows: [{**row, "data": {"content": "something else"}}
+                               if row["type"] == "assistant.message" else row for row in rows],
+     "baseline: missing expected reply BASELINE_FIXTURE_MARKER"),
+    ("tool_failure", lambda rows: [{**row, "data": {**row["data"], "result": {"content": "fine"}}}
+                                   if row["type"] == "tool.execution_complete" else row
+                                   for row in rows],
+     "tool_failure: missing native result exit code 1"),
+])
+def test_main_rejects_incomplete_native_capture(monkeypatch, tmp_path, case, breakage, message):
+    # Only the continued case's resumed turn is broken for the second-turn check.
+    def mutate(name, resume, rows):
+        if name != case or (case == "continued" and not resume):
+            return rows
+        return breakage(rows)
+
+    _fake_copilot(monkeypatch, tmp_path, mutate)
+    with pytest.raises(RuntimeError) as exc:
+        generator.main()
+    assert str(exc.value) == message
+
+
+def test_run_reports_cli_failure(monkeypatch, tmp_path):
+    monkeypatch.setattr(generator.subprocess, "run",
+                        lambda *a, **k: SimpleNamespace(returncode=2, stderr=" auth \n"))
+    with pytest.raises(RuntimeError, match="Copilot exited 2: auth"):
+        generator.run("prompt", tmp_path, "session-id")
+
+
+def test_copy_session_rejects_unknown_session(tmp_path):
+    source = tmp_path / "source.db"
+    with sqlite3.connect(source) as conn:
+        conn.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT)")
+    with pytest.raises(RuntimeError, match="missing native session nope"):
+        copy_session(source, "nope", tmp_path / "out.db", tmp_path)
+
+
+def test_clean_event_lines_rejects_unknown_event_shape(tmp_path):
+    with pytest.raises(RuntimeError, match="unexpected Copilot event format"):
+        clean_event_lines(['["not", "an", "event"]'], tmp_path)
 
 
 def test_clean_rejects_other_private_temp_paths(tmp_path):
