@@ -1,0 +1,22 @@
+# Codex fixture provenance
+
+These seven native fixtures cover the captured shapes recorded in [QUAL-2400](https://linear.app/andela/issue/QUAL-2400/codex-test-coverage). Captured on 2026-10-15 with Codex CLI 0.162.1. There are **no hand-authored JSONL fixtures**. Tests read committed files and require no local Codex login or session directory.
+
+## Regenerate
+
+Run `python3 scripts/generate_codex_fixtures.py` from the repository root with a logged-in `codex` CLI for the headless captures, then `python3 scripts/generate_codex_fixtures.py --interactive` for Plan mode, answered question, and declined permission captures. Both commands make model calls. Each case runs in a temporary workspace. The headless cases use `codex exec --json --ignore-user-config`; the interactive cases use the `codex app-server` protocol and read its saved native rollout JSONL, not its JSON-RPC notification stream. The model case resumes its first thread under `gpt-6-luna`. The image case attaches `pixel.png`, a 64×64 synthetic test asset enlarged from the existing one-pixel Copilot fixture; the 1×1 source was too small for this Codex CLI to process. The script finds only the new thread IDs, retains relevant native records, strips startup and mode instructions and unrelated tool output, redacts home/workspace paths, checks each capture's shape, and stages all outputs before replacement. Session IDs and timestamps vary on regeneration. Review the diff before committing.
+
+| QUAL-2400 shape | Classification and evidence |
+| --- | --- |
+| 1. Slash commands | **Headless-generatable:** bare `/review fixture` in `slash.jsonl`. **Fixture-only:** the interactive `<command-name>` wrapper cannot be emitted by `codex exec`; its narrow parser test remains inline. |
+| 2. Plan mode | **App-server capture:** `plan.jsonl` records a native Plan mode turn and Plan item. In CLI 0.162.1, Plan mode disallows `update_plan`, and a Default mode probe reported that tool unavailable. The inline structured `update_plan` test uses handwritten input; we have no native capture showing that combination. |
+| 3. Permission denial | **App-server capture:** `denial.jsonl` records a declined command approval in its native tool result. The current approval response accepts a decision without feedback text; a probe's extra message field did not appear in the saved rollout. The inline assistant-message denial with feedback uses handwritten input; we have no native capture showing that exact form. |
+| 4. `request_user_input` answer | **App-server capture:** `question.jsonl` records the native options request and the answered result. |
+| 5. Pasted images | **Headless-generatable:** `image.jsonl` contains a native base64 `input_image` block and image path; tests decode it using committed `pixel.png`. **Fixture-only:** a deleted backing file requires deliberate mutation; the missing-path test stays inline. |
+| 6. `apply_patch` changes | **Headless-generatable:** `tool_patch_large.jsonl` contains the native `FileChange` and `custom_tool_call` records. The extractor reads completed `FileChange` paths and patch output plus native tool calls/results. The `patch_apply_end` and direct `function_call` patch cases remain inline because these captures do not contain those combinations. |
+| 7. Model switch | **Headless-generatable:** `model.jsonl` has two turns and two native `turn_context.model` values after `codex exec resume -m gpt-6-luna`. |
+| 8. Multi-session scan | **Generatable:** the seven captures have distinct native session IDs and cwd metadata. **Fixture-only:** literal `~`, symlink, overlap, and nonmatch arrangements need controlled path values; the selection tests retain their temporary paths. |
+| 9. Malformed JSONL | **Fixture-only:** a completed headless run cannot intentionally end with a truncated line. The loader test keeps its small inline partial line. |
+| 10. Large tool result | **Headless-generatable:** `tool_patch_large.jsonl` contains thirty repeated tool-output lines. The native result is checked for truncation at a 64-byte limit; large `function_call_output` values remain covered inline. The native `question.jsonl` contains a shorter `function_call_output`. |
+
+The extractor handles the captured native tool and patch records while retaining parser branches for uncaptured variants. Verify with `pytest -q scripts/test_extract_codex_session_log.py scripts/test_generate_codex_fixtures.py` and both coverage gates in `AGENTS.md`.

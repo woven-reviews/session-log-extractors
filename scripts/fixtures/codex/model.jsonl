@@ -1,0 +1,9 @@
+{"timestamp": "2026-10-15T20:21:00.781Z", "type": "session_meta", "payload": {"id": "01a14139-aaa7-7d82-b670-ddc60a2b44b3", "cwd": "/workspace"}}
+{"timestamp": "2026-10-15T20:21:00.781Z", "type": "event_msg", "payload": {"type": "task_started", "collaboration_mode_kind": "default"}}
+{"timestamp": "2026-10-15T20:21:03.650Z", "type": "turn_context", "payload": {"cwd": "/workspace", "model": "gpt-6.1-sol", "collaboration_mode": {"mode": "default"}}}
+{"timestamp": "2026-10-15T20:21:03.653Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Reply with FIRST_MODEL_FIXTURE_MARKER."}]}}
+{"timestamp": "2026-10-15T20:21:05.346Z", "type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "FIRST_MODEL_FIXTURE_MARKER"}]}}
+{"timestamp": "2026-10-15T20:21:06.229Z", "type": "event_msg", "payload": {"type": "task_started", "collaboration_mode_kind": "default"}}
+{"timestamp": "2026-10-15T20:21:07.999Z", "type": "turn_context", "payload": {"cwd": "/workspace", "model": "gpt-6-luna", "collaboration_mode": {"mode": "default"}}}
+{"timestamp": "2026-10-15T20:21:08.330Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Reply with SECOND_MODEL_FIXTURE_MARKER."}]}}
+{"timestamp": "2026-10-15T20:21:09.805Z", "type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "SECOND_MODEL_FIXTURE_MARKER\n\nSkipped code changes and checks because you asked only for the marker. No known risk."}]}}
