@@ -1,0 +1,3 @@
+{"type": "event_msg", "timestamp": "2026-01-01T00:00:00Z", "payload": {"type": "user_message", "message": "do the thing"}}
+{"type": "response_item", "payload": {"type": "function_call", "name": "external_agent", "call_id": "deny-1", "arguments": "{}"}}
+{"type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "[external_agent_tool_result: error]\nThe user doesn't want to proceed with this tool use. The tool use was rejected. The user said:\nnot like that"}]}}
