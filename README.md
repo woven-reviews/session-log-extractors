@@ -2,6 +2,12 @@
 
 Reusable extractors for Claude, Codex, and Copilot session logs.
 
+## Extraction compatibility
+
+The [extraction information contract](scripts/fixtures/README.md) records the
+planned move to JSON-only output, the complete information to preserve across
+harnesses, and the fixture acceptance requirements.
+
 ## Ownership
 
 This repository is owned and maintained by Andela. The source is published
