@@ -1438,6 +1438,18 @@ def test_cli_file_keeps_size_warning(tmp_path, monkeypatch, capsys):
     assert json.loads(output.read_text())["harness"] == "claude"
 
 
+def test_cli_stdout_keeps_size_warning(monkeypatch, capsys):
+    import session_log_envelope
+
+    monkeypatch.setattr(session_log_envelope, "SIZE_WARN_BYTES", 1)
+    transcript = FIXTURES / "baseline.jsonl"
+    assert main(["--transcript", str(transcript), "--output", "-"]) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["harness"] == "claude"
+    assert "warning: stdout JSON is" in captured.err
+    assert "session-log uploads are capped" in captured.err
+
+
 @pytest.mark.parametrize("mode", ["single", "batch"])
 def test_cli_no_event_input_keeps_existing_envelope_omission(mode, tmp_path, capsys):
     transcript = tmp_path / "session.jsonl"

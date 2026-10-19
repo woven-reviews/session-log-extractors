@@ -221,10 +221,15 @@ def write_envelope(path: Path, envelope: Dict[str, Any]) -> int:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(payload, encoding="utf-8")
 
+    return warn_if_oversized(path.name, payload)
+
+
+def warn_if_oversized(label: str, payload: str) -> int:
+    """Return the payload's size in bytes, warning above SIZE_WARN_BYTES."""
     size = len(payload.encode("utf-8"))
     if size > SIZE_WARN_BYTES:
         print(
-            f"  warning: {path.name} is {_human_size(size)} — session-log uploads "
+            f"  warning: {label} is {_human_size(size)} — session-log uploads "
             f"are capped at 10 MB; consider a lower --raw-tool-result-bytes",
             file=sys.stderr,
         )
