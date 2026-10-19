@@ -983,10 +983,13 @@ def _build_turn_objects(
         for key in ("path", "type", "data_url", "data", "media_type"):
             if attachment.get(key):
                 ref[key] = attachment[key]
-        # Two different files can share a display name, so match on the image itself.
+        # Two different files can share a display name, so match on the image
+        # itself; only a ref with no source falls back to its name.
         source = _image_source(ref)
         if any(
-            _image_source(r) == source if source else r["name"] == name
+            _image_source(r) == source
+            if source and _image_source(r)
+            else r["name"] == name
             for r in target.image_refs
         ):
             continue

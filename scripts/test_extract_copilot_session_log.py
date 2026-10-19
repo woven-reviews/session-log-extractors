@@ -835,6 +835,19 @@ def test_copilot_timestamped_attachment_does_not_duplicate_image_token():
                                      "type": ""}]
 
 
+def test_copilot_image_token_and_same_named_attachment_at_another_path_stay_distinct():
+    turns = copilot_log._build_turn_objects(
+        [{"user_message": "[image: p.png]", "timestamp": "2026-01-01T00:00:05Z"}],
+        [],
+        [
+            {"display_name": "p.png", "path": "/a/p.png"},
+            {"display_name": "p.png", "path": "/b/p.png",
+             "timestamp": "2026-01-01T00:00:01Z"},
+        ],
+    )
+    assert [r["path"] for r in turns[0].image_refs] == ["/a/p.png", "/b/p.png"]
+
+
 # -- raw envelope writing and image byte resolution --------------------------
 
 
