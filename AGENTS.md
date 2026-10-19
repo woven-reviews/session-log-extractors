@@ -1,17 +1,21 @@
 # Agent instructions
 
-Use Python 3.11+ and install development tools with `pip install '.[test]'`
-inside a virtual environment. Use the pinned Ruff version from that extra.
+Use uv (CI pins 0.12.11) and Python 3.11+. Install development tools with
+`uv sync --locked --extra test`; add `--python 3.11` to match CI's Python version.
+uv manages `.venv` without manual activation. Use the committed `uv.lock` and
+the pinned Ruff version from the test extra. After intentional dependency
+changes, run `uv lock` and commit the updated lockfile.
 
-Format Python with `ruff format .`. Before committing, run the CI checks:
+Format Python with `uv run --locked ruff format .`. Before committing, run the
+CI checks:
 
 ```sh
-ruff format --check .
-pytest --cov=scripts --cov=src --cov-report=term --cov-report=xml --cov-fail-under=95
+uv run --locked ruff format --check .
+uv run --locked pytest --cov=scripts --cov=src --cov-report=term --cov-report=xml --cov-fail-under=95
 git fetch origin main
-diff-cover coverage.xml --compare-branch=origin/main --fail-under=95
-pytest scripts/test_extract_codex_session_log.py --cov=extract_codex_session_log --cov-fail-under=95
-pytest scripts/test_extract_claude_session_log.py --cov=extract_claude_session_log --cov-fail-under=95
+uv run --locked diff-cover coverage.xml --compare-branch=origin/main --fail-under=95
+uv run --locked pytest scripts/test_extract_codex_session_log.py --cov=extract_codex_session_log --cov-fail-under=95
+uv run --locked pytest scripts/test_extract_claude_session_log.py --cov=extract_claude_session_log --cov-fail-under=95
 ```
 
 Keep all four coverage thresholds at 95% or higher. Overall coverage excludes
