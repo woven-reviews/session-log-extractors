@@ -78,7 +78,6 @@ from skill_metadata import (
     render_skill_lines,
 )
 
-
 CODEX_SESSIONS_ROOT = Path.home() / ".codex" / "sessions"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUTPUT = PROJECT_ROOT / "codex_session_log.md"
@@ -263,7 +262,7 @@ def _payload(entry: Dict[str, Any]) -> Dict[str, Any]:
 def session_id_from_file(path: Path) -> Optional[str]:
     try:
         with path.open("r", encoding="utf-8", errors="replace") as fh:
-            for _, line in zip(range(50), fh):
+            for _, line in zip(range(50), fh, strict=False):
                 try:
                     obj = json.loads(line)
                 except json.JSONDecodeError:
@@ -279,7 +278,7 @@ def session_id_from_file(path: Path) -> Optional[str]:
 def session_cwd_from_file(path: Path) -> Optional[str]:
     try:
         with path.open("r", encoding="utf-8", errors="replace") as fh:
-            for _, line in zip(range(80), fh):
+            for _, line in zip(range(80), fh, strict=False):
                 try:
                     obj = json.loads(line)
                 except json.JSONDecodeError:
@@ -346,7 +345,8 @@ def output_identifier(transcript: Path) -> str:
     return ident or transcript.stem
 
 
-def select_transcript(
+# Existing transcript selection; remove in QUAL-2515.
+def select_transcript(  # noqa: C901
     selector: Optional[str],
     transcript: Optional[str],
     sessions_root: Optional[str],
@@ -463,12 +463,13 @@ def assistant_text_from_payload(payload: Dict[str, Any]) -> str:
 def _image_ref_from_string(value: str) -> Optional[Dict[str, Any]]:
     if value.startswith("data:image/"):
         return {"type": "data_url", "data_url": value}
-    if value.startswith("/") or value.startswith("~"):
+    if value.startswith(("/", "~")):
         return {"type": "path", "path": value}
     return None
 
 
-def image_refs_from_event(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+# Existing native interpretation; remove in QUAL-2518.
+def image_refs_from_event(payload: Dict[str, Any]) -> List[Dict[str, Any]]:  # noqa: C901, PLR0912
     """Image refs from Codex ``event_msg:user_message`` payloads."""
     refs: List[Dict[str, Any]] = []
 
@@ -571,7 +572,8 @@ def tool_descriptor(name: str, arguments: Any) -> str:
         return ""
 
 
-def skill_refs_from_call(name: str, arguments: Any) -> List[Dict[str, Optional[str]]]:
+# Existing native interpretation; remove in QUAL-2518.
+def skill_refs_from_call(name: str, arguments: Any) -> List[Dict[str, Optional[str]]]:  # noqa: C901
     """Return skill names and definition paths evidenced by a tool call."""
     args = _decode_arguments(arguments)
     refs: List[Dict[str, Optional[str]]] = []
@@ -725,7 +727,8 @@ def _extract_answer_from_item(question: Dict[str, Any], item: Any) -> str:
     return ""
 
 
-def _structured_answer_for_question(question: Dict[str, Any], output: Any) -> str:
+# Existing native interpretation; remove in QUAL-2518.
+def _structured_answer_for_question(question: Dict[str, Any], output: Any) -> str:  # noqa: C901, PLR0912
     output = _decode_jsonish(output)
     qid = question.get("id")
     qtext = question.get("question")
@@ -769,7 +772,8 @@ def _structured_answer_for_question(question: Dict[str, Any], output: Any) -> st
     return ""
 
 
-def _flatten_result_text(output: Any) -> str:
+# Existing native interpretation; remove in QUAL-2518.
+def _flatten_result_text(output: Any) -> str:  # noqa: C901
     output = _decode_jsonish(output)
     if isinstance(output, str):
         return output
@@ -923,7 +927,8 @@ class Turn:
             self.result_notes.append(note)
 
 
-def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]:
+# Existing native interpretation; remove in QUAL-2518.
+def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]:  # noqa: C901, PLR0912, PLR0915
     turns: List[Turn] = []
     files_changed: List[str] = []
     files_seen = set()
@@ -1177,7 +1182,8 @@ def envelope_images(refs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return images
 
 
-def build_events(
+# Existing native interpretation; remove in QUAL-2518.
+def build_events(  # noqa: C901, PLR0912, PLR0915
     entries: List[Dict[str, Any]],
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
 ) -> List[Dict[str, Any]]:
@@ -1306,7 +1312,8 @@ def write_raw_envelope(
     return out_path
 
 
-def _image_bytes_and_ext(ref: Dict[str, Any]) -> Optional[Tuple[bytes, str]]:
+# Existing source loading and interpretation; remove in QUAL-2515.
+def _image_bytes_and_ext(ref: Dict[str, Any]) -> Optional[Tuple[bytes, str]]:  # noqa: C901
     kind = ref.get("type")
 
     if kind == "data_url":
@@ -1437,7 +1444,8 @@ def _render_plan_update(plan: Dict[str, Any]) -> List[str]:
     return out
 
 
-def render_summary(turns: List[Turn], first_ts: Optional[str]) -> List[str]:
+# Presentation removed by JSON-only work; remove in QUAL-2506.
+def render_summary(turns: List[Turn], first_ts: Optional[str]) -> List[str]:  # noqa: C901, PLR0912, PLR0915
     """Render the up-front recap of every real user input."""
     out: List[str] = ["## Summary - user inputs", ""]
     input_turns = [
@@ -1517,7 +1525,8 @@ def render_summary(turns: List[Turn], first_ts: Optional[str]) -> List[str]:
     return out
 
 
-def render(
+# Presentation removed by JSON-only work; remove in QUAL-2506.
+def render(  # noqa: C901, PLR0912, PLR0915
     turns: List[Turn],
     files_changed: List[str],
     project_label: str,

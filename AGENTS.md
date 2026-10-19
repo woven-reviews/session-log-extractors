@@ -11,6 +11,7 @@ CI checks:
 
 ```sh
 uv run --locked ruff format --check .
+uv run --locked ruff check .
 uv run --locked pytest --cov=scripts --cov=src --cov-report=term --cov-report=xml --cov-fail-under=95
 git fetch origin main
 uv run --locked diff-cover coverage.xml --compare-branch=origin/main --fail-under=95
@@ -27,3 +28,16 @@ The fixture generators (`scripts/generate_*_fixtures.py`) make paid CLI calls.
 Their tests replace the CLI with a fake, so their code is still covered.
 Use diff-cover to identify missing coverage; add tests rather than lowering
 the threshold.
+
+## Lint policy
+
+Ruff checks application code, fixture generators, and tests. Keep the enabled
+rules and initial configurable limits (complexity 10, statements 50, branches
+12, arguments 5); these are Ruff defaults, not universal quality standards.
+Do not add blanket exclusions or blanket noqa comments. Additional suppressions
+or raised thresholds require explicit human approval and justification in review.
+Each temporary exception must identify the function, specific rules, reason, and
+removal ticket (see the inventory in README.md). Remove exceptions when replacing
+or substantially refactoring the affected code; never transfer them to replacement
+code. Unrelated fixes must not increase metrics inside suppressed functions;
+reviewers must compare those metrics because automated comparisons are deferred.

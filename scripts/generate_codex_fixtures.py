@@ -17,7 +17,6 @@ import threading
 import time
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parent / "fixtures" / "codex"
 SESSIONS = Path.home() / ".codex" / "sessions"
 EMAIL = re.compile(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}")
@@ -45,7 +44,8 @@ INTERACTIVE_PROMPTS = {
 }
 
 
-def clean(entries: list[dict], workspace: Path) -> list[dict]:
+# Existing capture validation; remove in QUAL-2547.
+def clean(entries: list[dict], workspace: Path) -> list[dict]:  # noqa: C901, PLR0912
     """Retain native extractor fields, excluding account and startup instructions."""
     kept = []
     for entry in entries:
@@ -186,7 +186,8 @@ def select(name: str, rows: list[dict]) -> list[dict]:
     return chosen
 
 
-def validate(name: str, rows: list[dict]) -> None:
+# Existing capture validation; remove in QUAL-2547.
+def validate(name: str, rows: list[dict]) -> None:  # noqa: C901, PLR0912
     payloads = [row["payload"] for row in rows]
     if name == "tool_patch_large":
         if (
@@ -307,7 +308,8 @@ def capture(
     return rows
 
 
-def capture_interactive(name: str, workspace: Path) -> list[dict]:
+# Existing capture orchestration; remove in QUAL-2547.
+def capture_interactive(name: str, workspace: Path) -> list[dict]:  # noqa: C901, PLR0915
     """Drive a real interactive turn and read its saved native rollout."""
     process = subprocess.Popen(
         ["codex", "app-server"],
@@ -333,7 +335,8 @@ def capture_interactive(name: str, workspace: Path) -> list[dict]:
         process.stdin.write(json.dumps(message) + "\n")
         process.stdin.flush()
 
-    def wait_for(expected, timeout: int = 120) -> dict:
+    # Existing capture orchestration; remove in QUAL-2547.
+    def wait_for(expected, timeout: int = 120) -> dict:  # noqa: C901
         deadline = time.monotonic() + timeout
         while True:
             try:

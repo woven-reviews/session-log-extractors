@@ -18,7 +18,6 @@ import tempfile
 import uuid
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parent / "fixtures" / "claude"
 PROJECTS = Path.home() / ".claude" / "projects"
 EMAIL = re.compile(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}")
@@ -55,7 +54,8 @@ def clean(entries: list[dict], workspace: Path) -> str:
     return text + "\n"
 
 
-def run_case(name: str, prompt: str, *, tools: str = "") -> dict[str, str]:
+# Existing capture orchestration; remove in QUAL-2547.
+def run_case(name: str, prompt: str, *, tools: str = "") -> dict[str, str]:  # noqa: C901, PLR0912, PLR0915
     with tempfile.TemporaryDirectory(prefix="claude-fixture-") as temporary:
         workspace = Path(temporary)
         settings = workspace / ".claude" / "settings.json"

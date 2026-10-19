@@ -189,7 +189,8 @@ def tool_call(
     return call
 
 
-def build_envelope(
+# Existing export signature; remove in QUAL-2513.
+def build_envelope(  # noqa: PLR0913
     harness: str,
     session_id: str,
     events: List[Dict[str, Any]],

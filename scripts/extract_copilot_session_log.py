@@ -484,7 +484,8 @@ def get_session_attachments(
     return [dict(row) for row in cursor]
 
 
-def get_state_attachments(session_id: str) -> List[Dict[str, Any]]:
+# Existing source loading and interpretation; remove in QUAL-2516.
+def get_state_attachments(session_id: str) -> List[Dict[str, Any]]:  # noqa: C901, PLR0912
     """Retrieve attachment records from the per-session events log if present."""
     events_path = COPILOT_STATE_ROOT / session_id / "events.jsonl"
     if not events_path.is_file():
@@ -561,7 +562,8 @@ def get_state_attachments(session_id: str) -> List[Dict[str, Any]]:
     return attachments
 
 
-def _permissions_from_events(lines: List[str]) -> List[Dict[str, Any]]:
+# Existing native interpretation; remove in QUAL-2519.
+def _permissions_from_events(lines: List[str]) -> List[Dict[str, Any]]:  # noqa: C901
     """Join ``permission.requested`` / ``permission.completed`` events into one
     record per decision: the tool asked about, the outcome, and any feedback.
 
@@ -918,7 +920,8 @@ def _attachment_lookup(attachments: List[Dict[str, Any]]) -> Dict[str, Dict[str,
     return lookup
 
 
-def _build_turn_objects(
+# Existing native interpretation; remove in QUAL-2519.
+def _build_turn_objects(  # noqa: C901, PLR0912, PLR0915
     turns: List[Dict[str, Any]],
     files: List[Dict[str, Any]],
     attachments: List[Dict[str, Any]],
@@ -1254,7 +1257,8 @@ def render_summary(turns: List[Turn], first_ts: Optional[str]) -> List[str]:
     return out
 
 
-def render(
+# Presentation removed by JSON-only work; remove in QUAL-2507.
+def render(  # noqa: C901, PLR0913, PLR0912, PLR0915
     session: Dict[str, Any],
     turns: List[Turn],
     checkpoints: List[Dict[str, Any]],
@@ -1609,7 +1613,8 @@ def _extract_all(
     return 0 if written else 1
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+# Existing dual-output CLI orchestration; remove in QUAL-2507.
+def main(argv: Optional[List[str]] = None) -> int:  # noqa: C901, PLR0912
     args = build_arg_parser().parse_args(argv)
 
     db_path = Path(args.db).expanduser() if args.db else COPILOT_DB

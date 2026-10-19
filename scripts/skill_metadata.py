@@ -312,7 +312,8 @@ def _compact(text: str, limit: int = 400) -> str:
     return out if len(out) <= limit else out[: limit - 3].rstrip() + "..."
 
 
-def render_skill_lines(
+# Presentation removed by JSON-only work; remove in QUAL-2508.
+def render_skill_lines(  # noqa: C901
     name: str,
     details: Optional[Dict[str, Any]] = None,
     indent: str = "",
