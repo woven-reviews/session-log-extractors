@@ -13,8 +13,8 @@ Claude extraction now produces only JSON. Run
 resolved project directory to `claude_session_log_raw_<session-id>.json` in the
 project root. Use a session id or `--transcript PATH` for one session, with
 `--output PATH` for an explicit JSON destination or `--output -` for stdout.
-`--raw-tool-result-bytes N` retains its existing cap behavior (negative for no
-cap); `--raw` and `--no-raw` are removed. Recorded Markdown, inline images, and
+`--tool-result-bytes N` sets the tool-result cap (negative for no cap); it
+replaces `--raw-tool-result-bytes`, and `--raw` and `--no-raw` are removed. Recorded Markdown, inline images, and
 tool results remain in the JSON. Codex and Copilot still write their existing
 artifacts pending their JSON-only migrations.
 

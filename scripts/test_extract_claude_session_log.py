@@ -1269,7 +1269,7 @@ def test_cli_json_destinations(destination, tmp_path, monkeypatch, capsys):
         pytest.fail("JSON extraction must not assemble Markdown turns")
 
     monkeypatch.setattr(eclog, "build_turns", no_turn_rendering)
-    args = ["--transcript", str(transcript), "--raw-tool-result-bytes", "3"]
+    args = ["--transcript", str(transcript), "--tool-result-bytes", "3"]
     if destination == "stdout":
         args += ["--output", "-"]
     elif destination == "explicit":
@@ -1319,10 +1319,12 @@ def test_cli_batch_emits_only_json(all_flag, tmp_path, monkeypatch, capsys):
     assert "done: 2/2" in captured.err
 
 
-@pytest.mark.parametrize("flag", ["--raw", "--no-raw"])
+@pytest.mark.parametrize(
+    "flag", [["--raw"], ["--no-raw"], ["--raw-tool-result-bytes", "3"]]
+)
 def test_cli_rejects_retired_output_flags(flag, tmp_path, capsys):
     with pytest.raises(SystemExit) as exc:
-        main([flag, "--project-dir", str(tmp_path), "--output", str(tmp_path / "out")])
+        main([*flag, "--project-dir", str(tmp_path), "--output", str(tmp_path / "out")])
     assert exc.value.code == 2
     assert "unrecognized arguments" in capsys.readouterr().err
 
@@ -1352,7 +1354,7 @@ def test_cli_preserves_native_payloads(fixture, limit, capsys):
                 str(transcript),
                 "--output",
                 "-",
-                "--raw-tool-result-bytes",
+                "--tool-result-bytes",
                 str(limit),
             ]
         )
@@ -1447,6 +1449,7 @@ def test_cli_stdout_keeps_size_warning(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert json.loads(captured.out)["harness"] == "claude"
     assert "warning: stdout JSON is" in captured.err
+    assert "consider a lower --tool-result-bytes" in captured.err
     assert "session-log uploads are capped" in captured.err
 
 
