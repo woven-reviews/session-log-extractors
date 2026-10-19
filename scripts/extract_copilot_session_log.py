@@ -507,8 +507,12 @@ def get_state_attachments(session_id: str) -> List[Dict[str, Any]]:
     for obj in events:
         if isinstance(obj, dict) and obj.get("type") == "session.binary_asset":
             asset = obj.get("data")
-            if isinstance(asset, dict) and isinstance(asset.get("data"), str):
-                assets[asset.get("assetId")] = (asset["data"], asset.get("mimeType"))
+            if (
+                isinstance(asset, dict)
+                and isinstance(asset.get("assetId"), str)
+                and isinstance(asset.get("data"), str)
+            ):
+                assets[asset["assetId"]] = (asset["data"], asset.get("mimeType"))
 
     for obj in events:
         if not isinstance(obj, dict) or obj.get("type") != "user.message":

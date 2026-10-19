@@ -2,6 +2,7 @@ not json at all
 [1, 2, 3]
 {"type": "assistant.message", "data": {}}
 {"type": "user.message", "data": "not-a-dict"}
+{"type": "session.binary_asset", "data": {"assetId": ["x"], "data": "AA"}}
 {"type": "user.message", "data": {"attachments": "not-a-list"}}
 {"type": "user.message", "data": {"attachments": ["not-a-dict", {"displayName": "shot.png", "path": "/workspace/shot.png", "mimeType": "image/png", "dataUrl": "data:image/png;base64,AAAA", "data": "AAAA", "mediaType": "image/png"}]}}
 {"type": "skill.invoked", "data": "not-a-dict"}
