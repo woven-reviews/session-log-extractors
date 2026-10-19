@@ -197,11 +197,13 @@ def _parse_ts(ts: Optional[str]):
     if not ts or not isinstance(ts, str):
         return None
     try:
-        from datetime import datetime
+        from datetime import datetime, timezone
 
-        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(ts.replace("Z", "+00:00"))
     except (TypeError, ValueError):
         return None
+    # SQLite writes naive timestamps; treat them as UTC so they compare with aware ones.
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def format_timestamp(ts: Optional[str]) -> str:

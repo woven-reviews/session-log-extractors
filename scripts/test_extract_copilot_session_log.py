@@ -787,6 +787,15 @@ def test_copilot_timestamped_attachment_belongs_to_second_turn():
     assert turns[1].image_refs == [{"name": "later.png", "path": "/tmp/later.png"}]
 
 
+def test_copilot_attachment_with_zulu_timestamp_matches_naive_db_turns():
+    turns = copilot_log._build_turn_objects(
+        [{"user_message": "first", "timestamp": "2026-01-01 00:00:05"}],
+        [],
+        [{"display_name": "p.png", "path": "/tmp/p.png", "timestamp": "2026-01-01T00:00:01Z"}],
+    )
+    assert turns[0].image_refs == [{"name": "p.png", "path": "/tmp/p.png"}]
+
+
 def test_copilot_attachment_names_from_path_and_skips_non_images():
     turns = copilot_log._build_turn_objects(
         [{"user_message": "look", "timestamp": "2026-01-01T00:00:05Z"}],
