@@ -20,9 +20,9 @@ Pass-through args (optional): `--output DIR` for a different directory, `--stric
 to only export sessions started in this exact directory (no parent-dir walk, no
 newest-anywhere fallback), or a single session id / `--output -` to extract just
 one. For a single session, `--output PATH` names the JSON file and `--output -`
-writes JSON to stdout; diagnostics go to stderr. `--raw-tool-result-bytes N`
-changes the tool-result cap (negative for no cap). The `--raw` and `--no-raw`
-flags have been removed. For Codex transcripts use
+writes JSON to stdout; diagnostics go to stderr. `--tool-result-bytes N`
+changes the tool-result cap (negative for no cap). It replaces
+`--raw-tool-result-bytes`; the `--raw` and `--no-raw` flags have been removed. For Codex transcripts use
 `scripts/extract_codex_session_log.py` instead, and for Copilot use
 `scripts/extract_copilot_session_log.py`.
 

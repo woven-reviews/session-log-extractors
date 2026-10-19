@@ -1144,7 +1144,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "conversation envelope. Mechanical extraction "
             "only — no LLM, no summarization."
         ),
-        allow_abbrev=False,
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Selection precedence:\n"
@@ -1204,12 +1203,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
-        "--raw-tool-result-bytes",
+        "--tool-result-bytes",
         metavar="N",
         type=int,
         default=DEFAULT_TOOL_RESULT_MAX_BYTES,
         help=(
-            "cap each tool result in the raw envelope at N bytes; the original "
+            "cap each tool result in the JSON envelope at N bytes; the original "
             "size is always recorded. Use a negative value for no cap "
             f"(default: {DEFAULT_TOOL_RESULT_MAX_BYTES})"
         ),
@@ -1217,6 +1216,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return p
 
 
+CAP_FLAG = "--tool-result-bytes"
 NO_EVENTS_NOTE = "no exportable events (no user or assistant messages); no JSON written"
 
 
@@ -1276,7 +1276,7 @@ def _extract_all(
             continue
         out_path = out_dir / raw_filename("claude", session_id)
         try:
-            write_envelope(out_path, envelope)
+            write_envelope(out_path, envelope, CAP_FLAG)
         except OSError as exc:
             print(f"  error writing {out_path}: {exc}", file=sys.stderr)
             continue
@@ -1298,7 +1298,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             proj,
             out,
             strict=args.strict,
-            tool_result_max_bytes=args.raw_tool_result_bytes,
+            tool_result_max_bytes=args.tool_result_bytes,
         )
 
     try:
@@ -1315,7 +1315,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(f"using transcript: {transcript}", file=sys.stderr)
 
     try:
-        envelope = extract_transcript(transcript, args.raw_tool_result_bytes)
+        envelope = extract_transcript(transcript, args.tool_result_bytes)
     except (OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -1326,7 +1326,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.output == "-":
         payload = json.dumps(envelope, ensure_ascii=False)
         print(payload)
-        warn_if_oversized("stdout JSON", payload)
+        warn_if_oversized("stdout JSON", payload, CAP_FLAG)
     else:
         out_path = (
             PROJECT_ROOT / raw_filename("claude", transcript.stem)
@@ -1334,7 +1334,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             else Path(args.output).expanduser()
         )
         try:
-            write_envelope(out_path, envelope)
+            write_envelope(out_path, envelope, CAP_FLAG)
         except OSError as exc:
             print(f"error: could not write {out_path}: {exc}", file=sys.stderr)
             return 1
