@@ -36,6 +36,7 @@ from session_log_envelope import (
     tool_call,
     truncate_result,
     user_event,
+    warn_if_oversized,
     write_envelope,
 )
 from skill_metadata import (
@@ -1318,7 +1319,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     if envelope is None:
         return 0
     if args.output == "-":
-        print(json.dumps(envelope, ensure_ascii=False))
+        payload = json.dumps(envelope, ensure_ascii=False)
+        print(payload)
+        warn_if_oversized("stdout JSON", payload)
     else:
         out_path = (
             PROJECT_ROOT / raw_filename("claude", transcript.stem)
