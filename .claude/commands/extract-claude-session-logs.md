@@ -11,6 +11,14 @@ Run the session log extractor and report what it wrote. It runs in Docker (see [
 
 The container gets read-only access to `~/.claude/projects` plus read-write access to this checkout.
 
+**What the container runs.** The image supplies only the Python interpreter. The
+script it runs is this checkout's own `scripts/extract_claude_session_log.py`
+(bind-mounted at the same path), not the copy baked into the image under
+`/extractor/`. Running the checkout's copy lets the script locate the checkout
+root from its own path, so it writes JSON there without being passed
+`--output`. Passing `--output "$r"` would break single-session runs, because in
+that mode `--output` names the JSON file, not a directory.
+
 Defaults to `--all`, writing one JSON file per session into the repo root:
 `claude_session_log_raw_<session-id>.json`. Each envelope carries the conversation,
 full tool inputs, tool results capped at 4 KB with their original size recorded,
