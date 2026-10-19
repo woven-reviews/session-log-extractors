@@ -5,8 +5,18 @@ Reusable extractors for Claude, Codex, and Copilot session logs.
 ## Extraction compatibility
 
 The [extraction information contract](scripts/fixtures/README.md) records the
-planned move to JSON-only output, the complete information to preserve across
+move to JSON-only output, the complete information to preserve across
 harnesses, and the fixture acceptance requirements.
+
+Claude extraction now produces only JSON. Run
+`python3 scripts/extract_claude_session_log.py` to export every session in the
+resolved project directory to `claude_session_log_raw_<session-id>.json` in the
+project root. Use a session id or `--transcript PATH` for one session, with
+`--output PATH` for an explicit JSON destination or `--output -` for stdout.
+`--raw-tool-result-bytes N` retains its existing cap behavior (negative for no
+cap); `--raw` and `--no-raw` are removed. Recorded Markdown, inline images, and
+tool results remain in the JSON. Codex and Copilot still write their existing
+artifacts pending their JSON-only migrations.
 
 ## Ownership
 
@@ -66,8 +76,9 @@ On the pinned Ruff 0.14.0 formatting baseline (`4f5b449`), the initial inventory
 was **107 findings**: 30 C901, 21 PLR0912, 13 PLR0915, 4 PLR0913, 15 B011,
 10 PT017, 9 I001, 4 B905, and 1 PIE810. The 39 non-complexity findings are fixed
 (imports, exception tests, explicit zip behavior, and redundant startswith). The
-68 complexity findings remain as function-level, rule-specific exceptions below
-**solely because the codebase predates lint enforcement**. This is temporary debt
+initial 68 complexity findings were recorded as function-level, rule-specific
+exceptions. Removing Claude Markdown rendering retires six; **62 remain** below
+solely because the codebase predates lint enforcement. This is temporary debt
 for pre-existing code, not precedent or permission to suppress future violations.
 No directory exclusion or raised threshold hides them.
 
@@ -81,8 +92,6 @@ Algorithms and interfaces are preserved in this tooling change.
 | --- | --- | --- | --- |
 | `extract_claude_session_log.py` | `build_events` | C901, PLR0912, PLR0915 | [QUAL-2517](https://linear.app/andela/issue/QUAL-2517) |
 | `extract_claude_session_log.py` | `build_turns` | C901, PLR0912, PLR0915 | [QUAL-2517](https://linear.app/andela/issue/QUAL-2517) |
-| `extract_claude_session_log.py` | `render` | C901, PLR0912, PLR0915 | [QUAL-2505](https://linear.app/andela/issue/QUAL-2505) |
-| `extract_claude_session_log.py` | `render_summary` | C901, PLR0912, PLR0915 | [QUAL-2505](https://linear.app/andela/issue/QUAL-2505) |
 | `extract_claude_session_log.py` | `result_note` | C901, PLR0912 | [QUAL-2517](https://linear.app/andela/issue/QUAL-2517) |
 | `extract_claude_session_log.py` | `select_transcript` | C901, PLR0912 | [QUAL-2514](https://linear.app/andela/issue/QUAL-2514) |
 | `extract_claude_session_log.py` | `summarize_subagent` | C901, PLR0912 | [QUAL-2514](https://linear.app/andela/issue/QUAL-2514) |
