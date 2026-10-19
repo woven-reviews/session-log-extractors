@@ -9,12 +9,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # diff-cover diffs against origin/main
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - run: pip install .[test]
-      - run: pytest
-      - run: pytest scripts/test_extract_codex_session_log.py --cov=extract_codex_session_log --cov-fail-under=95
-      - run: >
-          pytest scripts/test_extract_claude_session_log.py
-          --cov=extract_claude_session_log --cov-fail-under=95
+      - run: pytest --cov --cov-fail-under=95 --cov-report=xml
+      - run: diff-cover coverage.xml --compare-branch=origin/main --fail-under=95

@@ -1,0 +1,9 @@
+{"type":"user","timestamp":"2026-01-01T00:00:00Z","message":{"role":"user","content":"Build the report"}}
+{"type":"assistant","timestamp":"2026-01-01T00:00:01Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"plan-1","name":"ExitPlanMode","input":{"plan":"# Plan\n\nStep one."}}]}}
+{"type":"user","timestamp":"2026-01-01T00:00:02Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"plan-1","content":"User has approved your plan. You can now start coding.\n\n## Approved Plan (edited by user):\n# Plan\n\nStep one."}]}}
+{"type":"user","timestamp":"2026-01-01T00:01:00Z","message":{"role":"user","content":"Make it smaller"}}
+{"type":"assistant","timestamp":"2026-01-01T00:01:01Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"plan-2","name":"ExitPlanMode","input":{"plan":"# Plan\n\nStep one."}}]}}
+{"type":"user","timestamp":"2026-01-01T00:01:02Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"plan-2","content":"User has approved your plan.\n\n## Approved Plan (edited by user):\n# Plan\n\nStep one, but smaller."}]}}
+{"type":"user","timestamp":"2026-01-01T00:02:00Z","message":{"role":"user","content":"Try again"}}
+{"type":"assistant","timestamp":"2026-01-01T00:02:01Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"plan-3","name":"ExitPlanMode","input":{"plan":"# Plan\n\nStep one."}}]}}
+{"type":"user","timestamp":"2026-01-01T00:02:02Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"plan-3","content":"The user doesn't want to proceed with this tool use. The tool use was rejected. the user said:\nToo big, split it up"}]}}

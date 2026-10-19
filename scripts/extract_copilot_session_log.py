@@ -197,11 +197,13 @@ def _parse_ts(ts: Optional[str]):
     if not ts or not isinstance(ts, str):
         return None
     try:
-        from datetime import datetime
+        from datetime import datetime, timezone
 
-        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(ts.replace("Z", "+00:00"))
     except (TypeError, ValueError):
         return None
+    # SQLite writes naive timestamps; treat them as UTC so they compare with aware ones.
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def format_timestamp(ts: Optional[str]) -> str:
@@ -494,12 +496,27 @@ def get_state_attachments(session_id: str) -> List[Dict[str, Any]]:
     except OSError:
         return []
 
+    events = []
     for line in lines:
         try:
-            obj = json.loads(line)
+            events.append(json.loads(line))
         except ValueError:
             continue
 
+    # Copilot logs each attached image's bytes as a session.binary_asset keyed by
+    # assetId, so the image survives even after its source file is deleted.
+    assets: Dict[str, tuple] = {}
+    for obj in events:
+        if isinstance(obj, dict) and obj.get("type") == "session.binary_asset":
+            asset = obj.get("data")
+            if (
+                isinstance(asset, dict)
+                and isinstance(asset.get("assetId"), str)
+                and isinstance(asset.get("data"), str)
+            ):
+                assets[asset["assetId"]] = (asset["data"], asset.get("mimeType"))
+
+    for obj in events:
         if not isinstance(obj, dict) or obj.get("type") != "user.message":
             continue
 
@@ -519,11 +536,15 @@ def get_state_attachments(session_id: str) -> List[Dict[str, Any]]:
             data_url = item.get("dataUrl")
             data_b64 = item.get("data")
             media_type = item.get("mediaType")
+            asset_id = item.get("assetId")
+            if not isinstance(data_b64, str) and isinstance(asset_id, str) and asset_id in assets:
+                data_b64, media_type = assets[asset_id]
 
             rec: Dict[str, Any] = {
                 "display_name": display_name if isinstance(display_name, str) else "",
                 "path": path_value if isinstance(path_value, str) else "",
                 "type": mime_type if isinstance(mime_type, str) else "",
+                "timestamp": obj.get("timestamp"),
             }
             if isinstance(data_url, str):
                 rec["data_url"] = data_url
@@ -732,22 +753,32 @@ def get_state_tools(session_id: str) -> List[Dict[str, Any]]:
     return _tools_from_events(lines)
 
 
+def _turn_for(turns: List[Turn], ts: Optional[str]) -> Optional[Turn]:
+    """The turn an event at ts belongs to.
+
+    DB turn timestamps mark completion, so that is the first turn ending at or
+    after the event; later events go to the last turn, untimed ones to the first.
+    """
+    if not turns:
+        return None
+    at = _parse_ts(ts)
+    if at is None:
+        return turns[0]
+    for turn in turns:
+        turn_at = _parse_ts(turn.timestamp)
+        if turn_at is not None and at <= turn_at:
+            return turn
+    return turns[-1]
+
+
 def attribute_tools(turns: List[Turn], tools: List[Dict[str, Any]]) -> None:
-    """Fold each tool call under the latest turn at or before its timestamp.
+    """Fold each tool call under the turn it happened in.
 
     Populates the markdown bullet, a structured record for the raw envelope, a
     result note, and any skill evidenced by the call's arguments.
     """
-    parsed = [(_parse_ts(t.timestamp), t) for t in turns]
     for tool in tools:
-        called_at = _parse_ts(tool.get("timestamp"))
-        target: Optional[Turn] = None
-        if called_at is not None:
-            for turn_ts, turn in parsed:
-                if turn_ts is not None and turn_ts <= called_at:
-                    target = turn
-        if target is None and turns:
-            target = turns[0]
+        target = _turn_for(turns, tool.get("timestamp"))
         if target is None:
             continue
 
@@ -774,17 +805,9 @@ def attribute_tools(turns: List[Turn], tools: List[Dict[str, Any]]) -> None:
 
 
 def attribute_skills(turns: List[Turn], skills: List[Dict[str, Any]]) -> None:
-    """Fold each skill invocation under the latest turn at or before its time."""
-    parsed = [(_parse_ts(t.timestamp), t) for t in turns]
+    """Fold each skill invocation under the turn it happened in."""
     for skill in skills:
-        invoked_at = _parse_ts(skill.get("timestamp"))
-        target: Optional[Turn] = None
-        if invoked_at is not None:
-            for turn_ts, turn in parsed:
-                if turn_ts is not None and turn_ts <= invoked_at:
-                    target = turn
-        if target is None and turns:
-            target = turns[0]
+        target = _turn_for(turns, skill.get("timestamp"))
         name = skill.get("name")
         if target is not None and isinstance(name, str):
             path = skill.get("path")
@@ -792,17 +815,9 @@ def attribute_skills(turns: List[Turn], skills: List[Dict[str, Any]]) -> None:
 
 
 def attribute_permissions(turns: List[Turn], perms: List[Dict[str, Any]]) -> None:
-    """Fold each permission decision under the latest turn at or before its time."""
-    parsed = [(_parse_ts(t.timestamp), t) for t in turns]
+    """Fold each permission decision under the turn it happened in."""
     for p in perms:
-        pt = _parse_ts(p.get("timestamp"))
-        target: Optional[Turn] = None
-        if pt is not None:
-            for ts, t in parsed:  # turns are in order; last match wins
-                if ts is not None and ts <= pt:
-                    target = t
-        if target is None and turns:
-            target = turns[0]
+        target = _turn_for(turns, p.get("timestamp"))
         if target is not None:
             target.permission_decisions.append(p)
 
@@ -816,27 +831,51 @@ def format_decision(kind: str) -> str:
     return kind or "unknown"
 
 
+def decision_label(kind: str) -> str:
+    """Summary-line label for a permission decision.
+
+    The harness log parser reads "user denied permission" as a candidate action,
+    so only a denial the human made interactively may carry it.
+    """
+    if kind == "denied-interactively-by-user":
+        return "user denied permission"
+    # ponytail: any other denied-* kind is assumed to be a rule/policy refusal.
+    if kind.startswith("denied"):
+        return "settings denied permission"
+    return f"permission {format_decision(kind)}"
+
+
 def get_session_models(conn: sqlite3.Connection, session_id: str) -> List[str]:
-    """Distinct model ids seen in events for the session, if available."""
-    cols = _table_columns(conn, "events")
-    if "session_id" not in cols or "usage_model" not in cols:
+    """Distinct model ids from the session's usage events, if available.
+
+    Reads assistant_usage_events (Copilot CLI 1.0.90-5); falls back to the
+    events.usage_model layout that earlier CLIs are assumed to have written.
+    """
+    for table, column, order in (
+        ("assistant_usage_events", "model", "id"),
+        ("events", "usage_model", "timestamp"),
+    ):
+        cols = _table_columns(conn, table)
+        if {"session_id", column, order} <= set(cols):
+            break
+    else:
         return []
 
     cursor = conn.cursor()
     cursor.execute(
-        """
-        SELECT usage_model
-        FROM events
+        f"""
+        SELECT {column} AS model
+        FROM {table}
         WHERE session_id = ?
-          AND usage_model IS NOT NULL
-          AND usage_model != ''
-        ORDER BY timestamp
+          AND {column} IS NOT NULL
+          AND {column} != ''
+        ORDER BY {order}
     """,
         (session_id,),
     )
     models: List[str] = []
     for row in cursor:
-        model = row["usage_model"]
+        model = row["model"]
         if isinstance(model, str) and model not in models:
             models.append(model)
     return models
@@ -920,18 +959,55 @@ def _build_turn_objects(
             turn.add_tool(str(tool_name), str(file_path))
 
         built.append(turn)
+
+    for attachment in attachments:
+        attached_at = _parse_ts(attachment.get("timestamp"))
+        if attached_at is None or not built:
+            continue
+        path = attachment.get("path")
+        name = attachment.get("display_name")
+        if not isinstance(name, str) or not name:
+            name = Path(path).name if isinstance(path, str) else ""
+        media_type = attachment.get("type") or attachment.get("media_type")
+        data_url = attachment.get("data_url")
+        if isinstance(media_type, str) and media_type and not media_type.startswith("image/"):
+            continue
+        if not name or not (
+            isinstance(media_type, str) and media_type.startswith("image/")
+            or isinstance(path, str) and media_type_for_ext(Path(path).suffix)
+            or isinstance(data_url, str) and _DATA_IMAGE_URL.match(data_url)
+        ):
+            continue
+        target = _turn_for(built, attachment.get("timestamp"))
+        ref = {"name": name}
+        for key in ("path", "type", "data_url", "data", "media_type"):
+            if attachment.get(key):
+                ref[key] = attachment[key]
+        # Two different files can share a display name, so match on the image
+        # itself; only a ref with no source falls back to its name.
+        source = _image_source(ref)
+        if any(
+            _image_source(r) == source
+            if source and _image_source(r)
+            else r["name"] == name
+            for r in target.image_refs
+        ):
+            continue
+        if len(ref) > 1:
+            target.image_refs.append(ref)
     return built
+
+
+def _image_source(ref: Dict[str, Any]) -> Optional[str]:
+    return ref.get("path") or ref.get("data_url") or ref.get("data")
 
 
 def envelope_images(refs: List[Dict[str, str]]) -> List[Dict[str, Any]]:
     """Resolve Copilot image refs to inline base64 entries.
 
-    Copilot records an image as a ``[image: name]`` token in the message text and
-    keeps the payload elsewhere — the SQLite ``attachments`` table or the
-    per-session events log — so a ref only resolves if that correlation found
-    something readable. Refs that do not resolve are recorded as unavailable,
-    which for Copilot is common enough to matter: an inline token with no
-    matching attachment record is exactly the case the markdown already flags.
+    Copilot stores image payloads outside DB turns. Image tokens and timestamped
+    event attachments both become refs; missing sources remain visible as
+    unavailable images.
     """
     images: List[Dict[str, Any]] = []
     for ref in refs:
@@ -1265,7 +1341,7 @@ def render(
         if turn.permission_decisions:
             out.append("")
             for p in turn.permission_decisions:
-                line = f"  _permission {format_decision(p['decision'])}:_ {_truncate(p['tool'], 120)}"
+                line = f"  _{decision_label(p['decision'])}:_ {_truncate(p['tool'], 120)}"
                 if p.get("feedback"):
                     line += f' -> "{_truncate(p["feedback"], 160)}"'
                 out.append(line)

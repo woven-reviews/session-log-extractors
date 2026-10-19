@@ -22,8 +22,8 @@ the preceding assistant activity. Subagent / sidechain entries
 (``isSidechain == true``) and meta entries (``isMeta == true``) are kept out of
 the main flow.
 
-When the human denies a tool's permission prompt, the harness records a canned
-error tool_result; those are surfaced as "permission denied" decisions (the tool
+When the human denies a tool's permission prompt (or settings such as don't-ask
+mode deny it), the harness records a canned error tool_result; those are surfaced as "permission denied" decisions (the tool
 that was denied, plus any steering message the human typed). Approvals leave no
 distinct record -- an approved tool just runs -- so only denials are captured.
 
@@ -164,6 +164,9 @@ _PERMISSION_DENIAL_PREFIXES = (
     "The user doesn't want to proceed with this tool use.",
     "Permission for this tool use was denied.",
 )
+# Settings-driven denials (e.g. don't-ask mode) name the tool instead. Anchored on
+# "has been denied" so reading an ISC LICENSE ("Permission to use, copy…") can't match.
+_PERMISSION_DENIED_TOOL = re.compile(r"Permission to use \S+ has been denied\b")
 # Optional steering message the human typed when denying, e.g.
 # "…the user said:\nWe need a new branch for this". A plan sent back in plan mode
 # uses a different lead-in ("…reason for the rejection: …") for the same thing.
@@ -177,8 +180,9 @@ _DENIAL_MESSAGE = re.compile(
 def parse_permission_denial(content: str) -> Optional[str]:
     """If ``content`` is a permission-denial tool_result, return the human's
     steering message (``""`` if they just denied). Return ``None`` otherwise."""
-    if not isinstance(content, str) or not content.startswith(
-        _PERMISSION_DENIAL_PREFIXES
+    if not isinstance(content, str) or not (
+        content.startswith(_PERMISSION_DENIAL_PREFIXES)
+        or _PERMISSION_DENIED_TOOL.match(content)
     ):
         return None
     m = _DENIAL_MESSAGE.search(content)
@@ -680,7 +684,8 @@ def permission_denials_from_result(
     for block in _content_blocks(entry):
         if not isinstance(block, dict) or block.get("type") != "tool_result":
             continue
-        message = parse_permission_denial(_result_block_text(block))
+        text = _result_block_text(block)
+        message = parse_permission_denial(text)
         if message is None:
             continue
         tuid = block.get("tool_use_id")
@@ -690,6 +695,8 @@ def permission_denials_from_result(
                 if isinstance(tuid, str)
                 else "tool",
                 "message": message,
+                # Don't-ask/deny rules refuse without a human in the loop.
+                "by": "settings" if _PERMISSION_DENIED_TOOL.match(text) else "user",
             }
         )
     return out
@@ -1153,7 +1160,8 @@ def render_summary(turns: List[Turn], first_ts: Optional[str]) -> List[str]:
                 out.extend(_quote(p["message"]))
             out.append("")
         for d in turn.permission_denials:
-            out.append(f"_Denied permission:_ **{d['tool']}**")
+            who = "by settings" if d.get("by") == "settings" else "permission"
+            out.append(f"_Denied {who}:_ **{d['tool']}**")
             if d["message"]:
                 for line in d["message"].splitlines():
                     out.append(f"> {line}" if line.strip() else ">")
@@ -1292,7 +1300,8 @@ def render(
         if turn.permission_denials:
             out.append("")
             for d in turn.permission_denials:
-                line = f"  _user denied permission:_ {d['tool']}"
+                who = "settings" if d.get("by") == "settings" else "user"
+                line = f"  _{who} denied permission:_ {d['tool']}"
                 if d["message"]:
                     line += f" → “{_truncate(d['message'], 160)}”"
                 out.append(line)

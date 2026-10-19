@@ -22,16 +22,16 @@ It intentionally ignores base instructions, developer messages, reasoning
 payloads, token counts, and encrypted/internal fields.
 
 When the human denies a tool's permission prompt, the decision is surfaced as a
-"permission denied" note on the turn (the tool that was denied, plus any steering
-message the human typed). Approvals leave no distinct record -- an approved tool
-just runs -- so only denials are captured.
+"permission denied" note on the turn. Current app-server rollouts record the
+rejection in the tool result without a feedback message. Approvals leave no
+distinct record -- an approved tool just runs -- so only denials are captured.
 
 Codex Plan mode is identified from the per-turn collaboration-mode metadata.
-Plan-mode turns are labeled in the output, and any structured ``update_plan``
-calls made during them are rendered in full rather than condensed to tool
-bullets. Unlike Claude Code's ``ExitPlanMode`` flow, Codex does not currently
-record a separate plan approval result; later approval or steering is captured
-as the next ordinary user turn.
+Plan-mode turns are labeled in the output. The parser can render a structured
+``update_plan`` call in full if one is present, but no current native capture
+shows that call in Plan mode. Unlike Claude Code's ``ExitPlanMode`` flow, Codex
+does not currently record a separate plan approval result; later approval or
+steering is captured as the next ordinary user turn.
 
 Examples
 --------
@@ -99,9 +99,8 @@ RESULT_NOTE_MAX = 160
 # namespaced tool names in logs, so matching is suffix-based in build_turns.
 INTERACTION_TOOLS = {"request_user_input"}
 
-# Codex can maintain a structured checklist through update_plan in either mode.
-# It represents plan output only when the surrounding turn is explicitly marked
-# as Plan mode; in Default mode it is an execution-progress tool.
+# Retain parsing for update_plan-shaped calls; no current native capture shows
+# this tool in Plan mode or Default mode.
 PLAN_TOOLS = {"update_plan"}
 
 _NOISE_TAG_BLOCK = re.compile(
@@ -127,12 +126,8 @@ _COMMAND_ARGS = re.compile(
 _SLASH_COMMAND = re.compile(r"^\s*(/[A-Za-z0-9][\w:.-]*)(?:\s+(.*?))?\s*$", re.DOTALL)
 _DATA_IMAGE_URL = re.compile(r"^data:(image/[A-Za-z0-9.+-]+);base64,(.*)$", re.DOTALL)
 
-# When the human denies a tool's permission prompt, the decision is fed back as
-# the same canned rejection text the Claude harness emits; in Codex logs the
-# orchestrator wraps it as an "[external_agent_tool_result: error]" assistant
-# message. Approvals leave no distinct record -- the tool just runs -- so denials
-# are the only permission decision we can observe here.
-# ponytail: denials only; there is no approval marker in the transcript to parse.
+# This branch recognizes a harness-style assistant rejection message. The
+# current native app-server denial instead appears in a tool result.
 _PERMISSION_DENIAL_PREFIXES = (
     "The user doesn't want to proceed with this tool use.",
     "Permission for this tool use was denied.",
@@ -693,6 +688,7 @@ def _value_to_answer_text(value: Any) -> str:
     if isinstance(value, dict):
         for key in (
             "answer",
+            "answers",
             "answer_text",
             "value",
             "label",
@@ -996,6 +992,23 @@ def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]:
             continue
 
         if etype == "event_msg":
+            if ptype == "item_completed":
+                item = payload.get("item")
+                if (
+                    isinstance(item, dict)
+                    and item.get("type") == "FileChange"
+                    and item.get("status") == "completed"
+                ):
+                    changes = item.get("changes")
+                    if isinstance(changes, dict):
+                        for fp in changes:
+                            if isinstance(fp, str):
+                                append_unique_path(files_changed, files_seen, fp)
+                    if current is not None:
+                        note = result_note(item.get("stdout") or item.get("stderr"))
+                        if note:
+                            current.add_result_note("apply_patch: " + note)
+                continue
             if ptype == "user_message":
                 text = user_text_from_event(payload)
                 response_images: List[Dict[str, Any]] = []
@@ -1114,7 +1127,17 @@ def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]:
             if qas:
                 current.option_qas.extend(qas)
                 continue
-            note = result_note(output)
+            result = _flatten_result_text(output) if ptype == "custom_tool_call_output" else output
+            if (
+                ptype == "custom_tool_call_output"
+                and "exec_command failed: CreateProcess" in result
+                and "rejected by user" in result.lower()
+            ):
+                current.permission_denials.append(
+                    {"tool": call_names.get(call_id, "(tool call)"), "message": ""}
+                )
+                continue
+            note = result_note(result)
             if note:
                 current.add_result_note(prefix + note)
             continue
@@ -1150,8 +1173,7 @@ def build_events(
 ) -> List[Dict[str, Any]]:
     """Walk Codex entries in order, producing raw-envelope events.
 
-    A second pass alongside ``build_turns``, deliberately not a refactor of it,
-    so the markdown stays byte-for-byte what it was.
+    A second pass alongside ``build_turns`` for raw envelope events.
     """
     events: List[Dict[str, Any]] = []
     pending_calls: Dict[str, Dict[str, Any]] = {}
