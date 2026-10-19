@@ -1460,5 +1460,8 @@ def test_cli_no_event_input_keeps_existing_envelope_omission(mode, tmp_path, cap
     else:
         args = ["--all", "--project-dir", str(tmp_path), "--output", str(output)]
     assert main(args) == (0 if mode == "single" else 1)
-    assert capsys.readouterr().out == ""
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "session: no exportable events" in captured.err
+    assert "no JSON written" in captured.err
     assert not list(tmp_path.rglob("*.json"))

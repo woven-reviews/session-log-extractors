@@ -1217,6 +1217,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return p
 
 
+NO_EVENTS_NOTE = "no exportable events (no user or assistant messages); no JSON written"
+
+
 def extract_transcript(
     transcript: Path,
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
@@ -1269,6 +1272,7 @@ def _extract_all(
             print(f"  skip {session_id}: {exc}", file=sys.stderr)
             continue
         if envelope is None:
+            print(f"  skip {session_id}: {NO_EVENTS_NOTE}", file=sys.stderr)
             continue
         out_path = out_dir / raw_filename("claude", session_id)
         try:
@@ -1317,6 +1321,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 1
 
     if envelope is None:
+        print(f"note: {transcript.stem}: {NO_EVENTS_NOTE}", file=sys.stderr)
         return 0
     if args.output == "-":
         payload = json.dumps(envelope, ensure_ascii=False)
