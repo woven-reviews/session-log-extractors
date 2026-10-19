@@ -840,20 +840,30 @@ def decision_label(kind: str) -> str:
 
 
 def get_session_models(conn: sqlite3.Connection, session_id: str) -> List[str]:
-    """Distinct model ids from the session's usage events, if available."""
-    cols = _table_columns(conn, "assistant_usage_events")
-    if "session_id" not in cols or "model" not in cols:
+    """Distinct model ids from the session's usage events, if available.
+
+    Reads assistant_usage_events (Copilot CLI 1.0.90-5); falls back to the
+    events.usage_model layout that earlier CLIs are assumed to have written.
+    """
+    for table, column, order in (
+        ("assistant_usage_events", "model", "id"),
+        ("events", "usage_model", "timestamp"),
+    ):
+        cols = _table_columns(conn, table)
+        if {"session_id", column, order} <= set(cols):
+            break
+    else:
         return []
 
     cursor = conn.cursor()
     cursor.execute(
-        """
-        SELECT model
-        FROM assistant_usage_events
+        f"""
+        SELECT {column} AS model
+        FROM {table}
         WHERE session_id = ?
-          AND model IS NOT NULL
-          AND model != ''
-        ORDER BY id
+          AND {column} IS NOT NULL
+          AND {column} != ''
+        ORDER BY {order}
     """,
         (session_id,),
     )

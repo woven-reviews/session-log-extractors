@@ -716,6 +716,17 @@ def test_copilot_get_session_models_reads_native_usage_events():
         assert copilot_log.get_session_models(conn, NATIVE_IDS["continued"]) == ["claude-sonnet-5"]
 
 
+def test_copilot_get_session_models_falls_back_to_legacy_events_table():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE events (session_id TEXT, usage_model TEXT, timestamp TEXT)")
+    conn.executemany(
+        "INSERT INTO events VALUES ('s', ?, ?)",
+        [("gpt-4", "2026-01-01"), ("", "2026-01-02"), ("gpt-4", "2026-01-03"), ("o3", "2026-01-04")],
+    )
+    assert copilot_log.get_session_models(conn, "s") == ["gpt-4", "o3"]
+
+
 def test_copilot_get_session_models_without_usage_table_is_empty():
     assert copilot_log.get_session_models(sqlite3.connect(":memory:"), "any") == []
 
