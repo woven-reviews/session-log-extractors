@@ -1461,3 +1461,75 @@ def test_extract_all_skips_unparseable_file():
         rc = _extract_all(proj, str(out_dir))
     assert rc == 1
     assert "skip bad" in err.getvalue()
+
+
+@pytest.mark.parametrize("destination", ["stdout", "explicit", "default"])
+def test_cli_json_destinations(destination, tmp_path, monkeypatch, capsys):
+    transcript = tmp_path / "session.jsonl"
+    entries = _conversation_entries()
+    entries[0]["message"]["content"][0]["text"] = "# Keep **recorded Markdown**"
+    _write_jsonl(transcript, entries)
+    output = tmp_path / "output"
+    output.mkdir()
+    monkeypatch.setattr(eclog, "PROJECT_ROOT", output)
+
+    def no_turn_rendering(*args, **kwargs):
+        pytest.fail("JSON extraction must not assemble Markdown turns")
+
+    monkeypatch.setattr(eclog, "build_turns", no_turn_rendering)
+    args = ["--transcript", str(transcript), "--raw-tool-result-bytes", "3"]
+    if destination == "stdout":
+        args += ["--output", "-"]
+    elif destination == "explicit":
+        args += ["--output", str(output / "custom.json")]
+    assert main(args) == 0
+    captured = capsys.readouterr()
+    if destination == "stdout":
+        envelope = json.loads(captured.out)
+        assert list(output.iterdir()) == []
+    else:
+        name = (
+            "custom.json"
+            if destination == "explicit"
+            else "claude_session_log_raw_session.json"
+        )
+        assert [p.name for p in output.iterdir()] == [name]
+        envelope = json.loads((output / name).read_text())
+        assert captured.out == ""
+        assert "wrote" in captured.err
+    assert "using transcript:" in captured.err
+    assert envelope["schema"] == "raw-session-log/1"
+    assert envelope["session_id"] == "session"
+    assert envelope["events"] == build_events(entries, 3)
+    assert envelope["events"][0]["text"] == "# Keep **recorded Markdown**"
+    assert envelope["events"][0]["images"][0]["data"] == _PNG_B64
+
+
+@pytest.mark.parametrize("all_flag", [[], ["--all"]])
+def test_cli_batch_emits_only_json(all_flag, tmp_path, monkeypatch, capsys):
+    project = tmp_path / "project"
+    project.mkdir()
+    for name in ["a", "b"]:
+        _write_jsonl(project / f"{name}.jsonl", _conversation_entries())
+    output = tmp_path / "output"
+    monkeypatch.setattr(eclog, "PROJECT_ROOT", output)
+    assert main(all_flag + ["--project-dir", str(project)]) == 0
+    assert sorted(p.name for p in output.iterdir()) == [
+        "claude_session_log_raw_a.json",
+        "claude_session_log_raw_b.json",
+    ]
+    for path in output.iterdir():
+        assert json.loads(path.read_text())["events"] == build_events(
+            _conversation_entries()
+        )
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "done: 2/2" in captured.err
+
+
+@pytest.mark.parametrize("flag", ["--raw", "--no-raw"])
+def test_cli_rejects_retired_output_flags(flag, tmp_path, capsys):
+    with pytest.raises(SystemExit) as exc:
+        main([flag, "--project-dir", str(tmp_path), "--output", str(tmp_path / "out")])
+    assert exc.value.code == 2
+    assert "unrecognized arguments" in capsys.readouterr().err
