@@ -15,14 +15,14 @@ import tempfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import extract_claude_session_log as eclog
-from session_log_envelope import SIZE_WARN_BYTES, build_envelope, write_envelope
+import pytest
 from extract_claude_session_log import (
     Turn,
     _candidate_project_dirs,
     _content_blocks,
     _extract_all,
-    _is_tool_result_entry,
     _human_text,
+    _is_tool_result_entry,
     _jsonl_files,
     _parse_chosen,
     _result_block_text,
@@ -48,9 +48,9 @@ from extract_claude_session_log import (
     parse_plan_decision,
     permission_denials_from_result,
     render,
+    render_summary,
     render_transcript,
     resolve_project_dir,
-    render_summary,
     result_note,
     select_transcript,
     session_cwd,
@@ -59,6 +59,7 @@ from extract_claude_session_log import (
     tool_descriptor,
     write_raw_envelope,
 )
+from session_log_envelope import SIZE_WARN_BYTES, build_envelope, write_envelope
 
 # 1x1 transparent PNG.
 _PNG_B64 = (
@@ -281,7 +282,7 @@ def test_dump_fixture_images_preserves_media_types():
     with tempfile.TemporaryDirectory() as directory:
         written = dump_images(turns, "images", dump_dir=Path(directory))
         assert [path.suffix for path in written] == [".png", ".jpg", ".gif", ".webp"]
-        for path, image in zip(written, turns[0].images):
+        for path, image in zip(written, turns[0].images, strict=True):
             assert path.read_bytes() == base64.b64decode(image["data"])
 
 
@@ -617,11 +618,8 @@ def test_select_transcript_explicit_transcript_wins():
 
 
 def test_select_transcript_explicit_transcript_missing_raises():
-    try:
+    with pytest.raises(FileNotFoundError):
         select_transcript(None, "/no/such/file.jsonl", None)
-        assert False, "expected FileNotFoundError"
-    except FileNotFoundError:
-        pass
 
 
 def test_select_transcript_selector_as_file_path():
@@ -648,29 +646,26 @@ def test_select_transcript_prefix_match_unique_and_ambiguous():
     proj2 = Path(tempfile.mkdtemp())
     (proj2 / "sess-aaa.jsonl").write_text("{}")
     (proj2 / "sess-aab.jsonl").write_text("{}")
-    try:
+    with pytest.raises(FileNotFoundError) as exc_info:
         select_transcript("sess-aa", None, str(proj2))
-        assert False, "expected FileNotFoundError"
-    except FileNotFoundError as exc:
-        assert "ambiguous" in str(exc)
+
+    assert "ambiguous" in str(exc_info.value)
 
 
 def test_select_transcript_selector_not_found_in_project_dir():
     proj = Path(tempfile.mkdtemp())  # no .jsonl files at all -- newest() yields None
-    try:
+    with pytest.raises(FileNotFoundError) as exc_info:
         select_transcript("missing-id", None, str(proj))
-        assert False, "expected FileNotFoundError"
-    except FileNotFoundError as exc:
-        assert "missing-id" in str(exc) and str(proj) in str(exc)
+
+    assert "missing-id" in str(exc_info.value) and str(proj) in str(exc_info.value)
 
 
 def test_select_transcript_selector_not_found_without_project_dir():
     with _patched_projects_root():
-        try:
+        with pytest.raises(FileNotFoundError) as exc_info:
             select_transcript("some-id", None, None, strict=True)
-            assert False, "expected FileNotFoundError"
-        except FileNotFoundError as exc:
-            assert str(exc) == "no transcript matching 'some-id'"
+
+        assert str(exc_info.value) == "no transcript matching 'some-id'"
 
 
 def test_select_transcript_no_selector_picks_newest_in_project_dir():
@@ -685,20 +680,18 @@ def test_select_transcript_no_selector_picks_newest_in_project_dir():
 
 def test_select_transcript_strict_no_match_mentions_strict():
     with _patched_projects_root():
-        try:
+        with pytest.raises(FileNotFoundError) as exc_info:
             select_transcript(None, None, None, strict=True)
-            assert False, "expected FileNotFoundError"
-        except FileNotFoundError as exc:
-            assert "--strict" in str(exc)
+
+        assert "--strict" in str(exc_info.value)
 
 
 def test_select_transcript_no_match_anywhere_raises():
     with _patched_projects_root():
-        try:
+        with pytest.raises(FileNotFoundError) as exc_info:
             select_transcript(None, None, None, strict=False)
-            assert False, "expected FileNotFoundError"
-        except FileNotFoundError as exc:
-            assert "could not locate" in str(exc)
+
+        assert "could not locate" in str(exc_info.value)
 
 
 def test_select_transcript_global_fallback_picks_newest_anywhere():
@@ -1351,11 +1344,8 @@ def _write_jsonl(path, entries):
 def test_render_transcript_raises_for_empty_file():
     tmp = Path(tempfile.mkdtemp()) / "empty.jsonl"
     tmp.write_text("")
-    try:
+    with pytest.raises(ValueError, match="no parseable JSON entries found"):
         render_transcript(tmp, None)
-        assert False, "expected ValueError"
-    except ValueError:
-        pass
 
 
 def test_render_transcript_writes_markdown_and_raw_envelope():

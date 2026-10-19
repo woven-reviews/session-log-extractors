@@ -14,16 +14,15 @@ import sqlite3
 from functools import partial
 from pathlib import Path
 
-import pytest
-
 import extract_copilot_session_log as copilot_log
+import pytest
 from extract_copilot_session_log import (
     Turn,
-    build_events,
     _permissions_from_events,
     _skills_from_events,
     attribute_permissions,
     attribute_skills,
+    build_events,
     clean_user_text,
     format_decision,
     get_db_connection,
@@ -660,11 +659,8 @@ def test_copilot_turn_add_tool_without_descriptor():
 
 
 def test_copilot_get_db_connection_missing_file_raises():
-    try:
+    with pytest.raises(FileNotFoundError):
         get_db_connection(Path("/nonexistent/copilot/session-store.db"))
-        assert False, "expected FileNotFoundError"
-    except FileNotFoundError:
-        pass
 
 
 def test_copilot_table_columns_without_row_factory():

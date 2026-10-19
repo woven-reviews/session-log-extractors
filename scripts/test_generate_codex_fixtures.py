@@ -5,16 +5,14 @@ import queue
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 import generate_codex_fixtures as generator
+import pytest
 from extract_codex_session_log import (
     build_events,
     build_turns,
     load_entries,
     session_models,
 )
-
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "codex"
 
@@ -229,7 +227,8 @@ def test_select_and_validate_captured_shapes():
             generator.validate(name, [])
 
 
-def _fake_cli(
+# Existing capture test setup; remove in QUAL-2547.
+def _fake_cli(  # noqa: PLR0913
     monkeypatch,
     tmp_path,
     *,
@@ -306,7 +305,8 @@ def test_main_regenerates_with_fake_cli_only(monkeypatch, tmp_path):
     assert not list(output.parent.glob("codex-fixture-stage-*"))
 
 
-def test_interactive_main_drives_requests_and_stages_native_rollouts(
+# Existing interactive capture assertions; remove in QUAL-2547.
+def test_interactive_main_drives_requests_and_stages_native_rollouts(  # noqa: C901
     monkeypatch, tmp_path
 ):
     output = tmp_path / "codex"

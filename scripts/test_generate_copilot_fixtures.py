@@ -4,10 +4,8 @@ import json
 import sqlite3
 from types import SimpleNamespace
 
-import pytest
-
 import generate_copilot_fixtures as generator
-
+import pytest
 from generate_copilot_fixtures import clean_event_lines, copy_session
 
 
@@ -292,9 +290,7 @@ def test_clean_rejects_other_private_temp_paths(tmp_path):
     line = json.dumps(
         {"type": "user.message", "data": {"content": "/private/var/other/file"}}
     )
-    try:
+    with pytest.raises(RuntimeError, match="private path") as exc_info:
         clean_event_lines([line], tmp_path)
-    except RuntimeError as exc:
-        assert "private path" in str(exc)
-    else:
-        raise AssertionError("unexpected private path must block capture")
+
+    assert "private path" in str(exc_info.value)

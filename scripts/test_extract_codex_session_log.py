@@ -12,6 +12,7 @@ import os
 import tempfile
 from pathlib import Path
 
+import pytest
 from extract_codex_session_log import (
     _cwd_matches,
     _decode_jsonish,
@@ -863,11 +864,8 @@ def test_output_identifier_falls_back_to_stem_for_no_session_id():
 
 
 def test_select_transcript_explicit_transcript_missing_raises():
-    try:
+    with pytest.raises(FileNotFoundError):
         select_transcript(None, "/no/such/path.jsonl", None)
-        assert False, "expected FileNotFoundError"
-    except FileNotFoundError:
-        pass
 
 
 def test_select_transcript_explicit_transcript_present():
@@ -901,17 +899,13 @@ def test_select_transcript_selector_prefix_single_and_ambiguous_and_missing():
         d2 = dup_dir / "rollout-y.jsonl"
         d1.write_text(json.dumps({"type": "session_meta", "payload": {"id": "dupe-1"}}))
         d2.write_text(json.dumps({"type": "session_meta", "payload": {"id": "dupe-2"}}))
-        try:
+        with pytest.raises(FileNotFoundError) as exc_info:
             select_transcript("dupe", None, str(dup_dir))
-            assert False, "expected ambiguous FileNotFoundError"
-        except FileNotFoundError as exc:
-            assert "ambiguous" in str(exc)
 
-        try:
+        assert "ambiguous" in str(exc_info.value)
+
+        with pytest.raises(FileNotFoundError):
             select_transcript("nope", None, str(sessions))
-            assert False, "expected FileNotFoundError"
-        except FileNotFoundError:
-            pass
 
 
 def test_select_transcript_falls_back_to_cwd_match_then_newest_anywhere():
@@ -980,11 +974,8 @@ def test_select_transcript_strict_raises_when_no_exact_match():
         old_cwd = os.getcwd()
         try:
             os.chdir(project)
-            try:
+            with pytest.raises(FileNotFoundError):
                 select_transcript(None, None, str(sessions), strict=True)
-                assert False, "expected FileNotFoundError"
-            except FileNotFoundError:
-                pass
         finally:
             os.chdir(old_cwd)
 
@@ -993,11 +984,8 @@ def test_select_transcript_raises_when_nothing_anywhere():
     with tempfile.TemporaryDirectory() as tmp_name:
         empty_root = Path(tmp_name) / "empty"
         empty_root.mkdir()
-        try:
+        with pytest.raises(FileNotFoundError):
             select_transcript(None, None, str(empty_root))
-            assert False, "expected FileNotFoundError"
-        except FileNotFoundError:
-            pass
 
 
 # --- image ref parsing ---------------------------------------
@@ -1758,11 +1746,8 @@ def test_render_transcript_raises_for_no_parseable_entries():
     with tempfile.TemporaryDirectory() as tmp_name:
         path = Path(tmp_name) / "empty.jsonl"
         path.write_text("not json\n")
-        try:
+        with pytest.raises(ValueError, match="no parseable JSON entries found"):
             render_transcript(path)
-            assert False, "expected ValueError"
-        except ValueError:
-            pass
 
 
 def test_write_raw_envelope_returns_none_for_no_events():
@@ -1881,11 +1866,8 @@ def test_main_single_session_render_error_returns_1():
 
 
 def test_jsonl_files_returns_empty_for_missing_root():
-    try:
+    with pytest.raises(FileNotFoundError):
         select_transcript(None, None, "/no/such/sessions/root")
-        assert False, "expected FileNotFoundError"
-    except FileNotFoundError:
-        pass
 
 
 def test_flatten_result_text_unhandled_type_returns_empty():

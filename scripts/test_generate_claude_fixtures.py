@@ -5,9 +5,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 import generate_claude_fixtures as generator
+import pytest
 from generate_claude_fixtures import clean
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "claude"
@@ -34,7 +33,8 @@ def _replace(entries, old, new):
     return json.loads(json.dumps(entries, ensure_ascii=False).replace(old, new))
 
 
-def _fake_claude(
+# Existing capture test setup; remove in QUAL-2547.
+def _fake_claude(  # noqa: PLR0913
     monkeypatch,
     tmp_path,
     *,
@@ -241,12 +241,12 @@ def test_clean_preserves_records_blocks_and_ids():
 
 def test_clean_rejects_unknown_thinking_shape():
     entries = [{"message": {"content": [{"type": "thinking", "text": "new format"}]}}]
-    try:
+    with pytest.raises(
+        RuntimeError, match="unexpected thinking block format"
+    ) as exc_info:
         clean(entries, Path("/tmp/fixture-project"))
-    except RuntimeError as exc:
-        assert str(exc) == "unexpected thinking block format"
-    else:
-        raise AssertionError("unknown thinking format must be reviewed")
+
+    assert str(exc_info.value) == "unexpected thinking block format"
 
 
 def test_clean_redacts_encoded_project_dir():
@@ -256,9 +256,9 @@ def test_clean_redacts_encoded_project_dir():
 
 def test_clean_rejects_leftover_private_temp_path():
     entries = [{"text": "-private-var-folders-ab-T-other"}]
-    try:
+    with pytest.raises(
+        RuntimeError, match="private path remains after sanitizing"
+    ) as exc_info:
         clean(entries, Path("/tmp/fixture-project"))
-    except RuntimeError as exc:
-        assert str(exc) == "private path remains after sanitizing"
-    else:
-        raise AssertionError("encoded temp path must be rejected")
+
+    assert str(exc_info.value) == "private path remains after sanitizing"
