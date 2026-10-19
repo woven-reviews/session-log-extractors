@@ -537,7 +537,11 @@ def get_state_attachments(session_id: str) -> List[Dict[str, Any]]:
             data_b64 = item.get("data")
             media_type = item.get("mediaType")
             asset_id = item.get("assetId")
-            if not isinstance(data_b64, str) and isinstance(asset_id, str) and asset_id in assets:
+            if (
+                not isinstance(data_b64, str)
+                and isinstance(asset_id, str)
+                and asset_id in assets
+            ):
                 data_b64, media_type = assets[asset_id]
 
             rec: Dict[str, Any] = {
@@ -970,12 +974,19 @@ def _build_turn_objects(
             name = Path(path).name if isinstance(path, str) else ""
         media_type = attachment.get("type") or attachment.get("media_type")
         data_url = attachment.get("data_url")
-        if isinstance(media_type, str) and media_type and not media_type.startswith("image/"):
+        if (
+            isinstance(media_type, str)
+            and media_type
+            and not media_type.startswith("image/")
+        ):
             continue
         if not name or not (
-            isinstance(media_type, str) and media_type.startswith("image/")
-            or isinstance(path, str) and media_type_for_ext(Path(path).suffix)
-            or isinstance(data_url, str) and _DATA_IMAGE_URL.match(data_url)
+            isinstance(media_type, str)
+            and media_type.startswith("image/")
+            or isinstance(path, str)
+            and media_type_for_ext(Path(path).suffix)
+            or isinstance(data_url, str)
+            and _DATA_IMAGE_URL.match(data_url)
         ):
             continue
         target = _turn_for(built, attachment.get("timestamp"))
@@ -1341,7 +1352,9 @@ def render(
         if turn.permission_decisions:
             out.append("")
             for p in turn.permission_decisions:
-                line = f"  _{decision_label(p['decision'])}:_ {_truncate(p['tool'], 120)}"
+                line = (
+                    f"  _{decision_label(p['decision'])}:_ {_truncate(p['tool'], 120)}"
+                )
                 if p.get("feedback"):
                     line += f' -> "{_truncate(p["feedback"], 160)}"'
                 out.append(line)

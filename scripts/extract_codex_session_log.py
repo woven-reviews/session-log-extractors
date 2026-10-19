@@ -932,7 +932,9 @@ def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]:
     pending_questions: Dict[str, List[Any]] = {}
     pending_plan_calls = set()
     pending_user_images: List[Dict[str, Any]] = []
-    pending_response_user: Optional[Tuple[str, Optional[str], List[Dict[str, Any]]]] = None
+    pending_response_user: Optional[Tuple[str, Optional[str], List[Dict[str, Any]]]] = (
+        None
+    )
     last_tool = ""  # most recent tool call, to name a denied permission
     pending_mode = ""
 
@@ -1015,7 +1017,11 @@ def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]:
                 if pending_response_user is not None:
                     response_images = pending_response_user[2]
                     pending_response_user = None
-                images = response_images or pending_user_images or image_refs_from_event(payload)
+                images = (
+                    response_images
+                    or pending_user_images
+                    or image_refs_from_event(payload)
+                )
                 pending_user_images = []
                 start_user_turn(
                     text,
@@ -1127,7 +1133,11 @@ def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]:
             if qas:
                 current.option_qas.extend(qas)
                 continue
-            result = _flatten_result_text(output) if ptype == "custom_tool_call_output" else output
+            result = (
+                _flatten_result_text(output)
+                if ptype == "custom_tool_call_output"
+                else output
+            )
             if (
                 ptype == "custom_tool_call_output"
                 and "exec_command failed: CreateProcess" in result
@@ -1178,7 +1188,9 @@ def build_events(
     events: List[Dict[str, Any]] = []
     pending_calls: Dict[str, Dict[str, Any]] = {}
     pending_user_images: List[Dict[str, Any]] = []
-    pending_response_user: Optional[Tuple[str, Optional[str], List[Dict[str, Any]]]] = None
+    pending_response_user: Optional[Tuple[str, Optional[str], List[Dict[str, Any]]]] = (
+        None
+    )
     index = 0
 
     def flush_pending_response_user() -> None:
@@ -1201,7 +1213,9 @@ def build_events(
             if pending_response_user is not None:
                 response_refs = pending_response_user[2]
                 pending_response_user = None
-            refs = response_refs or pending_user_images or image_refs_from_event(payload)
+            refs = (
+                response_refs or pending_user_images or image_refs_from_event(payload)
+            )
             pending_user_images = []
             images = envelope_images(refs)
             if not text and not images:

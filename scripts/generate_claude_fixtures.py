@@ -43,7 +43,13 @@ def clean(entries: list[dict], workspace: Path) -> str:
     text = text.replace(encoded, "-workspace")
     text = text.replace(str(Path.home()), "/home/fixture-user")
     text = EMAIL.sub("fixture@example.invalid", text)
-    private = (str(workspace), str(Path.home()), encoded_home, "/private/var/", "-private-var-")
+    private = (
+        str(workspace),
+        str(Path.home()),
+        encoded_home,
+        "/private/var/",
+        "-private-var-",
+    )
     if any(path in text for path in private):
         raise RuntimeError("private path remains after sanitizing")
     return text + "\n"
@@ -81,18 +87,31 @@ def run_case(name: str, prompt: str, *, tools: str = "") -> dict[str, str]:
             args = ["claude", "--print", message, "--output-format", "json"]
             if model:
                 args.extend(["--model", model])
-            args.extend([
-                "--resume" if resume else "--session-id", session_id,
-                "--max-budget-usd", "0.25", "--permission-mode", "dontAsk",
-                "--permission-prompts", "none", "--setting-sources", "project",
-                "--strict-mcp-config", "--no-chrome",
-            ])
+            args.extend(
+                [
+                    "--resume" if resume else "--session-id",
+                    session_id,
+                    "--max-budget-usd",
+                    "0.25",
+                    "--permission-mode",
+                    "dontAsk",
+                    "--permission-prompts",
+                    "none",
+                    "--setting-sources",
+                    "project",
+                    "--strict-mcp-config",
+                    "--no-chrome",
+                ]
+            )
             if tools:
                 args.extend(["--tools", tools])
             print(f"{name}: {shlex.join(args)}", flush=True)
             result = subprocess.run(
-                args, cwd=workspace, stdin=subprocess.DEVNULL,
-                capture_output=True, text=True,
+                args,
+                cwd=workspace,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
             )
             if result.returncode:
                 raise RuntimeError(
@@ -109,7 +128,8 @@ def run_case(name: str, prompt: str, *, tools: str = "") -> dict[str, str]:
             invoke(
                 "Which codename was the fallback in your previous answer? "
                 "Answer without using tools.",
-                "haiku", resume=True,
+                "haiku",
+                resume=True,
             )
 
         matches = list(PROJECTS.rglob(f"{session_id}.jsonl"))
@@ -118,14 +138,19 @@ def run_case(name: str, prompt: str, *, tools: str = "") -> dict[str, str]:
         transcript = matches[0]
         entries = [json.loads(line) for line in transcript.read_text().splitlines()]
         blocks = [
-            block for entry in entries
+            block
+            for entry in entries
             for block in entry.get("message", {}).get("content", [])
             if isinstance(block, dict)
         ]
-        calls = {block.get("name") for block in blocks if block.get("type") == "tool_use"}
+        calls = {
+            block.get("name") for block in blocks if block.get("type") == "tool_use"
+        }
         expected = {
-            "skill_command": "Skill", "large_result": "Read",
-            "permission_denial": "Bash", "subagent": "Agent",
+            "skill_command": "Skill",
+            "large_result": "Read",
+            "permission_denial": "Bash",
+            "subagent": "Agent",
             "continued": "Read",
         }
         if name in expected and expected[name] not in calls:
@@ -138,7 +163,8 @@ def run_case(name: str, prompt: str, *, tools: str = "") -> dict[str, str]:
             raise RuntimeError("skill_command: direct slash command was not recorded")
         if name == "permission_denial" and not any(
             "denied" in str(block.get("content", "")).lower()
-            for block in blocks if block.get("type") == "tool_result"
+            for block in blocks
+            if block.get("type") == "tool_result"
         ):
             raise RuntimeError("permission_denial: no denial result")
         if name == "model":
@@ -148,35 +174,51 @@ def run_case(name: str, prompt: str, *, tools: str = "") -> dict[str, str]:
                 for entry in entries
             ):
                 raise RuntimeError("model: direct /model command was not recorded")
-            if len({
-                entry.get("message", {}).get("model")
-                for entry in entries if entry.get("type") == "assistant"
-                and entry.get("message", {}).get("model") not in (None, "<synthetic>")
-            }) < 2:
+            if (
+                len(
+                    {
+                        entry.get("message", {}).get("model")
+                        for entry in entries
+                        if entry.get("type") == "assistant"
+                        and entry.get("message", {}).get("model")
+                        not in (None, "<synthetic>")
+                    }
+                )
+                < 2
+            ):
                 raise RuntimeError("model: resume did not produce two model IDs")
         if not any(entry.get("type") == "assistant" for entry in entries):
             raise RuntimeError(f"{name}: transcript has no assistant message")
         if name == "continued":
             answers = [
-                block.get("text", "") for entry in entries
+                block.get("text", "")
+                for entry in entries
                 if entry.get("type") == "assistant"
                 for block in entry.get("message", {}).get("content", [])
                 if isinstance(block, dict) and block.get("type") == "text"
             ]
-            if len(answers) < 2 or not all("RED-FOX-23" in answer for answer in answers[-2:]):
-                raise RuntimeError("continued: follow-up did not retain the fallback codename")
+            if len(answers) < 2 or not all(
+                "RED-FOX-23" in answer for answer in answers[-2:]
+            ):
+                raise RuntimeError(
+                    "continued: follow-up did not retain the fallback codename"
+                )
         output[f"{name}.jsonl"] = clean(entries, workspace)
 
         if name == "subagent":
             sidecars = transcript.parent / session_id / "subagents"
             agents = list(sidecars.glob("agent-*.jsonl"))
             if len(agents) != 1:
-                raise RuntimeError(f"subagent: expected one sidecar, found {len(agents)}")
+                raise RuntimeError(
+                    f"subagent: expected one sidecar, found {len(agents)}"
+                )
             agent = agents[0]
             meta = agent.with_suffix(".meta.json")
             if not meta.is_file():
                 raise RuntimeError("subagent: missing native metadata sidecar")
-            agent_entries = [json.loads(line) for line in agent.read_text().splitlines()]
+            agent_entries = [
+                json.loads(line) for line in agent.read_text().splitlines()
+            ]
             output["subagent/subagents/agent-fixture.jsonl"] = clean(
                 agent_entries, workspace
             )
@@ -208,7 +250,9 @@ def main() -> None:
     for name, prompt, tools in cases:
         files.update(run_case(name, prompt, tools=tools))
     ROOT.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="claude-fixture-staging-", dir=ROOT.parent) as stage:
+    with tempfile.TemporaryDirectory(
+        prefix="claude-fixture-staging-", dir=ROOT.parent
+    ) as stage:
         for name, content in files.items():
             path = Path(stage) / name
             path.parent.mkdir(parents=True, exist_ok=True)

@@ -22,7 +22,8 @@ def test_clean_event_lines_preserves_shape_and_redacts_private_paths(tmp_path):
     ]
     cleaned = clean_event_lines([json.dumps(row) for row in rows], workspace)
     assert [row["type"] for row in map(json.loads, cleaned.splitlines())] == [
-        "user.message", "assistant.message"
+        "user.message",
+        "assistant.message",
     ]
     assert "/workspace/file.py" in cleaned
     assert "user@example.com" not in cleaned
@@ -35,23 +36,28 @@ def test_copy_session_keeps_native_schema_and_only_requested_rows(tmp_path):
     with sqlite3.connect(source) as conn:
         conn.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT)")
         conn.execute("CREATE TABLE turns (session_id TEXT, user_message TEXT)")
-        conn.executemany("INSERT INTO sessions VALUES (?, ?)", [
-            ("fixture-id", str(workspace)), ("private-id", "/private/project")
-        ])
-        conn.executemany("INSERT INTO turns VALUES (?, ?)", [
-            ("fixture-id", "hello"), ("private-id", "private conversation")
-        ])
+        conn.executemany(
+            "INSERT INTO sessions VALUES (?, ?)",
+            [("fixture-id", str(workspace)), ("private-id", "/private/project")],
+        )
+        conn.executemany(
+            "INSERT INTO turns VALUES (?, ?)",
+            [("fixture-id", "hello"), ("private-id", "private conversation")],
+        )
     copy_session(source, "fixture-id", destination, workspace)
     with sqlite3.connect(destination) as conn:
         assert conn.execute("SELECT id, cwd FROM sessions").fetchall() == [
             ("fixture-id", "/workspace")
         ]
-        assert conn.execute("SELECT session_id, user_message FROM turns").fetchall() == [
-            ("fixture-id", "hello")
-        ]
-        assert "CREATE TABLE sessions" in conn.execute(
-            "SELECT sql FROM sqlite_master WHERE name='sessions'"
-        ).fetchone()[0]
+        assert conn.execute(
+            "SELECT session_id, user_message FROM turns"
+        ).fetchall() == [("fixture-id", "hello")]
+        assert (
+            "CREATE TABLE sessions"
+            in conn.execute(
+                "SELECT sql FROM sqlite_master WHERE name='sessions'"
+            ).fetchone()[0]
+        )
 
 
 def test_run_uses_isolated_headless_flags_and_resume(monkeypatch, tmp_path):
@@ -63,12 +69,17 @@ def test_run_uses_isolated_headless_flags_and_resume(monkeypatch, tmp_path):
 
     monkeypatch.setattr(generator.subprocess, "run", fake_subprocess)
     generator.run("first prompt", tmp_path, "session-id")
-    generator.run("second prompt", tmp_path, "session-id", resume=True,
-                  attachment=tmp_path / "pixel.png")
+    generator.run(
+        "second prompt",
+        tmp_path,
+        "session-id",
+        resume=True,
+        attachment=tmp_path / "pixel.png",
+    )
     assert "--no-custom-instructions" in calls[0]
     assert "--disable-builtin-mcps" in calls[0]
     assert calls[0][-2:] == ["--session-id", "session-id"]
-    assert ["--resume", "session-id"] == calls[1][calls[1].index("--resume"):][:2]
+    assert ["--resume", "session-id"] == calls[1][calls[1].index("--resume") :][:2]
     assert "--attachment" in calls[1]
 
 
@@ -86,9 +97,13 @@ def _fake_copilot(monkeypatch, tmp_path, mutate=lambda name, resume, rows: rows)
     monkeypatch.setattr(generator, "STORE", source)
     monkeypatch.setattr(generator, "STATE", state)
     monkeypatch.setattr(generator, "ROOT", output)
-    monkeypatch.setattr(generator.subprocess, "run", lambda *a, **k: SimpleNamespace(
-        stdout="GitHub Copilot CLI 1.0.90-5.\n", returncode=0
-    ))
+    monkeypatch.setattr(
+        generator.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(
+            stdout="GitHub Copilot CLI 1.0.90-5.\n", returncode=0
+        ),
+    )
     seen = []
 
     def fake_run(prompt, workspace, session_id, *, resume=False, attachment=None):
@@ -102,18 +117,38 @@ def _fake_copilot(monkeypatch, tmp_path, mutate=lambda name, resume, rows: rows)
             "tool_failure": "exit code 1",
         }.get(name, "fixture")
         new = [
-            {"type": "user.message", "data": {"content": prompt,
-                "attachments": [{"path": str(attachment)}] if attachment else []}},
+            {
+                "type": "user.message",
+                "data": {
+                    "content": prompt,
+                    "attachments": [{"path": str(attachment)}] if attachment else [],
+                },
+            },
             {"type": "assistant.message", "data": {"content": response}},
         ]
         if name.startswith("tool_"):
-            command = "printf TOOL_FIXTURE_MARKER" if name == "tool_success" else "false"
-            new.extend([
-                {"type": "tool.execution_start", "data": {
-                    "toolCallId": "call-1", "toolName": "bash", "arguments": {"command": command}}},
-                {"type": "tool.execution_complete", "data": {
-                    "toolCallId": "call-1", "result": {"content": response}}},
-            ])
+            command = (
+                "printf TOOL_FIXTURE_MARKER" if name == "tool_success" else "false"
+            )
+            new.extend(
+                [
+                    {
+                        "type": "tool.execution_start",
+                        "data": {
+                            "toolCallId": "call-1",
+                            "toolName": "bash",
+                            "arguments": {"command": command},
+                        },
+                    },
+                    {
+                        "type": "tool.execution_complete",
+                        "data": {
+                            "toolCallId": "call-1",
+                            "result": {"content": response},
+                        },
+                    },
+                ]
+            )
         if name == "skill":
             new.append({"type": "skill.invoked", "data": {"name": "fixture-skill"}})
         new = mutate(name, resume, new)
@@ -127,7 +162,9 @@ def _fake_copilot(monkeypatch, tmp_path, mutate=lambda name, resume, rows: rows)
         events_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
         with sqlite3.connect(source) as conn:
             if not resume:
-                conn.execute("INSERT INTO sessions VALUES (?, ?)", (session_id, str(workspace)))
+                conn.execute(
+                    "INSERT INTO sessions VALUES (?, ?)", (session_id, str(workspace))
+                )
             conn.execute("INSERT INTO turns VALUES (?, ?)", (session_id, prompt))
 
     monkeypatch.setattr(generator, "run", fake_run)
@@ -139,7 +176,12 @@ def test_main_stages_all_six_native_cases(monkeypatch, tmp_path):
     generator.main()
     manifest = json.loads((output / "manifest.json").read_text())
     assert set(manifest["cases"]) == {
-        "baseline", "continued", "tool_success", "tool_failure", "skill", "image"
+        "baseline",
+        "continued",
+        "tool_success",
+        "tool_failure",
+        "skill",
+        "image",
     }
     with sqlite3.connect(output / "session-store.db") as conn:
         assert conn.execute("SELECT count(*) FROM sessions").fetchone()[0] == 6
@@ -156,25 +198,61 @@ def _drop(event_type):
     return lambda rows: [row for row in rows if row["type"] != event_type]
 
 
-@pytest.mark.parametrize(("case", "breakage", "message"), [
-    ("baseline", lambda rows: None, "baseline: missing native event log"),
-    ("baseline", _drop("assistant.message"), "baseline: incomplete native event log"),
-    ("continued", _drop("user.message"), "continued: resume did not produce a second turn"),
-    ("tool_success", _drop("tool.execution_complete"),
-     "tool_success: missing native printf TOOL_FIXTURE_MARKER execution"),
-    ("skill", _drop("skill.invoked"), "skill: no native skill invocation"),
-    ("image", lambda rows: [{**row, "data": {**row["data"], "attachments": []}}
-                            if row["type"] == "user.message" else row for row in rows],
-     "image: attachment was not recorded"),
-    ("baseline", lambda rows: [{**row, "data": {"content": "something else"}}
-                               if row["type"] == "assistant.message" else row for row in rows],
-     "baseline: missing expected reply BASELINE_FIXTURE_MARKER"),
-    ("tool_failure", lambda rows: [{**row, "data": {**row["data"], "result": {"content": "fine"}}}
-                                   if row["type"] == "tool.execution_complete" else row
-                                   for row in rows],
-     "tool_failure: missing native result exit code 1"),
-])
-def test_main_rejects_incomplete_native_capture(monkeypatch, tmp_path, case, breakage, message):
+@pytest.mark.parametrize(
+    ("case", "breakage", "message"),
+    [
+        ("baseline", lambda rows: None, "baseline: missing native event log"),
+        (
+            "baseline",
+            _drop("assistant.message"),
+            "baseline: incomplete native event log",
+        ),
+        (
+            "continued",
+            _drop("user.message"),
+            "continued: resume did not produce a second turn",
+        ),
+        (
+            "tool_success",
+            _drop("tool.execution_complete"),
+            "tool_success: missing native printf TOOL_FIXTURE_MARKER execution",
+        ),
+        ("skill", _drop("skill.invoked"), "skill: no native skill invocation"),
+        (
+            "image",
+            lambda rows: [
+                {**row, "data": {**row["data"], "attachments": []}}
+                if row["type"] == "user.message"
+                else row
+                for row in rows
+            ],
+            "image: attachment was not recorded",
+        ),
+        (
+            "baseline",
+            lambda rows: [
+                {**row, "data": {"content": "something else"}}
+                if row["type"] == "assistant.message"
+                else row
+                for row in rows
+            ],
+            "baseline: missing expected reply BASELINE_FIXTURE_MARKER",
+        ),
+        (
+            "tool_failure",
+            lambda rows: [
+                {**row, "data": {**row["data"], "result": {"content": "fine"}}}
+                if row["type"] == "tool.execution_complete"
+                else row
+                for row in rows
+            ],
+            "tool_failure: missing native result exit code 1",
+        ),
+    ],
+)
+def test_main_rejects_incomplete_native_capture(
+    monkeypatch, tmp_path, case, breakage, message
+):
     # Only the continued case's resumed turn is broken for the second-turn check.
     def mutate(name, resume, rows):
         if name != case or (case == "continued" and not resume):
@@ -188,8 +266,11 @@ def test_main_rejects_incomplete_native_capture(monkeypatch, tmp_path, case, bre
 
 
 def test_run_reports_cli_failure(monkeypatch, tmp_path):
-    monkeypatch.setattr(generator.subprocess, "run",
-                        lambda *a, **k: SimpleNamespace(returncode=2, stderr=" auth \n"))
+    monkeypatch.setattr(
+        generator.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(returncode=2, stderr=" auth \n"),
+    )
     with pytest.raises(RuntimeError, match="Copilot exited 2: auth"):
         generator.run("prompt", tmp_path, "session-id")
 
@@ -208,7 +289,9 @@ def test_clean_event_lines_rejects_unknown_event_shape(tmp_path):
 
 
 def test_clean_rejects_other_private_temp_paths(tmp_path):
-    line = json.dumps({"type": "user.message", "data": {"content": "/private/var/other/file"}})
+    line = json.dumps(
+        {"type": "user.message", "data": {"content": "/private/var/other/file"}}
+    )
     try:
         clean_event_lines([line], tmp_path)
     except RuntimeError as exc:

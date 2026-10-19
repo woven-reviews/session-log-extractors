@@ -148,7 +148,9 @@ def test_codex_initial_response_item_user_message_is_exported_once():
 
     turns, _ = build_turns(entries)
     assert [turn.user_text for turn in turns] == ["Initial task", "Follow up"]
-    assert [event["text"] for event in build_events(entries) if event["role"] == "user"] == [
+    assert [
+        event["text"] for event in build_events(entries) if event["role"] == "user"
+    ] == [
         "Initial task",
         "Follow up",
     ]
@@ -694,7 +696,9 @@ def test_build_events_keeps_local_and_unresolvable_images():
 
 
 def test_build_events_attaches_output_to_its_function_call():
-    events = build_events(load_entries(FIXTURES / "tool_patch_large.jsonl"), tool_result_max_bytes=100)
+    events = build_events(
+        load_entries(FIXTURES / "tool_patch_large.jsonl"), tool_result_max_bytes=100
+    )
     calls = [c for e in events for c in e.get("tool_calls", [])]
     assert len(calls) == 2
     assert calls[0]["name"] == "exec"
@@ -1037,7 +1041,9 @@ def test_image_refs_from_user_message_payload_ignores_non_list_and_other_blocks(
 
 def test_is_startup_context_requires_all_markers():
     assert not is_startup_context("plain text")
-    assert not is_startup_context("<recommended_plugins>only this</recommended_plugins>")
+    assert not is_startup_context(
+        "<recommended_plugins>only this</recommended_plugins>"
+    )
 
 
 def test_user_text_from_event_non_string_message():
@@ -1125,7 +1131,10 @@ def test_plan_update_requires_list_of_steps_with_str_step():
     result = _plan_update(
         json.dumps({"plan": [{"step": "Do it"}], "explanation": "why"})
     )
-    assert result == {"explanation": "why", "steps": [{"step": "Do it", "status": "pending"}]}
+    assert result == {
+        "explanation": "why",
+        "steps": [{"step": "Do it", "status": "pending"}],
+    }
 
 
 def test_decode_jsonish_passthrough_and_parse():
@@ -1183,8 +1192,7 @@ def test_structured_answer_for_question_container_and_fallback_paths():
 
     # Fallback: output itself matches via _extract_answer_from_item.
     assert (
-        _structured_answer_for_question(question, {"id": "q1", "value": "top"})
-        == "top"
+        _structured_answer_for_question(question, {"id": "q1", "value": "top"}) == "top"
     )
 
     # Output is a bare list.
@@ -1361,9 +1369,7 @@ def test_build_turns_apply_patch_tool_call_records_file_paths():
                 "type": "function_call",
                 "name": "apply_patch",
                 "call_id": "c1",
-                "arguments": json.dumps(
-                    {"input": "*** Add File: new.py"}
-                ),
+                "arguments": json.dumps({"input": "*** Add File: new.py"}),
             },
         },
     ]
@@ -1470,14 +1476,19 @@ def test_build_events_assistant_blank_text_is_skipped():
 
 def test_build_events_function_call_flushes_pending_user_message():
     entries = load_entries(FIXTURES / "question.jsonl")
-    calls = [entry["payload"] for entry in entries
-             if entry["payload"].get("type") in ("function_call", "function_call_output")]
+    calls = [
+        entry["payload"]
+        for entry in entries
+        if entry["payload"].get("type") in ("function_call", "function_call_output")
+    ]
     assert [call["type"] for call in calls] == ["function_call", "function_call_output"]
     assert calls[0]["call_id"] == calls[1]["call_id"]
 
     events = build_events(entries)
     assert events[0]["role"] == "user"
-    assert "Which team" in events[1]["tool_calls"][0]["input"]["questions"][0]["question"]
+    assert (
+        "Which team" in events[1]["tool_calls"][0]["input"]["questions"][0]["question"]
+    )
     assert events[1]["tool_calls"][0]["name"] == "request_user_input"
     assert events[1]["tool_calls"][0]["result"] == "QUAL"
 
@@ -1501,7 +1512,9 @@ def test_build_events_output_with_unknown_call_id_is_ignored():
 
 
 def test_image_bytes_and_ext_invalid_data_url_and_bad_base64():
-    assert _image_bytes_and_ext({"type": "data_url", "data_url": "not-a-data-url"}) is None
+    assert (
+        _image_bytes_and_ext({"type": "data_url", "data_url": "not-a-data-url"}) is None
+    )
     assert _image_bytes_and_ext({"type": "data_url", "data_url": 123}) is None
     assert _image_bytes_and_ext({"type": "base64", "data": 123}) is None
     assert _image_bytes_and_ext({"type": "base64", "data": "!!!not-base64!!!"}) is None
@@ -1560,9 +1573,7 @@ def test_derive_project_label_falls_back_to_cwd_without_sid_and_to_path():
     entries_with_cwd_no_id = [
         {"type": "session_meta", "payload": {"cwd": "/work/app"}},
     ]
-    assert (
-        derive_project_label(Path("/x.jsonl"), entries_with_cwd_no_id) == "/work/app"
-    )
+    assert derive_project_label(Path("/x.jsonl"), entries_with_cwd_no_id) == "/work/app"
 
     assert derive_project_label(Path("/x.jsonl"), []) == "/x.jsonl"
 
@@ -1595,7 +1606,13 @@ def test_render_handles_empty_turns_list():
 def test_render_includes_models_line():
     entries = load_entries(FIXTURES / "model.jsonl")
     turns, files_changed = build_turns(entries)
-    md = render(turns, files_changed, "project", first_timestamp(entries), models=session_models(entries))
+    md = render(
+        turns,
+        files_changed,
+        "project",
+        first_timestamp(entries),
+        models=session_models(entries),
+    )
     assert "Model: gpt-6.1-sol, gpt-6-luna." in md
 
 
@@ -1816,7 +1833,9 @@ def test_main_single_session_to_stdout():
 
     captured = io.StringIO()
     with contextlib.redirect_stdout(captured):
-        rc = main(["--transcript", str(FIXTURES / "tool_patch_large.jsonl"), "--output", "-"])
+        rc = main(
+            ["--transcript", str(FIXTURES / "tool_patch_large.jsonl"), "--output", "-"]
+        )
     assert rc == 0
     assert "# Codex Session Conversation Log" in captured.getvalue()
     assert "TOOL_FIXTURE_MARKER" in captured.getvalue()
@@ -1831,7 +1850,9 @@ def test_main_single_session_writes_markdown_and_raw_file():
         rc = main(["--transcript", str(transcript), "--output", str(out_md)])
         assert rc == 0
         assert "SECOND_MODEL_FIXTURE_MARKER" in out_md.read_text()
-        assert (tmp / f"codex_session_log_raw_{session_id_from_file(transcript)}.json").exists()
+        assert (
+            tmp / f"codex_session_log_raw_{session_id_from_file(transcript)}.json"
+        ).exists()
 
 
 def test_main_single_session_no_raw_skips_raw_file():
@@ -2018,7 +2039,9 @@ def test_main_default_output_path_and_no_trailing_newline_write(monkeypatch):
 
         fake_default = tmp / "default_out.md"
         monkeypatch.setattr(mod, "DEFAULT_OUTPUT", fake_default)
-        monkeypatch.setattr(mod, "render_transcript", lambda *a, **k: "no trailing newline")
+        monkeypatch.setattr(
+            mod, "render_transcript", lambda *a, **k: "no trailing newline"
+        )
         rc = mod.main(["--transcript", str(transcript)])
         assert rc == 0
         assert fake_default.read_text(encoding="utf-8") == "no trailing newline"
