@@ -34,10 +34,18 @@ the threshold.
 Ruff checks application code, fixture generators, and tests. Keep the enabled
 rules and initial configurable limits (complexity 10, statements 50, branches
 12, arguments 5); these are Ruff defaults, not universal quality standards.
-Do not add blanket exclusions or blanket noqa comments. Additional suppressions
-or raised thresholds require explicit human approval and justification in review.
-Each temporary exception must identify the function, specific rules, reason, and
-removal ticket (see the inventory in README.md). Remove exceptions when replacing
-or substantially refactoring the affected code; never transfer them to replacement
-code. Unrelated fixes must not increase metrics inside suppressed functions;
-reviewers must compare those metrics because automated comparisons are deferred.
+Agents must never add new lint exceptions or broaden existing ones. Do not add
+suppressions, disable rules, exclude files or directories, or raise thresholds
+to make a check pass. Fix the code to satisfy the rules.
+
+The exceptions inventoried in README.md exist solely because this codebase
+predates lint enforcement. They are temporary debt for pre-existing code, not
+precedent or permission to suppress violations in new or replacement code.
+Each identifies its function, specific rules, reason, and removal ticket.
+Remove the exception when replacing or substantially refactoring that code;
+never transfer it to replacement code. Update README.md in the same change:
+remove resolved exception entries, update entries for partially resolved
+exceptions, and keep the remaining counts, rules, reasons, and removal tickets
+accurate. Keep the initial baseline inventory clearly labeled as historical.
+Unrelated fixes must not increase metrics inside suppressed functions; reviewers
+must compare those metrics because automated comparisons are deferred.

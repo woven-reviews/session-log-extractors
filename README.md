@@ -66,7 +66,9 @@ On the pinned Ruff 0.14.0 formatting baseline (`4f5b449`), the initial inventory
 was **107 findings**: 30 C901, 21 PLR0912, 13 PLR0915, 4 PLR0913, 15 B011,
 10 PT017, 9 I001, 4 B905, and 1 PIE810. The 39 non-complexity findings are fixed
 (imports, exception tests, explicit zip behavior, and redundant startswith). The
-68 complexity findings remain as function-level, rule-specific exceptions below.
+68 complexity findings remain as function-level, rule-specific exceptions below
+**solely because the codebase predates lint enforcement**. This is temporary debt
+for pre-existing code, not precedent or permission to suppress future violations.
 No directory exclusion or raised threshold hides them.
 
 The exception reasons are existing selection and asset I/O (source-boundary
@@ -111,9 +113,17 @@ Algorithms and interfaces are preserved in this tooling change.
 | `test_generate_codex_fixtures.py` | `_fake_cli` | PLR0913 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
 | `test_generate_codex_fixtures.py` | `test_interactive_main_drives_requests_and_stages_native_rollouts` | C901 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
 
-Additional suppressions or raised limits require **explicit human approval and
-review justification**. Every exception names a function, specific rules, reason,
-and removal ticket. Remove it when replacing or substantially refactoring that
-code; do not transfer it to replacement code. Unrelated fixes must not increase
-metrics within suppressed functions: reviewers must compare them manually,
-since automated metric comparisons are deferred. See [AGENTS.md](AGENTS.md).
+**Agents must never add new lint exceptions or broaden existing ones.** Do not
+add suppressions, disable rules, exclude files or directories, or raise thresholds
+to make a check pass. Fix the code to satisfy the rules. New and replacement code
+must pass without exceptions.
+
+Every existing exception names a function, specific rules, reason, and removal
+ticket. Remove it when replacing or substantially refactoring that code; do not
+transfer it to replacement code. **Update this inventory in the same change**:
+remove resolved exception entries, update entries for partially resolved
+exceptions, and keep the remaining counts, rules, reasons, and removal tickets
+accurate. Keep the initial baseline inventory clearly labeled as historical.
+Unrelated fixes must not increase metrics within suppressed functions: reviewers
+must compare them manually, since automated metric comparisons are deferred.
+See [AGENTS.md](AGENTS.md).
