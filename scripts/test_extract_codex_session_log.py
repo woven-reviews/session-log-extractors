@@ -621,6 +621,26 @@ def test_build_events_keeps_local_and_unresolvable_images():
     assert user["images"][1] == {"unavailable": True, "ref": "/gone/missing.png"}
 
 
+def test_image_fixture_inlines_response_item_image_in_json(tmp_path):
+    destination = tmp_path / "out.json"
+    assert (
+        main(
+            [
+                "--transcript",
+                str(FIXTURES / "image.jsonl"),
+                "--output",
+                str(destination),
+            ]
+        )
+        == 0
+    )
+    events = json.loads(destination.read_text())["events"]
+    images = [image for event in events for image in event.get("images", [])]
+    assert len(images) == 1
+    assert images[0]["media_type"] == "image/png"
+    assert base64.b64decode(images[0]["data"]) == (FIXTURES / "pixel.png").read_bytes()
+
+
 def test_build_events_attaches_output_to_its_function_call():
     events = build_events(
         load_entries(FIXTURES / "tool_patch_large.jsonl"), tool_result_max_bytes=100
