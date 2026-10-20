@@ -6,7 +6,6 @@ Run: python3 scripts/test_extract_claude_session_log.py
 
 from __future__ import annotations
 
-import base64
 import contextlib
 import io
 import json
@@ -29,16 +28,13 @@ from extract_claude_session_log import (
     apply_plan_decisions,
     attribute_subagents,
     build_events,
+    build_raw_envelope,
     build_turns,
     clean_user_text,
-    date_only,
-    derive_project_label,
-    dump_images,
     encode_project_path,
     extract_file_path,
+    extract_transcript,
     first_timestamp,
-    format_elapsed,
-    format_timestamp,
     load_entries,
     load_subagents,
     main,
@@ -47,9 +43,6 @@ from extract_claude_session_log import (
     parse_permission_denial,
     parse_plan_decision,
     permission_denials_from_result,
-    render,
-    render_summary,
-    render_transcript,
     resolve_project_dir,
     result_note,
     select_transcript,
@@ -57,7 +50,6 @@ from extract_claude_session_log import (
     session_models,
     summarize_subagent,
     tool_descriptor,
-    write_raw_envelope,
 )
 from session_log_envelope import SIZE_WARN_BYTES, build_envelope, write_envelope
 
@@ -120,9 +112,6 @@ def test_native_skill_and_command_use_checked_in_definitions():
     )
     assert turns[1].command == "/fixture-command"
     assert turns[1].command_details["overview"] == "Say COMMAND_FIXTURE_MARKER."
-    markdown = render(turns, [], "fixture project", turns[0].timestamp)
-    assert "_Overview:_ Say SKILL_FIXTURE_MARKER." in markdown
-    assert "_Overview:_ Say COMMAND_FIXTURE_MARKER." in markdown
 
 
 def test_single_choice():
@@ -177,10 +166,6 @@ def test_native_dont_ask_denial_is_recorded():
     assert [d["tool"].split(" — ")[0] for d in turns[0].permission_denials] == ["Bash"]
     assert turns[0].permission_denials[0]["by"] == "settings"
     assert not any("has been denied" in note for note in turns[0].result_notes)
-    md = render(turns, [], "proj", None)
-    assert "_Denied by settings:_ **Bash" in md
-    assert "_settings denied permission:_ Bash" in md
-    assert "user denied permission" not in md
 
 
 def test_permission_denial_ignores_isc_license_text():
@@ -255,35 +240,6 @@ def test_encode_project_path_does_not_collapse_runs():
         encode_project_path(PureWindowsPath(r"C:\Users\me\proj")) == "C--Users-me-proj"
     )
     assert encode_project_path(PurePosixPath("/Users/me/proj")) == "-Users-me-proj"
-
-
-def test_dump_images_writes_file_and_marker():
-    turn = Turn("look at this", None)
-    turn.images = [{"type": "base64", "media_type": "image/png", "data": _PNG_B64}]
-    dump_dir = Path(tempfile.mkdtemp())
-    written = dump_images([turn], "sess123", dump_dir=dump_dir)
-    assert len(written) == 1
-    p = written[0]
-    assert p.exists() and p.name == "sess123_turn1_img1.png"
-    assert p.read_bytes() == base64.b64decode(_PNG_B64)
-    assert "description pending" in turn.user_text
-    assert str(p) in turn.user_text
-
-
-def test_dump_images_noop_without_images():
-    turn = Turn("no images here", None)
-    dump_dir = Path(tempfile.mkdtemp())
-    assert dump_images([turn], "s", dump_dir=dump_dir) == []
-    assert turn.user_text == "no images here"
-
-
-def test_dump_fixture_images_preserves_media_types():
-    turns, _ = build_turns(_fixture_entries("images.jsonl"))
-    with tempfile.TemporaryDirectory() as directory:
-        written = dump_images(turns, "images", dump_dir=Path(directory))
-        assert [path.suffix for path in written] == [".png", ".jpg", ".gif", ".webp"]
-        for path, image in zip(written, turns[0].images, strict=True):
-            assert path.read_bytes() == base64.b64decode(image["data"])
 
 
 def _conversation_entries():
@@ -532,7 +488,7 @@ def test_plan_rejected_keeps_steering_message():
     assert turns[2].permission_denials == []
 
 
-def test_plan_rejection_reason_is_captured_and_rendered():
+def test_plan_rejection_reason_is_captured():
     # The wording the harness actually uses when a plan is sent back in plan mode.
     turns, _ = build_turns(
         _plan_entries(
@@ -549,9 +505,6 @@ def test_plan_rejection_reason_is_captured_and_rendered():
     assert (
         plan["message"] == "wrong table, use line_items\nand keep it in one migration"
     )
-    md = render(turns, [], "proj", None)
-    assert "> wrong table, use line_items" in md
-    assert "> and keep it in one migration" in md
 
 
 def test_plan_without_result_is_marked_undecided():
@@ -1004,37 +957,8 @@ def test_build_events_skips_non_dict_assistant_blocks_and_unmatched_calls():
 
 
 # --------------------------------------------------------------------------- #
-# Timestamp formatting
+# Envelope metadata
 # --------------------------------------------------------------------------- #
-
-
-def test_format_timestamp_and_elapsed_and_date_only():
-    assert format_timestamp(None) == "(no timestamp)"
-    assert format_timestamp("not-a-timestamp") == "not-a-timestamp"
-    assert format_timestamp("2026-01-01T00:00:00Z") == "2026-01-01 00:00:00 UTC"
-    assert format_elapsed(None, "2026-01-01T00:00:00Z") == ""
-    assert format_elapsed("2026-01-01T00:00:00Z", "2026-01-01T01:02:03Z") == "+1:02:03"
-    assert format_elapsed("2026-01-01T00:00:00Z", "2026-01-01T00:02:03Z") == "+2:03"
-    assert format_elapsed("2026-01-01T00:00:00Z", "2026-01-01T00:00:05Z") == "+5s"
-    assert date_only(None) == "unknown"
-    assert date_only("2026-01-01T00:00:00Z") == "2026-01-01"
-
-
-# --------------------------------------------------------------------------- #
-# Rendering
-# --------------------------------------------------------------------------- #
-
-
-def test_derive_project_label_prefers_entry_cwd():
-    label = derive_project_label(
-        Path("/x/-Users-me-app/sess.jsonl"), [{"cwd": "/Users/me/app"}]
-    )
-    assert label == "/Users/me/app  (dir: -Users-me-app)"
-
-
-def test_derive_project_label_falls_back_to_decoded_dirname():
-    label = derive_project_label(Path("/x/-Users-me-app/sess.jsonl"), [])
-    assert label == "/Users/me/app  (dir: -Users-me-app)"
 
 
 def test_first_timestamp_session_models_and_cwd():
@@ -1089,126 +1013,18 @@ def test_native_continued_conversation_keeps_follow_up_in_one_session():
     assert events[4].get("tool_calls", []) == []
 
 
-def test_write_raw_envelope_writes_file_and_returns_path():
-    out_dir = Path(tempfile.mkdtemp())
-    path = write_raw_envelope(
-        Path("/wherever/sess123.jsonl"), _conversation_entries(), out_dir
-    )
-    assert path == out_dir / "claude_session_log_raw_sess123.json"
-    assert path.exists()
+def test_build_raw_envelope_preserves_metadata_and_events():
+    entries = _conversation_entries()
+    envelope = build_raw_envelope(Path("/wherever/sess123.jsonl"), entries)
+    assert envelope["session_id"] == "sess123"
+    assert envelope["cwd"] == "/work/app"
+    assert envelope["started_at"] == first_timestamp(entries)
+    assert envelope["models"] == session_models(entries)
+    assert envelope["events"] == build_events(entries)
 
 
-def test_write_raw_envelope_returns_none_when_no_events():
-    out_dir = Path(tempfile.mkdtemp())
-    assert write_raw_envelope(Path("/x/sess.jsonl"), [], out_dir) is None
-
-
-def test_dump_images_skips_undecodable_payload():
-    turn = Turn("bad image", None)
-    turn.images = [{"type": "base64", "media_type": "image/png", "data": "a"}]
-    dump_dir = Path(tempfile.mkdtemp())
-    assert dump_images([turn], "s", dump_dir=dump_dir) == []
-
-
-def test_render_summary_empty_when_no_input_turns():
-    out = render_summary([Turn("", None)], None)
-    assert "_(No user inputs in this transcript.)_" in out
-
-
-def test_render_handles_no_turns():
-    md = render([], [], "proj", None)
-    assert "_(No conversational turns found in this transcript.)_" in md
-
-
-def test_derive_context_line_fallback_when_no_user_text():
-    md = render([Turn("", None)], [], "proj", None)
-    assert "a Claude Code working session." in md
-
-
-def test_render_full_turn_with_all_features():
-    t = Turn("fix the bug", "2026-01-01T00:00:00Z")
-    t.add_assistant_text("Fixed it.")
-    t.add_tool("Bash", "pytest")
-    t.add_skill("documents")
-    t.add_result_note("ok")
-    t.option_qas = [
-        {
-            "question": "Which?",
-            "header": "Pick",
-            "options": OPTS,
-            "chosen_labels": [],
-            "answer_text": "custom pick",
-        }
-    ]
-    t.permission_denials = [{"tool": "Bash — rm -rf", "message": "no, careful"}]
-    t.plans = [
-        {
-            "plan": "# Plan\nstep",
-            "decision": "approved",
-            "edited_plan": "# Plan\nstep, tweaked",
-            "message": "",
-        }
-    ]
-    t.subagents = [
-        {
-            "agent_type": "Explore",
-            "task": "find the file",
-            "tool_count": 2,
-            "tool_names": ["Grep", "Read"],
-            "result": "found it",
-        }
-    ]
-    t.subagent_count = 1
-
-    t2 = Turn("", "2026-01-01T00:05:00Z")  # pre-conversation stub
-
-    t3 = Turn("", "2026-01-01T00:06:00Z")
-    t3.command = "/do-thing"
-    t3.command_args = "--flag"
-    t3.command_details = {}
-
-    t4 = Turn("", "2026-01-01T00:07:00Z")
-    t4.shell_command = "ls -la"
-    # A bare, undecided plan so this turn also appears in the summary (which
-    # only lists turns with user text / a command / a plan) and exercises the
-    # shell-command branch of render_summary plus the no-edit/no-message plan
-    # rendering path.
-    t4.plans = [
-        {
-            "plan": "",
-            "decision": "no decision recorded",
-            "edited_plan": "",
-            "message": "",
-        }
-    ]
-
-    turns = [t, t2, t3, t4]
-    md = render(
-        turns, ["app/models.py"], "proj", "2026-01-01T00:00:00Z", models=["claude-opus"]
-    )
-
-    assert "## Summary — user inputs" in md
-    assert "fix the bug" in md
-    assert "Model: claude-opus." in md
-    assert "_Answered via options (Pick):_" in md
-    assert "_(custom answer)_ custom pick" in md
-    assert "  _user chose:_ Pick → custom pick" in md
-    assert "_Denied permission:_ **Bash — rm -rf**" in md
-    assert "  _user denied permission:_ Bash — rm -rf" in md
-    assert "_Plan presented for approval — user **approved**_" in md
-    assert "_user approved the plan_" in md
-    assert "user edited the plan before approving" in md
-    assert "Invoked command: **/do-thing**" in md
-    assert "**User invoked command:** /do-thing `--flag`" in md
-    assert "**User ran shell command:**" in md
-    assert "Ran shell command:" in md
-    assert "user **no decision recorded**" in md
-    assert "(no user text — pre-conversation activity)" in md
-    assert "(no response captured)" in md
-    assert "_subagent (Explore):_ find the file" in md
-    assert "(spawned 1 subagent(s))" in md
-    assert "## Files changed during the session" in md
-    assert "app/models.py" in md
+def test_build_raw_envelope_returns_none_when_no_events():
+    assert build_raw_envelope(Path("/x/sess.jsonl"), []) is None
 
 
 # --------------------------------------------------------------------------- #
@@ -1311,9 +1127,6 @@ def test_native_subagent_sidecar_is_attributed_to_turn():
         (FIXTURES / "subagent/subagents/agent-fixture.meta.json").read_text()
     )
     assert subs[0]["agent_type"] == meta["agentType"]
-    assert f"_subagent ({meta['agentType']}):_" in render(
-        turns, [], "fixture project", turns[0].timestamp
-    )
 
 
 def test_attribute_subagents_assigns_by_start_time_and_falls_back():
@@ -1333,7 +1146,7 @@ def test_attribute_subagents_noop_when_no_turns():
 
 
 # --------------------------------------------------------------------------- #
-# render_transcript / CLI
+# extract_transcript / CLI
 # --------------------------------------------------------------------------- #
 
 
@@ -1341,45 +1154,38 @@ def _write_jsonl(path, entries):
     path.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
 
 
-def test_render_transcript_raises_for_empty_file():
-    tmp = Path(tempfile.mkdtemp()) / "empty.jsonl"
-    tmp.write_text("")
+def test_extract_transcript_raises_for_empty_file(tmp_path):
+    transcript = tmp_path / "empty.jsonl"
+    transcript.write_text("")
     with pytest.raises(ValueError, match="no parseable JSON entries found"):
-        render_transcript(tmp, None)
+        extract_transcript(transcript)
 
 
-def test_render_transcript_writes_markdown_and_raw_envelope():
-    transcript = FIXTURES / "baseline.jsonl"
-    out_dir = Path(tempfile.mkdtemp())
-    buf = io.StringIO()
-    with contextlib.redirect_stderr(buf):
-        md = render_transcript(transcript, None, raw_output=out_dir)
-    assert "**User:** Reply with BASELINE_FIXTURE_MARKER and nothing else." in md
-    assert "**Assistant:** BASELINE_FIXTURE_MARKER" in md
-    envelope = json.loads(
-        (out_dir / "claude_session_log_raw_baseline.json").read_text()
-    )
+def test_extract_transcript_preserves_native_conversation():
+    envelope = extract_transcript(FIXTURES / "baseline.jsonl")
     assert [(event["role"], event["text"]) for event in envelope["events"]] == [
         ("user", "Reply with BASELINE_FIXTURE_MARKER and nothing else."),
         ("assistant", "BASELINE_FIXTURE_MARKER"),
     ]
-    assert "wrote" in buf.getvalue()
 
 
-def test_main_writes_to_explicit_output_and_raw_envelope():
+def test_main_writes_json_to_explicit_output():
     transcript = Path(tempfile.mkdtemp()) / "s1.jsonl"
     _write_jsonl(transcript, _conversation_entries())
     out_dir = Path(tempfile.mkdtemp())
-    out_file = out_dir / "log.md"
+    out_file = out_dir / "log.json"
     buf = io.StringIO()
     with contextlib.redirect_stderr(buf):
         rc = main(["--transcript", str(transcript), "--output", str(out_file)])
     assert rc == 0
     assert out_file.exists()
-    assert (out_dir / "claude_session_log_raw_s1.json").exists()
+    assert json.loads(out_file.read_text())["events"] == build_events(
+        _conversation_entries()
+    )
+    assert list(out_dir.iterdir()) == [out_file]
 
 
-def test_main_stdout_output_skips_raw_envelope():
+def test_main_stdout_outputs_json():
     transcript = Path(tempfile.mkdtemp()) / "s1.jsonl"
     _write_jsonl(transcript, _conversation_entries())
     out = io.StringIO()
@@ -1387,7 +1193,7 @@ def test_main_stdout_output_skips_raw_envelope():
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         rc = main(["--transcript", str(transcript), "--output", "-"])
     assert rc == 0
-    assert "# Session Conversation Log" in out.getvalue()
+    assert json.loads(out.getvalue())["events"] == build_events(_conversation_entries())
 
 
 def test_main_errors_for_missing_transcript():
@@ -1396,20 +1202,6 @@ def test_main_errors_for_missing_transcript():
         rc = main(["--transcript", "/no/such/file.jsonl"])
     assert rc == 1
     assert "error:" in err.getvalue()
-
-
-def test_main_no_raw_flag_skips_envelope():
-    transcript = Path(tempfile.mkdtemp()) / "s1.jsonl"
-    _write_jsonl(transcript, _conversation_entries())
-    out_dir = Path(tempfile.mkdtemp())
-    out_file = out_dir / "log.md"
-    err = io.StringIO()
-    with contextlib.redirect_stderr(err):
-        rc = main(
-            ["--transcript", str(transcript), "--output", str(out_file), "--no-raw"]
-        )
-    assert rc == 0
-    assert list(out_dir.glob("*raw*")) == []
 
 
 def test_main_default_mode_errors_when_no_project_dir_found():
@@ -1430,8 +1222,8 @@ def test_main_all_mode_extracts_every_session():
     with contextlib.redirect_stderr(err):
         rc = main(["--all", "--project-dir", str(proj), "--output", str(out_dir)])
     assert rc == 0
-    assert (out_dir / "session_log_a.md").exists()
-    assert (out_dir / "session_log_b.md").exists()
+    assert (out_dir / "claude_session_log_raw_a.json").exists()
+    assert (out_dir / "claude_session_log_raw_b.json").exists()
     assert "done: 2/2" in err.getvalue()
 
 
@@ -1461,3 +1253,218 @@ def test_extract_all_skips_unparseable_file():
         rc = _extract_all(proj, str(out_dir))
     assert rc == 1
     assert "skip bad" in err.getvalue()
+
+
+@pytest.mark.parametrize("destination", ["stdout", "explicit", "default"])
+def test_cli_json_destinations(destination, tmp_path, monkeypatch, capsys):
+    transcript = tmp_path / "session.jsonl"
+    entries = _conversation_entries()
+    entries[0]["message"]["content"][0]["text"] = "# Keep **recorded Markdown**"
+    _write_jsonl(transcript, entries)
+    output = tmp_path / "output"
+    output.mkdir()
+    monkeypatch.setattr(eclog, "PROJECT_ROOT", output)
+
+    def no_turn_rendering(*args, **kwargs):
+        pytest.fail("JSON extraction must not assemble Markdown turns")
+
+    monkeypatch.setattr(eclog, "build_turns", no_turn_rendering)
+    args = ["--transcript", str(transcript), "--tool-result-bytes", "3"]
+    if destination == "stdout":
+        args += ["--output", "-"]
+    elif destination == "explicit":
+        args += ["--output", str(output / "custom.json")]
+    assert main(args) == 0
+    captured = capsys.readouterr()
+    if destination == "stdout":
+        envelope = json.loads(captured.out)
+        assert list(output.iterdir()) == []
+    else:
+        name = (
+            "custom.json"
+            if destination == "explicit"
+            else "claude_session_log_raw_session.json"
+        )
+        assert [p.name for p in output.iterdir()] == [name]
+        envelope = json.loads((output / name).read_text())
+        assert captured.out == ""
+        assert "wrote" in captured.err
+    assert "using transcript:" in captured.err
+    assert envelope["schema"] == "raw-session-log/1"
+    assert envelope["session_id"] == "session"
+    assert envelope["events"] == build_events(entries, 3)
+    assert envelope["events"][0]["text"] == "# Keep **recorded Markdown**"
+    assert envelope["events"][0]["images"][0]["data"] == _PNG_B64
+
+
+@pytest.mark.parametrize("all_flag", [[], ["--all"]])
+def test_cli_batch_emits_only_json(all_flag, tmp_path, monkeypatch, capsys):
+    project = tmp_path / "project"
+    project.mkdir()
+    for name in ["a", "b"]:
+        _write_jsonl(project / f"{name}.jsonl", _conversation_entries())
+    output = tmp_path / "output"
+    monkeypatch.setattr(eclog, "PROJECT_ROOT", output)
+    assert main(all_flag + ["--project-dir", str(project)]) == 0
+    assert sorted(p.name for p in output.iterdir()) == [
+        "claude_session_log_raw_a.json",
+        "claude_session_log_raw_b.json",
+    ]
+    for path in output.iterdir():
+        assert json.loads(path.read_text())["events"] == build_events(
+            _conversation_entries()
+        )
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "done: 2/2" in captured.err
+
+
+@pytest.mark.parametrize(
+    "flag", [["--raw"], ["--no-raw"], ["--raw-tool-result-bytes", "3"]]
+)
+def test_cli_rejects_retired_output_flags(flag, tmp_path, capsys):
+    with pytest.raises(SystemExit) as exc:
+        main([*flag, "--project-dir", str(tmp_path), "--output", str(tmp_path / "out")])
+    assert exc.value.code == 2
+    assert "unrecognized arguments" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("limit", [0, 17, -1])
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        "baseline.jsonl",
+        "images.jsonl",
+        "large_result.jsonl",
+        "questions.jsonl",
+        "model.jsonl",
+        "continued.jsonl",
+        "subagent.jsonl",
+        "plan_modes.jsonl",
+        "permission_denial.jsonl",
+        "skill_command.jsonl",
+    ],
+)
+def test_cli_preserves_native_payloads(fixture, limit, capsys):
+    transcript = FIXTURES / fixture
+    assert (
+        main(
+            [
+                "--transcript",
+                str(transcript),
+                "--output",
+                "-",
+                "--tool-result-bytes",
+                str(limit),
+            ]
+        )
+        == 0
+    )
+    captured = capsys.readouterr()
+    envelope = json.loads(captured.out)
+    entries = load_entries(transcript)
+    assert envelope == build_envelope(
+        "claude",
+        transcript.stem,
+        build_events(entries, limit),
+        cwd=session_cwd(entries),
+        started_at=first_timestamp(entries),
+        models=session_models(entries),
+        tool_result_max_bytes=limit,
+    )
+
+
+@pytest.mark.parametrize("selector", ["path", "prefix", "newest"])
+def test_cli_single_selection_paths(selector, tmp_path, capsys):
+    transcript = tmp_path / "session-123.jsonl"
+    _write_jsonl(transcript, _conversation_entries())
+    args = ["--project-dir", str(tmp_path), "--output", "-"]
+    if selector != "newest":
+        args += [str(transcript) if selector == "path" else "session-1"]
+    assert main(args) == 0
+    assert json.loads(capsys.readouterr().out)["session_id"] == "session-123"
+
+
+@pytest.mark.parametrize("mode", ["single", "batch"])
+def test_cli_reports_write_errors(mode, tmp_path, capsys):
+    transcript = tmp_path / "session.jsonl"
+    _write_jsonl(transcript, _conversation_entries())
+    output = tmp_path / "output"
+    output.mkdir()
+    if mode == "single":
+        args = ["--transcript", str(transcript), "--output", str(output)]
+    else:
+        (output / "claude_session_log_raw_session.json").mkdir()
+        args = ["--all", "--project-dir", str(tmp_path), "--output", str(output)]
+    assert main(args) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "error" in captured.err
+
+
+@pytest.mark.parametrize("contents", ["", "not JSON\n"])
+def test_cli_reports_parse_errors(contents, tmp_path, capsys):
+    transcript = tmp_path / "session.jsonl"
+    transcript.write_text(contents)
+    assert main(["--transcript", str(transcript), "--output", "-"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "no parseable JSON entries" in captured.err
+    if contents:
+        assert "skipping malformed JSON" in captured.err
+
+
+def test_cli_retains_malformed_line_diagnostics(capsys):
+    assert (
+        main(["--transcript", str(FIXTURES / "truncated.jsonl"), "--output", "-"]) == 0
+    )
+    captured = capsys.readouterr()
+    assert len(json.loads(captured.out)["events"]) == 2
+    assert "skipping malformed JSON on line 3" in captured.err
+
+
+def test_cli_file_keeps_size_warning(tmp_path, monkeypatch, capsys):
+    import session_log_envelope
+
+    monkeypatch.setattr(session_log_envelope, "SIZE_WARN_BYTES", 1)
+    output = tmp_path / "session.json"
+    assert (
+        main(
+            ["--transcript", str(FIXTURES / "baseline.jsonl"), "--output", str(output)]
+        )
+        == 0
+    )
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "session-log uploads are capped" in captured.err
+    assert json.loads(output.read_text())["harness"] == "claude"
+
+
+def test_cli_stdout_keeps_size_warning(monkeypatch, capsys):
+    import session_log_envelope
+
+    monkeypatch.setattr(session_log_envelope, "SIZE_WARN_BYTES", 1)
+    transcript = FIXTURES / "baseline.jsonl"
+    assert main(["--transcript", str(transcript), "--output", "-"]) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["harness"] == "claude"
+    assert "warning: stdout JSON is" in captured.err
+    assert "consider a lower --tool-result-bytes" in captured.err
+    assert "session-log uploads are capped" in captured.err
+
+
+@pytest.mark.parametrize("mode", ["single", "batch"])
+def test_cli_no_event_input_keeps_existing_envelope_omission(mode, tmp_path, capsys):
+    transcript = tmp_path / "session.jsonl"
+    _write_jsonl(transcript, [{"type": "system"}])
+    output = tmp_path / "output"
+    if mode == "single":
+        args = ["--transcript", str(transcript), "--output", "-"]
+    else:
+        args = ["--all", "--project-dir", str(tmp_path), "--output", str(output)]
+    assert main(args) == (0 if mode == "single" else 1)
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "session: no exportable events" in captured.err
+    assert "no JSON written" in captured.err
+    assert not list(tmp_path.rglob("*.json"))

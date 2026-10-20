@@ -1,63 +1,29 @@
 #!/usr/bin/env python3
-"""Extract a Claude Code session transcript into a readable markdown conversation log.
+"""Extract Claude Code JSONL transcripts into JSON conversation envelopes.
 
-Claude Code records each working session as a JSONL file (one JSON object per
-line) under ``~/.claude/projects/<encoded-project-path>/<session-id>.jsonl``.
-The project path is "encoded" by replacing every run of non-alphanumeric
-characters with a single dash, e.g.::
+Transcripts live under ~/.claude/projects/<encoded-project-path>/<session-id>.jsonl.
+Non-alphanumeric path characters each become one dash. Extraction is mechanical:
+no LLM, summarization, or network access. Recorded Markdown remains message text;
+images stay inline as base64, and tool results retain their configured byte cap.
 
-    /Users/jane/work/app  ->  -Users-jane-work-app
+By default, export all sessions in the resolved project directory to the project
+root as claude_session_log_raw_<session-id>.json. A session id or --transcript
+selects one session; --output PATH writes its JSON there, and --output - writes
+JSON to stdout. Diagnostics go to stderr.
 
-This script reads one of those transcripts and produces a turn-by-turn markdown
-log with per-turn timestamps. It is a *mechanical* extractor: there is no LLM,
-no summarization, and no network access. User prose is reproduced verbatim;
-assistant text is reproduced verbatim; tool calls are condensed to a single
-bullet each (tool name + a short descriptor such as the file path or command).
-
-A "turn" is a real user message together with everything the assistant did in
-response, up to the next real user message. Tool results come back as
-``user``-role entries whose content is ``tool_result`` blocks -- those are *not*
-real user messages and do not start a new turn; they are folded (condensed) into
-the preceding assistant activity. Subagent / sidechain entries
-(``isSidechain == true``) and meta entries (``isMeta == true``) are kept out of
-the main flow.
-
-When the human denies a tool's permission prompt (or settings such as don't-ask
-mode deny it), the harness records a canned error tool_result; those are surfaced as "permission denied" decisions (the tool
-that was denied, plus any steering message the human typed). Approvals leave no
-distinct record -- an approved tool just runs -- so only denials are captured.
-
-Plan mode is the exception: a plan is presented via the ``ExitPlanMode`` tool and
-the human's approve/reject decision comes back as that tool's result. Both the
-plan text and the decision (including a plan the human edited in the approval
-dialog, or the steering message they typed when rejecting) are surfaced.
-
-Standard library only; works on Python 3.8+.
-
-Examples
---------
-Most recent transcript for the current project, written to ``session_log.md``
-in the project root (always, regardless of where you run it from)::
+Examples::
 
     python3 scripts/extract_claude_session_log.py
-
-A specific session id, to stdout::
-
     python3 scripts/extract_claude_session_log.py 1a2b3c4d-... --output -
-
-An explicit transcript file::
-
-    python3 scripts/extract_claude_session_log.py --transcript ~/.claude/projects/-Users-me-app/abc.jsonl
+    python3 scripts/extract_claude_session_log.py --transcript /path/to/abc.jsonl
 """
 
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import re
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -70,12 +36,12 @@ from session_log_envelope import (
     tool_call,
     truncate_result,
     user_event,
+    warn_if_oversized,
     write_envelope,
 )
 from skill_metadata import (
     load_command_details,
     load_skill_details,
-    render_skill_lines,
 )
 
 # --------------------------------------------------------------------------- #
@@ -88,17 +54,6 @@ PROJECTS_ROOT = Path.home() / ".claude" / "projects"
 # project root is two levels up. The log is always written here by default,
 # regardless of the current working directory.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_OUTPUT = PROJECT_ROOT / "session_log.md"
-
-# Pasted images are dumped here so an image-capable reader can describe them.
-IMAGE_DUMP_DIR = Path(tempfile.gettempdir()) / "claude_session_images"
-_IMAGE_EXT = {
-    "image/png": "png",
-    "image/jpeg": "jpg",
-    "image/gif": "gif",
-    "image/webp": "webp",
-}
-
 # Tool calls whose inputs touch files we want to collect for "Files changed".
 FILE_WRITING_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "Create"}
 
@@ -722,46 +677,6 @@ def _parse_ts(ts: Optional[str]):
         return None
 
 
-def format_timestamp(ts: Optional[str]) -> str:
-    """Render an ISO-8601 timestamp as 'YYYY-MM-DD HH:MM:SS UTC'.
-
-    Always UTC so logs extracted on different machines are comparable.
-    Falls back to the raw string, then to '(no timestamp)'.
-    """
-    from datetime import timezone
-
-    if not ts or not isinstance(ts, str):
-        return "(no timestamp)"
-    dt = _parse_ts(ts)
-    if dt is None:
-        return ts
-    if dt.tzinfo is not None:
-        dt = dt.astimezone(timezone.utc)
-    return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
-
-
-def format_elapsed(first_ts: Optional[str], ts: Optional[str]) -> str:
-    """Time since session start, as '+H:MM:SS' / '+M:SS' / '+Ns'. '' if unknown."""
-    a, b = _parse_ts(first_ts), _parse_ts(ts)
-    if a is None or b is None:
-        return ""
-    secs = max(0, int((b - a).total_seconds()))
-    h, rem = divmod(secs, 3600)
-    m, s = divmod(rem, 60)
-    if h:
-        return f"+{h}:{m:02d}:{s:02d}"
-    if m:
-        return f"+{m}:{s:02d}"
-    return f"+{s}s"
-
-
-def date_only(ts: Optional[str]) -> str:
-    formatted = format_timestamp(ts)
-    if formatted in ("(no timestamp)",):
-        return "unknown"
-    return formatted.split(" ")[0]
-
-
 # --------------------------------------------------------------------------- #
 # Turn assembly
 # --------------------------------------------------------------------------- #
@@ -962,11 +877,6 @@ def build_events(  # noqa: C901, PLR0912, PLR0915
 ) -> List[Dict[str, Any]]:
     """Walk entries in order, producing raw-envelope events.
 
-    A deliberate second pass over the same entries ``build_turns`` consumes,
-    rather than a refactor of it. The two outputs answer different questions —
-    the markdown condenses for scoring, this keeps the detail for examination —
-    and keeping them separate is what guarantees the markdown is unchanged.
-
     Entry filtering matches ``build_turns`` exactly (meta, summary/system, and
     sidechain entries are skipped) so events and turns describe the same
     conversation. User text is the harness-stripped prose, i.e. what the human
@@ -1071,304 +981,6 @@ def build_events(  # noqa: C901, PLR0912, PLR0915
     return events
 
 
-# --------------------------------------------------------------------------- #
-# Rendering
-# --------------------------------------------------------------------------- #
-
-
-def _derive_context_line(turns: List[Turn]) -> str:
-    """A brief context line from the first human message, if usable."""
-    for t in turns:
-        if t.user_text.strip():
-            first = _truncate(t.user_text, 80)
-            return f"a Claude Code working session starting with: “{first}”"
-    return "a Claude Code working session"
-
-
-def _quote(text: str) -> List[str]:
-    """Blockquote a block of text so embedded markdown can't break the log."""
-    return [f"> {line}" if line.strip() else ">" for line in text.splitlines()]
-
-
-# Presentation removed by JSON-only work; remove in QUAL-2505.
-def render_summary(turns: List[Turn], first_ts: Optional[str]) -> List[str]:  # noqa: C901, PLR0912, PLR0915
-    """The up-front recap: every turn that carried real user input.
-
-    Turns with no user text (pre-conversation / assistant-only activity) are
-    omitted — they required no input. User prose is reproduced in full. When the
-    input was a pop-up choice, all presented options are listed with the chosen
-    one(s) checked.
-    """
-    out: List[str] = ["## Summary — user inputs", ""]
-    input_turns = [
-        (i, t)
-        for i, t in enumerate(turns, 1)
-        if t.user_text.strip() or t.command or t.plans
-    ]
-    if not input_turns:
-        out += ["_(No user inputs in this transcript.)_", ""]
-        return out
-
-    prev_ts: Optional[str] = None
-    for i, turn in input_turns:
-        elapsed = format_elapsed(first_ts, turn.timestamp) or "+?"
-        delta = format_elapsed(prev_ts, turn.timestamp) if prev_ts else "+0s"
-        out.append(
-            f"### Turn {i} · {format_timestamp(turn.timestamp)} ({elapsed}, Δ{delta})"
-        )
-        out.append("")
-        if turn.command:
-            head = f"Invoked command: **{turn.command}**"
-            if turn.command_args:
-                head += f" `{turn.command_args}`"
-            out.append(head)
-            out.append("")
-            out.extend(
-                render_skill_lines(turn.command, turn.command_details, kind="Command")
-            )
-        elif turn.shell_command:
-            out.append("Ran shell command:")
-            out.append("")
-            out.append("```sh")
-            out.append(turn.shell_command)
-            out.append("```")
-        else:
-            for line in turn.user_text.splitlines():
-                out.append(f"> {line}" if line.strip() else ">")
-        out.append("")
-        for skill in turn.skills_used:
-            out.extend(render_skill_lines(skill, turn.skill_details.get(skill)))
-            out.append("")
-        for qa in turn.option_qas:
-            label = qa["header"] or "Question"
-            out.append(f"_Answered via options ({label}):_")
-            if qa["question"]:
-                out.append(f"> {qa['question']}")
-            for o in qa["options"]:
-                mark = "x" if o.get("label") in qa["chosen_labels"] else " "
-                row = f"- [{mark}] **{o.get('label', '')}**"
-                if o.get("description"):
-                    row += f" — {o['description']}"
-                out.append(row)
-            if not qa["chosen_labels"] and qa["answer_text"]:
-                out.append(f"- [x] _(custom answer)_ {qa['answer_text']}")
-            out.append("")
-        for p in turn.plans:
-            out.append(
-                f"_Plan presented for approval — user **{p['decision']}**_"
-                + (" _(after editing it)_" if p["edited_plan"] else "")
-            )
-            out.append("> _(full plan text in Turn %d below)_" % i)
-            if p["message"]:
-                out.append("")
-                out.append("_Feedback the user gave:_")
-                out.extend(_quote(p["message"]))
-            out.append("")
-        for d in turn.permission_denials:
-            who = "by settings" if d.get("by") == "settings" else "permission"
-            out.append(f"_Denied {who}:_ **{d['tool']}**")
-            if d["message"]:
-                for line in d["message"].splitlines():
-                    out.append(f"> {line}" if line.strip() else ">")
-            out.append("")
-        prev_ts = turn.timestamp
-    return out
-
-
-# Presentation removed by JSON-only work; remove in QUAL-2505.
-def render(  # noqa: C901, PLR0912, PLR0915
-    turns: List[Turn],
-    files_changed: List[str],
-    project_label: str,
-    first_ts: Optional[str],
-    models: Optional[List[str]] = None,
-) -> str:
-    out: List[str] = []
-    out.append("# Session Conversation Log")
-    out.append("")
-    out.append(
-        f"A turn-by-turn log of the conversation for {_derive_context_line(turns)}."
-    )
-    out.append(f"Project: {project_label}. Date: {date_only(first_ts)}.")
-    if models:
-        out.append(f"Model: {', '.join(models)}.")
-    out.append("")
-    out.append("---")
-
-    if not turns:
-        out.append("")
-        out.append("_(No conversational turns found in this transcript.)_")
-        out.append("")
-        return "\n".join(out)
-
-    # Summary first, then the full detail.
-    out.append("")
-    out.extend(render_summary(turns, first_ts))
-    out.append("---")
-    out.append("")
-    out.append("# Full turn-by-turn detail")
-
-    for i, turn in enumerate(turns, 1):
-        out.append("")
-        elapsed = format_elapsed(first_ts, turn.timestamp)
-        header = f"## Turn {i} · {format_timestamp(turn.timestamp)}"
-        if elapsed:
-            header += f" ({elapsed} into session)"
-        out.append(header)
-        out.append("")
-        if turn.command:
-            head = f"**User invoked command:** {turn.command}"
-            if turn.command_args:
-                head += f" `{turn.command_args}`"
-            out.append(head)
-            out.append("")
-            out.extend(
-                render_skill_lines(
-                    turn.command, turn.command_details, indent="  ", kind="Command"
-                )
-            )
-        elif turn.shell_command:
-            out.append("**User ran shell command:**")
-            out.append("")
-            out.append("```sh")
-            out.append(turn.shell_command)
-            out.append("```")
-        elif turn.user_text.strip():
-            out.append(f"**User:** {turn.user_text}")
-        else:
-            out.append("**User:** _(no user text — pre-conversation activity)_")
-        out.append("")
-
-        assistant_chunks: List[str] = []
-        if turn.assistant_text_blocks:
-            assistant_chunks.append("\n\n".join(turn.assistant_text_blocks))
-        body = "\n\n".join(c for c in assistant_chunks if c)
-        if body:
-            out.append(f"**Assistant:** {body}")
-        elif turn.tool_bullets or turn.plans:
-            out.append("**Assistant:**")
-        else:
-            out.append("**Assistant:** _(no response captured)_")
-
-        if turn.tool_bullets:
-            out.append("")
-            out.extend(turn.tool_bullets)
-
-        if turn.skills_used:
-            out.append("")
-            for skill in turn.skills_used:
-                out.extend(
-                    render_skill_lines(
-                        skill, turn.skill_details.get(skill), indent="  "
-                    )
-                )
-
-        if turn.result_notes:
-            # Keep results compact: one summarizing line.
-            notes = "; ".join(turn.result_notes[:6])
-            extra = len(turn.result_notes) - 6
-            if extra > 0:
-                notes += f"; (+{extra} more results)"
-            out.append("")
-            out.append(f"  _results:_ {_truncate(notes, 400)}")
-
-        for p in turn.plans:
-            out.append("")
-            out.append("**Assistant presented a plan for approval:**")
-            out.append("")
-            out.extend(_quote(p["plan"] or "_(empty plan)_"))
-            out.append("")
-            out.append(f"  _user {p['decision']} the plan_")
-            if p["message"]:
-                # Verbatim, not truncated: when a plan is sent back, what the
-                # human typed is the highest-signal input in the session.
-                out.append("")
-                out.append("  _feedback the user gave:_")
-                out.append("")
-                out.extend(_quote(p["message"]))
-            if p["edited_plan"]:
-                out.append("")
-                out.append("  _user edited the plan before approving; final version:_")
-                out.append("")
-                out.extend(_quote(p["edited_plan"]))
-
-        if turn.option_qas:
-            out.append("")
-            for qa in turn.option_qas:
-                chosen = (
-                    ", ".join(c for c in qa["chosen_labels"] if c)
-                    or qa["answer_text"]
-                    or "(no selection)"
-                )
-                q = qa["header"] or _truncate(qa["question"], 80)
-                out.append(f"  _user chose:_ {q} → {chosen}")
-
-        if turn.permission_denials:
-            out.append("")
-            for d in turn.permission_denials:
-                who = "settings" if d.get("by") == "settings" else "user"
-                line = f"  _{who} denied permission:_ {d['tool']}"
-                if d["message"]:
-                    line += f" → “{_truncate(d['message'], 160)}”"
-                out.append(line)
-
-        for s in turn.subagents:
-            out.append("")
-            label = s["agent_type"]
-            if s["task"]:
-                out.append(f"  _subagent ({label}):_ {_truncate(s['task'], 160)}")
-            else:
-                out.append(f"  _subagent ({label})_")
-            detail = f"    → {s['tool_count']} tool call(s)"
-            if s["tool_names"]:
-                detail += f" ({', '.join(s['tool_names'])})"
-            if s["result"]:
-                detail += f"; result: {_truncate(s['result'], 200)}"
-            out.append(detail)
-
-        if turn.subagent_count:
-            out.append("")
-            out.append(f"_(spawned {turn.subagent_count} subagent(s))_")
-
-        out.append("")
-        out.append("---")
-
-    if files_changed:
-        out.append("")
-        out.append("## Files changed during the session")
-        out.append("")
-        out.append("```")
-        out.extend(files_changed)
-        out.append("```")
-
-    out.append("")
-    return "\n".join(out)
-
-
-def derive_project_label(
-    transcript: Path, entries: Optional[List[Dict[str, Any]]] = None
-) -> str:
-    """Best-effort human-readable project label.
-
-    Prefer the real project path: transcript entries carry a ``cwd`` field, which
-    is the accurate working directory. Fall back to de-dashing the encoded dir
-    name (lossy — the encoding collapses '/' and '_' to '-', so the original
-    separators can't be recovered).
-    """
-    encoded = transcript.parent.name
-    # Accurate path from the transcript itself, when available.
-    if entries:
-        for entry in entries:
-            cwd = entry.get("cwd")
-            if isinstance(cwd, str) and cwd:
-                return f"{cwd}  (dir: {encoded})" if encoded else cwd
-    # Encoded dirs typically begin with a leading dash (from the leading '/').
-    decoded = "/" + encoded.lstrip("-").replace("-", "/") if encoded else encoded
-    if encoded:
-        return f"{decoded}  (dir: {encoded})"
-    return str(transcript.parent)
-
-
 def first_timestamp(entries: List[Dict[str, Any]]) -> Optional[str]:
     for entry in entries:
         ts = entry.get("timestamp")
@@ -1405,20 +1017,18 @@ def session_cwd(entries: List[Dict[str, Any]]) -> Optional[str]:
     return None
 
 
-def write_raw_envelope(
+def build_raw_envelope(
     transcript: Path,
     entries: List[Dict[str, Any]],
-    out_dir: Path,
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
-) -> Optional[Path]:
-    """Write the raw envelope for one transcript. Returns the path, or None if
-    the session held no events worth exporting."""
+) -> Optional[Dict[str, Any]]:
+    """Build the JSON envelope, or None when there are no exportable events."""
     events = build_events(entries, tool_result_max_bytes)
     if not events:
         return None
 
     session_id = transcript.stem
-    envelope = build_envelope(
+    return build_envelope(
         harness="claude",
         session_id=session_id,
         events=events,
@@ -1427,37 +1037,6 @@ def write_raw_envelope(
         models=session_models(entries),
         tool_result_max_bytes=tool_result_max_bytes,
     )
-    out_path = out_dir / raw_filename("claude", session_id)
-    write_envelope(out_path, envelope)
-    return out_path
-
-
-def dump_images(
-    turns: List[Turn], session_id: str, dump_dir: Path = IMAGE_DUMP_DIR
-) -> List[Path]:
-    """Write each turn's pasted images to ``dump_dir`` and append a marker to the
-    turn text pointing at the file. Descriptions are filled in later by an
-    image-capable reader (see the extract command); the script only dumps.
-
-    Returns the paths written. The marker text is stable so a describe pass can
-    find it: ``[Image dumped to `<path>` — description pending]``.
-    """
-    written: List[Path] = []
-    for ti, turn in enumerate(turns, 1):
-        for n, src in enumerate(turn.images, 1):
-            try:
-                raw = base64.b64decode(src.get("data", ""), validate=False)
-            except (ValueError, TypeError):
-                continue
-            ext = _IMAGE_EXT.get(src.get("media_type", ""), "img")
-            path = dump_dir / f"{session_id}_turn{ti}_img{n}.{ext}"
-            dump_dir.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(raw)
-            written.append(path)
-            turn.user_text = (
-                f"{turn.user_text}\n\n[Image dumped to `{path}` — description pending]"
-            ).strip()
-    return written
 
 
 # --------------------------------------------------------------------------- #
@@ -1561,8 +1140,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="extract_claude_session_log.py",
         description=(
-            "Extract a Claude Code session transcript (JSONL) into a markdown "
-            "conversation log with per-turn timestamps. Mechanical extraction "
+            "Extract a Claude Code session transcript (JSONL) into a JSON "
+            "conversation envelope. Mechanical extraction "
             "only — no LLM, no summarization."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1605,7 +1184,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "extract every session in the resolved project dir, one file per "
-            "session named session_log_<session-id>.md (in this mode --output is "
+            "session named claude_session_log_raw_<session-id>.json "
+            "(in this mode --output is "
             "treated as the output directory; positional selector is ignored). "
             "This is the default unless a session id, --transcript, or "
             "'--output -' selects a single session."
@@ -1616,35 +1196,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         default=None,
         help=(
-            "output markdown file (default: session_log.md in the project root, "
-            f"{DEFAULT_OUTPUT}; use '-' for stdout). With --all, an output "
+            "output JSON file (default: claude_session_log_raw_<session-id>.json "
+            f"in the project root, {PROJECT_ROOT}; use '-' for stdout). "
+            "With --all, an output "
             "directory instead (default: project root)."
         ),
     )
     p.add_argument(
-        "--raw",
-        dest="raw",
-        action="store_true",
-        default=True,
-        help=(
-            "also write the raw envelope claude_session_log_raw_<session-id>.json "
-            "alongside the markdown, carrying the full conversation with pasted "
-            "images inlined as base64 (default: on)"
-        ),
-    )
-    p.add_argument(
-        "--no-raw",
-        dest="raw",
-        action="store_false",
-        help="skip the raw envelope and write only the markdown log",
-    )
-    p.add_argument(
-        "--raw-tool-result-bytes",
+        "--tool-result-bytes",
         metavar="N",
         type=int,
         default=DEFAULT_TOOL_RESULT_MAX_BYTES,
         help=(
-            "cap each tool result in the raw envelope at N bytes; the original "
+            "cap each tool result in the JSON envelope at N bytes; the original "
             "size is always recorded. Use a negative value for no cap "
             f"(default: {DEFAULT_TOOL_RESULT_MAX_BYTES})"
         ),
@@ -1652,52 +1216,31 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return p
 
 
-def render_transcript(
+CAP_FLAG = "--tool-result-bytes"
+NO_EVENTS_NOTE = "no exportable events (no user or assistant messages); no JSON written"
+
+
+def extract_transcript(
     transcript: Path,
-    project_label_override: Optional[str],
-    raw_output: Optional[Path] = None,
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
-) -> str:
-    """Parse one transcript file and return its rendered markdown.
+) -> Optional[Dict[str, Any]]:
+    """Read one transcript directly into its JSON envelope.
 
-    When ``raw_output`` is given, the raw envelope is also written to that
-    directory. Entries are parsed once and fed to both passes.
-
-    Raises ``OSError`` if the file can't be read and ``ValueError`` if it holds
-    no parseable entries.
+    Keep the existing parse-error and no-exportable-events behavior.
     """
     entries = load_entries(transcript)
     if not entries:
         raise ValueError(f"no parseable JSON entries found in {transcript}")
-    turns, files_changed = build_turns(entries)
-    dump_images(turns, transcript.stem)
-    subagents = load_subagents(transcript)
-    attribute_subagents(turns, subagents)
-    project_label = project_label_override or derive_project_label(transcript, entries)
-    markdown = render(
-        turns=turns,
-        files_changed=files_changed,
-        project_label=project_label,
-        first_ts=first_timestamp(entries),
-        models=session_models(entries),
-    )
-    if raw_output is not None:
-        raw_path = write_raw_envelope(
-            transcript, entries, raw_output, tool_result_max_bytes
-        )
-        if raw_path is not None:
-            print(f"  wrote {raw_path}", file=sys.stderr)
-    return markdown
+    return build_raw_envelope(transcript, entries, tool_result_max_bytes)
 
 
 def _extract_all(
     project_dir: Optional[Path],
     output: Optional[str],
     strict: bool = False,
-    raw: bool = True,
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
 ) -> int:
-    """Extract every transcript in the project dir, one markdown file each.
+    """Extract every transcript in the project dir, one JSON file each.
 
     The session id (the ``.jsonl`` stem) is the per-file identifier. Files are
     written to ``output`` (treated as a directory) or the project root.
@@ -1724,18 +1267,16 @@ def _extract_all(
     for transcript in files:
         session_id = transcript.stem
         try:
-            markdown = render_transcript(
-                transcript,
-                None,
-                raw_output=out_dir if raw else None,
-                tool_result_max_bytes=tool_result_max_bytes,
-            )
+            envelope = extract_transcript(transcript, tool_result_max_bytes)
         except (OSError, ValueError) as exc:
             print(f"  skip {session_id}: {exc}", file=sys.stderr)
             continue
-        out_path = out_dir / f"session_log_{session_id}.md"
+        if envelope is None:
+            print(f"  skip {session_id}: {NO_EVENTS_NOTE}", file=sys.stderr)
+            continue
+        out_path = out_dir / raw_filename("claude", session_id)
         try:
-            out_path.write_text(markdown, encoding="utf-8")
+            write_envelope(out_path, envelope, CAP_FLAG)
         except OSError as exc:
             print(f"  error writing {out_path}: {exc}", file=sys.stderr)
             continue
@@ -1757,8 +1298,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             proj,
             out,
             strict=args.strict,
-            raw=args.raw,
-            tool_result_max_bytes=args.raw_tool_result_bytes,
+            tool_result_max_bytes=args.tool_result_bytes,
         )
 
     try:
@@ -1774,36 +1314,27 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     print(f"using transcript: {transcript}", file=sys.stderr)
 
-    # The envelope is a file, so there is nowhere to put it when the markdown is
-    # going to stdout. Write it next to the markdown otherwise.
-    if not args.raw or args.output == "-":
-        raw_output = None
-    elif args.output is None:
-        raw_output = DEFAULT_OUTPUT.parent
-    else:
-        raw_output = Path(args.output).expanduser().parent
-
     try:
-        markdown = render_transcript(
-            transcript,
-            args.project_dir if args.project_dir else None,
-            raw_output=raw_output,
-            tool_result_max_bytes=args.raw_tool_result_bytes,
-        )
+        envelope = extract_transcript(transcript, args.tool_result_bytes)
     except (OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
+    if envelope is None:
+        print(f"note: {transcript.stem}: {NO_EVENTS_NOTE}", file=sys.stderr)
+        return 0
     if args.output == "-":
-        sys.stdout.write(markdown)
-        if not markdown.endswith("\n"):
-            sys.stdout.write("\n")
+        payload = json.dumps(envelope, ensure_ascii=False)
+        print(payload)
+        warn_if_oversized("stdout JSON", payload, CAP_FLAG)
     else:
         out_path = (
-            DEFAULT_OUTPUT if args.output is None else Path(args.output).expanduser()
+            PROJECT_ROOT / raw_filename("claude", transcript.stem)
+            if args.output is None
+            else Path(args.output).expanduser()
         )
         try:
-            out_path.write_text(markdown, encoding="utf-8")
+            write_envelope(out_path, envelope, CAP_FLAG)
         except OSError as exc:
             print(f"error: could not write {out_path}: {exc}", file=sys.stderr)
             return 1

@@ -211,7 +211,11 @@ def build_envelope(  # noqa: PLR0913
     }
 
 
-def write_envelope(path: Path, envelope: Dict[str, Any]) -> int:
+def write_envelope(
+    path: Path,
+    envelope: Dict[str, Any],
+    cap_flag: str = "--raw-tool-result-bytes",
+) -> int:
     """Write the envelope and return its size in bytes.
 
     Warns above SIZE_WARN_BYTES so an oversized file is caught while the author
@@ -221,11 +225,18 @@ def write_envelope(path: Path, envelope: Dict[str, Any]) -> int:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(payload, encoding="utf-8")
 
+    return warn_if_oversized(path.name, payload, cap_flag)
+
+
+def warn_if_oversized(
+    label: str, payload: str, cap_flag: str = "--raw-tool-result-bytes"
+) -> int:
+    """Return the payload's size in bytes, warning above SIZE_WARN_BYTES."""
     size = len(payload.encode("utf-8"))
     if size > SIZE_WARN_BYTES:
         print(
-            f"  warning: {path.name} is {_human_size(size)} — session-log uploads "
-            f"are capped at 10 MB; consider a lower --raw-tool-result-bytes",
+            f"  warning: {label} is {_human_size(size)} — session-log uploads "
+            f"are capped at 10 MB; consider a lower {cap_flag}",
             file=sys.stderr,
         )
     return size
