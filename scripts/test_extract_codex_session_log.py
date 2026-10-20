@@ -16,7 +16,6 @@ import pytest
 from extract_codex_session_log import (
     _cwd_matches,
     _decode_jsonish,
-    _derive_context_line,
     _extract_all,
     _extract_answer_from_item,
     _flatten_result_text,
@@ -30,11 +29,11 @@ from extract_codex_session_log import (
     append_unique_path,
     assistant_text_from_payload,
     build_events,
+    build_raw_envelope,
     build_turns,
     clean_user_text,
     date_only,
-    derive_project_label,
-    dump_images,
+    extract_transcript,
     first_timestamp,
     format_elapsed,
     format_timestamp,
@@ -48,9 +47,6 @@ from extract_codex_session_log import (
     output_identifier,
     parse_permission_denial,
     patch_paths,
-    render,
-    render_summary,
-    render_transcript,
     result_note,
     select_transcript,
     session_cwd_from_file,
@@ -61,7 +57,6 @@ from extract_codex_session_log import (
     tool_descriptor,
     user_text_from_event,
     user_text_from_response_item,
-    write_raw_envelope,
 )
 
 # 1x1 transparent PNG.
@@ -87,7 +82,7 @@ QUESTIONS = [
 ]
 
 
-def test_codex_structured_skill_call_is_recorded_and_rendered():
+def test_codex_structured_skill_call_is_recorded():
     entries = [
         {
             "type": "event_msg",
@@ -107,8 +102,6 @@ def test_codex_structured_skill_call_is_recorded_and_rendered():
     ]
     turns, files_changed = build_turns(entries)
     assert turns[0].skills_used == ["pdf:pdf"]
-    md = render(turns, files_changed, "project", "2026-01-01T00:00:00Z")
-    assert "pdf:pdf" in md
 
 
 def test_codex_initial_response_item_user_message_is_exported_once():
@@ -157,16 +150,13 @@ def test_codex_initial_response_item_user_message_is_exported_once():
     ]
 
 
-def test_codex_slash_command_is_recorded_and_rendered_like_claude():
+def test_codex_slash_command_is_recorded():
     entries = load_entries(FIXTURES / "slash.jsonl")
     turns, files_changed = build_turns(entries)
     assert len(turns) == 1
     assert turns[0].user_text == ""
     assert turns[0].command == "/review"
     assert turns[0].command_args == "fixture"
-    md = render(turns, files_changed, "project", first_timestamp(entries))
-    assert "Invoked command: **/review** `fixture`" in md
-    assert "_Command used:_ **/review**" in md
 
 
 def test_codex_tagged_slash_command_is_recorded():
@@ -268,19 +258,12 @@ def test_codex_handwritten_assistant_denial_branch():
     # The canned denial text must not leak into assistant prose.
     assert turns[0].assistant_text_blocks == []
 
-    md = render(turns, files_changed, "project", "2026-01-01T00:00:00Z")
-    assert "_Denied permission:_ **external_agent**" in md
-    assert "> not like that" in md
-    assert '_user denied permission:_ external_agent -> "not like that"' in md
-
 
 def test_codex_native_denial_fixture_records_declined_command():
     entries = load_entries(FIXTURES / "denial.jsonl")
     turns, files_changed = build_turns(entries)
     assert turns[0].permission_denials == [{"tool": "exec", "message": ""}]
     assert turns[0].result_notes == []
-    md = render(turns, files_changed, "project", entries[0]["timestamp"])
-    assert "_user denied permission:_ exec" in md
 
 
 def test_codex_handwritten_plan_mode_update_plan_branch():
@@ -345,26 +328,20 @@ def test_codex_handwritten_plan_mode_update_plan_branch():
     assert turns[0].collaboration_mode == "plan"
     assert turns[0].tool_bullets == []
     assert turns[0].result_notes == []
-    assert turns[0].plan_updates[0]["steps"][1]["step"] == "Design change"
-
-    md = render(turns, files_changed, "project", "2026-08-05T10:00:00Z")
-    assert "_Codex Plan mode turn._" in md
-    assert "**Mode:** Plan" in md
-    assert "**Assistant updated the Plan mode plan:**" in md
-    assert "- [x] Inspect schema _(completed)_" in md
-    assert "- [ ] Design change _(in_progress)_" in md
-    assert "Here is the plan." in md
+    assert turns[0].plan_updates[0]["steps"] == [
+        {"step": "Inspect schema", "status": "completed"},
+        {"step": "Design change", "status": "in_progress"},
+    ]
+    assert turns[0].assistant_text_blocks == ["Here is the plan."]
 
 
-def test_codex_native_plan_fixture_renders_plan_mode():
+def test_codex_native_plan_fixture_records_plan_mode():
     entries = load_entries(FIXTURES / "plan.jsonl")
     turns, files_changed = build_turns(entries)
     assert len(turns) == 1
     assert turns[0].collaboration_mode == "plan"
     assert turns[0].plan_updates == []
-    md = render(turns, files_changed, "project", entries[0]["timestamp"])
-    assert "**Mode:** Plan" in md
-    assert "<proposed_plan>" in md
+    assert "<proposed_plan>" in "\n".join(turns[0].assistant_text_blocks)
 
 
 def test_codex_default_mode_update_plan_remains_execution_tool():
@@ -458,63 +435,11 @@ def test_codex_summary_options_and_shell_command():
     assert turns[0].option_qas[0]["chosen_labels"] == ["QUAL"]
     assert turns[1].shell_command == "ls -la"
 
-    md = render(turns, files_changed, "project", "2026-01-01T00:00:00Z")
-    assert md.index("## Summary - user inputs") < md.index("# Full turn-by-turn detail")
-    assert "> Need help" in md
-    assert "- [x] **QUAL**" in md
-    assert "```sh\nls -la\n```" in md
-
 
 def test_codex_native_question_fixture_marks_answered_option():
     entries = load_entries(FIXTURES / "question.jsonl")
     turns, files_changed = build_turns(entries)
     assert turns[0].option_qas[0]["chosen_labels"] == ["QUAL"]
-    md = render(turns, files_changed, "project", entries[0]["timestamp"])
-    assert "- [x] **QUAL**" in md
-    assert "- [ ] **SE**" in md
-    assert "_user chose:_" in md and "-> QUAL" in md
-
-
-def test_codex_dumps_local_images_from_user_event():
-    with tempfile.TemporaryDirectory() as tmp_name:
-        tmp = Path(tmp_name)
-        source = FIXTURES / "pixel.png"
-
-        turns, _ = build_turns(
-            [
-                {
-                    "type": "event_msg",
-                    "timestamp": "2026-01-01T00:00:01Z",
-                    "payload": {
-                        "type": "user_message",
-                        "message": "Look [Image #1]",
-                        "images": [],
-                        "local_images": [str(source)],
-                        "text_elements": [],
-                    },
-                }
-            ]
-        )
-
-        dump_dir = tmp / "dumped"
-        written = dump_images(turns, "sess123", dump_dir=dump_dir)
-        assert len(written) == 1
-        assert written[0].name == "sess123_turn1_img1.png"
-        assert written[0].read_bytes() == source.read_bytes()
-        assert "description pending" in turns[0].user_text
-        assert str(written[0]) in turns[0].user_text
-
-
-def test_codex_dumps_base64_image_from_response_item_user_message():
-    entries = load_entries(FIXTURES / "image.jsonl")
-    with tempfile.TemporaryDirectory() as tmp_name:
-        turns, _ = build_turns(entries)
-        written = dump_images(turns, "sess123", dump_dir=Path(tmp_name))
-        assert len(turns) == 1
-        assert len(written) == 1
-        assert written[0].name == "sess123_turn1_img1.png"
-        assert written[0].read_bytes() == (FIXTURES / "pixel.png").read_bytes()
-        assert "description pending" in turns[0].user_text
 
 
 def _write_jsonl(path: Path, entries):
@@ -579,15 +504,15 @@ def test_codex_all_extracts_matching_sessions_to_unique_files():
             os.chdir(old_cwd)
 
         assert rc == 0
-        written = sorted(path.name for path in out.glob("codex_session_log_*.md"))
+        written = sorted(path.name for path in out.glob("codex_session_log_raw_*.json"))
         assert written == [
-            "codex_session_log_session-one.md",
-            "codex_session_log_session-two.md",
+            "codex_session_log_raw_session-one.json",
+            "codex_session_log_raw_session-two.json",
         ]
-        assert "First session" in (out / "codex_session_log_session-one.md").read_text(
-            encoding="utf-8"
-        )
-        assert not (out / "codex_session_log_session-other.md").exists()
+        assert "First session" in (
+            out / "codex_session_log_raw_session-one.json"
+        ).read_text(encoding="utf-8")
+        assert not (out / "codex_session_log_raw_session-other.json").exists()
 
 
 def test_codex_no_selector_extracts_all_by_default():
@@ -622,10 +547,10 @@ def test_codex_no_selector_extracts_all_by_default():
             os.chdir(old_cwd)
 
         assert rc == 0
-        written = sorted(path.name for path in out.glob("codex_session_log_*.md"))
+        written = sorted(path.name for path in out.glob("codex_session_log_raw_*.json"))
         assert written == [
-            "codex_session_log_session-one.md",
-            "codex_session_log_session-two.md",
+            "codex_session_log_raw_session-one.json",
+            "codex_session_log_raw_session-two.json",
         ]
 
 
@@ -665,8 +590,8 @@ def test_codex_strict_requires_exact_cwd():
 
         assert rc == 0
         # Strict drops the descendant; only the exact-cwd session survives.
-        written = sorted(path.name for path in out.glob("codex_session_log_*.md"))
-        assert written == ["codex_session_log_session-one.md"]
+        written = sorted(path.name for path in out.glob("codex_session_log_raw_*.json"))
+        assert written == ["codex_session_log_raw_session-one.json"]
 
 
 def _codex_entries(image_path, missing_path="/gone/missing.png"):
@@ -711,7 +636,7 @@ def test_build_events_attaches_output_to_its_function_call():
     assert call["result_truncated"] is True
 
 
-def test_build_events_does_not_disturb_the_markdown_turns():
+def test_build_events_does_not_disturb_interpreted_turns():
     entries = load_entries(FIXTURES / "tool_patch_large.jsonl")
     before = [t.user_text for t in build_turns(entries)[0]]
     build_events(entries)
@@ -1520,26 +1445,6 @@ def test_image_bytes_and_ext_path_missing_file_returns_none():
     assert _image_bytes_and_ext({"type": "path", "path": 123}) is None
 
 
-def test_dump_images_skips_unresolvable_ref():
-    turns, _ = build_turns(
-        [
-            {
-                "type": "event_msg",
-                "timestamp": "2026-01-01T00:00:00Z",
-                "payload": {
-                    "type": "user_message",
-                    "message": "broken image",
-                    "images": ["/no/such/file.png"],
-                },
-            }
-        ]
-    )
-    with tempfile.TemporaryDirectory() as tmp_name:
-        written = dump_images(turns, "sess", dump_dir=Path(tmp_name))
-        assert written == []
-        assert "description pending" not in turns[0].user_text
-
-
 # --- session-level helpers ---------------------------------------
 
 
@@ -1557,72 +1462,10 @@ def test_session_models_dedupes_and_ignores_missing():
     assert session_models(entries) == ["gpt-6.1-sol", "gpt-6-luna"]
 
 
-def test_derive_project_label_falls_back_to_cwd_without_sid_and_to_path():
-    entries_with_cwd_no_id = [
-        {"type": "session_meta", "payload": {"cwd": "/work/app"}},
-    ]
-    assert derive_project_label(Path("/x.jsonl"), entries_with_cwd_no_id) == "/work/app"
-
-    assert derive_project_label(Path("/x.jsonl"), []) == "/x.jsonl"
+# --- retained interpretation edge cases ---------------------------------------
 
 
-def test_derive_context_line_falls_back_when_no_text_or_command():
-    class EmptyTurn:
-        command = None
-        user_text = ""
-
-    assert _derive_context_line([EmptyTurn()]) == "a Codex session"
-
-
-# --- render() edge cases ---------------------------------------
-
-
-def test_render_summary_no_input_turns():
-    class ToolOnlyTurn:
-        user_text = ""
-        command = None
-
-    out = render_summary([ToolOnlyTurn()], None)
-    assert "_(No user inputs in this transcript.)_" in out
-
-
-def test_render_handles_empty_turns_list():
-    md = render([], [], "project", None)
-    assert "_(No conversational turns found in this Codex transcript.)_" in md
-
-
-def test_render_includes_models_line():
-    entries = load_entries(FIXTURES / "model.jsonl")
-    turns, files_changed = build_turns(entries)
-    md = render(
-        turns,
-        files_changed,
-        "project",
-        first_timestamp(entries),
-        models=session_models(entries),
-    )
-    assert "Model: gpt-6.1-sol, gpt-6-luna." in md
-
-
-def test_render_no_user_text_placeholder_in_full_detail():
-    entries = [
-        {
-            "type": "response_item",
-            "timestamp": "2026-01-01T00:00:00Z",
-            "payload": {
-                "type": "function_call",
-                "name": "shell",
-                "call_id": "c1",
-                "arguments": json.dumps({"command": "ls"}),
-            },
-        }
-    ]
-    turns, files_changed = build_turns(entries)
-    md = render(turns, files_changed, "project", "2026-01-01T00:00:00Z")
-    assert "**User:** _(no user text - pre-conversation activity)_" in md
-
-
-def test_render_custom_answer_without_chosen_label():
+def test_custom_answer_without_chosen_label():
     questions = [
         {
             "id": "team",
@@ -1658,47 +1501,10 @@ def test_render_custom_answer_without_chosen_label():
         },
     ]
     turns, files_changed = build_turns(entries)
-    md = render(turns, files_changed, "project", "2026-01-01T00:00:00Z")
-    assert "_(custom answer)_ Something else entirely" in md
+    assert turns[0].option_qas[0]["answer_text"] == "Something else entirely"
 
 
-def test_render_truncates_many_result_notes():
-    entries = [
-        {
-            "type": "event_msg",
-            "timestamp": "2026-01-01T00:00:00Z",
-            "payload": {"type": "user_message", "message": "run things"},
-        }
-    ]
-    for i in range(8):
-        entries.append(
-            {
-                "type": "response_item",
-                "timestamp": f"2026-01-01T00:00:0{i}Z",
-                "payload": {
-                    "type": "function_call",
-                    "name": "shell",
-                    "call_id": f"c{i}",
-                    "arguments": json.dumps({"command": f"cmd{i}"}),
-                },
-            }
-        )
-        entries.append(
-            {
-                "type": "response_item",
-                "payload": {
-                    "type": "function_call_output",
-                    "call_id": f"c{i}",
-                    "output": f"out{i}",
-                },
-            }
-        )
-    turns, files_changed = build_turns(entries)
-    md = render(turns, files_changed, "project", "2026-01-01T00:00:00Z")
-    assert "(+2 more results)" in md
-
-
-def test_render_numbers_multiple_plan_updates():
+def test_multiple_plan_updates():
     entries = [
         {
             "type": "event_msg",
@@ -1726,37 +1532,36 @@ def test_render_numbers_multiple_plan_updates():
             }
         )
     turns, files_changed = build_turns(entries)
-    md = render(turns, files_changed, "project", "2026-01-01T00:00:00Z")
-    assert "**Assistant updated the Plan mode plan (1):**" in md
-    assert "**Assistant updated the Plan mode plan (2):**" in md
+    assert [p["steps"][0]["step"] for p in turns[0].plan_updates] == [
+        "Step 0",
+        "Step 1",
+    ]
 
 
-def test_render_lists_files_changed():
+def test_records_files_changed():
     entries = load_entries(FIXTURES / "tool_patch_large.jsonl")
     turns, files_changed = build_turns(entries)
-    md = render(turns, files_changed, "project", first_timestamp(entries))
-    assert "## Files changed during the session" in md
-    assert "/workspace/fixture.txt" in md
+    assert files_changed == ["/workspace/fixture.txt"]
 
 
-# --- render_transcript / write_raw_envelope / _extract_all / main errors ---------------------------------------
+# --- extract_transcript / build_raw_envelope / _extract_all / main errors ---------------------------------------
 
 
-def test_render_transcript_raises_for_no_parseable_entries():
+def test_extract_transcript_raises_for_no_parseable_entries():
     with tempfile.TemporaryDirectory() as tmp_name:
         path = Path(tmp_name) / "empty.jsonl"
         path.write_text("not json\n")
         with pytest.raises(ValueError, match="no parseable JSON entries found"):
-            render_transcript(path)
+            extract_transcript(path)
 
 
-def test_write_raw_envelope_returns_none_for_no_events():
+def test_build_raw_envelope_returns_none_for_no_events():
     with tempfile.TemporaryDirectory() as tmp_name:
         tmp = Path(tmp_name)
         transcript = tmp / "t.jsonl"
         transcript.write_text(json.dumps({"type": "session_meta", "payload": {}}))
         entries = load_entries(transcript)
-        assert write_raw_envelope(transcript, entries, tmp) is None
+        assert build_raw_envelope(transcript, entries) is None
 
 
 def test_extract_all_reports_error_when_nothing_matches():
@@ -1788,20 +1593,20 @@ def test_extract_all_skips_unparseable_transcript_and_still_succeeds(monkeypatch
             _session_entries("bad", project, "Bad session"),
         )
 
-        original_render_transcript = mod.render_transcript
+        original_extract_transcript = mod.extract_transcript
 
-        def flaky_render_transcript(transcript, **kwargs):
+        def flaky_extract_transcript(transcript, *args):
             if "bad" in transcript.name:
                 raise ValueError("boom")
-            return original_render_transcript(transcript, **kwargs)
+            return original_extract_transcript(transcript, *args)
 
-        monkeypatch.setattr(mod, "render_transcript", flaky_render_transcript)
+        monkeypatch.setattr(mod, "extract_transcript", flaky_extract_transcript)
         monkeypatch.chdir(project)
         rc = mod._extract_all(str(sessions), str(out))
 
         assert rc == 0
-        written = sorted(p.name for p in out.glob("codex_session_log_*.md"))
-        assert written == ["codex_session_log_good.md"]
+        written = sorted(p.name for p in out.glob("codex_session_log_raw_*.json"))
+        assert written == ["codex_session_log_raw_good.json"]
 
 
 # --- main() CLI paths ---------------------------------------
@@ -1822,38 +1627,31 @@ def test_main_single_session_to_stdout():
             ["--transcript", str(FIXTURES / "tool_patch_large.jsonl"), "--output", "-"]
         )
     assert rc == 0
-    assert "# Codex Session Conversation Log" in captured.getvalue()
+    assert json.loads(captured.getvalue())["harness"] == "codex"
     assert "TOOL_FIXTURE_MARKER" in captured.getvalue()
     assert "/workspace/fixture.txt" in captured.getvalue()
 
 
-def test_main_single_session_writes_markdown_and_raw_file():
-    with tempfile.TemporaryDirectory() as tmp_name:
-        tmp = Path(tmp_name)
-        transcript = FIXTURES / "model.jsonl"
-        out_md = tmp / "out.md"
-        rc = main(["--transcript", str(transcript), "--output", str(out_md)])
-        assert rc == 0
-        assert "SECOND_MODEL_FIXTURE_MARKER" in out_md.read_text()
-        assert (
-            tmp / f"codex_session_log_raw_{session_id_from_file(transcript)}.json"
-        ).exists()
-
-
-def test_main_single_session_no_raw_skips_raw_file():
-    with tempfile.TemporaryDirectory() as tmp_name:
-        tmp = Path(tmp_name)
-        transcript = FIXTURES / "question.jsonl"
-        out_md = tmp / "out.md"
-        rc = main(
-            ["--transcript", str(transcript), "--output", str(out_md), "--no-raw"]
+def test_main_single_session_writes_only_json(tmp_path):
+    destination = tmp_path / "out.json"
+    assert (
+        main(
+            [
+                "--transcript",
+                str(FIXTURES / "model.jsonl"),
+                "--output",
+                str(destination),
+            ]
         )
-        assert rc == 0
-        assert out_md.exists()
-        assert not list(tmp.glob("codex_session_log_raw_*.json"))
+        == 0
+    )
+    envelope = json.loads(destination.read_text())
+    assert envelope["models"] == ["gpt-6.1-sol", "gpt-6-luna"]
+    assert "SECOND_MODEL_FIXTURE_MARKER" in destination.read_text()
+    assert list(tmp_path.iterdir()) == [destination]
 
 
-def test_main_single_session_render_error_returns_1():
+def test_main_single_session_parse_error_returns_1():
     with tempfile.TemporaryDirectory() as tmp_name:
         tmp = Path(tmp_name)
         transcript = tmp / "t.jsonl"
@@ -1987,9 +1785,9 @@ def test_extract_all_write_failure_is_skipped():
             sessions / "rollout-one.jsonl",
             _session_entries("session-one", project, "First session"),
         )
-        # Pre-create a directory where the markdown file would be written so
+        # Pre-create a directory where the JSON file would be written so
         # write_text() raises OSError (IsADirectoryError).
-        (out / "codex_session_log_session-one.md").mkdir()
+        (out / "codex_session_log_raw_session-one.json").mkdir()
 
         old_cwd = os.getcwd()
         try:
@@ -2001,72 +1799,20 @@ def test_extract_all_write_failure_is_skipped():
         assert rc == 1
 
 
-def test_main_default_output_path_and_no_trailing_newline_write(monkeypatch):
-    import extract_codex_session_log as mod
-
-    with tempfile.TemporaryDirectory() as tmp_name:
-        tmp = Path(tmp_name)
-        transcript = tmp / "t.jsonl"
-        transcript.write_text(
-            json.dumps({"type": "session_meta", "payload": {"id": "s1"}})
-            + "\n"
-            + json.dumps(
-                {
-                    "type": "event_msg",
-                    "timestamp": "2026-01-01T00:00:00Z",
-                    "payload": {"type": "user_message", "message": "hi"},
-                }
-            )
-        )
-
-        fake_default = tmp / "default_out.md"
-        monkeypatch.setattr(mod, "DEFAULT_OUTPUT", fake_default)
-        monkeypatch.setattr(
-            mod, "render_transcript", lambda *a, **k: "no trailing newline"
-        )
-        rc = mod.main(["--transcript", str(transcript)])
-        assert rc == 0
-        assert fake_default.read_text(encoding="utf-8") == "no trailing newline"
-
-
-def test_main_stdout_adds_trailing_newline_when_missing(monkeypatch):
-    import contextlib
-    import io
-
-    import extract_codex_session_log as mod
-
-    with tempfile.TemporaryDirectory() as tmp_name:
-        transcript = Path(tmp_name) / "t.jsonl"
-        transcript.write_text(json.dumps({"type": "session_meta", "payload": {}}))
-
-        monkeypatch.setattr(mod, "render_transcript", lambda *a, **k: "no newline here")
-        captured = io.StringIO()
-        with contextlib.redirect_stdout(captured):
-            rc = mod.main(["--transcript", str(transcript), "--output", "-"])
-        assert rc == 0
-        assert captured.getvalue() == "no newline here\n"
-
-
-def test_main_write_failure_for_explicit_output_path(monkeypatch):
-    import extract_codex_session_log as mod
-
-    with tempfile.TemporaryDirectory() as tmp_name:
-        tmp = Path(tmp_name)
-        transcript = tmp / "t.jsonl"
-        transcript.write_text(json.dumps({"type": "session_meta", "payload": {}}))
-        out_dir_as_file_target = tmp / "out.md"
-        out_dir_as_file_target.mkdir()  # a directory, so write_text() raises OSError
-
-        monkeypatch.setattr(mod, "render_transcript", lambda *a, **k: "content\n")
-        rc = mod.main(
+def test_main_write_failure_for_explicit_output_path(tmp_path):
+    destination = tmp_path / "out.json"
+    destination.mkdir()
+    assert (
+        main(
             [
                 "--transcript",
-                str(transcript),
+                str(FIXTURES / "model.jsonl"),
                 "--output",
-                str(out_dir_as_file_target),
+                str(destination),
             ]
         )
-        assert rc == 1
+        == 1
+    )
 
 
 @pytest.mark.parametrize("mode", ["stdout", "file", "default", "batch"])
@@ -2107,3 +1853,132 @@ def test_json_entrypoints_bypass_presentation(mode, tmp_path, monkeypatch, capsy
     assert not list(tmp_path.rglob("*.png"))
     if mode != "stdout":
         assert captured.out == ""
+
+
+@pytest.mark.parametrize("cap", [0, 7, -1])
+@pytest.mark.parametrize("batch", [False, True])
+def test_cli_preserves_nested_tools_and_result_cap(
+    cap, batch, tmp_path, monkeypatch, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    entries = _session_entries("s1", tmp_path, "é **content**")
+    tool_input = {
+        "tool_uses": [{"recipient_name": "exec", "parameters": {"cmd": "pwd"}}]
+    }
+    result = "é" * 10
+    entries += [
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "multi_tool_use.parallel",
+                "call_id": "c1",
+                "arguments": json.dumps(tool_input),
+            },
+        },
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "function_call_output",
+                "call_id": "c1",
+                "output": {"content": [{"type": "text", "text": result}]},
+            },
+        },
+    ]
+    transcript = tmp_path / "s.jsonl"
+    _write_jsonl(transcript, entries)
+    args = ["--tool-result-bytes", str(cap)]
+    if batch:
+        args += ["--sessions-root", str(tmp_path), "--output", str(tmp_path / "out")]
+    else:
+        args += ["--transcript", str(transcript), "--output", "-"]
+    assert main(args) == 0
+    captured = capsys.readouterr()
+    envelope = json.loads(
+        (tmp_path / "out" / "codex_session_log_raw_s1.json").read_text()
+        if batch
+        else captured.out
+    )
+    assert envelope["truncation"] == {"tool_result_max_bytes": cap}
+    assert envelope["events"][0]["text"] == "é **content**"
+    call = envelope["events"][1]["tool_calls"][0]
+    assert call["input"] == tool_input
+    assert call["result_bytes"] == 20
+    assert call["result"] == (
+        result if cap < 0 else result.encode()[:cap].decode(errors="ignore")
+    )
+    assert call["result_truncated"] is (cap >= 0)
+
+
+@pytest.mark.parametrize(
+    "flag", [["--raw"], ["--no-raw"], ["--raw-tool-result-bytes", "3"]]
+)
+def test_cli_rejects_removed_flags(flag):
+    with pytest.raises(SystemExit) as exc:
+        main(flag)
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize("batch", [False, True])
+def test_cli_no_events_writes_no_json(batch, tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    transcript = tmp_path / "empty.jsonl"
+    _write_jsonl(transcript, _session_entries("empty", tmp_path, "")[:1])
+    args = (
+        ["--sessions-root", str(tmp_path), "--output", str(tmp_path / "out")]
+        if batch
+        else ["--transcript", str(transcript), "--output", "-"]
+    )
+    assert main(args) == (1 if batch else 0)
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "no exportable events" in captured.err
+    assert not list(tmp_path.rglob("*.json"))
+
+
+@pytest.mark.parametrize("stdout", [False, True])
+def test_cli_warnings_stay_on_stderr(stdout, tmp_path, monkeypatch, capsys):
+    import session_log_envelope
+
+    monkeypatch.setattr(session_log_envelope, "SIZE_WARN_BYTES", 1)
+    transcript = tmp_path / "s.jsonl"
+    _write_jsonl(transcript, _session_entries("s1", tmp_path, "hello"))
+    with transcript.open("a") as stream:
+        stream.write("bad json\n")
+    destination = tmp_path / "out.json"
+    assert (
+        main(
+            [
+                "--transcript",
+                str(transcript),
+                "--output",
+                "-" if stdout else str(destination),
+            ]
+        )
+        == 0
+    )
+    captured = capsys.readouterr()
+    assert (
+        json.loads(captured.out if stdout else destination.read_text())["session_id"]
+        == "s1"
+    )
+    assert "skipping malformed JSON" in captured.err
+    assert "consider a lower --tool-result-bytes" in captured.err
+    assert "--raw-tool-result-bytes" not in captured.err
+
+
+def test_batch_duplicate_identifiers_preserve_both_json_files(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    for name, text in [("a", "first"), ("b", "second")]:
+        _write_jsonl(
+            tmp_path / f"{name}.jsonl", _session_entries("same", tmp_path, text)
+        )
+    out = tmp_path / "out"
+    assert main(["--sessions-root", str(tmp_path), "--output", str(out)]) == 0
+    envelopes = [json.loads(path.read_text()) for path in out.glob("*.json")]
+    assert {e["events"][0]["text"] for e in envelopes} == {"first", "second"}
+    assert {e["session_id"] for e in envelopes} == {"same"}
+    assert {p.name for p in out.iterdir()} == {
+        "codex_session_log_raw_same.json",
+        "codex_session_log_raw_same-2.json",
+    }
