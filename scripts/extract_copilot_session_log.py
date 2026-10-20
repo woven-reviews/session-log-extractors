@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extract GitHub Copilot CLI session transcripts into readable markdown conversation logs.
+"""Extract GitHub Copilot CLI session transcripts into JSON conversation envelopes.
 
 GitHub Copilot CLI records sessions in a SQLite database at:
 
@@ -42,7 +42,6 @@ import json
 import re
 import sqlite3
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -56,14 +55,14 @@ from session_log_envelope import (
     tool_call,
     unavailable_image,
     user_event,
+    warn_if_oversized,
     write_envelope,
 )
-from skill_metadata import load_skill_details, render_skill_lines
+from skill_metadata import load_skill_details
 
 COPILOT_DB = Path.home() / ".copilot" / "session-store.db"
 COPILOT_STATE_ROOT = Path.home() / ".copilot" / "session-state"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_OUTPUT = PROJECT_ROOT / "copilot_session_log.md"
 
 _NOISE_TAG_BLOCK = re.compile(
     r"<(system-reminder|system-notification|local-command-stdout|local-command-stderr|"
@@ -81,7 +80,6 @@ _NOISE_TAG_LOOSE = re.compile(
 _BASH_INPUT = re.compile(r"<bash-input>(.*?)</bash-input>", re.DOTALL | re.IGNORECASE)
 _COPILOT_IMAGE_REF = re.compile(r"\[image:\s*([^\]]+?)\s*\]", re.IGNORECASE)
 _DATA_IMAGE_URL = re.compile(r"^data:(image/[A-Za-z0-9.+-]+);base64,(.*)$", re.DOTALL)
-IMAGE_DUMP_DIR = Path(tempfile.gettempdir()) / "copilot_session_images"
 _IMAGE_EXT = {
     "image/png": "png",
     "image/jpeg": "jpg",
@@ -106,7 +104,7 @@ def _decode_arguments(arguments: Any) -> Any:
 
 
 def tool_descriptor(name: str, arguments: Any) -> str:
-    """Summarize a tool call's most salient argument for a one-line bullet."""
+    """Summarize a tool call's most salient argument for a retained tool descriptor."""
     args = _decode_arguments(arguments)
     if not isinstance(args, dict):
         return _truncate(str(args), TOOL_DESC_MAX) if args else ""
@@ -220,20 +218,6 @@ def format_timestamp(ts: Optional[str]) -> str:
     return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
-def format_elapsed(first_ts: Optional[str], ts: Optional[str]) -> str:
-    a, b = _parse_ts(first_ts), _parse_ts(ts)
-    if a is None or b is None:
-        return ""
-    secs = max(0, int((b - a).total_seconds()))
-    h, rem = divmod(secs, 3600)
-    m, s = divmod(rem, 60)
-    if h:
-        return f"+{h}:{m:02d}:{s:02d}"
-    if m:
-        return f"+{m}:{s:02d}"
-    return f"+{s}s"
-
-
 def date_only(ts: Optional[str]) -> str:
     formatted = format_timestamp(ts)
     if formatted == "(no timestamp)":
@@ -254,7 +238,7 @@ class Turn:
         self.timestamp = timestamp
         self.turn_index = turn_index
         self.shell_command: Optional[str] = None
-        self.tool_bullets: List[str] = []
+        self.tools: List[tuple[str, str]] = []
         self.skills_used: List[str] = []
         self.skill_details: Dict[str, Dict[str, Any]] = {}
         self.image_refs: List[Dict[str, str]] = []
@@ -263,10 +247,7 @@ class Turn:
         self.tool_calls: List[Dict[str, Any]] = []
 
     def add_tool(self, name: str, descriptor: str) -> None:
-        if descriptor:
-            self.tool_bullets.append(f"- {name} -> {descriptor}")
-        else:
-            self.tool_bullets.append(f"- {name}")
+        self.tools.append((name, descriptor))
 
     def add_result_note(self, note: str) -> None:
         if note:
@@ -780,7 +761,7 @@ def _turn_for(turns: List[Turn], ts: Optional[str]) -> Optional[Turn]:
 def attribute_tools(turns: List[Turn], tools: List[Dict[str, Any]]) -> None:
     """Fold each tool call under the turn it happened in.
 
-    Populates the markdown bullet, a structured record for the raw envelope, a
+    Populates the tool target, a structured record for the JSON envelope, a
     result note, and any skill evidenced by the call's arguments.
     """
     for tool in tools:
@@ -1043,15 +1024,11 @@ def build_events(
     Copilot's store hands us whole turns rather than an event stream, so this
     reads the Turn objects instead of re-walking a transcript.
 
-    **Call this before ``dump_images``** — that function appends image markers to
-    ``turn.user_text`` in place, and the envelope should carry the candidate's
-    text, not the markdown's annotation of it.
-
     When a turn carries structured ``tool_calls`` (recovered from the events log),
     each call becomes its own assistant event stamped with that call's own
     timestamp -- mirroring Codex, where every tool call is a separate event -- and
     its arguments and result are emitted in full (result capped at
-    ``tool_result_max_bytes``). Older turns that only have file-edit bullets fall
+    ``tool_result_max_bytes``). Older turns that only have file-edit records fall
     back to a single grouped assistant event with no per-call timestamp or result.
     """
     events: List[Dict[str, Any]] = []
@@ -1087,7 +1064,7 @@ def build_events(
         else:
             calls = [
                 tool_call(name, {"target": target} if target else {})
-                for name, target in _tool_pairs(turn)
+                for name, target in turn.tools
             ]
             if turn.assistant_text.strip() or calls:
                 events.append(
@@ -1096,48 +1073,6 @@ def build_events(
                 index += 1
 
     return events
-
-
-def _tool_pairs(turn: "Turn") -> List[tuple]:
-    """Recover (tool name, target) from a turn's rendered tool bullets.
-
-    ``Turn.add_tool`` is the only place the pair is kept, and it stores the
-    rendered ``- name -> target`` string. Parsing it back is uglier than keeping
-    the structured pair, but changing ``Turn`` would risk the markdown.
-    """
-    pairs = []
-    for bullet in turn.tool_bullets:
-        body = bullet[2:] if bullet.startswith("- ") else bullet
-        name, sep, target = body.partition(" -> ")
-        pairs.append((name.strip(), target.strip() if sep else ""))
-    return pairs
-
-
-def write_raw_envelope(
-    session: Dict[str, Any],
-    turns: List["Turn"],
-    models: List[str],
-    out_dir: Path,
-    tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
-) -> Optional[Path]:
-    """Write the raw envelope for one Copilot session."""
-    events = build_events(turns, tool_result_max_bytes)
-    if not events:
-        return None
-
-    session_id = output_identifier(session)
-    envelope = build_envelope(
-        harness="copilot",
-        session_id=session_id,
-        events=events,
-        cwd=session.get("cwd"),
-        started_at=session.get("created_at"),
-        models=models,
-        tool_result_max_bytes=tool_result_max_bytes,
-    )
-    out_path = out_dir / raw_filename("copilot", session_id)
-    write_envelope(out_path, envelope)
-    return out_path
 
 
 def _image_bytes_and_ext(ref: Dict[str, str]) -> Optional[tuple[bytes, str]]:
@@ -1180,234 +1115,6 @@ def _image_bytes_and_ext(ref: Dict[str, str]) -> Optional[tuple[bytes, str]]:
     return None
 
 
-def dump_images(
-    turns: List[Turn], session_id: str, dump_dir: Path = IMAGE_DUMP_DIR
-) -> List[Path]:
-    """Dump attached images and append stable pending markers to user text."""
-    written: List[Path] = []
-    for ti, turn in enumerate(turns, 1):
-        for n, ref in enumerate(turn.image_refs, 1):
-            decoded = _image_bytes_and_ext(ref)
-            if decoded is not None:
-                raw, ext = decoded
-                out_path = dump_dir / f"{session_id}_turn{ti}_img{n}.{ext}"
-                dump_dir.mkdir(parents=True, exist_ok=True)
-                out_path.write_bytes(raw)
-                written.append(out_path)
-                turn.user_text = (
-                    f"{turn.user_text}\n\n"
-                    f"[Image dumped to `{out_path}` — description pending]"
-                ).strip()
-                continue
-
-            turn.user_text = (
-                f"{turn.user_text}\n\n"
-                f"[Image referenced as `{ref.get('name', 'unknown')}` — "
-                "source file unavailable; description pending]"
-            ).strip()
-    return written
-
-
-def _derive_context_line(turns: List[Turn]) -> str:
-    for turn in turns:
-        if turn.user_text.strip():
-            first = _truncate(turn.user_text, 80)
-            return f'a Copilot CLI session starting with: "{first}"'
-    return "a Copilot CLI session"
-
-
-def render_summary(turns: List[Turn], first_ts: Optional[str]) -> List[str]:
-    out: List[str] = ["## Summary - user inputs", ""]
-    input_turns = [(i, t) for i, t in enumerate(turns, 1) if t.user_text.strip()]
-    if not input_turns:
-        out += ["_(No user inputs in this transcript.)_", ""]
-        return out
-
-    prev_ts: Optional[str] = None
-    for i, turn in input_turns:
-        elapsed = format_elapsed(first_ts, turn.timestamp) or "+?"
-        delta = format_elapsed(prev_ts, turn.timestamp) if prev_ts else "+0s"
-        out.append(
-            f"### Turn {i} - {format_timestamp(turn.timestamp)} "
-            f"({elapsed}, delta {delta})"
-        )
-        out.append("")
-        if turn.shell_command:
-            out.append("Ran shell command:")
-            out.append("")
-            out.append("```sh")
-            out.append(turn.shell_command)
-            out.append("```")
-        else:
-            for line in turn.user_text.splitlines():
-                out.append(f"> {line}" if line.strip() else ">")
-        out.append("")
-        for skill in turn.skills_used:
-            out.extend(render_skill_lines(skill, turn.skill_details.get(skill)))
-            out.append("")
-        for p in turn.permission_decisions:
-            out.append(
-                f"_Permission {format_decision(p['decision'])}:_ **{_truncate(p['tool'], 120)}**"
-            )
-            if p.get("feedback"):
-                for line in p["feedback"].splitlines():
-                    out.append(f"> {line}" if line.strip() else ">")
-            out.append("")
-        prev_ts = turn.timestamp
-    return out
-
-
-# Presentation removed by JSON-only work; remove in QUAL-2507.
-def render(  # noqa: C901, PLR0913, PLR0912, PLR0915
-    session: Dict[str, Any],
-    turns: List[Turn],
-    checkpoints: List[Dict[str, Any]],
-    files: List[Dict[str, Any]],
-    refs: List[Dict[str, Any]],
-    models: Optional[List[str]] = None,
-) -> str:
-    """Render a session transcript as markdown."""
-    out: List[str] = []
-    first_ts = turns[0].timestamp if turns else session.get("created_at")
-
-    out.append("# GitHub Copilot CLI Session Conversation Log")
-    out.append("")
-    out.append(
-        f"A turn-by-turn log of the conversation for {_derive_context_line(turns)}."
-    )
-    out.append(
-        "Project: "
-        f"{session.get('cwd') or session.get('repository') or '(unknown)'}"
-        f". Date: {date_only(first_ts)}."
-    )
-    if models:
-        out.append(f"Model: {', '.join(models)}.")
-    out.append("")
-    out.append(f"Session ID: `{session.get('id', 'unknown')}`.")
-    if session.get("repository"):
-        out.append(f"Repository: `{session['repository']}`.")
-    if session.get("branch"):
-        out.append(f"Branch: `{session['branch']}`.")
-    if session.get("summary"):
-        out.append(f"Summary: {session['summary']}")
-    out.append("")
-    out.append("---")
-
-    if not turns:
-        out.append("")
-        out.append("_(No conversational turns found in this Copilot transcript.)_")
-        out.append("")
-        return "\n".join(out)
-
-    out.append("")
-    out.extend(render_summary(turns, first_ts))
-    out.append("---")
-    out.append("")
-    out.append("# Full turn-by-turn detail")
-
-    for i, turn in enumerate(turns, 1):
-        out.append("")
-        elapsed = format_elapsed(first_ts, turn.timestamp)
-        header = f"## Turn {i} - {format_timestamp(turn.timestamp)}"
-        if elapsed:
-            header += f" ({elapsed} into session)"
-        out.append(header)
-        out.append("")
-        if turn.shell_command:
-            out.append("**User ran shell command:**")
-            out.append("")
-            out.append("```sh")
-            out.append(turn.shell_command)
-            out.append("```")
-        elif turn.user_text.strip():
-            out.append(f"**User:** {turn.user_text}")
-        else:
-            out.append("**User:** _(no user text captured)_")
-        out.append("")
-
-        if turn.assistant_text:
-            out.append(f"**Assistant:** {turn.assistant_text}")
-        elif turn.tool_bullets:
-            out.append("**Assistant:**")
-        else:
-            out.append("**Assistant:** _(no response captured)_")
-
-        if turn.tool_bullets:
-            out.append("")
-            out.extend(turn.tool_bullets)
-
-        if turn.skills_used:
-            out.append("")
-            for skill in turn.skills_used:
-                out.extend(
-                    render_skill_lines(
-                        skill, turn.skill_details.get(skill), indent="  "
-                    )
-                )
-
-        if turn.result_notes:
-            notes = "; ".join(turn.result_notes[:6])
-            extra = len(turn.result_notes) - 6
-            if extra > 0:
-                notes += f"; (+{extra} more results)"
-            out.append("")
-            out.append(f"  _results:_ {_truncate(notes, 500)}")
-
-        if turn.permission_decisions:
-            out.append("")
-            for p in turn.permission_decisions:
-                line = (
-                    f"  _{decision_label(p['decision'])}:_ {_truncate(p['tool'], 120)}"
-                )
-                if p.get("feedback"):
-                    line += f' -> "{_truncate(p["feedback"], 160)}"'
-                out.append(line)
-
-        out.append("")
-        out.append("---")
-
-    if files:
-        out.append("")
-        out.append("## Files changed during the session")
-        out.append("")
-        out.append("```")
-        for item in files:
-            path = item.get("file_path")
-            if isinstance(path, str) and path:
-                out.append(path)
-        out.append("```")
-
-    if refs:
-        out.append("")
-        out.append("## References")
-        out.append("")
-        for ref in refs:
-            ref_type = ref.get("ref_type", "unknown")
-            ref_value = ref.get("ref_value", "")
-            turn = ref.get("turn_index")
-            turn_marker = f" (turn {turn})" if turn is not None else ""
-            out.append(f"- **{ref_type}**: `{ref_value}`{turn_marker}")
-
-    if checkpoints:
-        out.append("")
-        out.append(f"## Checkpoints ({len(checkpoints)})")
-        out.append("")
-        for cp in checkpoints:
-            num = cp.get("checkpoint_number", 0)
-            title = cp.get("title", "Checkpoint")
-            overview = cp.get("overview", "")
-            ts = format_timestamp(cp.get("created_at"))
-            out.append(f"### Checkpoint {num}: {title}")
-            out.append(f"*{ts}*")
-            if overview:
-                out.append("")
-                out.append(str(overview))
-            out.append("")
-
-    out.append("")
-    return "\n".join(out)
-
-
 def output_identifier(session: Dict[str, Any]) -> str:
     """Generate a short identifier for output filenames."""
     session_id = session.get("id", "unknown")
@@ -1430,59 +1137,50 @@ def _unique_identifier(base: str, used: set) -> str:
     return ident
 
 
-def render_session(
-    conn: sqlite3.Connection,
-    session: Dict[str, Any],
-    raw_output: Optional[Path] = None,
-    tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
-) -> str:
-    """Load all data for a session and render it as markdown.
-
-    When ``raw_output`` is given, the raw envelope is also written there.
-    """
+def load_session_turns(conn: sqlite3.Connection, session: Dict[str, Any]) -> List[Turn]:
+    """Load turns with file, attachment, tool, permission, and skill evidence."""
     session_id = session["id"]
-    turns_raw = get_session_turns(conn, session_id)
-    checkpoints = get_session_checkpoints(conn, session_id)
-    files = get_session_files(conn, session_id)
-    refs = get_session_refs(conn, session_id)
     attachments = get_session_attachments(conn, session_id)
     attachments.extend(get_state_attachments(session_id))
-    models = get_session_models(conn, session_id)
-    turns = _build_turn_objects(turns_raw, files, attachments)
+    turns = _build_turn_objects(
+        get_session_turns(conn, session_id),
+        get_session_files(conn, session_id),
+        attachments,
+    )
     tools = get_state_tools(session_id)
     if tools:
-        # The events log is a superset of the DB's file-edit list, carrying every
-        # tool call with its arguments and result. Prefer it, dropping the
-        # coarser file-only bullets so nothing is double-counted.
+        # Events carry full calls and results; discard coarser DB file targets.
         for turn in turns:
-            turn.tool_bullets = []
+            turn.tools = []
         attribute_tools(turns, tools)
     attribute_permissions(turns, get_state_permissions(session_id))
     attribute_skills(turns, get_state_skills(session_id))
+    return turns
 
-    # Before dump_images: it appends image markers to turn.user_text in place.
-    if raw_output is not None:
-        raw_path = write_raw_envelope(
-            session, turns, models, raw_output, tool_result_max_bytes
-        )
-        if raw_path is not None:
-            print(f"  wrote {raw_path}", file=sys.stderr)
 
-    dump_images(turns, output_identifier(session))
-
-    return render(
-        session=session,
-        turns=turns,
-        checkpoints=checkpoints,
-        files=files,
-        refs=refs,
-        models=models,
+def extract_session(
+    conn: sqlite3.Connection,
+    session: Dict[str, Any],
+    tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
+) -> Optional[Dict[str, Any]]:
+    """Build a session envelope without changing its content for display."""
+    events = build_events(load_session_turns(conn, session), tool_result_max_bytes)
+    if not events:
+        return None
+    return build_envelope(
+        harness="copilot",
+        session_id=output_identifier(session),
+        events=events,
+        cwd=session.get("cwd"),
+        started_at=session.get("created_at"),
+        models=get_session_models(conn, session["id"]),
+        tool_result_max_bytes=tool_result_max_bytes,
     )
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Extract GitHub Copilot CLI session logs as markdown.",
+        description="Extract GitHub Copilot CLI session logs as JSON.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -1490,7 +1188,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "session",
         nargs="?",
         metavar="SESSION_ID",
-        help="session id or prefix (optional; defaults to newest for current repo)",
+        help="session id or prefix (optional; --output - selects newest for current repo)",
     )
     parser.add_argument(
         "--db",
@@ -1510,9 +1208,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--all",
         action="store_true",
         help=(
-            "extract every session for the current repository into the current "
-            "working directory, one file per session named "
-            "copilot_session_log_<identifier>.md (in this mode --output is treated "
+            "extract every session for the current repository into the "
+            "project root, one file per session named "
+            "copilot_session_log_raw_<identifier>.json (in this mode --output is treated "
             "as the output directory; positional selector is ignored). This is "
             "the default when no session selector is supplied"
         ),
@@ -1522,36 +1220,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         default=None,
         help=(
-            "output markdown file (default: copilot_session_log.md in the project "
-            f"root, {DEFAULT_OUTPUT}; use '-' for stdout). With --all, an output "
-            "directory instead (default: project root)."
+            "output JSON file (default: copilot_session_log_raw_<identifier>.json "
+            f"in the project root, {PROJECT_ROOT}; use '-' for stdout). With --all, "
+            "an output directory instead (default: project root)."
         ),
     )
     parser.add_argument(
-        "--raw",
-        dest="raw",
-        action="store_true",
-        default=True,
-        help=(
-            "also write the raw envelope "
-            "copilot_session_log_raw_<identifier>.json alongside the markdown, "
-            "carrying the full conversation with pasted images inlined as "
-            "base64 (default: on)"
-        ),
-    )
-    parser.add_argument(
-        "--no-raw",
-        dest="raw",
-        action="store_false",
-        help="skip the raw envelope and write only the markdown log",
-    )
-    parser.add_argument(
-        "--raw-tool-result-bytes",
+        "--tool-result-bytes",
         metavar="N",
         type=int,
         default=DEFAULT_TOOL_RESULT_MAX_BYTES,
         help=(
-            "cap each tool result in the raw envelope at N bytes; the original "
+            "cap each tool result in the JSON envelope at N bytes; the original "
             "size is always recorded. Use a negative value for no cap "
             f"(default: {DEFAULT_TOOL_RESULT_MAX_BYTES})"
         ),
@@ -1559,147 +1239,102 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+CAP_FLAG = "--tool-result-bytes"
+NO_EVENTS_NOTE = "no exportable events; no JSON written"
+
+
 def _extract_all(
     conn: sqlite3.Connection,
     output: Optional[str],
     strict: bool = False,
-    raw: bool = True,
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
 ) -> int:
-    """Extract every matching Copilot session, one markdown file each."""
-    cwd = Path.cwd()
-    sessions = matching_sessions(conn, cwd, strict=strict)
-
+    """Extract every matching Copilot session, one JSON file each."""
+    sessions = matching_sessions(conn, Path.cwd(), strict=strict)
     if not sessions:
-        print(
-            f"error: no Copilot sessions for {cwd}",
-            file=sys.stderr,
-        )
+        print(f"error: no Copilot sessions for {Path.cwd()}", file=sys.stderr)
         return 1
-
-    # Sort by created timestamp
     sessions.sort(key=lambda s: s.get("created_at", ""))
-
     out_dir = Path(output).expanduser() if output else PROJECT_ROOT
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"extracting {len(sessions)} Copilot session(s)", file=sys.stderr)
-
     written = 0
     used_ids = set()
     for session in sessions:
         ident = _unique_identifier(output_identifier(session), used_ids)
+        out_path = out_dir / raw_filename("copilot", ident)
         try:
-            markdown = render_session(
-                conn,
-                session,
-                raw_output=out_dir if raw else None,
-                tool_result_max_bytes=tool_result_max_bytes,
-            )
+            envelope = extract_session(conn, session, tool_result_max_bytes)
+            if envelope is None:
+                print(f"  skip {ident}: {NO_EVENTS_NOTE}", file=sys.stderr)
+                continue
+            write_envelope(out_path, envelope, CAP_FLAG)
         except (OSError, ValueError) as exc:
             print(f"  skip {ident}: {exc}", file=sys.stderr)
             continue
-
-        out_path = out_dir / f"copilot_session_log_{ident}.md"
-        try:
-            out_path.write_text(markdown, encoding="utf-8")
-        except OSError as exc:
-            print(f"  error writing {out_path}: {exc}", file=sys.stderr)
-            continue
-
         written += 1
         print(f"  wrote {out_path}", file=sys.stderr)
-
     print(f"done: {written}/{len(sessions)} session(s) written", file=sys.stderr)
     return 0 if written else 1
 
 
-# Existing dual-output CLI orchestration; remove in QUAL-2507.
-def main(argv: Optional[List[str]] = None) -> int:  # noqa: C901, PLR0912
+def _select_session(conn: sqlite3.Connection, args: argparse.Namespace):
+    if args.session:
+        session = get_session_by_id(conn, args.session)
+        if session is None:
+            print(f"error: no session found matching {args.session!r}", file=sys.stderr)
+        return session
+    session = newest_session(conn, Path.cwd(), strict=args.strict)
+    if session is None:
+        print(
+            f"error: no Copilot sessions for {Path.cwd()}"
+            + (" (--strict: exact cwd match only)" if args.strict else ""),
+            file=sys.stderr,
+        )
+    return session
+
+
+def _extract_selected(conn: sqlite3.Connection, args: argparse.Namespace) -> int:
+    session = _select_session(conn, args)
+    if session is None:
+        return 1
+    print(f"using session: {session['id']}", file=sys.stderr)
+    try:
+        envelope = extract_session(conn, session, args.tool_result_bytes)
+        if envelope is None:
+            print(f"skip {session['id']}: {NO_EVENTS_NOTE}", file=sys.stderr)
+            return 1
+        if args.output == "-":
+            payload = json.dumps(envelope, ensure_ascii=False)
+            warn_if_oversized("stdout", payload, CAP_FLAG)
+            sys.stdout.write(payload + "\n")
+        else:
+            out_path = (
+                Path(args.output).expanduser()
+                if args.output
+                else PROJECT_ROOT / raw_filename("copilot", output_identifier(session))
+            )
+            write_envelope(out_path, envelope, CAP_FLAG)
+            print(f"wrote {out_path}", file=sys.stderr)
+    except (OSError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def main(argv: Optional[List[str]] = None) -> int:
     args = build_arg_parser().parse_args(argv)
-
     db_path = Path(args.db).expanduser() if args.db else COPILOT_DB
-
     try:
         conn = get_db_connection(db_path)
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-
     try:
-        default_all = not args.session and args.output != "-"
-        if args.all or default_all:
+        if args.all or (not args.session and args.output != "-"):
             out = None if args.output == "-" else args.output
-            return _extract_all(
-                conn,
-                out,
-                strict=args.strict,
-                raw=args.raw,
-                tool_result_max_bytes=args.raw_tool_result_bytes,
-            )
-
-        cwd = Path.cwd()
-
-        # Try to get session by ID if provided
-        session = None
-        if args.session:
-            session = get_session_by_id(conn, args.session)
-            if not session:
-                print(
-                    f"error: no session found matching {args.session!r}",
-                    file=sys.stderr,
-                )
-                return 1
-        else:
-            # Get newest session for current repo (or global newest fallback).
-            session = newest_session(conn, cwd, strict=args.strict)
-            if not session:
-                print(
-                    f"error: no Copilot sessions for {cwd}"
-                    + (" (--strict: exact cwd match only)" if args.strict else ""),
-                    file=sys.stderr,
-                )
-                return 1
-
-        print(f"using session: {session['id']}", file=sys.stderr)
-
-        # The envelope is a file, so there is nowhere to put it when the markdown
-        # is going to stdout. Write it next to the markdown otherwise.
-        if not args.raw or args.output == "-":
-            raw_output = None
-        elif args.output is None:
-            raw_output = DEFAULT_OUTPUT.parent
-        else:
-            raw_output = Path(args.output).expanduser().parent
-
-        try:
-            markdown = render_session(
-                conn,
-                session,
-                raw_output=raw_output,
-                tool_result_max_bytes=args.raw_tool_result_bytes,
-            )
-        except (OSError, ValueError) as exc:
-            print(f"error: {exc}", file=sys.stderr)
-            return 1
-
-        if args.output == "-":
-            sys.stdout.write(markdown)
-            if not markdown.endswith("\n"):
-                sys.stdout.write("\n")
-        else:
-            out_path = (
-                DEFAULT_OUTPUT
-                if args.output is None
-                else Path(args.output).expanduser()
-            )
-            try:
-                out_path.write_text(markdown, encoding="utf-8")
-            except OSError as exc:
-                print(f"error: could not write {out_path}: {exc}", file=sys.stderr)
-                return 1
-            print(f"wrote {out_path}", file=sys.stderr)
-
-        return 0
+            return _extract_all(conn, out, args.strict, args.tool_result_bytes)
+        return _extract_selected(conn, args)
     finally:
         conn.close()
 
