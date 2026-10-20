@@ -221,11 +221,11 @@ def test_worker_restarts_if_a_snapshot_lands_as_it_exits(clone, remote):
     calls = {"n": 0}
     real_drain = pusher._drain
 
-    def drain_that_misses_it(repo, clk):
+    def drain_that_misses_it(repo, clk, refresh=None):
         calls["n"] += 1
         if calls["n"] == 1:
             return
-        real_drain(repo, clk)
+        real_drain(repo, clk, refresh)
 
     pusher._drain, original = drain_that_misses_it, pusher._drain
     try:
@@ -255,7 +255,14 @@ def test_spawn_worker_starts_a_detached_process_only_when_none_is_running(
     pusher.spawn_worker(clone, script)
 
     argv, kwargs = launched[0]
-    assert argv == [sys.executable, str(script), "--worker", "--repo", str(clone)]
+    assert argv == [
+        sys.executable,
+        "-B",
+        str(script),
+        "--worker",
+        "--repo",
+        str(clone),
+    ]
     assert kwargs["stdout"] == subprocess.DEVNULL
     assert kwargs["start_new_session"] is True
     (pusher.state_dir(clone) / pusher.LOCK).write_text("")
@@ -298,3 +305,72 @@ def test_clearing_a_snapshot_whose_files_vanished_is_a_no_op(clone):
     pusher._clear_if_unchanged(clone, staged, signature)
 
     assert pusher.load_pending(clone) == []
+
+
+def staged_from_source(text="user only\n"):
+    staged = snap(text)
+    staged.source = {"harness": "claude", "payload": {"session_id": "s1"}}
+    return staged
+
+
+def test_the_staged_source_round_trips_through_the_pending_area(clone):
+    pusher.stage(clone, staged_from_source())
+
+    assert pusher.load_pending(clone)[0][0].source == {
+        "harness": "claude",
+        "payload": {"session_id": "s1"},
+    }
+
+
+def test_worker_rereads_the_transcript_at_push_time(clone, remote):
+    """The hook fires before the harness flushes the turn, so the staged copy is stale."""
+    pusher.stage(clone, staged_from_source("user only\n"))
+    transcript = {"text": "user only\n"}
+    transcript["text"] += "assistant reply\n"  # written after the hook fired
+
+    def refresh(staged):
+        return snap(transcript["text"])
+
+    fake, clock = fake_clock_for(clone)
+    pusher.run_worker(clone, clock, refresh)
+
+    assert (
+        remote_text(remote, "session_logs/claude/s1.jsonl")
+        == "user only\nassistant reply\n"
+    )
+    assert pusher.load_pending(clone) == []
+
+
+def test_worker_falls_back_to_the_staged_copy_when_the_source_is_gone(clone, remote):
+    pusher.stage(clone, staged_from_source("staged copy\n"))
+    fake, clock = fake_clock_for(clone)
+
+    pusher.run_worker(clone, clock, lambda staged: None)
+
+    assert remote_text(remote, "session_logs/claude/s1.jsonl") == "staged copy\n"
+
+
+def test_worker_does_not_refresh_snapshots_without_a_source(clone, remote):
+    pusher.stage(clone, snap("no source\n"))
+    fake, clock = fake_clock_for(clone)
+
+    def refresh(staged):
+        raise AssertionError("must not be called")
+
+    pusher.run_worker(clone, clock, refresh)
+
+    assert remote_text(remote, "session_logs/claude/s1.jsonl") == "no source\n"
+
+
+def test_worker_pushes_nothing_when_the_filter_rejects_at_push_time(clone, remote):
+    pusher.stage(clone, staged_from_source())
+
+    def refresh(staged):
+        raise pusher.FilterError("session_log_filter.py rejected the file")
+
+    fake, clock = fake_clock_for(clone)
+    pusher.run_worker(clone, clock, refresh)
+
+    assert sh(remote, "git", "branch", "--list", "session-logs").strip() == ""
+    assert pusher.load_pending(clone) == []
+    assert "nothing was saved" in pusher.take_last_error(clone)

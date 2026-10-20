@@ -3,6 +3,11 @@
 Idempotent: running it twice changes nothing. Existing hook configs are merged, not
 overwritten, so a starter repo's own hooks survive. The starter repo gets a mirror of
 this package named ``session_log_capture`` (the package uses relative imports only).
+
+The privacy filter is not part of this package: each starter repo owns its own
+``session_log_capture/session_log_filter.py`` (see ``session_filter``). Syncing never
+writes, overwrites, or removes it, and warns when it is missing, because capture pushes
+nothing without it.
 """
 
 from __future__ import annotations
@@ -12,9 +17,13 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from .session_filter import MODULE_FILE
+
 PACKAGE_NAME = "session_log_capture"
 # Starter repos only run the hook, so the sync tooling itself stays behind.
-EXCLUDED = {"sync.py"}
+EXCLUDED = {"sync.py", MODULE_FILE}
+# Files a starter repo owns inside the mirrored package; never touched by a sync.
+PRESERVED = {MODULE_FILE}
 CODEX_FLAG = "codex_hooks"
 
 
@@ -65,7 +74,7 @@ def _mirror_package(source: Path, dest: Path) -> list[str]:
         if _copy(source / name, dest / name):
             changed.append(f"{PACKAGE_NAME}/{name}")
     for stale in sorted(dest.glob("*.py")) if dest.exists() else []:
-        if stale.name not in wanted:
+        if stale.name not in wanted and stale.name not in PRESERVED:
             stale.unlink()
             changed.append(f"{PACKAGE_NAME}/{stale.name} (removed)")
     return changed
@@ -78,6 +87,16 @@ def _codex_config(source: Path, dest: Path) -> list[str]:
     if CODEX_FLAG not in dest.read_text(encoding="utf-8"):
         return [f"WARNING: {dest} exists without {CODEX_FLAG}; enable it by hand"]
     return []
+
+
+def _filter_warning(target: Path) -> list[str]:
+    plugin = target / "scripts" / PACKAGE_NAME / MODULE_FILE
+    if plugin.exists():
+        return []
+    return [
+        f"WARNING: {plugin.relative_to(target)} is missing; capture pushes nothing "
+        "until the starter repo provides a privacy filter"
+    ]
 
 
 def sync(target: Path, source_root: Path) -> list[str]:
@@ -102,9 +121,10 @@ def sync(target: Path, source_root: Path) -> list[str]:
         target / ".github" / "hooks" / "woven-capture.json",
     ):
         changed.append(".github/hooks/woven-capture.json")
-    return changed + _codex_config(
+    changed += _codex_config(
         hooks / "codex" / "config.toml", target / ".codex" / "config.toml"
     )
+    return changed + _filter_warning(target)
 
 
 def remove_pycache(target: Path) -> None:

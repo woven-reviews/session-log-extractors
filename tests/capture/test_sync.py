@@ -40,7 +40,11 @@ def test_sync_installs_scripts_package_and_hook_configs(target):
 def test_sync_is_idempotent(target):
     sync.sync(target, SOURCE_ROOT)
 
-    assert sync.sync(target, SOURCE_ROOT) == []
+    assert [
+        line
+        for line in sync.sync(target, SOURCE_ROOT)
+        if not line.startswith("WARNING")
+    ] == []
 
 
 def test_sync_keeps_existing_hooks_and_does_not_duplicate_ours(target):
@@ -72,7 +76,9 @@ def test_sync_removes_stale_package_files_and_pycache(target):
     changed = sync.sync(target, SOURCE_ROOT)
     sync.remove_pycache(target)
 
-    assert changed == ["session_log_capture/old_module.py (removed)"]
+    assert [line for line in changed if not line.startswith("WARNING")] == [
+        "session_log_capture/old_module.py (removed)"
+    ]
     assert not (package / "__pycache__").exists()
 
 
@@ -80,7 +86,11 @@ def test_sync_updates_changed_files(target):
     sync.sync(target, SOURCE_ROOT)
     (target / "scripts" / "capture_session.py").write_text("tampered")
 
-    assert sync.sync(target, SOURCE_ROOT) == ["scripts/capture_session.py"]
+    assert [
+        line
+        for line in sync.sync(target, SOURCE_ROOT)
+        if not line.startswith("WARNING")
+    ] == ["scripts/capture_session.py"]
 
 
 def test_sync_warns_when_codex_config_lacks_the_flag(target):
@@ -117,7 +127,30 @@ def test_sync_script_reports_changes_and_rejects_non_checkouts(
 
     assert run(str(target)) == 0
     assert "scripts/capture_session.py" in capsys.readouterr().out
+    (target / "scripts" / "session_log_capture" / "session_log_filter.py").write_text(
+        ""
+    )
     assert run(str(target)) == 0
     assert capsys.readouterr().out.strip() == "already up to date"
     assert run(str(tmp_path / "nowhere")) == 1
     assert "not a git checkout" in capsys.readouterr().err
+
+
+def test_sync_never_touches_a_starter_repos_own_filter(target):
+    sync.sync(target, SOURCE_ROOT)
+    plugin = target / "scripts" / "session_log_capture" / "session_log_filter.py"
+    plugin.write_text("# mine\n")
+
+    changed = sync.sync(target, SOURCE_ROOT)
+
+    assert changed == []
+    assert plugin.read_text() == "# mine\n"
+
+
+def test_sync_warns_when_the_starter_repo_has_no_filter(target):
+    changed = sync.sync(target, SOURCE_ROOT)
+
+    assert any("session_log_filter.py is missing" in line for line in changed)
+    assert not (
+        target / "scripts" / "session_log_capture" / "session_log_filter.py"
+    ).exists()

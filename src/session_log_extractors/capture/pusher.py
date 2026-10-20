@@ -2,10 +2,12 @@
 
 The hook itself only stages files under ``<git-dir>/woven-capture/pending`` and starts
 a worker if none is running, so it returns at once. The worker holds a lock file, waits
-until the session goes quiet (or a maximum interval passes), pushes the newest staged
-snapshot, and exits once there has been nothing to push for a while. Because the worker
-always pushes whatever is newest when it wakes, a turn that lands inside the debounce
-window is never skipped.
+until the session goes quiet (or a maximum interval passes), rebuilds each staged
+session from its source, pushes it, and exits once there has been nothing to push for a
+while. A hook fires before the harness has finished writing the turn's transcript, so
+the staged copy is only the signal that something changed. The worker re-reads and
+re-filters the transcript at push time, which is what makes the last reply of a session
+reach the branch. The staged copy is used only when the source can no longer be read.
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ from pathlib import Path
 
 from . import gitpush
 from .locate import Snapshot
+from .session_filter import FilterError
 
 QUIET_SECONDS = 10.0
 MAX_INTERVAL_SECONDS = 60.0
@@ -32,6 +35,9 @@ META = "pending-meta"
 LOCK = "lock"
 DISABLED_FLAG = "disabled"
 LAST_ERROR = "last_error"
+
+Loaded = list[tuple[Snapshot, dict[str, tuple[int, int]]]]
+Refresh = Callable[[Snapshot], Snapshot | None]
 
 
 @dataclass
@@ -70,6 +76,7 @@ def stage(repo: Path, snap: Snapshot) -> None:
         "session_id": snap.session_id,
         "files": sorted(snap.files),
         "meta": snap.meta,
+        "source": snap.source,
     }
     _atomic_write(
         state / META / f"{snap.harness}__{snap.session_id}.json", json.dumps(meta)
@@ -91,7 +98,7 @@ def _signature(state: Path, snap: Snapshot) -> dict[str, tuple[int, int]]:
     return out
 
 
-def load_pending(repo: Path) -> list[tuple[Snapshot, dict[str, tuple[int, int]]]]:
+def load_pending(repo: Path) -> Loaded:
     """Staged snapshots, each with the file signatures that identify exactly what was read."""
     state = state_dir(repo)
     loaded = []
@@ -103,7 +110,11 @@ def load_pending(repo: Path) -> list[tuple[Snapshot, dict[str, tuple[int, int]]]
                 for rel in info["files"]
             }
             snap = Snapshot(
-                info["harness"], info["session_id"], files, info.get("meta") or {}
+                info["harness"],
+                info["session_id"],
+                files,
+                info.get("meta") or {},
+                info.get("source"),
             )
             loaded.append((snap, _signature(state, snap)))
         except (OSError, ValueError, KeyError):
@@ -111,7 +122,7 @@ def load_pending(repo: Path) -> list[tuple[Snapshot, dict[str, tuple[int, int]]]
     return loaded
 
 
-def _newest_mtime(loaded: list[tuple[Snapshot, dict[str, tuple[int, int]]]]) -> float:
+def _newest_mtime(loaded: Loaded) -> float:
     return max((m / 1e9 for _, sig in loaded for m, _ in sig.values()), default=0.0)
 
 
@@ -168,25 +179,42 @@ def take_last_error(repo: Path) -> str | None:
     return message or None
 
 
-def _push_pending(
-    repo: Path, loaded: list[tuple[Snapshot, dict[str, tuple[int, int]]]]
-) -> str:
+def _rebuilt(
+    repo: Path, loaded: Loaded, refresh: Refresh | None
+) -> list[tuple[Snapshot, dict[str, tuple[int, int]], Snapshot]]:
+    """Pair each staged snapshot with a freshly read one; drop sessions the filter now rejects."""
+    ready = []
+    for staged, signature in loaded:
+        try:
+            fresh = refresh(staged) if refresh and staged.source else None
+        except FilterError as err:
+            _record_error(state_dir(repo), f"woven-capture: nothing was saved, {err}")
+            _clear_if_unchanged(repo, staged, signature)
+            continue
+        ready.append((staged, signature, fresh or staged))
+    return ready
+
+
+def _push_pending(repo: Path, loaded: Loaded, refresh: Refresh | None = None) -> str:
     state = state_dir(repo)
-    outcome = gitpush.commit_and_push(repo, [snap for snap, _ in loaded])
+    ready = _rebuilt(repo, loaded, refresh)
+    if not ready:
+        return gitpush.BLOCKED
+    outcome = gitpush.commit_and_push(repo, [fresh for _, _, fresh in ready])
     if outcome.status == gitpush.PUSHED:
-        for snap, signature in loaded:
-            _clear_if_unchanged(repo, snap, signature)
+        for staged, signature, _ in ready:
+            _clear_if_unchanged(repo, staged, signature)
     elif outcome.status == gitpush.DISABLED:
         (state / DISABLED_FLAG).write_text(outcome.detail, encoding="utf-8")
-        for snap, signature in loaded:
-            _clear_if_unchanged(repo, snap, signature)
+        for staged, signature, _ in ready:
+            _clear_if_unchanged(repo, staged, signature)
     elif outcome.status == gitpush.BLOCKED:
         _record_error(
             state,
             "woven-capture: GitHub rejected a session log push; this session was not saved.",
         )
-        for snap, signature in loaded:
-            _clear_if_unchanged(repo, snap, signature)
+        for staged, signature, _ in ready:
+            _clear_if_unchanged(repo, staged, signature)
     else:
         _record_error(
             state,
@@ -195,7 +223,7 @@ def _push_pending(
     return outcome.status
 
 
-def _drain(repo: Path, clock: Clock) -> bool:
+def _drain(repo: Path, clock: Clock, refresh: Refresh | None = None) -> bool:
     """Push staged snapshots when quiet or overdue.
 
     Returns True when it stopped because a push failed transiently: the next hook fire
@@ -216,20 +244,22 @@ def _drain(repo: Path, clock: Clock) -> bool:
             if quiet or now - last_push >= _seconds(
                 "MAX_INTERVAL", MAX_INTERVAL_SECONDS
             ):
-                if _push_pending(repo, loaded) == gitpush.TRANSIENT:
+                if _push_pending(repo, loaded, refresh) == gitpush.TRANSIENT:
                     return True
                 last_push = clock.now()
         clock.sleep(POLL_SECONDS)
     return False
 
 
-def run_worker(repo: Path, clock: Clock | None = None) -> None:
+def run_worker(
+    repo: Path, clock: Clock | None = None, refresh: Refresh | None = None
+) -> None:
     """Run as the single worker for this clone until there is nothing left to push."""
     clock = clock or Clock()
     state = state_dir(repo)
     while _acquire(state, clock):
         try:
-            gave_up = _drain(repo, clock)
+            gave_up = _drain(repo, clock, refresh)
         finally:
             (state / LOCK).unlink(missing_ok=True)
         # A hook may have staged a snapshot just after the idle check; go round again.
@@ -247,7 +277,8 @@ def spawn_worker(repo: Path, script: Path) -> None:
             "creationflags": 0x00000008 | 0x00000200
         }  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
     subprocess.Popen(
-        [sys.executable, str(script), "--worker", "--repo", str(repo)],
+        # -B: never leave __pycache__ in the candidate's clone.
+        [sys.executable, "-B", str(script), "--worker", "--repo", str(repo)],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,

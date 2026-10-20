@@ -2,7 +2,7 @@
 
 A hook payload names the session (and, for Claude and Copilot, a transcript path).
 Each locator reads only files that belong to that one session, runs them through the
-allowlist filters, and returns them under the branch layout:
+privacy filter plug-in (``session_filter``), and returns them under the branch layout:
 
     session_logs/claude/<session-id>.jsonl
     session_logs/claude/<session-id>/subagents/<agent-file>.jsonl
@@ -21,10 +21,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import filtering
+from .records import COPILOT_DB_COLUMNS, entries
+from .session_filter import SessionFilter
 
 SAFE_ID = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
-COPILOT_TABLES = tuple(filtering.COPILOT_DB_COLUMNS)
+COPILOT_TABLES = tuple(COPILOT_DB_COLUMNS)
 
 
 @dataclass
@@ -35,6 +36,8 @@ class Snapshot:
     session_id: str
     files: dict[str, str] = field(default_factory=dict)
     meta: dict[str, Any] = field(default_factory=dict)
+    # The hook payload this was built from, so the worker can rebuild it at push time.
+    source: dict[str, Any] | None = None
 
 
 def inside(root: Path, candidate: str | Path | None) -> bool:
@@ -56,7 +59,7 @@ def _read(path: Path) -> str | None:
 
 
 def _first_value(text: str, key: str) -> Any:
-    return next((e[key] for e in filtering.entries(text) if key in e), None)
+    return next((e[key] for e in entries(text) if key in e), None)
 
 
 def _payload_id(payload: dict[str, Any], *keys: str) -> str | None:
@@ -75,7 +78,9 @@ def _reported(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def claude_snapshot(payload: dict[str, Any], root: Path) -> Snapshot | None:
+def claude_snapshot(
+    payload: dict[str, Any], root: Path, flt: SessionFilter
+) -> Snapshot | None:
     """Claude Code: the hook's ``transcript_path`` plus its sibling subagent transcripts."""
     session_id = _payload_id(payload, "session_id", "sessionId")
     transcript = payload.get("transcript_path")
@@ -90,14 +95,14 @@ def claude_snapshot(payload: dict[str, Any], root: Path) -> Snapshot | None:
         session_id,
         meta={**_reported(payload), "harness_version": _first_value(text, "version")},
     )
-    snap.files[f"session_logs/claude/{session_id}.jsonl"] = filtering.filter_claude(
-        text
+    snap.files[f"session_logs/claude/{session_id}.jsonl"] = flt.apply(
+        "filter_claude", text
     )
     for agent in sorted((path.with_suffix("") / "subagents").glob("agent-*.jsonl")):
         agent_text = _read(agent)
         if agent_text is not None:
             snap.files[f"session_logs/claude/{session_id}/subagents/{agent.name}"] = (
-                filtering.filter_claude(agent_text)
+                flt.apply("filter_claude", agent_text)
             )
     return snap
 
@@ -116,14 +121,16 @@ def _codex_rollout(session_id: str, sessions: Path) -> Path | None:
 
 
 def _codex_meta(text: str) -> dict[str, Any]:
-    for entry in filtering.entries(text):
+    for entry in entries(text):
         if entry.get("type") == "session_meta":
             payload = entry.get("payload")
             return payload if isinstance(payload, dict) else {}
     return {}
 
 
-def codex_snapshot(payload: dict[str, Any], root: Path, home: Path) -> Snapshot | None:
+def codex_snapshot(
+    payload: dict[str, Any], root: Path, home: Path, flt: SessionFilter
+) -> Snapshot | None:
     """Codex: the hook's transcript path if given, else the rollout file for the session id."""
     session_id = _payload_id(payload, "session_id", "sessionId")
     reported = payload.get("transcript_path")
@@ -142,7 +149,9 @@ def codex_snapshot(payload: dict[str, Any], root: Path, home: Path) -> Snapshot 
         session_id,
         meta={**_reported(payload), "harness_version": meta.get("cli_version")},
     )
-    snap.files[f"session_logs/codex/{session_id}.jsonl"] = filtering.filter_codex(text)
+    snap.files[f"session_logs/codex/{session_id}.jsonl"] = flt.apply(
+        "filter_codex", text
+    )
     return snap
 
 
@@ -155,15 +164,13 @@ def copilot_home(home: Path) -> Path:
 
 
 def copilot_db_dump(db_path: Path, session_id: str) -> dict[str, Any]:
-    """Rows for one session from Copilot's session store, read-only, allowlisted columns only."""
+    """Rows for one session from Copilot's session store, read-only, only the columns the extractor reads."""
     if not db_path.exists():
         return {}
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     try:
-        return filtering.filter_copilot_dump(
-            {t: _table_rows(conn, t, session_id) for t in COPILOT_TABLES}
-        )
+        return {t: _table_rows(conn, t, session_id) for t in COPILOT_TABLES}
     except sqlite3.Error:
         return {}
     finally:
@@ -173,7 +180,7 @@ def copilot_db_dump(db_path: Path, session_id: str) -> dict[str, Any]:
 def _table_rows(
     conn: sqlite3.Connection, table: str, session_id: str
 ) -> list[dict[str, Any]]:
-    columns = filtering.COPILOT_DB_COLUMNS[table]
+    columns = COPILOT_DB_COLUMNS[table]
     present = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
     wanted = [c for c in columns if c in present]
     if not wanted:
@@ -186,7 +193,7 @@ def _table_rows(
 
 
 def copilot_snapshot(
-    payload: dict[str, Any], root: Path, home: Path
+    payload: dict[str, Any], root: Path, home: Path, flt: SessionFilter
 ) -> Snapshot | None:
     """Copilot: events.jsonl located from the session id, plus a dump of its database rows.
 
@@ -205,17 +212,18 @@ def copilot_snapshot(
         "copilot", session_id, meta={**_reported(payload), "harness_version": version}
     )
     prefix = f"session_logs/copilot/{session_id}"
-    snap.files[f"{prefix}/events.jsonl"] = filtering.filter_copilot_events(text)
+    snap.files[f"{prefix}/events.jsonl"] = flt.apply("filter_copilot_events", text)
     dump = copilot_db_dump(base / "session-store.db", session_id)
     if dump:
+        raw_dump = json.dumps(dump, separators=(",", ":"), ensure_ascii=False)
         snap.files[f"{prefix}/copilot_db.json"] = (
-            json.dumps(dump, separators=(",", ":"), ensure_ascii=False) + "\n"
+            flt.apply("filter_copilot_db", raw_dump).rstrip("\n") + "\n"
         )
     return snap
 
 
 def _first_copilot_version(text: str) -> Any:
-    for entry in filtering.entries(text):
+    for entry in entries(text):
         data = entry.get("data")
         if isinstance(data, dict) and "copilotVersion" in data:
             return data["copilotVersion"]
@@ -237,12 +245,19 @@ def detect_harness(payload: dict[str, Any]) -> str | None:
 
 
 def build_snapshot(
-    harness: str, payload: dict[str, Any], root: Path, home: Path
+    harness: str,
+    payload: dict[str, Any],
+    root: Path,
+    home: Path,
+    flt: SessionFilter,
 ) -> Snapshot | None:
-    if harness == "claude":
-        return claude_snapshot(payload, root)
-    if harness == "codex":
-        return codex_snapshot(payload, root, home)
-    if harness == "copilot":
-        return copilot_snapshot(payload, root, home)
-    return None
+    """The filtered snapshot for the session a hook payload names, or None if it is not ours."""
+    builders = {
+        "claude": lambda: claude_snapshot(payload, root, flt),
+        "codex": lambda: codex_snapshot(payload, root, home, flt),
+        "copilot": lambda: copilot_snapshot(payload, root, home, flt),
+    }
+    snap = builders[harness]() if harness in builders else None
+    if snap is not None:
+        snap.source = {"harness": harness, "payload": payload}
+    return snap

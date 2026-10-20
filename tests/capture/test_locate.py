@@ -2,8 +2,9 @@ import json
 import sqlite3
 
 import pytest
+from conftest import write_filter
 
-from session_log_extractors.capture import locate
+from session_log_extractors.capture import locate, session_filter
 
 
 def jl(*entries):
@@ -38,7 +39,7 @@ def test_inside_accepts_the_root_and_children_only(tmp_path, root):
     assert not locate.inside(root, "")
 
 
-def test_claude_snapshot_reads_transcript_and_subagents(tmp_path, root):
+def test_claude_snapshot_reads_transcript_and_subagents(tmp_path, root, flt):
     transcript = tmp_path / "abc.jsonl"
     transcript.write_text(claude_lines("main"))
     agents = tmp_path / "abc" / "subagents"
@@ -52,7 +53,7 @@ def test_claude_snapshot_reads_transcript_and_subagents(tmp_path, root):
         "hook_event_name": "Stop",
     }
 
-    snap = locate.claude_snapshot(payload, root)
+    snap = locate.claude_snapshot(payload, root, flt)
 
     assert snap.harness == "claude"
     assert set(snap.files) == {
@@ -67,7 +68,7 @@ def test_claude_snapshot_reads_transcript_and_subagents(tmp_path, root):
     }
 
 
-def test_claude_snapshot_skips_sessions_outside_the_clone(tmp_path, root):
+def test_claude_snapshot_skips_sessions_outside_the_clone(tmp_path, root, flt):
     transcript = tmp_path / "abc.jsonl"
     transcript.write_text(claude_lines())
     payload = {
@@ -76,7 +77,7 @@ def test_claude_snapshot_skips_sessions_outside_the_clone(tmp_path, root):
         "cwd": str(tmp_path / "other"),
     }
 
-    assert locate.claude_snapshot(payload, root) is None
+    assert locate.claude_snapshot(payload, root, flt) is None
 
 
 @pytest.mark.parametrize(
@@ -88,8 +89,8 @@ def test_claude_snapshot_skips_sessions_outside_the_clone(tmp_path, root):
         {"session_id": "abc", "transcript_path": "/does/not/exist.jsonl", "cwd": "."},
     ],
 )
-def test_claude_snapshot_needs_a_safe_id_and_readable_transcript(payload, root):
-    assert locate.claude_snapshot(payload, root) is None
+def test_claude_snapshot_needs_a_safe_id_and_readable_transcript(payload, root, flt):
+    assert locate.claude_snapshot(payload, root, flt) is None
 
 
 def codex_rollout(sid="s1"):
@@ -102,13 +103,13 @@ def codex_rollout(sid="s1"):
     )
 
 
-def test_codex_snapshot_finds_rollout_by_session_id(tmp_path, root):
+def test_codex_snapshot_finds_rollout_by_session_id(tmp_path, root, flt):
     day = tmp_path / ".codex" / "sessions" / "2026" / "10" / "20"
     day.mkdir(parents=True)
     (day / "rollout-2026-10-20T10-00-00-s1.jsonl").write_text(codex_rollout())
     payload = {"session_id": "s1", "cwd": str(root)}
 
-    snap = locate.codex_snapshot(payload, root, tmp_path)
+    snap = locate.codex_snapshot(payload, root, tmp_path, flt)
 
     assert snap.harness == "codex"
     assert set(snap.files) == {"session_logs/codex/s1.jsonl"}
@@ -116,45 +117,51 @@ def test_codex_snapshot_finds_rollout_by_session_id(tmp_path, root):
 
 
 def test_codex_snapshot_prefers_reported_transcript_and_reads_id_from_meta(
-    tmp_path, root
+    tmp_path, root, flt
 ):
     rollout = tmp_path / "r.jsonl"
     rollout.write_text(codex_rollout("from-meta"))
     payload = {"transcript_path": str(rollout), "cwd": str(root)}
 
-    snap = locate.codex_snapshot(payload, root, tmp_path)
+    snap = locate.codex_snapshot(payload, root, tmp_path, flt)
 
     assert snap.session_id == "from-meta"
 
 
-def test_codex_snapshot_honours_codex_home(tmp_path, root, monkeypatch):
+def test_codex_snapshot_honours_codex_home(tmp_path, root, monkeypatch, flt):
     home = tmp_path / "custom"
     (home / "sessions").mkdir(parents=True)
     (home / "sessions" / "rollout-x-s2.jsonl").write_text(codex_rollout("s2"))
     monkeypatch.setenv("CODEX_HOME", str(home))
 
-    snap = locate.codex_snapshot({"session_id": "s2", "cwd": str(root)}, root, tmp_path)
+    snap = locate.codex_snapshot(
+        {"session_id": "s2", "cwd": str(root)}, root, tmp_path, flt
+    )
 
     assert snap.session_id == "s2"
 
 
-def test_codex_snapshot_returns_none_without_a_rollout_or_id(tmp_path, root):
+def test_codex_snapshot_returns_none_without_a_rollout_or_id(tmp_path, root, flt):
     (tmp_path / ".codex" / "sessions").mkdir(parents=True)
     bare = tmp_path / "bare.jsonl"
     bare.write_text(jl({"type": "event_msg", "payload": {"type": "agent_message"}}))
 
     assert (
-        locate.codex_snapshot({"session_id": "nope", "cwd": str(root)}, root, tmp_path)
-        is None
-    )
-    assert (
         locate.codex_snapshot(
-            {"transcript_path": str(bare), "cwd": str(root)}, root, tmp_path
+            {"session_id": "nope", "cwd": str(root)}, root, tmp_path, flt
         )
         is None
     )
     assert (
-        locate.codex_snapshot({"session_id": "s", "cwd": "/elsewhere"}, root, tmp_path)
+        locate.codex_snapshot(
+            {"transcript_path": str(bare), "cwd": str(root)}, root, tmp_path, flt
+        )
+        is None
+    )
+    assert (
+        locate.codex_snapshot(
+            {"session_id": "s", "cwd": "/elsewhere"}, root, tmp_path, flt
+        )
         is None
     )
 
@@ -209,7 +216,7 @@ def make_copilot_home(tmp_path, sid="c1", with_db=True):
         conn.close()
 
 
-def test_copilot_snapshot_collects_events_and_a_db_dump(tmp_path, root):
+def test_copilot_snapshot_collects_events_and_a_db_dump(tmp_path, root, flt):
     make_copilot_home(tmp_path)
     payload = {
         "sessionId": "c1",
@@ -217,7 +224,7 @@ def test_copilot_snapshot_collects_events_and_a_db_dump(tmp_path, root):
         "transcriptPath": "/somewhere/else.jsonl",
     }
 
-    snap = locate.copilot_snapshot(payload, root, tmp_path)
+    snap = locate.copilot_snapshot(payload, root, tmp_path, flt)
 
     assert set(snap.files) == {
         "session_logs/copilot/c1/events.jsonl",
@@ -229,7 +236,7 @@ def test_copilot_snapshot_collects_events_and_a_db_dump(tmp_path, root):
     dump = json.loads(snap.files["session_logs/copilot/c1/copilot_db.json"])
     assert [s["id"] for s in dump["sessions"]] == ["c1"]
     assert "secret_col" not in dump["sessions"][0]
-    assert dump["turns"][0]["user_message"] == "go\n[line removed: possible secret]"
+    assert dump["turns"][0]["user_message"] == "go\nPASSWORD=abcdefgh1"
     assert dump["attachments"] == [
         {
             "session_id": "c1",
@@ -242,45 +249,47 @@ def test_copilot_snapshot_collects_events_and_a_db_dump(tmp_path, root):
     assert snap.meta["harness_version"] == "1.0.90"
 
 
-def test_copilot_snapshot_works_without_a_database(tmp_path, root):
+def test_copilot_snapshot_works_without_a_database(tmp_path, root, flt):
     make_copilot_home(tmp_path, with_db=False)
 
     snap = locate.copilot_snapshot(
-        {"sessionId": "c1", "cwd": str(root)}, root, tmp_path
+        {"sessionId": "c1", "cwd": str(root)}, root, tmp_path, flt
     )
 
     assert set(snap.files) == {"session_logs/copilot/c1/events.jsonl"}
 
 
-def test_copilot_snapshot_tolerates_a_broken_database(tmp_path, root):
+def test_copilot_snapshot_tolerates_a_broken_database(tmp_path, root, flt):
     make_copilot_home(tmp_path, with_db=False)
     (tmp_path / ".copilot" / "session-store.db").write_text("not sqlite")
 
     snap = locate.copilot_snapshot(
-        {"sessionId": "c1", "cwd": str(root)}, root, tmp_path
+        {"sessionId": "c1", "cwd": str(root)}, root, tmp_path, flt
     )
 
     assert set(snap.files) == {"session_logs/copilot/c1/events.jsonl"}
 
 
 def test_copilot_snapshot_honours_copilot_home_and_skips_foreign_sessions(
-    tmp_path, root, monkeypatch
+    tmp_path, root, monkeypatch, flt
 ):
     make_copilot_home(tmp_path)
     monkeypatch.setenv("COPILOT_HOME", str(tmp_path / "missing"))
 
     assert (
-        locate.copilot_snapshot({"sessionId": "c1", "cwd": str(root)}, root, tmp_path)
+        locate.copilot_snapshot(
+            {"sessionId": "c1", "cwd": str(root)}, root, tmp_path, flt
+        )
         is None
     )
     monkeypatch.delenv("COPILOT_HOME")
     assert (
         locate.copilot_snapshot(
-            {"sessionId": "c1", "cwd": "/elsewhere"}, root, tmp_path
+            {"sessionId": "c1", "cwd": "/elsewhere"}, root, tmp_path, flt
         )
         is None
     )
-    assert locate.copilot_snapshot({"cwd": str(root)}, root, tmp_path) is None
+    assert locate.copilot_snapshot({"cwd": str(root)}, root, tmp_path, flt) is None
 
 
 def test_copilot_db_dump_ignores_tables_missing_expected_columns(tmp_path):
@@ -312,7 +321,7 @@ def test_detect_harness_from_payload_shape():
     assert locate.detect_harness({"cwd": "/w"}) is None
 
 
-def test_build_snapshot_dispatches_and_rejects_unknown_harnesses(tmp_path, root):
+def test_build_snapshot_dispatches_and_rejects_unknown_harnesses(tmp_path, root, flt):
     transcript = tmp_path / "abc.jsonl"
     transcript.write_text(claude_lines())
     payload = {
@@ -321,10 +330,18 @@ def test_build_snapshot_dispatches_and_rejects_unknown_harnesses(tmp_path, root)
         "cwd": str(root),
     }
 
-    assert locate.build_snapshot("claude", payload, root, tmp_path).session_id == "abc"
-    assert locate.build_snapshot("codex", payload, root, tmp_path).harness == "codex"
-    assert locate.build_snapshot("copilot", {"cwd": str(root)}, root, tmp_path) is None
-    assert locate.build_snapshot("mystery", payload, root, tmp_path) is None
+    assert (
+        locate.build_snapshot("claude", payload, root, tmp_path, flt).session_id
+        == "abc"
+    )
+    assert (
+        locate.build_snapshot("codex", payload, root, tmp_path, flt).harness == "codex"
+    )
+    assert (
+        locate.build_snapshot("copilot", {"cwd": str(root)}, root, tmp_path, flt)
+        is None
+    )
+    assert locate.build_snapshot("mystery", payload, root, tmp_path, flt) is None
 
 
 def test_copilot_db_dump_skips_tables_without_a_session_key(tmp_path):
@@ -338,7 +355,7 @@ def test_copilot_db_dump_skips_tables_without_a_session_key(tmp_path):
     assert locate.copilot_db_dump(db, "c1")["turns"] == []
 
 
-def test_copilot_snapshot_without_a_version_event_reports_none(tmp_path, root):
+def test_copilot_snapshot_without_a_version_event_reports_none(tmp_path, root, flt):
     state = tmp_path / ".copilot" / "session-state" / "c2"
     state.mkdir(parents=True)
     (state / "events.jsonl").write_text(
@@ -346,7 +363,35 @@ def test_copilot_snapshot_without_a_version_event_reports_none(tmp_path, root):
     )
 
     snap = locate.copilot_snapshot(
-        {"sessionId": "c2", "cwd": str(root)}, root, tmp_path
+        {"sessionId": "c2", "cwd": str(root)}, root, tmp_path, flt
     )
 
     assert snap.meta["harness_version"] is None
+
+
+def test_snapshots_remember_the_payload_they_were_built_from(tmp_path, root, flt):
+    transcript = tmp_path / "abc.jsonl"
+    transcript.write_text(claude_lines())
+    payload = {
+        "session_id": "abc",
+        "transcript_path": str(transcript),
+        "cwd": str(root),
+    }
+
+    snap = locate.build_snapshot("claude", payload, root, tmp_path, flt)
+
+    assert snap.source == {"harness": "claude", "payload": payload}
+
+
+def test_a_filter_that_raises_rejects_the_whole_session(tmp_path, root):
+    transcript = tmp_path / "abc.jsonl"
+    transcript.write_text(claude_lines())
+    payload = {
+        "session_id": "abc",
+        "transcript_path": str(transcript),
+        "cwd": str(root),
+    }
+    raising = session_filter.load(write_filter(tmp_path / "bad", "raising"))
+
+    with pytest.raises(session_filter.FilterError, match="cannot judge this file"):
+        locate.claude_snapshot(payload, root, raising)

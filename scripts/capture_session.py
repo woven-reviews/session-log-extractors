@@ -8,6 +8,9 @@ starter repo this script sits next to a synced copy of the package, ``session_lo
 import sys
 from pathlib import Path
 
+# Never leave __pycache__ in the candidate's clone: it would show up in their git status.
+sys.dont_write_bytecode = True
+
 
 def load_cli():
     try:

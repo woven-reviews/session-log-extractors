@@ -146,7 +146,8 @@ extractor and upload files at the end. The design and its trade-offs are in
 in `woven-teams/apply-yourself`.
 
 - `src/session_log_extractors/capture/` holds the capture code. It is standard
-  library only, because it runs on the candidate's `python3`.
+  library only, because it runs on the candidate's `python3`. It contains no filter: see
+  "Privacy filter" below.
 - `scripts/capture_session.py` is the hook entry point. It reads one hook payload
   from stdin (Claude Code, Codex, or Copilot CLI), stages the filtered session, and
   starts a detached background worker that pushes after the session goes quiet.
@@ -158,15 +159,33 @@ in `woven-teams/apply-yourself`.
   a fetched `session_logs/` tree into the usual envelopes by running the existing
   extractors. Copilot sessions are rebuilt into a temporary `~/.copilot` first.
 
-What the filter keeps and drops (an allowlist, so unknown fields are dropped):
+### Privacy filter (a plug-in, not part of this package)
 
-- Keeps user and assistant turns, tool calls, plan and question decisions,
-  timestamps, and small images.
-- Drops system reminders (personal config and email), attachments, API request
-  blobs, file-history snapshots, and model reasoning.
-- Cuts each tool result to 1 KB (8 KB for plan and question tools) and drops the
-  whole result when anything credential-shaped appears or when the tool touched an
-  environment file.
+The hook must never save an unfiltered transcript, but deciding what is private is
+separate work. Each starter repo provides its own `scripts/session_log_capture/session_log_filter.py`
+(the sync script never writes, overwrites, or removes it, and warns when it is missing).
+The module defines four functions. Each takes the raw text a harness wrote and returns
+the text that is safe to save. Raising any exception rejects the whole file.
+
+```python
+def filter_claude(text: str) -> str          # a Claude Code transcript (JSONL)
+def filter_codex(text: str) -> str           # a Codex rollout (JSONL)
+def filter_copilot_events(text: str) -> str  # a Copilot events.jsonl
+def filter_copilot_db(text: str) -> str      # JSON dump of one session's Copilot database rows
+```
+
+Capture fails closed. If the module is missing, lacks a function, raises, or returns
+something other than text, nothing is staged or pushed and the hook prints one warning
+line (`woven-capture: nothing was saved, ...`). There is no unfiltered fallback. A
+rejected push (for example GitHub secret scanning) is reported and not retried or edited.
+
+### Timing and the working tree
+
+- A harness fires its stop hook before it has finished writing the turn's transcript.
+  The staged copy is therefore only the signal that something changed: the background
+  worker re-reads and re-filters the transcript at push time, after the quiet period,
+  so the last reply of a session reaches the branch.
+- The hook and worker never write bytecode, so a candidate's `git status` stays clean.
 
 Branch layout:
 

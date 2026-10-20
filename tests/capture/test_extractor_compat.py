@@ -1,7 +1,8 @@
-"""The filter must not change what the existing extractors read out of a session.
+"""A captured session must read the same through the export path as the native capture does.
 
-Each fixture is extracted twice: straight from the native capture, and after the capture
+Each fixture is extracted twice: straight from the native capture, and after a pass-through
 filter plus the export path the server uses. The envelopes' conversation events must match.
+The real filter is a separate plug-in; this checks only the capture and export plumbing.
 """
 
 import json
@@ -14,11 +15,20 @@ from pathlib import Path
 
 import pytest
 
-from session_log_extractors.capture import export, filtering
+from session_log_extractors.capture import export, locate
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / "scripts"
 FIXTURES = SCRIPTS / "fixtures"
+
+
+@pytest.fixture
+def identity_filter(tmp_path):
+    from conftest import write_filter
+
+    from session_log_extractors.capture import session_filter
+
+    return session_filter.load(write_filter(tmp_path / "plugin", "identity"))
 
 
 def events_of(envelope_path):
@@ -56,7 +66,7 @@ def only(path, pattern):
 @pytest.mark.parametrize(
     "fixture", sorted((FIXTURES / "claude").glob("*.jsonl")), ids=lambda p: p.stem
 )
-def test_claude_events_survive_filtering_and_export(fixture, tmp_path):
+def test_claude_events_survive_capture_and_export(fixture, tmp_path, identity_filter):
     run(
         "extract_claude_session_log.py",
         "--transcript",
@@ -67,7 +77,7 @@ def test_claude_events_survive_filtering_and_export(fixture, tmp_path):
     tree = tmp_path / "tree"
     (tree / "claude").mkdir(parents=True)
     (tree / "claude" / "sid.jsonl").write_text(
-        filtering.filter_claude(fixture.read_text())
+        identity_filter.apply("filter_claude", fixture.read_text())
     )
 
     result = export.export_sessions(tree, tmp_path / "out", SCRIPTS)
@@ -79,7 +89,7 @@ def test_claude_events_survive_filtering_and_export(fixture, tmp_path):
 @pytest.mark.parametrize(
     "fixture", sorted((FIXTURES / "codex").glob("*.jsonl")), ids=lambda p: p.stem
 )
-def test_codex_events_survive_filtering_and_export(fixture, tmp_path):
+def test_codex_events_survive_capture_and_export(fixture, tmp_path, identity_filter):
     raw_dir = tmp_path / "raw"
     raw_dir.mkdir()
     run(
@@ -92,7 +102,7 @@ def test_codex_events_survive_filtering_and_export(fixture, tmp_path):
     tree = tmp_path / "tree"
     (tree / "codex").mkdir(parents=True)
     (tree / "codex" / "sid.jsonl").write_text(
-        filtering.filter_codex(fixture.read_text())
+        identity_filter.apply("filter_codex", fixture.read_text())
     )
 
     result = export.export_sessions(tree, tmp_path / "out", SCRIPTS)
@@ -109,7 +119,9 @@ def copilot_cases():
 
 
 @pytest.mark.parametrize(("case", "session_id"), copilot_cases(), ids=lambda v: str(v))
-def test_copilot_events_survive_filtering_and_export(case, session_id, tmp_path):
+def test_copilot_events_survive_capture_and_export(
+    case, session_id, tmp_path, identity_filter
+):
     events = (FIXTURES / "copilot" / case / "events.jsonl").read_text()
     native = tmp_path / "native" / ".copilot"
     (native / "session-state" / session_id).mkdir(parents=True)
@@ -125,26 +137,14 @@ def test_copilot_events_survive_filtering_and_export(case, session_id, tmp_path)
         str(tmp_path / "raw.md"),
         env=env,
     )
-    conn = sqlite3.connect(native / "session-store.db")
-    conn.row_factory = sqlite3.Row
-    dump = {
-        table: [
-            dict(r)
-            for r in conn.execute(
-                f"SELECT * FROM {table} WHERE {key} = ?", (session_id,)
-            )
-        ]
-        for table, key in [
-            (t, "id" if t == "sessions" else "session_id")
-            for t in filtering.COPILOT_DB_COLUMNS
-        ]
-        if table in {r[0] for r in conn.execute("SELECT name FROM sqlite_master")}
-    }
+    dump = locate.copilot_db_dump(native / "session-store.db", session_id)
     session_dir = tmp_path / "tree" / "copilot" / session_id
     session_dir.mkdir(parents=True)
-    (session_dir / "events.jsonl").write_text(filtering.filter_copilot_events(events))
+    (session_dir / "events.jsonl").write_text(
+        identity_filter.apply("filter_copilot_events", events)
+    )
     (session_dir / "copilot_db.json").write_text(
-        json.dumps(filtering.filter_copilot_dump(dump))
+        identity_filter.apply("filter_copilot_db", json.dumps(dump))
     )
 
     result = export.export_sessions(tmp_path / "tree", tmp_path / "out", SCRIPTS)

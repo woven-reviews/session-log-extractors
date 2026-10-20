@@ -10,9 +10,10 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
-from . import gitpush, locate, pusher
+from . import gitpush, locate, pusher, session_filter
 
 NOTICE = "Session logs for this assessment are saved to a session-logs branch of your repository."
 
@@ -52,25 +53,67 @@ def _payload(text: str) -> dict[str, object]:
     return loaded if isinstance(loaded, dict) else {}
 
 
-def capture(
-    args: argparse.Namespace, stdin_text: str, script: Path, home: Path, root: Path
-) -> None:
-    warning = pusher.take_last_error(root)
+def package_dir(script: Path) -> Path:
+    """Where the filter plug-in lives: the ``session_log_capture`` folder beside the entry script."""
+    return script.parent / "session_log_capture"
+
+
+def refresher(root: Path, home: Path, filter_dir: Path) -> pusher.Refresh:
+    """Rebuild a staged session from its source at push time, filtering it again."""
+
+    def refresh(snap: locate.Snapshot) -> locate.Snapshot | None:
+        flt = session_filter.load(filter_dir)
+        source = snap.source or {}
+        return locate.build_snapshot(
+            source.get("harness", snap.harness),
+            source.get("payload", {}),
+            root,
+            home,
+            flt,
+        )
+
+    return refresh
+
+
+@dataclass
+class Hook:
+    """Where one hook run happens: the entry script, home, clone, and filter plug-in directory."""
+
+    script: Path
+    home: Path
+    root: Path
+    filter_dir: Path
+
+
+def capture(args: argparse.Namespace, stdin_text: str, hook: Hook) -> None:
+    warning = pusher.take_last_error(hook.root)
     if warning:
         print(warning, file=sys.stderr)
-    if pusher.is_disabled(root):
+    if pusher.is_disabled(hook.root):
         return
     payload = _payload(stdin_text)
     harness = args.harness or locate.detect_harness(payload)
-    snap = locate.build_snapshot(harness, payload, root, home) if harness else None
+    if harness is None:
+        return
+    try:
+        flt = session_filter.load(hook.filter_dir)
+        snap = locate.build_snapshot(harness, payload, hook.root, hook.home, flt)
+    except session_filter.FilterError as err:
+        # Fail closed: without a working filter nothing is staged, so nothing is pushed.
+        print(f"woven-capture: nothing was saved, {err}", file=sys.stderr)
+        return
     if snap is None:
         return
-    pusher.stage(root, snap)
-    pusher.spawn_worker(root, script)
+    pusher.stage(hook.root, snap)
+    pusher.spawn_worker(hook.root, hook.script)
 
 
 def main(
-    argv: list[str], stdin_text: str, script: Path, home: Path | None = None
+    argv: list[str],
+    stdin_text: str,
+    script: Path,
+    home: Path | None = None,
+    filter_dir: Path | None = None,
 ) -> int:
     """Entry point shared by every harness hook. Returns the process exit code (always 0)."""
     args = _parse(argv)
@@ -79,10 +122,11 @@ def main(
         return 0
     try:
         root = repo_root(script, args.repo)
+        where = filter_dir or package_dir(script)
         if args.worker:
-            pusher.run_worker(root)
+            pusher.run_worker(root, refresh=refresher(root, home or Path.home(), where))
         else:
-            capture(args, stdin_text, script, home or Path.home(), root)
+            capture(args, stdin_text, Hook(script, home or Path.home(), root, where))
     except Exception as err:
         # A hook must never fail the agent session, so every error becomes one warning line.
         print(f"woven-capture: skipped ({type(err).__name__}: {err})", file=sys.stderr)

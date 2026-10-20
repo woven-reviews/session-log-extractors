@@ -19,7 +19,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .filtering import COPILOT_DB_COLUMNS
+from .records import COPILOT_DB_COLUMNS
 
 
 @dataclass

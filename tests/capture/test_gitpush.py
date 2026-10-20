@@ -108,15 +108,9 @@ def test_persistent_conflict_gives_up_quietly(clone, monkeypatch):
 
 HOOK = """#!/bin/sh
 while read old new ref; do
-  hit=$(git grep -n BADSECRET "$new" -- session_logs | head -1)
-  if [ -n "$hit" ]; then
-    path=$(echo "$hit" | cut -d: -f2)
-    line=$(echo "$hit" | cut -d: -f3)
+  if git grep -q BADSECRET "$new" -- session_logs; then
     echo "error: GH013: Repository rule violations found for $ref." >&2
     echo "  - Push cannot contain secrets" >&2
-    echo "      locations:" >&2
-    echo "        - commit: $new" >&2
-    echo "          path: $path:$line" >&2
     exit 1
   fi
 done
@@ -129,44 +123,16 @@ def install_hook(remote, body=HOOK):
     hook.chmod(hook.stat().st_mode | stat.S_IXUSR)
 
 
-def test_secret_scanning_rejection_retries_once_with_the_flagged_line_dropped(
-    clone, remote
-):
+def test_secret_scanning_rejection_is_final_and_pushes_nothing(clone, remote):
     install_hook(remote)
-    text = '{"n":1}\n{"leak":"BADSECRET"}\n{"n":3}\n'
+    text = '{"n":1}\n{"leak":"BADSECRET"}\n'
 
     outcome = gitpush.commit_and_push(clone, [snap(text=text)], NOW)
 
-    assert outcome.status == gitpush.PUSHED
-    assert outcome.dropped == ["session_logs/claude/s1.jsonl"]
-    pushed = remote_file(remote, "session_logs/claude/s1.jsonl")
-    assert "BADSECRET" not in pushed
-    assert pushed.splitlines()[0] == '{"n":1}'
-    assert "capture_removed" in pushed.splitlines()[1]
-    assert pushed.splitlines()[2] == '{"n":3}'
-
-
-def test_secret_rejection_that_cannot_be_located_is_blocked_not_retried_forever(
-    clone, remote
-):
-    install_hook(remote, "#!/bin/sh\necho 'GH013 push protection' >&2\nexit 1\n")
-
-    outcome = gitpush.commit_and_push(clone, [snap()], NOW)
-
+    # The filter plug-in owns what may be saved, so a block is reported, never worked around.
     assert outcome.status == gitpush.BLOCKED
-
-
-def test_secret_that_survives_the_retry_is_blocked(clone, remote):
-    # A hook that always rejects, but names a real file and line each time.
-    always = HOOK.replace(
-        'git grep -n BADSECRET "$new" -- session_logs',
-        'git grep -n "" "$new" -- session_logs',
-    )
-    install_hook(remote, always)
-
-    outcome = gitpush.commit_and_push(clone, [snap(text="x\n")], NOW)
-
-    assert outcome.status == gitpush.BLOCKED
+    branches = sh(remote, "git", "branch", "--list", "session-logs")
+    assert branches.strip() == ""
 
 
 def test_lost_access_is_reported_as_disabled(clone, tmp_path):

@@ -10,15 +10,14 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from . import HOOK_VERSION, filtering
+from . import HOOK_VERSION
 from .locate import Snapshot
 
 BRANCH = "session-logs"
@@ -49,7 +48,6 @@ _ACCESS_LOST = (
     "access denied",
     "does not appear to be a git repository",
 )
-_SECRET_LOCATION = re.compile(r"path:\s+(\S+?):(\d+)")
 
 
 class GitError(Exception):
@@ -65,7 +63,6 @@ class Outcome:
     status: str
     detail: str = ""
     commit: str | None = None
-    dropped: list[str] = field(default_factory=list)
 
 
 def git(
@@ -207,24 +204,16 @@ def push(repo: Path, sha: str) -> tuple[str, str]:
     return "ok", ""
 
 
-def _drop_flagged(snaps: list[Snapshot], stderr: str) -> list[str]:
-    """Replace each line GitHub flagged as a secret with a stub; return the paths touched."""
-    touched = []
-    for path, line in _SECRET_LOCATION.findall(stderr):
-        for snap in snaps:
-            if path in snap.files:
-                snap.files[path] = filtering.drop_line(snap.files[path], int(line))
-                touched.append(path)
-    return touched
-
-
 def commit_and_push(
     repo: Path, snaps: list[Snapshot], now: datetime | None = None
 ) -> Outcome:
-    """Commit ``snaps`` and push, retrying once for a race and once for a secret-scanning block."""
+    """Commit ``snaps`` and push, retrying once if another push won the race.
+
+    A secret-scanning rejection is final: the filter plug-in is responsible for what
+    reaches this point, so the push is reported as blocked and nothing is altered or resent.
+    """
     when = now or datetime.now(UTC)
-    retried_conflict = retried_secret = False
-    dropped: list[str] = []
+    retried_conflict = False
     while True:
         try:
             sha = build_commit(repo, fetch_parent(repo), snaps, when)
@@ -232,19 +221,11 @@ def commit_and_push(
         except GitError as err:
             kind, stderr, sha = classify(err.stderr), err.stderr, ""
         if kind == "ok":
-            return Outcome(PUSHED, commit=sha, dropped=dropped)
+            return Outcome(PUSHED, commit=sha)
         if kind == "conflict" and not retried_conflict:
             retried_conflict = True
             continue
-        if kind == "secret" and not retried_secret:
-            retried_secret = True
-            touched = _drop_flagged(snaps, stderr)
-            if touched:
-                dropped += touched
-                continue
-        return Outcome(
-            _final_status(kind), detail=stderr.strip()[-400:], dropped=dropped
-        )
+        return Outcome(_final_status(kind), detail=stderr.strip()[-400:])
 
 
 def _final_status(kind: str) -> str:
