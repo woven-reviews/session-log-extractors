@@ -281,7 +281,8 @@ def newest(paths: Iterable[Path]) -> Optional[Path]:
     return max(paths, key=lambda p: p.stat().st_mtime)
 
 
-def select_transcript(
+# Existing transcript selection; remove in QUAL-2514.
+def select_transcript(  # noqa: C901, PLR0912
     selector: Optional[str],
     transcript: Optional[str],
     project_dir: Optional[str],
@@ -529,7 +530,8 @@ def extract_file_path(tool_input: Any) -> Optional[str]:
     return None
 
 
-def result_note(entry: Dict[str, Any]) -> str:
+# Existing native interpretation; remove in QUAL-2517.
+def result_note(entry: Dict[str, Any]) -> str:  # noqa: C901, PLR0912
     """A terse note about a tool result (error flag / short output)."""
     is_error = False
     text_bits: List[str] = []
@@ -819,7 +821,8 @@ class Turn:
             self.result_notes.append(note)
 
 
-def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]:
+# Existing native interpretation; remove in QUAL-2517.
+def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]:  # noqa: C901, PLR0912, PLR0915
     """Walk entries in order, producing turns and the changed-files list."""
     turns: List[Turn] = []
     files_changed: List[str] = []
@@ -952,7 +955,8 @@ def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]:
     return turns, files_changed
 
 
-def build_events(
+# Existing native interpretation; remove in QUAL-2517.
+def build_events(  # noqa: C901, PLR0912, PLR0915
     entries: List[Dict[str, Any]],
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
 ) -> List[Dict[str, Any]]:
@@ -1060,7 +1064,7 @@ def build_events(
                 )
             )
             index += 1
-            for call, tool_id in zip(calls, ids):
+            for call, tool_id in zip(calls, ids, strict=True):
                 if tool_id:
                     pending_calls[tool_id] = call
 
@@ -1086,7 +1090,8 @@ def _quote(text: str) -> List[str]:
     return [f"> {line}" if line.strip() else ">" for line in text.splitlines()]
 
 
-def render_summary(turns: List[Turn], first_ts: Optional[str]) -> List[str]:
+# Presentation removed by JSON-only work; remove in QUAL-2505.
+def render_summary(turns: List[Turn], first_ts: Optional[str]) -> List[str]:  # noqa: C901, PLR0912, PLR0915
     """The up-front recap: every turn that carried real user input.
 
     Turns with no user text (pre-conversation / assistant-only activity) are
@@ -1170,7 +1175,8 @@ def render_summary(turns: List[Turn], first_ts: Optional[str]) -> List[str]:
     return out
 
 
-def render(
+# Presentation removed by JSON-only work; remove in QUAL-2505.
+def render(  # noqa: C901, PLR0912, PLR0915
     turns: List[Turn],
     files_changed: List[str],
     project_label: str,
@@ -1459,7 +1465,8 @@ def dump_images(
 # --------------------------------------------------------------------------- #
 
 
-def summarize_subagent(path: Path) -> Optional[Dict[str, Any]]:
+# Existing source loading and interpretation; remove in QUAL-2514.
+def summarize_subagent(path: Path) -> Optional[Dict[str, Any]]:  # noqa: C901, PLR0912
     """Condense one subagent transcript into task / tools / result.
 
     There is no reliable link from the main transcript to a subagent file (no

@@ -15,14 +15,14 @@ import tempfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import extract_claude_session_log as eclog
-from session_log_envelope import SIZE_WARN_BYTES, build_envelope, write_envelope
+import pytest
 from extract_claude_session_log import (
     Turn,
     _candidate_project_dirs,
     _content_blocks,
     _extract_all,
-    _is_tool_result_entry,
     _human_text,
+    _is_tool_result_entry,
     _jsonl_files,
     _parse_chosen,
     _result_block_text,
@@ -48,9 +48,9 @@ from extract_claude_session_log import (
     parse_plan_decision,
     permission_denials_from_result,
     render,
+    render_summary,
     render_transcript,
     resolve_project_dir,
-    render_summary,
     result_note,
     select_transcript,
     session_cwd,
@@ -59,6 +59,7 @@ from extract_claude_session_log import (
     tool_descriptor,
     write_raw_envelope,
 )
+from session_log_envelope import SIZE_WARN_BYTES, build_envelope, write_envelope
 
 # 1x1 transparent PNG.
 _PNG_B64 = (
@@ -113,7 +114,10 @@ def test_native_skill_and_command_use_checked_in_definitions():
     finally:
         eclog.PROJECT_ROOT = project_root
     assert turns[0].skills_used == ["fixture-skill"]
-    assert turns[0].skill_details["fixture-skill"]["overview"] == "Say SKILL_FIXTURE_MARKER."
+    assert (
+        turns[0].skill_details["fixture-skill"]["overview"]
+        == "Say SKILL_FIXTURE_MARKER."
+    )
     assert turns[1].command == "/fixture-command"
     assert turns[1].command_details["overview"] == "Say COMMAND_FIXTURE_MARKER."
     markdown = render(turns, [], "fixture project", turns[0].timestamp)
@@ -180,7 +184,10 @@ def test_native_dont_ask_denial_is_recorded():
 
 
 def test_permission_denial_ignores_isc_license_text():
-    assert parse_permission_denial("Permission to use, copy, modify, and/or distribute") is None
+    assert (
+        parse_permission_denial("Permission to use, copy, modify, and/or distribute")
+        is None
+    )
 
 
 def test_permission_denials_from_result_names_tool():
@@ -275,7 +282,7 @@ def test_dump_fixture_images_preserves_media_types():
     with tempfile.TemporaryDirectory() as directory:
         written = dump_images(turns, "images", dump_dir=Path(directory))
         assert [path.suffix for path in written] == [".png", ".jpg", ".gif", ".webp"]
-        for path, image in zip(written, turns[0].images):
+        for path, image in zip(written, turns[0].images, strict=True):
             assert path.read_bytes() == base64.b64decode(image["data"])
 
 
@@ -380,7 +387,10 @@ def test_build_events_inlines_pasted_images_as_base64():
     assert user["role"] == "user"
     assert user["text"] == "Compare these four tiny images"
     assert [image["media_type"] for image in user["images"]] == [
-        "image/png", "image/jpeg", "image/gif", "image/webp"
+        "image/png",
+        "image/jpeg",
+        "image/gif",
+        "image/webp",
     ]
     assert [image["data"] for image in user["images"]] == [
         block["source"]["data"]
@@ -390,7 +400,9 @@ def test_build_events_inlines_pasted_images_as_base64():
 
 
 def test_build_events_attaches_tool_results_to_their_call():
-    events = build_events(_fixture_entries("large_result.jsonl"), tool_result_max_bytes=100)
+    events = build_events(
+        _fixture_entries("large_result.jsonl"), tool_result_max_bytes=100
+    )
     call = events[1]["tool_calls"][0]
     assert call["name"] == "Read"
     assert call["input"]["file_path"] == "/workspace/large.txt"
@@ -400,7 +412,9 @@ def test_build_events_attaches_tool_results_to_their_call():
 
 
 def test_large_native_result_reaches_envelope_size_warning():
-    events = build_events(_fixture_entries("large_result.jsonl"), tool_result_max_bytes=100_000)
+    events = build_events(
+        _fixture_entries("large_result.jsonl"), tool_result_max_bytes=100_000
+    )
     # Repeated native Read results simulate a long session without checking in 8 MB.
     copies = SIZE_WARN_BYTES // len(json.dumps(events).encode()) + 2
     envelope = build_envelope("claude", "large-session", events * copies)
@@ -570,9 +584,7 @@ class _patched_projects_root:
 
 
 def test_resolve_project_dir_explicit_wins():
-    assert resolve_project_dir("/some/explicit", Path("/cwd")) == Path(
-        "/some/explicit"
-    )
+    assert resolve_project_dir("/some/explicit", Path("/cwd")) == Path("/some/explicit")
 
 
 def test_resolve_project_dir_matches_parent_unless_strict():
@@ -606,11 +618,8 @@ def test_select_transcript_explicit_transcript_wins():
 
 
 def test_select_transcript_explicit_transcript_missing_raises():
-    try:
+    with pytest.raises(FileNotFoundError):
         select_transcript(None, "/no/such/file.jsonl", None)
-        assert False, "expected FileNotFoundError"
-    except FileNotFoundError:
-        pass
 
 
 def test_select_transcript_selector_as_file_path():
@@ -637,29 +646,26 @@ def test_select_transcript_prefix_match_unique_and_ambiguous():
     proj2 = Path(tempfile.mkdtemp())
     (proj2 / "sess-aaa.jsonl").write_text("{}")
     (proj2 / "sess-aab.jsonl").write_text("{}")
-    try:
+    with pytest.raises(FileNotFoundError) as exc_info:
         select_transcript("sess-aa", None, str(proj2))
-        assert False, "expected FileNotFoundError"
-    except FileNotFoundError as exc:
-        assert "ambiguous" in str(exc)
+
+    assert "ambiguous" in str(exc_info.value)
 
 
 def test_select_transcript_selector_not_found_in_project_dir():
     proj = Path(tempfile.mkdtemp())  # no .jsonl files at all -- newest() yields None
-    try:
+    with pytest.raises(FileNotFoundError) as exc_info:
         select_transcript("missing-id", None, str(proj))
-        assert False, "expected FileNotFoundError"
-    except FileNotFoundError as exc:
-        assert "missing-id" in str(exc) and str(proj) in str(exc)
+
+    assert "missing-id" in str(exc_info.value) and str(proj) in str(exc_info.value)
 
 
 def test_select_transcript_selector_not_found_without_project_dir():
     with _patched_projects_root():
-        try:
+        with pytest.raises(FileNotFoundError) as exc_info:
             select_transcript("some-id", None, None, strict=True)
-            assert False, "expected FileNotFoundError"
-        except FileNotFoundError as exc:
-            assert str(exc) == "no transcript matching 'some-id'"
+
+        assert str(exc_info.value) == "no transcript matching 'some-id'"
 
 
 def test_select_transcript_no_selector_picks_newest_in_project_dir():
@@ -674,20 +680,18 @@ def test_select_transcript_no_selector_picks_newest_in_project_dir():
 
 def test_select_transcript_strict_no_match_mentions_strict():
     with _patched_projects_root():
-        try:
+        with pytest.raises(FileNotFoundError) as exc_info:
             select_transcript(None, None, None, strict=True)
-            assert False, "expected FileNotFoundError"
-        except FileNotFoundError as exc:
-            assert "--strict" in str(exc)
+
+        assert "--strict" in str(exc_info.value)
 
 
 def test_select_transcript_no_match_anywhere_raises():
     with _patched_projects_root():
-        try:
+        with pytest.raises(FileNotFoundError) as exc_info:
             select_transcript(None, None, None, strict=False)
-            assert False, "expected FileNotFoundError"
-        except FileNotFoundError as exc:
-            assert "could not locate" in str(exc)
+
+        assert "could not locate" in str(exc_info.value)
 
 
 def test_select_transcript_global_fallback_picks_newest_anywhere():
@@ -961,7 +965,9 @@ def test_build_turns_covers_command_args_shell_subagents_questions_and_files():
     assert turns[0].subagent_count == 1
     assert files_changed == ["/new/file.py"]
     assert turns[0].option_qas[0]["chosen_labels"] == ["section"]
-    assert turns[0].permission_denials == [{"tool": "Bash — rm -rf build", "message": "no", "by": "user"}]
+    assert turns[0].permission_denials == [
+        {"tool": "Bash — rm -rf build", "message": "no", "by": "user"}
+    ]
 
 
 def test_build_turns_makes_stub_for_leading_assistant_activity():
@@ -1055,11 +1061,11 @@ def test_first_timestamp_session_models_and_cwd():
 
 def test_native_resumed_session_lists_both_models():
     entries = _fixture_entries("model.jsonl")
-    assert session_models(entries) == [
-        "claude-haiku-4-5-20251001", "claude-sonnet-5-5"
-    ]
+    assert session_models(entries) == ["claude-haiku-4-5-20251001", "claude-sonnet-5-5"]
     turns, _ = build_turns(entries)
-    assert any(turn.command == "/model" and turn.command_args == "sonnet" for turn in turns)
+    assert any(
+        turn.command == "/model" and turn.command_args == "sonnet" for turn in turns
+    )
 
 
 def test_native_continued_conversation_keeps_follow_up_in_one_session():
@@ -1073,7 +1079,11 @@ def test_native_continued_conversation_keeps_follow_up_in_one_session():
     assert "RED-FOX-23" in " ".join(turns[1].assistant_text_blocks)
     events = build_events(entries)
     assert [event["role"] for event in events] == [
-        "user", "assistant", "assistant", "user", "assistant"
+        "user",
+        "assistant",
+        "assistant",
+        "user",
+        "assistant",
     ]
     assert "RED-FOX-23" in events[1]["tool_calls"][0]["result"]
     assert events[4].get("tool_calls", []) == []
@@ -1164,7 +1174,12 @@ def test_render_full_turn_with_all_features():
     # shell-command branch of render_summary plus the no-edit/no-message plan
     # rendering path.
     t4.plans = [
-        {"plan": "", "decision": "no decision recorded", "edited_plan": "", "message": ""}
+        {
+            "plan": "",
+            "decision": "no decision recorded",
+            "edited_plan": "",
+            "message": "",
+        }
     ]
 
     turns = [t, t2, t3, t4]
@@ -1218,7 +1233,11 @@ def test_summarize_subagent_reads_meta_task_and_result():
                 "type": "assistant",
                 "message": {
                     "content": [
-                        {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}},
+                        {
+                            "type": "tool_use",
+                            "name": "Bash",
+                            "input": {"command": "ls"},
+                        },
                         {"type": "text", "text": "done"},
                     ]
                 },
@@ -1273,6 +1292,7 @@ def test_native_subagent_sidecar_is_attributed_to_turn():
     assert len(subs) == 1
     assert "2 + 2" in subs[0]["task"]
     assert "4" in subs[0]["result"]
+
     # Surround the native turn with earlier and later turns so attribution must
     # use the sidecar's real start time rather than the first-turn fallback.
     def turn(text, ts):
@@ -1287,7 +1307,9 @@ def test_native_subagent_sidecar_is_attributed_to_turn():
     assert [t.subagents for t in turns] == [[], [], []]
     attribute_subagents(turns, subs)
     assert [t.subagents for t in turns] == [[], subs, []]
-    meta = json.loads((FIXTURES / "subagent/subagents/agent-fixture.meta.json").read_text())
+    meta = json.loads(
+        (FIXTURES / "subagent/subagents/agent-fixture.meta.json").read_text()
+    )
     assert subs[0]["agent_type"] == meta["agentType"]
     assert f"_subagent ({meta['agentType']}):_" in render(
         turns, [], "fixture project", turns[0].timestamp
@@ -1322,11 +1344,8 @@ def _write_jsonl(path, entries):
 def test_render_transcript_raises_for_empty_file():
     tmp = Path(tempfile.mkdtemp()) / "empty.jsonl"
     tmp.write_text("")
-    try:
+    with pytest.raises(ValueError, match="no parseable JSON entries found"):
         render_transcript(tmp, None)
-        assert False, "expected ValueError"
-    except ValueError:
-        pass
 
 
 def test_render_transcript_writes_markdown_and_raw_envelope():

@@ -9,4 +9,5 @@ __pycache__/
 !.claude/settings.json
 .coverage
 coverage.xml
+.ruff_cache/
 

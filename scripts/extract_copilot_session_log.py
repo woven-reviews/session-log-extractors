@@ -484,7 +484,8 @@ def get_session_attachments(
     return [dict(row) for row in cursor]
 
 
-def get_state_attachments(session_id: str) -> List[Dict[str, Any]]:
+# Existing source loading and interpretation; remove in QUAL-2516.
+def get_state_attachments(session_id: str) -> List[Dict[str, Any]]:  # noqa: C901, PLR0912
     """Retrieve attachment records from the per-session events log if present."""
     events_path = COPILOT_STATE_ROOT / session_id / "events.jsonl"
     if not events_path.is_file():
@@ -537,7 +538,11 @@ def get_state_attachments(session_id: str) -> List[Dict[str, Any]]:
             data_b64 = item.get("data")
             media_type = item.get("mediaType")
             asset_id = item.get("assetId")
-            if not isinstance(data_b64, str) and isinstance(asset_id, str) and asset_id in assets:
+            if (
+                not isinstance(data_b64, str)
+                and isinstance(asset_id, str)
+                and asset_id in assets
+            ):
                 data_b64, media_type = assets[asset_id]
 
             rec: Dict[str, Any] = {
@@ -557,7 +562,8 @@ def get_state_attachments(session_id: str) -> List[Dict[str, Any]]:
     return attachments
 
 
-def _permissions_from_events(lines: List[str]) -> List[Dict[str, Any]]:
+# Existing native interpretation; remove in QUAL-2519.
+def _permissions_from_events(lines: List[str]) -> List[Dict[str, Any]]:  # noqa: C901
     """Join ``permission.requested`` / ``permission.completed`` events into one
     record per decision: the tool asked about, the outcome, and any feedback.
 
@@ -914,7 +920,8 @@ def _attachment_lookup(attachments: List[Dict[str, Any]]) -> Dict[str, Dict[str,
     return lookup
 
 
-def _build_turn_objects(
+# Existing native interpretation; remove in QUAL-2519.
+def _build_turn_objects(  # noqa: C901, PLR0912, PLR0915
     turns: List[Dict[str, Any]],
     files: List[Dict[str, Any]],
     attachments: List[Dict[str, Any]],
@@ -970,12 +977,19 @@ def _build_turn_objects(
             name = Path(path).name if isinstance(path, str) else ""
         media_type = attachment.get("type") or attachment.get("media_type")
         data_url = attachment.get("data_url")
-        if isinstance(media_type, str) and media_type and not media_type.startswith("image/"):
+        if (
+            isinstance(media_type, str)
+            and media_type
+            and not media_type.startswith("image/")
+        ):
             continue
         if not name or not (
-            isinstance(media_type, str) and media_type.startswith("image/")
-            or isinstance(path, str) and media_type_for_ext(Path(path).suffix)
-            or isinstance(data_url, str) and _DATA_IMAGE_URL.match(data_url)
+            isinstance(media_type, str)
+            and media_type.startswith("image/")
+            or isinstance(path, str)
+            and media_type_for_ext(Path(path).suffix)
+            or isinstance(data_url, str)
+            and _DATA_IMAGE_URL.match(data_url)
         ):
             continue
         target = _turn_for(built, attachment.get("timestamp"))
@@ -1243,7 +1257,8 @@ def render_summary(turns: List[Turn], first_ts: Optional[str]) -> List[str]:
     return out
 
 
-def render(
+# Presentation removed by JSON-only work; remove in QUAL-2507.
+def render(  # noqa: C901, PLR0913, PLR0912, PLR0915
     session: Dict[str, Any],
     turns: List[Turn],
     checkpoints: List[Dict[str, Any]],
@@ -1341,7 +1356,9 @@ def render(
         if turn.permission_decisions:
             out.append("")
             for p in turn.permission_decisions:
-                line = f"  _{decision_label(p['decision'])}:_ {_truncate(p['tool'], 120)}"
+                line = (
+                    f"  _{decision_label(p['decision'])}:_ {_truncate(p['tool'], 120)}"
+                )
                 if p.get("feedback"):
                     line += f' -> "{_truncate(p["feedback"], 160)}"'
                 out.append(line)
@@ -1596,7 +1613,8 @@ def _extract_all(
     return 0 if written else 1
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+# Existing dual-output CLI orchestration; remove in QUAL-2507.
+def main(argv: Optional[List[str]] = None) -> int:  # noqa: C901, PLR0912
     args = build_arg_parser().parse_args(argv)
 
     db_path = Path(args.db).expanduser() if args.db else COPILOT_DB
