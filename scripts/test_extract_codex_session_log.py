@@ -2067,3 +2067,43 @@ def test_main_write_failure_for_explicit_output_path(monkeypatch):
             ]
         )
         assert rc == 1
+
+
+@pytest.mark.parametrize("mode", ["stdout", "file", "default", "batch"])
+def test_json_entrypoints_bypass_presentation(mode, tmp_path, monkeypatch, capsys):
+    import extract_codex_session_log as mod
+
+    transcript = tmp_path / "session.jsonl"
+    entries = _session_entries("s1", tmp_path, "# Recorded Markdown")
+    entries += load_entries(FIXTURES / "image.jsonl")[1:]
+    entries += load_entries(FIXTURES / "tool_patch_large.jsonl")[1:]
+    _write_jsonl(transcript, entries)
+    expected = build_events(entries)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(mod, "PROJECT_ROOT", tmp_path / "out")
+
+    def presentation_forbidden(*args, **kwargs):
+        pytest.fail("JSON extraction invoked presentation")
+
+    monkeypatch.setattr(mod, "build_turns", presentation_forbidden)
+    args = ["--transcript", str(transcript)]
+    destination = tmp_path / "out" / "codex_session_log_raw_s1.json"
+    if mode == "stdout":
+        args += ["--output", "-"]
+    elif mode == "file":
+        destination = tmp_path / "explicit.json"
+        args += ["--output", str(destination)]
+    elif mode == "batch":
+        args = ["--all", "--sessions-root", str(tmp_path)]
+    assert main(args) == 0
+    captured = capsys.readouterr()
+    envelope = json.loads(captured.out if mode == "stdout" else destination.read_text())
+    assert envelope["events"] == expected
+    assert envelope["session_id"] == "s1"
+    assert envelope["harness"] == "codex"
+    assert envelope["cwd"] == str(tmp_path)
+    assert "using transcript:" in captured.err or "extracting" in captured.err
+    assert not list(tmp_path.rglob("*.md"))
+    assert not list(tmp_path.rglob("*.png"))
+    if mode != "stdout":
+        assert captured.out == ""
