@@ -1391,3 +1391,50 @@ def test_copilot_main_reports_output_write_error(monkeypatch, tmp_path, capsys):
     captured = capsys.readouterr()
     assert rc == 1
     assert "error" in captured.err
+
+
+@pytest.mark.parametrize("selector", [True, False])
+def test_copilot_cli_stdout_is_json(selector, capsys):
+    _install_native_events("tool_success")
+    args = ["--db", str(FIXTURES / "session-store.db"), "--output", "-"]
+    if selector:
+        args.insert(0, NATIVE_IDS["tool_success"])
+    assert copilot_log.main(args) == 0
+    captured = capsys.readouterr()
+    envelope = json.loads(captured.out)
+    assert envelope["harness"] == "copilot"
+    assert envelope["events"]
+    assert "using session:" in captured.err
+
+
+@pytest.mark.parametrize(
+    "flag", [["--raw"], ["--no-raw"], ["--raw-tool-result-bytes", "3"]]
+)
+def test_copilot_cli_rejects_removed_flags(flag):
+    with pytest.raises(SystemExit, match="2"):
+        copilot_log.build_arg_parser().parse_args(flag)
+
+
+def test_copilot_cli_tool_result_cap(tmp_path):
+    _install_native_events("tool_success")
+    output = tmp_path / "session.json"
+    assert (
+        copilot_log.main(
+            [
+                NATIVE_IDS["tool_success"],
+                "--db",
+                str(FIXTURES / "session-store.db"),
+                "--output",
+                str(output),
+                "--tool-result-bytes",
+                "4",
+            ]
+        )
+        == 0
+    )
+    envelope = json.loads(output.read_text())
+    call = next(c for e in envelope["events"] for c in e.get("tool_calls", []))
+    assert call["result_truncated"] is True
+    assert call["result_bytes"] > 4
+    assert len(call["result"].encode("utf-8")) <= 4
+    assert list(tmp_path.iterdir()) == [output]
