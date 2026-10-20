@@ -136,3 +136,49 @@ accurate. Keep the initial baseline inventory clearly labeled as historical.
 Unrelated fixes must not increase metrics within suppressed functions: reviewers
 must compare them manually, since automated metric comparisons are deferred.
 See [AGENTS.md](AGENTS.md).
+
+## Session log capture
+
+Hooks in a candidate's starter repo save each agent session to a `session-logs`
+branch of the candidate's own repo while they work, so nobody has to run an
+extractor and upload files at the end. The design and its trade-offs are in
+[docs/rfcs/session-log-capture.md](https://github.com/woven-teams/apply-yourself/blob/master/docs/rfcs/session-log-capture.md)
+in `woven-teams/apply-yourself`.
+
+- `src/session_log_extractors/capture/` holds the capture code. It is standard
+  library only, because it runs on the candidate's `python3`.
+- `scripts/capture_session.py` is the hook entry point. It reads one hook payload
+  from stdin (Claude Code, Codex, or Copilot CLI), stages the filtered session, and
+  starts a detached background worker that pushes after the session goes quiet.
+- `hooks/` holds the canonical hook configs for each harness.
+- `scripts/sync_capture_hooks.py TARGET_REPO` copies the script, a mirror of the
+  package (as `scripts/session_log_capture/`), and the hook configs into a starter
+  repo. It merges into existing hook configs and is safe to run repeatedly.
+- `python3 -m session_log_extractors.capture.export SESSION_LOGS_DIR OUT_DIR` turns
+  a fetched `session_logs/` tree into the usual envelopes by running the existing
+  extractors. Copilot sessions are rebuilt into a temporary `~/.copilot` first.
+
+What the filter keeps and drops (an allowlist, so unknown fields are dropped):
+
+- Keeps user and assistant turns, tool calls, plan and question decisions,
+  timestamps, and small images.
+- Drops system reminders (personal config and email), attachments, API request
+  blobs, file-history snapshots, and model reasoning.
+- Cuts each tool result to 1 KB (8 KB for plan and question tools) and drops the
+  whole result when anything credential-shaped appears or when the tool touched an
+  environment file.
+
+Branch layout:
+
+```text
+session_logs/manifest.json
+session_logs/claude/<session-id>.jsonl
+session_logs/claude/<session-id>/subagents/agent-*.jsonl
+session_logs/codex/<session-id>.jsonl
+session_logs/copilot/<session-id>/events.jsonl
+session_logs/copilot/<session-id>/copilot_db.json
+```
+
+Known gaps: the Claude and Codex extractors do not yet read the captured subagent
+transcripts, and the Copilot hook's `transcriptPath` is recorded in the manifest as
+reported because the Copilot docs do not say what it points to.

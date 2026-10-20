@@ -1,0 +1,123 @@
+import json
+import runpy
+import sys
+from pathlib import Path
+
+import pytest
+
+from session_log_extractors.capture import sync
+
+SOURCE_ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.fixture
+def target(tmp_path):
+    path = tmp_path / "starter"
+    (path / ".git").mkdir(parents=True)
+    return path
+
+
+def test_sync_installs_scripts_package_and_hook_configs(target):
+    changed = sync.sync(target, SOURCE_ROOT)
+
+    assert "scripts/capture_session.py" in changed
+    package = target / "scripts" / "session_log_capture"
+    assert (package / "cli.py").exists()
+    assert (package / "__init__.py").exists()
+    assert not (package / "sync.py").exists()
+    claude = json.loads((target / ".claude" / "settings.json").read_text())
+    assert set(claude["hooks"]) == {"SessionStart", "Stop"}
+    assert "Stop" in json.loads((target / ".codex" / "hooks.json").read_text())["hooks"]
+    assert (
+        "agentStop"
+        in json.loads(
+            (target / ".github" / "hooks" / "woven-capture.json").read_text()
+        )["hooks"]
+    )
+    assert "codex_hooks = true" in (target / ".codex" / "config.toml").read_text()
+
+
+def test_sync_is_idempotent(target):
+    sync.sync(target, SOURCE_ROOT)
+
+    assert sync.sync(target, SOURCE_ROOT) == []
+
+
+def test_sync_keeps_existing_hooks_and_does_not_duplicate_ours(target):
+    settings = target / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    mine = {
+        "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "echo mine"}]}]},
+        "model": "x",
+    }
+    settings.write_text(json.dumps(mine))
+
+    sync.sync(target, SOURCE_ROOT)
+    sync.sync(target, SOURCE_ROOT)
+
+    merged = json.loads(settings.read_text())
+    commands = [h["command"] for g in merged["hooks"]["Stop"] for h in g["hooks"]]
+    assert commands.count("echo mine") == 1
+    assert sum("capture_session.py" in c for c in commands) == 1
+    assert merged["model"] == "x"
+
+
+def test_sync_removes_stale_package_files_and_pycache(target):
+    sync.sync(target, SOURCE_ROOT)
+    package = target / "scripts" / "session_log_capture"
+    (package / "old_module.py").write_text("x")
+    (package / "__pycache__").mkdir()
+    (package / "__pycache__" / "x.pyc").write_text("x")
+
+    changed = sync.sync(target, SOURCE_ROOT)
+    sync.remove_pycache(target)
+
+    assert changed == ["session_log_capture/old_module.py (removed)"]
+    assert not (package / "__pycache__").exists()
+
+
+def test_sync_updates_changed_files(target):
+    sync.sync(target, SOURCE_ROOT)
+    (target / "scripts" / "capture_session.py").write_text("tampered")
+
+    assert sync.sync(target, SOURCE_ROOT) == ["scripts/capture_session.py"]
+
+
+def test_sync_warns_when_codex_config_lacks_the_flag(target):
+    config = target / ".codex" / "config.toml"
+    config.parent.mkdir(parents=True)
+    config.write_text('model = "x"\n')
+
+    changed = sync.sync(target, SOURCE_ROOT)
+
+    assert any(line.startswith("WARNING") for line in changed)
+    assert config.read_text() == 'model = "x"\n'
+
+
+def test_sync_ignores_a_non_object_settings_file(target):
+    settings = target / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text("[1]")
+
+    sync.sync(target, SOURCE_ROOT)
+
+    assert "hooks" in json.loads(settings.read_text())
+
+
+def test_sync_script_reports_changes_and_rejects_non_checkouts(
+    target, tmp_path, monkeypatch, capsys
+):
+    script = SOURCE_ROOT / "scripts" / "sync_capture_hooks.py"
+
+    def run(*argv):
+        monkeypatch.setattr(sys, "argv", ["sync_capture_hooks.py", *argv])
+        with pytest.raises(SystemExit) as info:
+            runpy.run_path(str(script), run_name="__main__")
+        return info.value.code
+
+    assert run(str(target)) == 0
+    assert "scripts/capture_session.py" in capsys.readouterr().out
+    assert run(str(target)) == 0
+    assert capsys.readouterr().out.strip() == "already up to date"
+    assert run(str(tmp_path / "nowhere")) == 1
+    assert "not a git checkout" in capsys.readouterr().err
