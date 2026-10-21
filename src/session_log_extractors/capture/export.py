@@ -116,6 +116,7 @@ def _export_codex(
             ]
         )
         found = []
+        proc.stderr += f"\nDEBUG rc={proc.returncode} ls={sorted(p.name for p in Path(tmp).iterdir())} stdout={proc.stdout[-200:]!r}"
         for produced in sorted(Path(tmp).glob("codex_session_log_raw_*.json")):
             target = out_dir / produced.name
             target.write_bytes(produced.read_bytes())
