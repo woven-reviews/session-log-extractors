@@ -4,9 +4,9 @@ import sys
 from pathlib import Path
 
 import pytest
-from session_log_extractors.session_log_envelope import raw_filename
 
 import session_log_extractors
+from session_log_extractors.session_log_envelope import raw_filename
 
 
 def test_package_imports():

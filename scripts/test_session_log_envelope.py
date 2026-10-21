@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Asserts for the shared raw session-log envelope builder.
 
-Run: python3 scripts/test_session_log_envelope.py
+Run: uv run --locked python scripts/test_session_log_envelope.py
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ import json
 import tempfile
 from pathlib import Path
 
-from session_log_envelope import (
+from session_log_extractors.session_log_envelope import (
     SCHEMA,
     build_envelope,
     image_from_base64,

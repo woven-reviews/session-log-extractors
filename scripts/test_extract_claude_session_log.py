@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Minimal asserts for the option-question parsing in extract_claude_session_log.
 
-Run: python3 scripts/test_extract_claude_session_log.py
+Run: uv run --locked python scripts/test_extract_claude_session_log.py
 """
 
 from __future__ import annotations
@@ -51,7 +51,12 @@ from extract_claude_session_log import (
     summarize_subagent,
     tool_descriptor,
 )
-from session_log_envelope import SIZE_WARN_BYTES, build_envelope, write_envelope
+
+from session_log_extractors.session_log_envelope import (
+    SIZE_WARN_BYTES,
+    build_envelope,
+    write_envelope,
+)
 
 # 1x1 transparent PNG.
 _PNG_B64 = (
@@ -1418,7 +1423,7 @@ def test_cli_retains_malformed_line_diagnostics(capsys):
 
 
 def test_cli_file_keeps_size_warning(tmp_path, monkeypatch, capsys):
-    import session_log_envelope
+    from session_log_extractors import session_log_envelope
 
     monkeypatch.setattr(session_log_envelope, "SIZE_WARN_BYTES", 1)
     output = tmp_path / "session.json"
@@ -1435,7 +1440,7 @@ def test_cli_file_keeps_size_warning(tmp_path, monkeypatch, capsys):
 
 
 def test_cli_stdout_keeps_size_warning(monkeypatch, capsys):
-    import session_log_envelope
+    from session_log_extractors import session_log_envelope
 
     monkeypatch.setattr(session_log_envelope, "SIZE_WARN_BYTES", 1)
     transcript = FIXTURES / "baseline.jsonl"

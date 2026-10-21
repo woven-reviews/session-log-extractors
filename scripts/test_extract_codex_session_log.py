@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Minimal asserts for extract_codex_session_log.
 
-Run: python3 scripts/test_extract_codex_session_log.py
+Run: uv run --locked python scripts/test_extract_codex_session_log.py
 """
 
 from __future__ import annotations
@@ -1933,7 +1933,7 @@ def test_cli_no_events_writes_no_json(batch, tmp_path, monkeypatch, capsys):
 
 @pytest.mark.parametrize("stdout", [False, True])
 def test_cli_warnings_stay_on_stderr(stdout, tmp_path, monkeypatch, capsys):
-    import session_log_envelope
+    from session_log_extractors import session_log_envelope
 
     monkeypatch.setattr(session_log_envelope, "SIZE_WARN_BYTES", 1)
     transcript = tmp_path / "s.jsonl"

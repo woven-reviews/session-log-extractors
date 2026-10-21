@@ -14,11 +14,11 @@ Run the Codex session-log extractor for every Codex transcript associated with t
 
 ```bash
 image="rfp-monster-session-log-extractor:local"
-docker build -q -t "$image" scripts >/dev/null
+docker build -q -f scripts/Dockerfile -t "$image" . >/dev/null
 mounts=(-v "$PWD:$PWD" -v /tmp:/tmp:ro)
 [ -d "$HOME/.codex/sessions" ] && mounts+=(-v "$HOME/.codex/sessions:$HOME/.codex/sessions:ro")
 docker run --rm -e HOME="$HOME" -u "$(id -u):$(id -g)" -w "$PWD" "${mounts[@]}" "$image" \
-  /extractor/extract_codex_session_log.py --all
+  "$PWD/scripts/extract_codex_session_log.py" --all
 ```
 
 The container only gets read-only access to `~/.codex/sessions` (not the user's whole home directory), read-only access to `/tmp` so temporary image sources can be inlined, and read-write access to this checkout — nothing else on the machine is exposed to it.
