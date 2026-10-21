@@ -8,15 +8,26 @@ The [extraction information contract](scripts/fixtures/README.md) records the
 move to JSON-only output, the complete information to preserve across
 harnesses, and the fixture acceptance requirements.
 
-Claude extraction now produces only JSON. Run
+Claude extraction produces JSON. Run
 `python3 scripts/extract_claude_session_log.py` to export every session in the
 resolved project directory to `claude_session_log_raw_<session-id>.json` in the
 project root. Use a session id or `--transcript PATH` for one session, with
 `--output PATH` for an explicit JSON destination or `--output -` for stdout.
-`--tool-result-bytes N` sets the tool-result cap (negative for no cap); it
-replaces `--raw-tool-result-bytes`, and `--raw` and `--no-raw` are removed. Recorded Markdown, inline images, and
-tool results remain in the JSON. Codex and Copilot still write their existing
-artifacts pending their JSON-only migrations.
+`--tool-result-bytes N` sets the tool-result cap (negative for no cap).
+Recorded Markdown, inline images, and tool results remain in the JSON.
+
+Copilot extraction produces JSON. Run
+`python3 scripts/extract_copilot_session_log.py` to export every matching session
+to `copilot_session_log_raw_<identifier>.json` in the project root. Use a session
+id or unique prefix to select one session, `--output PATH` for its JSON file,
+or `--output -` for the selected or newest session on stdout. With `--all`,
+`--output DIR` selects the destination directory. `--strict` requires an exact
+working-directory match during discovery; `--db PATH` selects a database.
+`--tool-result-bytes N` sets the tool-result cap (negative for no cap).
+Tool inputs and results remain structured, and available images are inlined as
+base64; unavailable image references remain explicit in the JSON.
+
+Codex extraction writes a Markdown log and a JSON envelope.
 
 ## Ownership
 
@@ -77,7 +88,8 @@ was **107 findings**: 30 C901, 21 PLR0912, 13 PLR0915, 4 PLR0913, 15 B011,
 10 PT017, 9 I001, 4 B905, and 1 PIE810. The 39 non-complexity findings are fixed
 (imports, exception tests, explicit zip behavior, and redundant startswith). The
 initial 68 complexity findings were recorded as function-level, rule-specific
-exceptions. Removing Claude Markdown rendering retires six; **62 remain** below
+exceptions. Removing Claude and Copilot Markdown rendering and replacing Copilot CLI
+orchestration retires twelve; **56 remain** below
 solely because the codebase predates lint enforcement. This is temporary debt
 for pre-existing code, not precedent or permission to suppress future violations.
 No directory exclusion or raised threshold hides them.
@@ -108,8 +120,6 @@ Algorithms and interfaces are preserved in this tooling change.
 | `extract_copilot_session_log.py` | `_build_turn_objects` | C901, PLR0912, PLR0915 | [QUAL-2519](https://linear.app/andela/issue/QUAL-2519) |
 | `extract_copilot_session_log.py` | `_permissions_from_events` | C901 | [QUAL-2519](https://linear.app/andela/issue/QUAL-2519) |
 | `extract_copilot_session_log.py` | `get_state_attachments` | C901, PLR0912 | [QUAL-2516](https://linear.app/andela/issue/QUAL-2516) |
-| `extract_copilot_session_log.py` | `main` | C901, PLR0912 | [QUAL-2507](https://linear.app/andela/issue/QUAL-2507) |
-| `extract_copilot_session_log.py` | `render` | C901, PLR0913, PLR0912, PLR0915 | [QUAL-2507](https://linear.app/andela/issue/QUAL-2507) |
 | `generate_claude_fixtures.py` | `run_case` | C901, PLR0912, PLR0915 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
 | `generate_codex_fixtures.py` | `capture_interactive` | C901, PLR0915 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
 | `generate_codex_fixtures.py` | `clean` | C901, PLR0912 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
