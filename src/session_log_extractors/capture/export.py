@@ -102,25 +102,35 @@ def _export_claude(
     )
 
 
+def _adopt(produced: Path, harness: str, fallback_id: str, out_dir: Path) -> list[Path]:
+    """Copy the one envelope an extractor wrote to ``produced`` under its uploaded name."""
+    if not produced.is_file():
+        return []
+    text = produced.read_text(encoding="utf-8", errors="replace")
+    envelope = valid_envelope(text, harness)
+    if envelope is None:
+        return []
+    session_id = str(envelope.get("session_id") or fallback_id)
+    target = out_dir / f"{harness}_session_log_raw_{session_id}.json"
+    target.write_text(text, encoding="utf-8")
+    return [target]
+
+
 def _export_codex(
     transcript: Path, out_dir: Path, scripts: Path, result: ExportResult
 ) -> None:
     with tempfile.TemporaryDirectory() as tmp:
+        produced = Path(tmp) / "envelope.json"
         proc = _run(
             [
                 str(scripts / "extract_codex_session_log.py"),
                 "--transcript",
                 str(transcript),
                 "--output",
-                f"{tmp}/log.md",
+                str(produced),
             ]
         )
-        found = []
-        proc.stderr += f"\nDEBUG rc={proc.returncode} ls={sorted(p.name for p in Path(tmp).iterdir())} stdout={proc.stdout[-200:]!r}"
-        for produced in sorted(Path(tmp).glob("codex_session_log_raw_*.json")):
-            target = out_dir / produced.name
-            target.write_bytes(produced.read_bytes())
-            found.append(target)
+        found = _adopt(produced, "codex", transcript.stem, out_dir)
     _collect(result, f"codex/{transcript.stem}", proc, found)
 
 
@@ -130,21 +140,19 @@ def _export_copilot(
     with tempfile.TemporaryDirectory() as tmp:
         home = Path(tmp) / "home"
         db_path = rebuild_copilot_home(session_dir, home)
-        argv = [
-            str(scripts / "extract_copilot_session_log.py"),
-            session_dir.name,
-            "--db",
-            str(db_path),
-        ]
+        produced = Path(tmp) / "envelope.json"
         proc = _run(
-            [*argv, "--output", f"{tmp}/log.md"],
+            [
+                str(scripts / "extract_copilot_session_log.py"),
+                session_dir.name,
+                "--db",
+                str(db_path),
+                "--output",
+                str(produced),
+            ],
             {"HOME": str(home), "COPILOT_HOME": str(home / ".copilot")},
         )
-        found = []
-        for produced in sorted(Path(tmp).glob("copilot_session_log_raw_*.json")):
-            target = out_dir / produced.name
-            target.write_bytes(produced.read_bytes())
-            found.append(target)
+        found = _adopt(produced, "copilot", session_dir.name, out_dir)
     _collect(result, f"copilot/{session_dir.name}", proc, found)
 
 

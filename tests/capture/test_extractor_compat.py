@@ -58,11 +58,6 @@ def run(script, *args, env=None):
     return proc
 
 
-def only(path, pattern):
-    (found,) = list(Path(path).glob(pattern))
-    return found
-
-
 @pytest.mark.parametrize(
     "fixture", sorted((FIXTURES / "claude").glob("*.jsonl")), ids=lambda p: p.stem
 )
@@ -97,7 +92,7 @@ def test_codex_events_survive_capture_and_export(fixture, tmp_path, identity_fil
         "--transcript",
         str(fixture),
         "--output",
-        str(raw_dir / "log.md"),
+        str(raw_dir / "native.json"),
     )
     tree = tmp_path / "tree"
     (tree / "codex").mkdir(parents=True)
@@ -108,9 +103,7 @@ def test_codex_events_survive_capture_and_export(fixture, tmp_path, identity_fil
     result = export.export_sessions(tree, tmp_path / "out", SCRIPTS)
 
     assert result.failures == {}
-    assert events_of(result.files[0]) == events_of(
-        only(raw_dir, "codex_session_log_raw_*.json")
-    )
+    assert events_of(result.files[0]) == events_of(raw_dir / "native.json")
 
 
 def copilot_cases():
@@ -134,7 +127,7 @@ def test_copilot_events_survive_capture_and_export(
         "--db",
         str(native / "session-store.db"),
         "--output",
-        str(tmp_path / "raw.md"),
+        str(tmp_path / "raw.json"),
         env=env,
     )
     dump = locate.copilot_db_dump(native / "session-store.db", session_id)
@@ -150,8 +143,7 @@ def test_copilot_events_survive_capture_and_export(
     result = export.export_sessions(tmp_path / "tree", tmp_path / "out", SCRIPTS)
 
     assert result.failures == {}
-    raw = only(tmp_path, "copilot_session_log_raw_*.json")
-    assert events_of(result.files[0]) == events_of(raw)
+    assert events_of(result.files[0]) == events_of(tmp_path / "raw.json")
 
 
 def test_export_reports_failures_instead_of_raising(tmp_path):
