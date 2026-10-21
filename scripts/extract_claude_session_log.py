@@ -39,10 +39,6 @@ from session_log_envelope import (
     warn_if_oversized,
     write_envelope,
 )
-from skill_metadata import (
-    load_command_details,
-    load_skill_details,
-)
 
 # --------------------------------------------------------------------------- #
 # Constants
@@ -694,11 +690,9 @@ class Turn:
         # Set when the user's input was a `/`-prefixed slash command.
         self.command: Optional[str] = None
         self.command_args: Optional[str] = None
-        self.command_details: Dict[str, Any] = {}
         self.assistant_text_blocks: List[str] = []
         self.tool_bullets: List[str] = []  # already-rendered "- Name — desc"
         self.skills_used: List[str] = []
-        self.skill_details: Dict[str, Dict[str, Any]] = {}
         self.result_notes: List[str] = []
         self.option_qas: List[
             Dict[str, Any]
@@ -718,18 +712,13 @@ class Turn:
         else:
             self.tool_bullets.append(f"- {name}")
 
-    def add_skill(self, name: str, path: Optional[str] = None) -> None:
+    def add_skill(self, name: str) -> None:
         if name and name not in self.skills_used:
             self.skills_used.append(name)
-        if name and (
-            name not in self.skill_details or (path and not self.skill_details[name])
-        ):
-            self.skill_details[name] = load_skill_details(name, path, PROJECT_ROOT)
 
     def add_command(self, name: str, args: str = "") -> None:
         self.command = name
         self.command_args = args or None
-        self.command_details = load_command_details(name, PROJECT_ROOT)
 
     def add_result_note(self, note: str) -> None:
         if note:

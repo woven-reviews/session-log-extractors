@@ -71,10 +71,6 @@ from session_log_envelope import (
     warn_if_oversized,
     write_envelope,
 )
-from skill_metadata import (
-    load_command_details,
-    load_skill_details,
-)
 
 CODEX_SESSIONS_ROOT = Path.home() / ".codex" / "sessions"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -172,41 +168,6 @@ def _parse_ts(ts: Optional[str]):
         return datetime.fromisoformat(ts.replace("Z", "+00:00"))
     except (TypeError, ValueError):
         return None
-
-
-def format_timestamp(ts: Optional[str]) -> str:
-    """Render as 'YYYY-MM-DD HH:MM:SS UTC' -- always UTC, never machine-local."""
-    from datetime import timezone
-
-    if not ts or not isinstance(ts, str):
-        return "(no timestamp)"
-    dt = _parse_ts(ts)
-    if dt is None:
-        return ts
-    if dt.tzinfo is not None:
-        dt = dt.astimezone(timezone.utc)
-    return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
-
-
-def format_elapsed(first_ts: Optional[str], ts: Optional[str]) -> str:
-    a, b = _parse_ts(first_ts), _parse_ts(ts)
-    if a is None or b is None:
-        return ""
-    secs = max(0, int((b - a).total_seconds()))
-    h, rem = divmod(secs, 3600)
-    m, s = divmod(rem, 60)
-    if h:
-        return f"+{h}:{m:02d}:{s:02d}"
-    if m:
-        return f"+{m}:{s:02d}"
-    return f"+{s}s"
-
-
-def date_only(ts: Optional[str]) -> str:
-    formatted = format_timestamp(ts)
-    if formatted == "(no timestamp)":
-        return "unknown"
-    return formatted.split(" ")[0]
 
 
 def _jsonl_files(root: Path) -> List[Path]:
@@ -884,11 +845,9 @@ class Turn:
         self.shell_command: Optional[str] = None
         self.command: Optional[str] = None
         self.command_args: Optional[str] = None
-        self.command_details: Dict[str, Any] = {}
         self.assistant_text_blocks: List[str] = []
         self.tool_bullets: List[str] = []
         self.skills_used: List[str] = []
-        self.skill_details: Dict[str, Dict[str, Any]] = {}
         self.result_notes: List[str] = []
         self.option_qas: List[Dict[str, Any]] = []
         self.permission_denials: List[Dict[str, Any]] = []  # denied tool + message
@@ -904,18 +863,13 @@ class Turn:
         else:
             self.tool_bullets.append(f"- {name}")
 
-    def add_skill(self, name: str, path: Optional[str] = None) -> None:
+    def add_skill(self, name: str) -> None:
         if name and name not in self.skills_used:
             self.skills_used.append(name)
-        if name and (
-            name not in self.skill_details or (path and not self.skill_details[name])
-        ):
-            self.skill_details[name] = load_skill_details(name, path, PROJECT_ROOT)
 
     def add_command(self, name: str, args: str = "") -> None:
         self.command = name
         self.command_args = args or None
-        self.command_details = load_command_details(name, PROJECT_ROOT)
 
     def add_result_note(self, note: str) -> None:
         if note:
@@ -1102,7 +1056,7 @@ def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]: 
                     continue
             current.add_tool(name, tool_descriptor(name, arguments))
             for skill_ref in skill_refs_from_call(name, arguments):
-                current.add_skill(str(skill_ref["name"]), skill_ref.get("path"))
+                current.add_skill(str(skill_ref["name"]))
             args = _decode_arguments(arguments)
 
             if isinstance(call_id, str) and _is_interaction_tool(name):

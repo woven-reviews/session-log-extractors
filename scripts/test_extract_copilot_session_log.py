@@ -22,7 +22,6 @@ from extract_copilot_session_log import (
     attribute_skills,
     build_events,
     clean_user_text,
-    format_decision,
     get_db_connection,
     get_session_by_id,
     get_session_turns,
@@ -134,21 +133,6 @@ def test_copilot_skill_invocation_is_recorded_and_attributed():
     assert turn.skills_used == ["fixture-skill"]
 
 
-def test_copilot_skill_definition_details_are_loaded(tmp_path):
-    # The native event points at the capture workspace; stage the captured
-    # SKILL.md where the extractor can read it.
-    skill_path = tmp_path / "fixture-skill" / "SKILL.md"
-    skill_path.parent.mkdir()
-    shutil.copyfile(FIXTURES / "fixture-skill.md", skill_path)
-    [skill] = _skills_from_events(_native_lines("skill"))
-    turn = Turn("use skill", "", "2026-01-01T00:00:00Z", 0)
-    attribute_skills([turn], [{**skill, "path": str(skill_path)}])
-    assert (
-        turn.skill_details["fixture-skill"]["description"] == "A fixture capture skill."
-    )
-    assert turn.skill_details["fixture-skill"]["path"] == str(skill_path.resolve())
-
-
 def test_copilot_permissions_join_approval_denial_and_pending():
     perms = _permissions_from_events(_hand_lines("permissions.jsonl"))
     assert [
@@ -163,23 +147,6 @@ def test_copilot_permissions_join_approval_denial_and_pending():
         ),
         ("rm x", "pending", "", "2026-07-01T22:06:00Z"),
     ]
-
-
-def test_copilot_format_decision():
-    assert format_decision("approved") == "approved"
-    assert format_decision("approved-for-location") == "approved"
-    assert format_decision("denied-interactively-by-user") == "denied"
-    assert format_decision("") == "unknown"
-
-
-def test_copilot_decision_label_reserves_user_wording_for_user_denials():
-    assert (
-        copilot_log.decision_label("denied-interactively-by-user")
-        == "user denied permission"
-    )
-    assert copilot_log.decision_label("denied-by-rules") == "settings denied permission"
-    assert copilot_log.decision_label("approved-for-location") == "permission approved"
-    assert copilot_log.decision_label("pending") == "permission pending"
 
 
 def test_copilot_attribute_permissions_by_timestamp():

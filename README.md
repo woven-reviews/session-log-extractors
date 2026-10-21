@@ -13,7 +13,7 @@ Claude extraction produces JSON. Run
 resolved project directory to `claude_session_log_raw_<session-id>.json` in the
 project root. Use a session id or `--transcript PATH` for one session, with
 `--output PATH` for an explicit JSON destination or `--output -` for stdout.
-`--tool-result-bytes N` sets the tool-result cap (negative for no cap); it
+`--tool-result-bytes N` sets the tool-result cap (negative for no cap).
 Recorded Markdown, inline images, and tool results remain in the JSON.
 
 Codex extraction also produces only JSON. Run
@@ -24,7 +24,6 @@ work as described above; `--sessions-root DIR` overrides the session root and
 `--strict` requires an exact recorded working directory match. Codex also
 removes `--raw`, `--no-raw`, and `--raw-tool-result-bytes`. Upload the JSON files
 with inline images; no generated Markdown or image description pass is needed.
-Copilot still writes its existing artifacts pending its JSON-only migration.
 Recorded Markdown, inline images, and tool results remain in the JSON.
 
 Copilot extraction produces JSON. Run
@@ -37,6 +36,10 @@ working-directory match during discovery; `--db PATH` selects a database.
 `--tool-result-bytes N` sets the tool-result cap (negative for no cap).
 Tool inputs and results remain structured, and available images are inlined as
 base64; unavailable image references remain explicit in the JSON.
+
+Extraction uses recorded skill/command invocations and payloads without reading
+local definitions. Recorded Markdown remains message content; the extractors do
+not generate Markdown or image descriptions.
 
 ## Ownership
 
@@ -133,7 +136,6 @@ Algorithms and interfaces are preserved in this tooling change.
 | `generate_codex_fixtures.py` | `wait_for` | C901 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
 | `generate_copilot_fixtures.py` | `main` | C901, PLR0912, PLR0915 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
 | `session_log_envelope.py` | `build_envelope` | PLR0913 | [QUAL-2513](https://linear.app/andela/issue/QUAL-2513) |
-| `skill_metadata.py` | `render_skill_lines` | C901 | [QUAL-2508](https://linear.app/andela/issue/QUAL-2508) |
 | `test_generate_claude_fixtures.py` | `_fake_claude` | PLR0913 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
 | `test_generate_codex_fixtures.py` | `_fake_cli` | PLR0913 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
 | `test_generate_codex_fixtures.py` | `test_interactive_main_drives_requests_and_stages_native_rollouts` | C901 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |

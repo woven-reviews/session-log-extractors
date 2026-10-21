@@ -58,7 +58,6 @@ from session_log_envelope import (
     warn_if_oversized,
     write_envelope,
 )
-from skill_metadata import load_skill_details
 
 COPILOT_DB = Path.home() / ".copilot" / "session-store.db"
 COPILOT_STATE_ROOT = Path.home() / ".copilot" / "session-state"
@@ -240,7 +239,6 @@ class Turn:
         self.shell_command: Optional[str] = None
         self.tools: List[tuple[str, str]] = []
         self.skills_used: List[str] = []
-        self.skill_details: Dict[str, Dict[str, Any]] = {}
         self.image_refs: List[Dict[str, str]] = []
         self.permission_decisions: List[Dict[str, Any]] = []
         self.result_notes: List[str] = []
@@ -253,13 +251,9 @@ class Turn:
         if note:
             self.result_notes.append(note)
 
-    def add_skill(self, name: str, path: Optional[str] = None) -> None:
+    def add_skill(self, name: str) -> None:
         if name and name not in self.skills_used:
             self.skills_used.append(name)
-        if name and (
-            name not in self.skill_details or (path and not self.skill_details[name])
-        ):
-            self.skill_details[name] = load_skill_details(name, path, PROJECT_ROOT)
 
 
 def get_db_connection(db_path: Path) -> sqlite3.Connection:
@@ -788,7 +782,7 @@ def attribute_tools(turns: List[Turn], tools: List[Dict[str, Any]]) -> None:
             target.add_result_note(f"{name}: {note}")
 
         for skill_ref in skill_refs_from_call(str(name), arguments):
-            target.add_skill(str(skill_ref["name"]), skill_ref.get("path"))
+            target.add_skill(str(skill_ref["name"]))
 
 
 def attribute_skills(turns: List[Turn], skills: List[Dict[str, Any]]) -> None:
@@ -797,8 +791,7 @@ def attribute_skills(turns: List[Turn], skills: List[Dict[str, Any]]) -> None:
         target = _turn_for(turns, skill.get("timestamp"))
         name = skill.get("name")
         if target is not None and isinstance(name, str):
-            path = skill.get("path")
-            target.add_skill(name, path if isinstance(path, str) else None)
+            target.add_skill(name)
 
 
 def attribute_permissions(turns: List[Turn], perms: List[Dict[str, Any]]) -> None:
@@ -807,29 +800,6 @@ def attribute_permissions(turns: List[Turn], perms: List[Dict[str, Any]]) -> Non
         target = _turn_for(turns, p.get("timestamp"))
         if target is not None:
             target.permission_decisions.append(p)
-
-
-def format_decision(kind: str) -> str:
-    """Collapse Copilot's decision kinds to a short verb for display."""
-    if kind.startswith("denied"):
-        return "denied"
-    if kind.startswith("approved"):
-        return "approved"
-    return kind or "unknown"
-
-
-def decision_label(kind: str) -> str:
-    """Summary-line label for a permission decision.
-
-    The harness log parser reads "user denied permission" as a candidate action,
-    so only a denial the human made interactively may carry it.
-    """
-    if kind == "denied-interactively-by-user":
-        return "user denied permission"
-    # ponytail: any other denied-* kind is assumed to be a rule/policy refusal.
-    if kind.startswith("denied"):
-        return "settings denied permission"
-    return f"permission {format_decision(kind)}"
 
 
 def get_session_models(conn: sqlite3.Connection, session_id: str) -> List[str]:

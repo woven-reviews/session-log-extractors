@@ -98,20 +98,15 @@ def test_skill_tool_use_is_recorded():
     assert turns[0].skills_used == ["documents"]
 
 
-def test_native_skill_and_command_use_checked_in_definitions():
-    project_root = eclog.PROJECT_ROOT
-    eclog.PROJECT_ROOT = FIXTURES / "project"
-    try:
-        turns, _ = build_turns(_fixture_entries("skill_command.jsonl"))
-    finally:
-        eclog.PROJECT_ROOT = project_root
+def test_native_skill_and_command_invocations_are_retained():
+    entries = _fixture_entries("skill_command.jsonl")
+    turns, _ = build_turns(entries)
     assert turns[0].skills_used == ["fixture-skill"]
-    assert (
-        turns[0].skill_details["fixture-skill"]["overview"]
-        == "Say SKILL_FIXTURE_MARKER."
-    )
     assert turns[1].command == "/fixture-command"
-    assert turns[1].command_details["overview"] == "Say COMMAND_FIXTURE_MARKER."
+    events = build_events(entries)
+    calls = [call for event in events for call in event.get("tool_calls", [])]
+    assert any(call["input"].get("skill") == "fixture-skill" for call in calls)
+    assert any("/fixture-command" in event["text"] for event in events)
 
 
 def test_single_choice():
@@ -452,7 +447,7 @@ def test_build_events_surfaces_slash_command_invocations():
     assert events[0]["text"] == "/extract-claude-session-logs --strict"
 
 
-def test_build_events_does_not_disturb_the_markdown_turns():
+def test_build_events_does_not_disturb_interpreted_turns():
     # The whole point of a second pass: running it must not perturb build_turns.
     entries = _conversation_entries()
     before = [t.user_text for t in build_turns(entries)[0]]
@@ -837,7 +832,6 @@ def test_turn_add_command_sets_fields_and_defaults_args_to_none():
     t.add_command("/foo", "bar")
     assert t.command == "/foo"
     assert t.command_args == "bar"
-    assert isinstance(t.command_details, dict)
     t.add_command("/foo")
     assert t.command_args is None
 
