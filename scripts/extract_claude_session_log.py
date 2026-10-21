@@ -13,9 +13,9 @@ JSON to stdout. Diagnostics go to stderr.
 
 Examples::
 
-    python3 scripts/extract_claude_session_log.py
-    python3 scripts/extract_claude_session_log.py 1a2b3c4d-... --output -
-    python3 scripts/extract_claude_session_log.py --transcript /path/to/abc.jsonl
+    uv run --locked python scripts/extract_claude_session_log.py
+    uv run --locked python scripts/extract_claude_session_log.py 1a2b3c4d-... --output -
+    uv run --locked python scripts/extract_claude_session_log.py --transcript /path/to/abc.jsonl
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from session_log_envelope import (
+from session_log_extractors.session_log_envelope import (
     DEFAULT_TOOL_RESULT_MAX_BYTES,
     assistant_event,
     build_envelope,

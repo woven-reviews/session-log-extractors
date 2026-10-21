@@ -9,7 +9,7 @@ move to JSON-only output, the complete information to preserve across
 harnesses, and the fixture acceptance requirements.
 
 Claude extraction produces JSON. Run
-`python3 scripts/extract_claude_session_log.py` to export every session in the
+`uv run --locked python scripts/extract_claude_session_log.py` to export every session in the
 resolved project directory to `claude_session_log_raw_<session-id>.json` in the
 project root. Use a session id or `--transcript PATH` for one session, with
 `--output PATH` for an explicit JSON destination or `--output -` for stdout.
@@ -17,7 +17,7 @@ project root. Use a session id or `--transcript PATH` for one session, with
 Recorded Markdown, inline images, and tool results remain in the JSON.
 
 Codex extraction also produces only JSON. Run
-`python3 scripts/extract_codex_session_log.py` to export every matching project
+`uv run --locked python scripts/extract_codex_session_log.py` to export every matching project
 session to `codex_session_log_raw_<session-id>.json` in the project root.
 Session selection, `--output PATH`, `--output -`, and `--tool-result-bytes N`
 work as described above; `--sessions-root DIR` overrides the session root and
@@ -27,7 +27,7 @@ with inline images; no generated Markdown or image description pass is needed.
 Recorded Markdown, inline images, and tool results remain in the JSON.
 
 Copilot extraction produces JSON. Run
-`python3 scripts/extract_copilot_session_log.py` to export every matching session
+`uv run --locked python scripts/extract_copilot_session_log.py` to export every matching session
 to `copilot_session_log_raw_<identifier>.json` in the project root. Use a session
 id or unique prefix to select one session, `--output PATH` for its JSON file,
 or `--output -` for the selected or newest session on stdout. With `--all`,
@@ -40,6 +40,26 @@ base64; unavailable image references remain explicit in the JSON.
 Extraction uses recorded skill/command invocations and payloads without reading
 local definitions. Recorded Markdown remains message content; the extractors do
 not generate Markdown or image descriptions.
+
+## Running the installed package
+
+Run local commands above from the repository root after `uv sync --locked`.
+uv installs the shared exporter from `src/session_log_extractors/`; keep the
+existing extractor scripts as entrypoints.
+
+Build Docker from the repository root so the context includes `pyproject.toml`
+and `src/`:
+
+```sh
+docker build -f scripts/Dockerfile -t session-log-extractor .
+docker run --rm session-log-extractor -c 'from session_log_extractors import session_log_envelope'
+```
+
+The repository extraction helpers mount the verified checkout and invoke its
+`scripts/extract_*_session_log.py` with the image's Python and installed package.
+This keeps discovery and default output paths relative to that checkout.
+Run `uv run --locked pytest tests/test_smoke.py` to check package imports and
+fixture exports through all three local script entrypoints.
 
 ## Ownership
 
@@ -111,7 +131,7 @@ consolidated (pipeline tickets), the existing shared export signature (model
 ticket), or generator/test orchestration (dedicated cleanup ticket QUAL-2547).
 Algorithms and interfaces are preserved in this tooling change.
 
-| File in `scripts/` | Function | Rules | Removal ticket |
+| File (relative to `scripts/` unless shown) | Function | Rules | Removal ticket |
 | --- | --- | --- | --- |
 | `extract_claude_session_log.py` | `build_events` | C901, PLR0912, PLR0915 | [QUAL-2517](https://linear.app/andela/issue/QUAL-2517) |
 | `extract_claude_session_log.py` | `build_turns` | C901, PLR0912, PLR0915 | [QUAL-2517](https://linear.app/andela/issue/QUAL-2517) |
@@ -135,7 +155,7 @@ Algorithms and interfaces are preserved in this tooling change.
 | `generate_codex_fixtures.py` | `validate` | C901, PLR0912 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
 | `generate_codex_fixtures.py` | `wait_for` | C901 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
 | `generate_copilot_fixtures.py` | `main` | C901, PLR0912, PLR0915 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
-| `session_log_envelope.py` | `build_envelope` | PLR0913 | [QUAL-2513](https://linear.app/andela/issue/QUAL-2513) |
+| `src/session_log_extractors/session_log_envelope.py` | `build_envelope` | PLR0913 | [QUAL-2513](https://linear.app/andela/issue/QUAL-2513) |
 | `test_generate_claude_fixtures.py` | `_fake_claude` | PLR0913 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
 | `test_generate_codex_fixtures.py` | `_fake_cli` | PLR0913 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
 | `test_generate_codex_fixtures.py` | `test_interactive_main_drives_requests_and_stages_native_rollouts` | C901 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |

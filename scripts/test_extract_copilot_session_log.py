@@ -1251,7 +1251,9 @@ def test_copilot_db_file_fallback_preserves_names_and_targets(tmp_path):
 def test_copilot_size_warning_uses_current_flag(
     tmp_path, monkeypatch, capsys, destination
 ):
-    monkeypatch.setattr("session_log_envelope.SIZE_WARN_BYTES", 1)
+    monkeypatch.setattr(
+        "session_log_extractors.session_log_envelope.SIZE_WARN_BYTES", 1
+    )
     output = "-" if destination == "stdout" else str(tmp_path / "output.json")
     assert (
         copilot_log.main(

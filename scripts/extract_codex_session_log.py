@@ -36,15 +36,15 @@ Examples
 --------
 Every transcript for the current project, one file per session::
 
-    python3 scripts/extract_codex_session_log.py
+    uv run --locked python scripts/extract_codex_session_log.py
 
 The most recent matching transcript, written to stdout::
 
-    python3 scripts/extract_codex_session_log.py --output -
+    uv run --locked python scripts/extract_codex_session_log.py --output -
 
 A specific session, written to one file::
 
-    python3 scripts/extract_codex_session_log.py <session-id> --output session.json
+    uv run --locked python scripts/extract_codex_session_log.py <session-id> --output session.json
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from session_log_envelope import (
+from session_log_extractors.session_log_envelope import (
     DEFAULT_TOOL_RESULT_MAX_BYTES,
     assistant_event,
     build_envelope,

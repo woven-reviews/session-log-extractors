@@ -23,15 +23,15 @@ Examples
 Every transcript for the current repository, one file per session (the default
 when no session selector is given), written into the project root::
 
-    python3 scripts/extract_copilot_session_log.py
+    uv run --locked python scripts/extract_copilot_session_log.py
 
 The most recent transcript for the current repository, written to stdout::
 
-    python3 scripts/extract_copilot_session_log.py --output -
+    uv run --locked python scripts/extract_copilot_session_log.py --output -
 
 A specific session id, to stdout::
 
-    python3 scripts/extract_copilot_session_log.py abc123... --output -
+    uv run --locked python scripts/extract_copilot_session_log.py abc123... --output -
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from session_log_envelope import (
+from session_log_extractors.session_log_envelope import (
     DEFAULT_TOOL_RESULT_MAX_BYTES,
     assistant_event,
     build_envelope,
