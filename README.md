@@ -13,7 +13,18 @@ Claude extraction produces JSON. Run
 resolved project directory to `claude_session_log_raw_<session-id>.json` in the
 project root. Use a session id or `--transcript PATH` for one session, with
 `--output PATH` for an explicit JSON destination or `--output -` for stdout.
-`--tool-result-bytes N` sets the tool-result cap (negative for no cap).
+`--tool-result-bytes N` sets the tool-result cap (negative for no cap); it
+Recorded Markdown, inline images, and tool results remain in the JSON.
+
+Codex extraction also produces only JSON. Run
+`python3 scripts/extract_codex_session_log.py` to export every matching project
+session to `codex_session_log_raw_<session-id>.json` in the project root.
+Session selection, `--output PATH`, `--output -`, and `--tool-result-bytes N`
+work as described above; `--sessions-root DIR` overrides the session root and
+`--strict` requires an exact recorded working directory match. Codex also
+removes `--raw`, `--no-raw`, and `--raw-tool-result-bytes`. Upload the JSON files
+with inline images; no generated Markdown or image description pass is needed.
+Copilot still writes its existing artifacts pending its JSON-only migration.
 Recorded Markdown, inline images, and tool results remain in the JSON.
 
 Copilot extraction produces JSON. Run
@@ -26,8 +37,6 @@ working-directory match during discovery; `--db PATH` selects a database.
 `--tool-result-bytes N` sets the tool-result cap (negative for no cap).
 Tool inputs and results remain structured, and available images are inlined as
 base64; unavailable image references remain explicit in the JSON.
-
-Codex extraction writes a Markdown log and a JSON envelope.
 
 ## Ownership
 
@@ -88,8 +97,7 @@ was **107 findings**: 30 C901, 21 PLR0912, 13 PLR0915, 4 PLR0913, 15 B011,
 10 PT017, 9 I001, 4 B905, and 1 PIE810. The 39 non-complexity findings are fixed
 (imports, exception tests, explicit zip behavior, and redundant startswith). The
 initial 68 complexity findings were recorded as function-level, rule-specific
-exceptions. Removing Claude and Copilot Markdown rendering and replacing Copilot CLI
-orchestration retires twelve; **56 remain** below
+exceptions.
 solely because the codebase predates lint enforcement. This is temporary debt
 for pre-existing code, not precedent or permission to suppress future violations.
 No directory exclusion or raised threshold hides them.
@@ -113,8 +121,6 @@ Algorithms and interfaces are preserved in this tooling change.
 | `extract_codex_session_log.py` | `build_events` | C901, PLR0912, PLR0915 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |
 | `extract_codex_session_log.py` | `build_turns` | C901, PLR0912, PLR0915 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |
 | `extract_codex_session_log.py` | `image_refs_from_event` | C901, PLR0912 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |
-| `extract_codex_session_log.py` | `render` | C901, PLR0912, PLR0915 | [QUAL-2506](https://linear.app/andela/issue/QUAL-2506) |
-| `extract_codex_session_log.py` | `render_summary` | C901, PLR0912, PLR0915 | [QUAL-2506](https://linear.app/andela/issue/QUAL-2506) |
 | `extract_codex_session_log.py` | `select_transcript` | C901 | [QUAL-2515](https://linear.app/andela/issue/QUAL-2515) |
 | `extract_codex_session_log.py` | `skill_refs_from_call` | C901 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |
 | `extract_copilot_session_log.py` | `_build_turn_objects` | C901, PLR0912, PLR0915 | [QUAL-2519](https://linear.app/andela/issue/QUAL-2519) |
