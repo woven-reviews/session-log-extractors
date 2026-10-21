@@ -1,6 +1,7 @@
 import json
 import os
 import runpy
+import shutil
 import subprocess
 import sys
 import time
@@ -10,7 +11,7 @@ import pytest
 from conftest import write_filter
 from gitutil import sh
 
-from session_log_extractors.capture import cli, pusher, sync
+from session_log_extractors.capture import cli, envelope, pusher, sync
 
 SOURCE_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = SOURCE_ROOT / "scripts" / "capture_session.py"
@@ -258,14 +259,11 @@ def test_entry_script_falls_back_to_the_synced_package(clone, monkeypatch):
     assert cli_module.__name__ == "session_log_capture.cli"
 
 
-@pytest.mark.parametrize("kind", [None, "raising", "incomplete"])
-def test_without_a_working_filter_nothing_is_staged_and_the_hook_says_so(
+@pytest.mark.parametrize("kind", ["raising", "incomplete"])
+def test_with_a_broken_filter_nothing_is_staged_and_the_hook_says_so(
     clone, tmp_path, no_spawn, capsys, kind
 ):
-    broken = tmp_path / "no-filter"
-    broken.mkdir()
-    if kind:
-        write_filter(broken, kind)
+    broken = write_filter(tmp_path / "broken-filter", kind)
 
     code = cli.main(
         ["--harness", "claude", "--repo", str(clone)],
@@ -293,7 +291,7 @@ def test_refresher_rebuilds_a_session_from_its_source(clone, tmp_path, filter_di
     with Path(payload["transcript_path"]).open("a") as handle:
         handle.write(json.dumps(entry) + "\n")
 
-    rebuilt = cli.refresher(clone, tmp_path, filter_dir)(staged)
+    rebuilt = cli.refresher(clone, tmp_path, filter_dir, SCRIPT)(staged)
 
     assert "later" in rebuilt.files["session_logs/claude/abc.jsonl"]
 
@@ -343,19 +341,122 @@ def test_end_to_end_the_reply_written_after_the_hook_fires_is_pushed(
     assert "answer" in pushed
 
 
-def test_end_to_end_without_a_filter_module_nothing_is_ever_pushed(
+def install_extractors(clone):
+    """A starter repo ships the extractors beside the hook; copy the library's for the test."""
+    names = [*envelope.SCRIPTS.values(), "session_log_envelope.py", "skill_metadata.py"]
+    for name in names:
+        shutil.copy(SOURCE_ROOT / "scripts" / name, clone / "scripts" / name)
+
+
+def full_claude_transcript(tmp_path):
+    path = tmp_path / "abc.jsonl"
+    entries = [
+        {
+            "type": "user",
+            "uuid": "u1",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "message": {"role": "user", "content": "question"},
+        },
+        {
+            "type": "assistant",
+            "uuid": "a1",
+            "timestamp": "2026-01-01T00:00:01Z",
+            "message": {
+                "role": "assistant",
+                "model": "m",
+                "content": [{"type": "text", "text": "answer"}],
+            },
+        },
+    ]
+    path.write_text("".join(json.dumps(e) + "\n" for e in entries))
+    return path
+
+
+def full_payload(tmp_path, clone):
+    return json.dumps(
+        {
+            "session_id": "abc",
+            "transcript_path": str(full_claude_transcript(tmp_path)),
+            "cwd": str(clone),
+        }
+    )
+
+
+def test_end_to_end_without_a_filter_module_the_extractor_envelope_is_pushed(
     clone, remote, tmp_path
 ):
-    sync.sync(clone, SOURCE_ROOT)  # a starter repo that never added its own filter
-    env = {**os.environ, "WOVEN_CAPTURE_QUIET_SECONDS": "0"}
+    sync.sync(clone, SOURCE_ROOT)
+    install_extractors(clone)
+    env = {
+        **os.environ,
+        "WOVEN_CAPTURE_QUIET_SECONDS": "1",
+        "WOVEN_CAPTURE_IDLE_SECONDS": "1",
+    }
 
-    hook = hook_subprocess(clone, hook_payload(tmp_path, clone), env)
-    time.sleep(2)
+    hook = hook_subprocess(clone, full_payload(tmp_path, clone), env)
+    pushed = wait_for_remote_file(remote, "session_logs/claude/abc.json")
+
+    assert hook.returncode == 0, hook.stderr
+    pushed_envelope = json.loads(pushed)
+    assert pushed_envelope["schema"] == "raw-session-log/1"
+    assert [e["text"] for e in pushed_envelope["events"]] == ["question", "answer"]
+    assert "abc.jsonl" not in sh(
+        remote, "git", "ls-tree", "-r", "--name-only", "session-logs"
+    )
+    assert list((clone / "scripts").rglob("__pycache__")) == []
+
+
+def test_end_to_end_without_a_filter_or_extractors_nothing_is_pushed(
+    clone, remote, tmp_path
+):
+    sync.sync(clone, SOURCE_ROOT)  # a starter repo with no extractor beside the hook
+    env = {
+        **os.environ,
+        "WOVEN_CAPTURE_QUIET_SECONDS": "0",
+        "WOVEN_CAPTURE_IDLE_SECONDS": "1",
+    }
+
+    hook = hook_subprocess(clone, full_payload(tmp_path, clone), env)
+    time.sleep(3)
 
     assert hook.returncode == 0
-    assert "nothing was saved" in hook.stderr
     assert sh(remote, "git", "branch", "--list", "session-logs").strip() == ""
     assert list((clone / "scripts").rglob("__pycache__")) == []
+
+
+def test_the_hook_only_stages_a_placeholder_and_never_runs_the_extractor(
+    clone, tmp_path, no_spawn, monkeypatch
+):
+    ran = []
+    monkeypatch.setattr(
+        envelope.EnvelopeBuilder, "_run", staticmethod(lambda *a, **k: ran.append(a))
+    )
+
+    cli.main(
+        ["--harness", "claude", "--repo", str(clone)],
+        hook_payload(tmp_path, clone),
+        SCRIPT,
+        tmp_path,
+        tmp_path / "no-plugin",
+    )
+
+    staged = pusher.load_pending(clone)[0][0]
+    assert staged.deferred
+    assert staged.files == {"session_logs/claude/abc.json": ""}
+    assert ran == []
+
+
+def test_a_plug_in_takes_precedence_over_the_envelope_mode(clone, tmp_path, no_spawn):
+    cli.main(
+        ["--harness", "claude", "--repo", str(clone)],
+        hook_payload(tmp_path, clone),
+        SCRIPT,
+        tmp_path,
+    )
+
+    staged = pusher.load_pending(clone)[0][0]
+    assert not staged.deferred
+    assert list(staged.files) == ["session_logs/claude/abc.jsonl"]
 
 
 def test_the_filter_is_found_beside_the_entry_script():

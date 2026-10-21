@@ -147,10 +147,27 @@ def test_sync_never_touches_a_starter_repos_own_filter(target):
     assert plugin.read_text() == "# mine\n"
 
 
-def test_sync_warns_when_the_starter_repo_has_no_filter(target):
+def test_sync_warns_when_a_starter_repo_has_neither_a_filter_nor_extractors(target):
     changed = sync.sync(target, SOURCE_ROOT)
 
-    assert any("session_log_filter.py is missing" in line for line in changed)
+    warnings = [line for line in changed if line.startswith("WARNING")]
+    assert len(warnings) == 3
+    assert "scripts/extract_claude_session_log.py is missing" in warnings[0]
     assert not (
         target / "scripts" / "session_log_capture" / "session_log_filter.py"
     ).exists()
+
+
+def test_sync_is_silent_and_idempotent_when_the_starter_repo_ships_the_extractors(
+    target,
+):
+    scripts = target / "scripts"
+    scripts.mkdir()
+    for name in sync.SCRIPTS.values():
+        (scripts / name).write_text("# the starter repo's own extractor\n")
+
+    sync.sync(target, SOURCE_ROOT)
+
+    assert sync.sync(target, SOURCE_ROOT) == []
+    for name in sync.SCRIPTS.values():
+        assert (scripts / name).read_text() == "# the starter repo's own extractor\n"

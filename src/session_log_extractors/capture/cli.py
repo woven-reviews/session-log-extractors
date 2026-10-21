@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import gitpush, locate, pusher, session_filter
+from .envelope import EnvelopeBuilder, EnvelopeError
 
 NOTICE = "Session logs for this assessment are saved to a session-logs branch of your repository."
 
@@ -58,11 +59,20 @@ def package_dir(script: Path) -> Path:
     return script.parent / "session_log_capture"
 
 
-def refresher(root: Path, home: Path, filter_dir: Path) -> pusher.Refresh:
+def choose_filter(
+    filter_dir: Path, script: Path, deferred: bool
+) -> session_filter.SessionFilter | EnvelopeBuilder:
+    """The filter plug-in if the starter repo provides one, else the built-in envelope mode."""
+    if (filter_dir / session_filter.MODULE_FILE).is_file():
+        return session_filter.load(filter_dir)
+    return EnvelopeBuilder(script.parent, deferred=deferred)
+
+
+def refresher(root: Path, home: Path, filter_dir: Path, script: Path) -> pusher.Refresh:
     """Rebuild a staged session from its source at push time, filtering it again."""
 
     def refresh(snap: locate.Snapshot) -> locate.Snapshot | None:
-        flt = session_filter.load(filter_dir)
+        flt = choose_filter(filter_dir, script, deferred=False)
         source = snap.source or {}
         return locate.build_snapshot(
             source.get("harness", snap.harness),
@@ -96,9 +106,9 @@ def capture(args: argparse.Namespace, stdin_text: str, hook: Hook) -> None:
     if harness is None:
         return
     try:
-        flt = session_filter.load(hook.filter_dir)
+        flt = choose_filter(hook.filter_dir, hook.script, deferred=True)
         snap = locate.build_snapshot(harness, payload, hook.root, hook.home, flt)
-    except session_filter.FilterError as err:
+    except (session_filter.FilterError, EnvelopeError) as err:
         # Fail closed: without a working filter nothing is staged, so nothing is pushed.
         print(f"woven-capture: nothing was saved, {err}", file=sys.stderr)
         return
@@ -124,7 +134,9 @@ def main(
         root = repo_root(script, args.repo)
         where = filter_dir or package_dir(script)
         if args.worker:
-            pusher.run_worker(root, refresh=refresher(root, home or Path.home(), where))
+            pusher.run_worker(
+                root, refresh=refresher(root, home or Path.home(), where, script)
+            )
         else:
             capture(args, stdin_text, Hook(script, home or Path.home(), root, where))
     except Exception as err:

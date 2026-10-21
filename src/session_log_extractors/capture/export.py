@@ -1,7 +1,9 @@
 """Turn a fetched ``session_logs/`` tree into the envelopes the existing extractors produce.
 
-The server fetches the ``session-logs`` branch and runs this over it. Claude and Codex
-transcripts go straight to their extractor with ``--transcript``. Copilot needs its native
+The server fetches the ``session-logs`` branch and runs this over it. A session already
+captured as an envelope (``<harness>/<id>.json``, the built-in capture mode) is checked and
+copied through unchanged. Otherwise Claude and Codex transcripts go straight to their
+extractor with ``--transcript``. Copilot needs its native
 layout, so the captured ``events.jsonl`` and ``copilot_db.json`` are rebuilt into a throwaway
 ``~/.copilot`` and the Copilot extractor runs with ``HOME`` pointed at it.
 
@@ -19,6 +21,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .envelope import valid_envelope
 from .records import COPILOT_DB_COLUMNS
 
 
@@ -144,10 +147,27 @@ def _export_copilot(
     _collect(result, f"copilot/{session_dir.name}", proc, found)
 
 
+def _export_envelopes(
+    harness: str, session_logs: Path, out_dir: Path, result: ExportResult
+) -> None:
+    """Pass through the envelopes the hook already built, after checking each one."""
+    for envelope in sorted((session_logs / harness).glob("*.json")):
+        key = f"{harness}/{envelope.stem}"
+        text = envelope.read_text(encoding="utf-8", errors="replace")
+        if valid_envelope(text, harness) is None:
+            result.failures[key] = f"not a raw-session-log/1 envelope for {harness}"
+            continue
+        target = out_dir / f"{harness}_session_log_raw_{envelope.stem}.json"
+        target.write_text(text, encoding="utf-8")
+        result.files.append(target)
+
+
 def export_sessions(session_logs: Path, out_dir: Path, scripts: Path) -> ExportResult:
     """Run the matching extractor over every captured session; failures are reported, not raised."""
     out_dir.mkdir(parents=True, exist_ok=True)
     result = ExportResult()
+    for harness in ("claude", "codex", "copilot"):
+        _export_envelopes(harness, session_logs, out_dir, result)
     for transcript in sorted((session_logs / "claude").glob("*.jsonl")):
         _export_claude(transcript, out_dir, scripts, result)
     for transcript in sorted((session_logs / "codex").glob("*.jsonl")):

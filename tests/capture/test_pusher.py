@@ -374,3 +374,49 @@ def test_worker_pushes_nothing_when_the_filter_rejects_at_push_time(clone, remot
     assert sh(remote, "git", "branch", "--list", "session-logs").strip() == ""
     assert pusher.load_pending(clone) == []
     assert "nothing was saved" in pusher.take_last_error(clone)
+
+
+def deferred_snap():
+    staged = staged_from_source()
+    staged.files = {"session_logs/claude/s1.json": ""}
+    staged.deferred = True
+    return staged
+
+
+def test_a_deferred_placeholder_is_never_pushed_when_the_source_cannot_be_read(
+    clone, remote
+):
+    pusher.stage(clone, deferred_snap())
+    fake, clock = fake_clock_for(clone)
+
+    pusher.run_worker(clone, clock, lambda staged: None)
+
+    assert sh(remote, "git", "branch", "--list", "session-logs").strip() == ""
+    assert pusher.load_pending(clone) == []
+    assert pusher.take_last_error(clone) is None
+
+
+def test_worker_pushes_nothing_when_the_extractor_fails_at_push_time(clone, remote):
+    pusher.stage(clone, deferred_snap())
+
+    def refresh(staged):
+        raise pusher.EnvelopeError("extract_claude_session_log.py failed: bad")
+
+    fake, clock = fake_clock_for(clone)
+    pusher.run_worker(clone, clock, refresh)
+
+    assert sh(remote, "git", "branch", "--list", "session-logs").strip() == ""
+    assert pusher.load_pending(clone) == []
+    assert "extract_claude_session_log.py failed" in pusher.take_last_error(clone)
+
+
+def test_a_rebuilt_envelope_replaces_the_placeholder(clone, remote):
+    pusher.stage(clone, deferred_snap())
+
+    def refresh(staged):
+        return Snapshot("claude", "s1", {"session_logs/claude/s1.json": '{"ok": 1}\n'})
+
+    fake, clock = fake_clock_for(clone)
+    pusher.run_worker(clone, clock, refresh)
+
+    assert remote_text(remote, "session_logs/claude/s1.json") == '{"ok": 1}\n'

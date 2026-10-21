@@ -146,8 +146,8 @@ extractor and upload files at the end. The design and its trade-offs are in
 in `woven-teams/apply-yourself`.
 
 - `src/session_log_extractors/capture/` holds the capture code. It is standard
-  library only, because it runs on the candidate's `python3`. It contains no filter: see
-  "Privacy filter" below.
+  library only, because it runs on the candidate's `python3`. It contains no privacy
+  filter: see "What is saved" below.
 - `scripts/capture_session.py` is the hook entry point. It reads one hook payload
   from stdin (Claude Code, Codex, or Copilot CLI), stages the filtered session, and
   starts a detached background worker that pushes after the session goes quiet.
@@ -156,16 +156,33 @@ in `woven-teams/apply-yourself`.
   package (as `scripts/session_log_capture/`), and the hook configs into a starter
   repo. It merges into existing hook configs and is safe to run repeatedly.
 - `python3 -m session_log_extractors.capture.export SESSION_LOGS_DIR OUT_DIR` turns
-  a fetched `session_logs/` tree into the usual envelopes by running the existing
-  extractors. Copilot sessions are rebuilt into a temporary `~/.copilot` first.
+  a fetched `session_logs/` tree into the usual envelopes. Envelopes the hook already
+  built are checked and copied through; raw transcripts (plug-in mode) are run through
+  the existing extractors. Copilot plug-in sessions are rebuilt into a temporary
+  `~/.copilot` first.
 
-### Privacy filter (a plug-in, not part of this package)
+### What is saved: the extractor's envelope, or a plug-in's filtered text
 
-The hook must never save an unfiltered transcript, but deciding what is private is
-separate work. Each starter repo provides its own `scripts/session_log_capture/session_log_filter.py`
-(the sync script never writes, overwrites, or removes it, and warns when it is missing).
-The module defines four functions. Each takes the raw text a harness wrote and returns
-the text that is safe to save. Raising any exception rejects the whole file.
+By default (no plug-in) the hook saves the same thing a candidate uploads by hand: the
+`raw-session-log/1` envelope written by the starter repo's own extractor
+(`scripts/extract_*_session_log.py`, which ship beside the hook; sync does not copy
+them and warns when they are missing). Tool results are capped at 4 KB with the original
+size recorded. The raw harness transcript is never pushed in this mode. The extractor runs
+in the background worker at push time, not inside the hook, so a large transcript cannot
+use up the hook's time budget. A Markdown log written beside the envelope is discarded.
+Copilot sessions are built from the candidate's `~/.copilot` directly.
+
+If an extractor is missing, fails, times out, or writes no valid envelope for the
+harness, nothing is saved for that session and the hook prints one warning line
+(`woven-capture: nothing was saved, ...`).
+
+### Privacy filter (an optional plug-in, not part of this package)
+
+A starter repo can instead provide its own `scripts/session_log_capture/session_log_filter.py`
+(the sync script never writes, overwrites, or removes it). When it exists it takes
+precedence: the hook then saves the filtered raw transcript, not an envelope. The module
+defines four functions. Each takes the raw text a harness wrote and returns the text that
+is safe to save. Raising any exception rejects the whole file.
 
 ```python
 def filter_claude(text: str) -> str          # a Claude Code transcript (JSONL)
@@ -174,9 +191,8 @@ def filter_copilot_events(text: str) -> str  # a Copilot events.jsonl
 def filter_copilot_db(text: str) -> str      # JSON dump of one session's Copilot database rows
 ```
 
-Capture fails closed. If the module is missing, lacks a function, raises, or returns
-something other than text, nothing is staged or pushed and the hook prints one warning
-line (`woven-capture: nothing was saved, ...`). There is no unfiltered fallback. A
+A plug-in that is missing a function, raises, or returns something other than text saves
+nothing and the hook prints one warning line. There is no unfiltered fallback. A
 rejected push (for example GitHub secret scanning) is reported and not retried or edited.
 
 ### Timing and the working tree
@@ -191,11 +207,13 @@ Branch layout:
 
 ```text
 session_logs/manifest.json
-session_logs/claude/<session-id>.jsonl
+session_logs/claude/<session-id>.json             envelope mode (default)
+session_logs/claude/<session-id>.jsonl            plug-in mode: filtered transcript
 session_logs/claude/<session-id>/subagents/agent-*.jsonl
-session_logs/codex/<session-id>.jsonl
-session_logs/copilot/<session-id>/events.jsonl
-session_logs/copilot/<session-id>/copilot_db.json
+session_logs/codex/<session-id>.json              envelope mode (.jsonl in plug-in mode)
+session_logs/copilot/<session-id>.json            envelope mode
+session_logs/copilot/<session-id>/events.jsonl    plug-in mode
+session_logs/copilot/<session-id>/copilot_db.json  plug-in mode
 ```
 
 Known gaps: the Claude and Codex extractors do not yet read the captured subagent

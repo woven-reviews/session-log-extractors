@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import gitpush
+from .envelope import EnvelopeError
 from .locate import Snapshot
 from .session_filter import FilterError
 
@@ -77,6 +78,7 @@ def stage(repo: Path, snap: Snapshot) -> None:
         "files": sorted(snap.files),
         "meta": snap.meta,
         "source": snap.source,
+        "deferred": snap.deferred,
     }
     _atomic_write(
         state / META / f"{snap.harness}__{snap.session_id}.json", json.dumps(meta)
@@ -115,6 +117,7 @@ def load_pending(repo: Path) -> Loaded:
                 files,
                 info.get("meta") or {},
                 info.get("source"),
+                bool(info.get("deferred")),
             )
             loaded.append((snap, _signature(state, snap)))
         except (OSError, ValueError, KeyError):
@@ -187,8 +190,12 @@ def _rebuilt(
     for staged, signature in loaded:
         try:
             fresh = refresh(staged) if refresh and staged.source else None
-        except FilterError as err:
+        except (FilterError, EnvelopeError) as err:
             _record_error(state_dir(repo), f"woven-capture: nothing was saved, {err}")
+            _clear_if_unchanged(repo, staged, signature)
+            continue
+        if staged.deferred and fresh is None:
+            # A placeholder is never pushed: with no real envelope there is nothing to save.
             _clear_if_unchanged(repo, staged, signature)
             continue
         ready.append((staged, signature, fresh or staged))

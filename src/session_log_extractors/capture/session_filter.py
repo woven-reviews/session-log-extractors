@@ -13,7 +13,10 @@ file, which then is not saved.
     filter_copilot_events(text: str) -> str  # a Copilot events.jsonl
     filter_copilot_db(text: str) -> str      # JSON dump of one Copilot session's database rows
 
-Capture fails closed. If the module is missing, lacks a function, or raises, nothing is
+The plug-in is optional. Without the module, capture uses the built-in envelope mode
+(``envelope``): the existing extractor's capped envelope is pushed, never the raw transcript.
+
+Capture fails closed. If the module exists but lacks a function or raises, nothing is
 pushed and the hook prints one warning line. There is never an unfiltered fallback.
 """
 

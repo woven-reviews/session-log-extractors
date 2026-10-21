@@ -98,7 +98,7 @@ def fetch_parent(repo: Path) -> str | None:
 
 def _belongs(path: str, snap: Snapshot) -> bool:
     base = f"session_logs/{snap.harness}/{snap.session_id}"
-    return path == f"{base}.jsonl" or path.startswith(f"{base}/")
+    return path in (f"{base}.jsonl", f"{base}.json") or path.startswith(f"{base}/")
 
 
 def _read_manifest(repo: Path, parent: str | None) -> dict[str, Any]:

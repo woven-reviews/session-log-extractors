@@ -4,10 +4,11 @@ Idempotent: running it twice changes nothing. Existing hook configs are merged, 
 overwritten, so a starter repo's own hooks survive. The starter repo gets a mirror of
 this package named ``session_log_capture`` (the package uses relative imports only).
 
-The privacy filter is not part of this package: each starter repo owns its own
+A privacy filter plug-in is not part of this package: a starter repo may own its own
 ``session_log_capture/session_log_filter.py`` (see ``session_filter``). Syncing never
-writes, overwrites, or removes it, and warns when it is missing, because capture pushes
-nothing without it.
+writes, overwrites, or removes it. Without one, the hook uses the built-in envelope mode,
+which runs the starter repo's own ``scripts/extract_*_session_log.py``; syncing warns when
+those are missing, because capture pushes nothing without them.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from .envelope import SCRIPTS
 from .session_filter import MODULE_FILE
 
 PACKAGE_NAME = "session_log_capture"
@@ -89,13 +91,14 @@ def _codex_config(source: Path, dest: Path) -> list[str]:
     return []
 
 
-def _filter_warning(target: Path) -> list[str]:
-    plugin = target / "scripts" / PACKAGE_NAME / MODULE_FILE
-    if plugin.exists():
+def _extractor_warning(target: Path) -> list[str]:
+    scripts = target / "scripts"
+    if (scripts / PACKAGE_NAME / MODULE_FILE).exists():
         return []
     return [
-        f"WARNING: {plugin.relative_to(target)} is missing; capture pushes nothing "
-        "until the starter repo provides a privacy filter"
+        f"WARNING: scripts/{name} is missing; capture pushes nothing for that harness"
+        for name in SCRIPTS.values()
+        if not (scripts / name).is_file()
     ]
 
 
@@ -124,7 +127,7 @@ def sync(target: Path, source_root: Path) -> list[str]:
     changed += _codex_config(
         hooks / "codex" / "config.toml", target / ".codex" / "config.toml"
     )
-    return changed + _filter_warning(target)
+    return changed + _extractor_warning(target)
 
 
 def remove_pycache(target: Path) -> None:
