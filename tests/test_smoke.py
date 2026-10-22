@@ -1,4 +1,7 @@
 import json
+import os
+import runpy
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -49,3 +52,63 @@ def test_script_exports_fixture_json(harness, arguments, tmp_path):
     assert envelope["schema"] == "raw-session-log/1"
     assert envelope["harness"] == harness
     assert envelope["events"]
+
+
+@pytest.mark.parametrize("subdirectory", [False, True])
+@pytest.mark.parametrize("selection", ["transcript", "all", "discovery"])
+def test_claude_checkout_defaults(subdirectory, selection, tmp_path):
+    from session_log_extractors.extract_claude_session_log import encode_project_path
+
+    root = Path(__file__).resolve().parents[1]
+    checkout = tmp_path / "checkout"
+    scripts = checkout / "scripts"
+    scripts.mkdir(parents=True)
+    wrapper = scripts / "extract_claude_session_log.py"
+    shutil.copyfile(root / "scripts" / wrapper.name, wrapper)
+    cwd = checkout / "nested" if subdirectory else checkout
+    cwd.mkdir(exist_ok=True)
+    home = tmp_path / "home"
+    project = home / ".claude" / "projects" / encode_project_path(checkout)
+    project.mkdir(parents=True)
+    transcript = project / "session.jsonl"
+    shutil.copyfile(root / "scripts/fixtures/claude/baseline.jsonl", transcript)
+    arguments = {
+        "transcript": ["--transcript", str(transcript)],
+        "all": ["--all", "--project-dir", str(project)],
+        "discovery": [],
+    }[selection]
+    result = subprocess.run(
+        [sys.executable, str(wrapper), *arguments],
+        cwd=cwd,
+        env={**os.environ, "HOME": str(home)},
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    output = checkout / "claude_session_log_raw_session.json"
+    envelope = json.loads(output.read_text())
+    assert envelope["harness"] == "claude"
+    assert envelope["events"]
+    assert result.stdout == ""
+    assert f"wrote {output}" in result.stderr
+    assert not (scripts / output.name).exists()
+    if subdirectory:
+        assert not (cwd / output.name).exists()
+
+
+def test_claude_wrapper_delegates_with_checkout_root(monkeypatch):
+    from session_log_extractors import extract_claude_session_log as claude
+
+    root = Path(__file__).resolve().parents[1]
+    monkeypatch.setattr(claude, "PROJECT_ROOT", claude.PROJECT_ROOT)
+
+    def main():
+        assert claude.PROJECT_ROOT == root
+        return 7
+
+    monkeypatch.setattr(claude, "main", main)
+    with pytest.raises(SystemExit) as exc:
+        runpy.run_path(
+            str(root / "scripts/extract_claude_session_log.py"), run_name="__main__"
+        )
+    assert exc.value.code == 7

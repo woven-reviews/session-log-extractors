@@ -13,9 +13,10 @@ import os
 import tempfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-import extract_claude_session_log as eclog
 import pytest
-from extract_claude_session_log import (
+
+from session_log_extractors import extract_claude_session_log as eclog
+from session_log_extractors.extract_claude_session_log import (
     Turn,
     _candidate_project_dirs,
     _content_blocks,
@@ -51,7 +52,6 @@ from extract_claude_session_log import (
     summarize_subagent,
     tool_descriptor,
 )
-
 from session_log_extractors.session_log_envelope import (
     SIZE_WARN_BYTES,
     build_envelope,
