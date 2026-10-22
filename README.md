@@ -57,6 +57,8 @@ docker run --rm session-log-extractor -c 'from session_log_extractors import ses
 
 The repository extraction helpers mount the verified checkout and invoke its
 `scripts/extract_*_session_log.py` with the image's Python and installed package.
+The Claude script delegates to `session_log_extractors.extract_claude_session_log`
+and supplies the checkout root for default output paths, including from subdirectories.
 This keeps discovery and default output paths relative to that checkout.
 Run `uv run --locked pytest tests/test_smoke.py` to check package imports and
 fixture exports through all three local script entrypoints.
@@ -93,7 +95,7 @@ uv run --locked pytest --cov=scripts --cov=src --cov-report=term --cov-report=xm
 git fetch origin main
 uv run --locked diff-cover coverage.xml --compare-branch=origin/main --fail-under=95
 uv run --locked pytest scripts/test_extract_codex_session_log.py --cov=extract_codex_session_log --cov-fail-under=95
-uv run --locked pytest scripts/test_extract_claude_session_log.py --cov=extract_claude_session_log --cov-fail-under=95
+uv run --locked pytest scripts/test_extract_claude_session_log.py --cov=session_log_extractors.extract_claude_session_log --cov-fail-under=95
 ```
 
 Overall coverage excludes test modules. Overall, changed-line, Codex, and Claude
@@ -133,11 +135,11 @@ Algorithms and interfaces are preserved in this tooling change.
 
 | File (relative to `scripts/` unless shown) | Function | Rules | Removal ticket |
 | --- | --- | --- | --- |
-| `extract_claude_session_log.py` | `build_events` | C901, PLR0912, PLR0915 | [QUAL-2517](https://linear.app/andela/issue/QUAL-2517) |
-| `extract_claude_session_log.py` | `build_turns` | C901, PLR0912, PLR0915 | [QUAL-2517](https://linear.app/andela/issue/QUAL-2517) |
-| `extract_claude_session_log.py` | `result_note` | C901, PLR0912 | [QUAL-2517](https://linear.app/andela/issue/QUAL-2517) |
-| `extract_claude_session_log.py` | `select_transcript` | C901, PLR0912 | [QUAL-2514](https://linear.app/andela/issue/QUAL-2514) |
-| `extract_claude_session_log.py` | `summarize_subagent` | C901, PLR0912 | [QUAL-2514](https://linear.app/andela/issue/QUAL-2514) |
+| `src/session_log_extractors/extract_claude_session_log.py` | `build_events` | C901, PLR0912, PLR0915 | [QUAL-2517](https://linear.app/andela/issue/QUAL-2517) |
+| `src/session_log_extractors/extract_claude_session_log.py` | `build_turns` | C901, PLR0912, PLR0915 | [QUAL-2517](https://linear.app/andela/issue/QUAL-2517) |
+| `src/session_log_extractors/extract_claude_session_log.py` | `result_note` | C901, PLR0912 | [QUAL-2517](https://linear.app/andela/issue/QUAL-2517) |
+| `src/session_log_extractors/extract_claude_session_log.py` | `select_transcript` | C901, PLR0912 | [QUAL-2514](https://linear.app/andela/issue/QUAL-2514) |
+| `src/session_log_extractors/extract_claude_session_log.py` | `summarize_subagent` | C901, PLR0912 | [QUAL-2514](https://linear.app/andela/issue/QUAL-2514) |
 | `extract_codex_session_log.py` | `_flatten_result_text` | C901 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |
 | `extract_codex_session_log.py` | `_image_bytes_and_ext` | C901 | [QUAL-2515](https://linear.app/andela/issue/QUAL-2515) |
 | `extract_codex_session_log.py` | `_structured_answer_for_question` | C901, PLR0912 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |

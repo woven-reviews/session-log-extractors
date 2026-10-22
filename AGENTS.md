@@ -16,7 +16,7 @@ uv run --locked pytest --cov=scripts --cov=src --cov-report=term --cov-report=xm
 git fetch origin main
 uv run --locked diff-cover coverage.xml --compare-branch=origin/main --fail-under=95
 uv run --locked pytest scripts/test_extract_codex_session_log.py --cov=extract_codex_session_log --cov-fail-under=95
-uv run --locked pytest scripts/test_extract_claude_session_log.py --cov=extract_claude_session_log --cov-fail-under=95
+uv run --locked pytest scripts/test_extract_claude_session_log.py --cov=session_log_extractors.extract_claude_session_log --cov-fail-under=95
 ```
 
 Keep all four coverage thresholds at 95% or higher. Overall coverage excludes
