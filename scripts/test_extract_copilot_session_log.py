@@ -12,9 +12,10 @@ import shutil
 import sqlite3
 from pathlib import Path
 
-import extract_copilot_session_log as copilot_log
 import pytest
-from extract_copilot_session_log import (
+
+from session_log_extractors import extract_copilot_session_log as copilot_log
+from session_log_extractors.extract_copilot_session_log import (
     Turn,
     _permissions_from_events,
     _skills_from_events,
@@ -1350,3 +1351,19 @@ def test_copilot_retained_database_metadata_readers(tmp_path):
                 "created_at": "2026-01-01T00:05:00Z",
             }
         ]
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_main_closes_connection(monkeypatch, fail):
+    from unittest.mock import Mock
+
+    conn = Mock()
+    monkeypatch.setattr(copilot_log, "get_db_connection", lambda path: conn)
+    extract = Mock(return_value=0, side_effect=ValueError("failure") if fail else None)
+    monkeypatch.setattr(copilot_log, "_extract_selected", extract)
+    if fail:
+        with pytest.raises(ValueError, match="failure"):
+            copilot_log.main(["selected"])
+    else:
+        assert copilot_log.main(["selected"]) == 0
+    conn.close.assert_called_once_with()
