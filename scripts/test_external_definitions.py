@@ -1,10 +1,10 @@
 """Extraction must use recorded evidence without reading local definitions."""
 
-import extract_codex_session_log as codex
 import extract_copilot_session_log as copilot
 import pytest
 
 from session_log_extractors import extract_claude_session_log as claude
+from session_log_extractors import extract_codex_session_log as codex
 
 
 @pytest.mark.parametrize("extractor", [claude, codex, copilot])

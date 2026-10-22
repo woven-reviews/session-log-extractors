@@ -13,7 +13,8 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from extract_codex_session_log import (
+
+from session_log_extractors.extract_codex_session_log import (
     _cwd_matches,
     _decode_jsonish,
     _extract_all,
@@ -1569,7 +1570,7 @@ def test_extract_all_reports_error_when_nothing_matches():
 
 
 def test_extract_all_skips_unparseable_transcript_and_still_succeeds(monkeypatch):
-    import extract_codex_session_log as mod
+    from session_log_extractors import extract_codex_session_log as mod
 
     with tempfile.TemporaryDirectory() as tmp_name:
         tmp = Path(tmp_name)
@@ -1758,7 +1759,7 @@ def test_image_bytes_and_ext_data_url_bad_base64_padding():
 
 
 def test_unique_identifier_suffixes_duplicates():
-    from extract_codex_session_log import _unique_identifier
+    from session_log_extractors.extract_codex_session_log import _unique_identifier
 
     used: set = set()
     assert _unique_identifier("sess", used) == "sess"
@@ -1812,7 +1813,7 @@ def test_main_write_failure_for_explicit_output_path(tmp_path):
 
 @pytest.mark.parametrize("mode", ["stdout", "file", "default", "batch"])
 def test_json_entrypoints_bypass_presentation(mode, tmp_path, monkeypatch, capsys):
-    import extract_codex_session_log as mod
+    from session_log_extractors import extract_codex_session_log as mod
 
     transcript = tmp_path / "session.jsonl"
     entries = _session_entries("s1", tmp_path, "# Recorded Markdown")
