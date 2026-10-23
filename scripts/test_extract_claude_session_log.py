@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Minimal asserts for the option-question parsing in extract_claude_session_log.
 
-Run: python3 scripts/test_extract_claude_session_log.py
+Run: uv run --locked python scripts/test_extract_claude_session_log.py
 """
 
 from __future__ import annotations
@@ -13,9 +13,10 @@ import os
 import tempfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-import extract_claude_session_log as eclog
 import pytest
-from extract_claude_session_log import (
+
+from session_log_extractors import extract_claude_session_log as eclog
+from session_log_extractors.extract_claude_session_log import (
     Turn,
     _candidate_project_dirs,
     _content_blocks,
@@ -51,7 +52,11 @@ from extract_claude_session_log import (
     summarize_subagent,
     tool_descriptor,
 )
-from session_log_envelope import SIZE_WARN_BYTES, build_envelope, write_envelope
+from session_log_extractors.session_log_envelope import (
+    SIZE_WARN_BYTES,
+    build_envelope,
+    write_envelope,
+)
 
 # 1x1 transparent PNG.
 _PNG_B64 = (
@@ -98,20 +103,15 @@ def test_skill_tool_use_is_recorded():
     assert turns[0].skills_used == ["documents"]
 
 
-def test_native_skill_and_command_use_checked_in_definitions():
-    project_root = eclog.PROJECT_ROOT
-    eclog.PROJECT_ROOT = FIXTURES / "project"
-    try:
-        turns, _ = build_turns(_fixture_entries("skill_command.jsonl"))
-    finally:
-        eclog.PROJECT_ROOT = project_root
+def test_native_skill_and_command_invocations_are_retained():
+    entries = _fixture_entries("skill_command.jsonl")
+    turns, _ = build_turns(entries)
     assert turns[0].skills_used == ["fixture-skill"]
-    assert (
-        turns[0].skill_details["fixture-skill"]["overview"]
-        == "Say SKILL_FIXTURE_MARKER."
-    )
     assert turns[1].command == "/fixture-command"
-    assert turns[1].command_details["overview"] == "Say COMMAND_FIXTURE_MARKER."
+    events = build_events(entries)
+    calls = [call for event in events for call in event.get("tool_calls", [])]
+    assert any(call["input"].get("skill") == "fixture-skill" for call in calls)
+    assert any("/fixture-command" in event["text"] for event in events)
 
 
 def test_single_choice():
@@ -452,7 +452,7 @@ def test_build_events_surfaces_slash_command_invocations():
     assert events[0]["text"] == "/extract-claude-session-logs --strict"
 
 
-def test_build_events_does_not_disturb_the_markdown_turns():
+def test_build_events_does_not_disturb_interpreted_turns():
     # The whole point of a second pass: running it must not perturb build_turns.
     entries = _conversation_entries()
     before = [t.user_text for t in build_turns(entries)[0]]
@@ -837,7 +837,6 @@ def test_turn_add_command_sets_fields_and_defaults_args_to_none():
     t.add_command("/foo", "bar")
     assert t.command == "/foo"
     assert t.command_args == "bar"
-    assert isinstance(t.command_details, dict)
     t.add_command("/foo")
     assert t.command_args is None
 
@@ -1255,15 +1254,17 @@ def test_extract_all_skips_unparseable_file():
     assert "skip bad" in err.getvalue()
 
 
+@pytest.mark.parametrize("explicit_root", [False, True])
 @pytest.mark.parametrize("destination", ["stdout", "explicit", "default"])
-def test_cli_json_destinations(destination, tmp_path, monkeypatch, capsys):
+def test_cli_json_destinations(
+    destination, tmp_path, monkeypatch, capsys, explicit_root
+):
     transcript = tmp_path / "session.jsonl"
     entries = _conversation_entries()
     entries[0]["message"]["content"][0]["text"] = "# Keep **recorded Markdown**"
     _write_jsonl(transcript, entries)
     output = tmp_path / "output"
     output.mkdir()
-    monkeypatch.setattr(eclog, "PROJECT_ROOT", output)
 
     def no_turn_rendering(*args, **kwargs):
         pytest.fail("JSON extraction must not assemble Markdown turns")
@@ -1274,7 +1275,9 @@ def test_cli_json_destinations(destination, tmp_path, monkeypatch, capsys):
         args += ["--output", "-"]
     elif destination == "explicit":
         args += ["--output", str(output / "custom.json")]
-    assert main(args) == 0
+    if not explicit_root:
+        monkeypatch.chdir(output)
+    assert main(args, project_root=output if explicit_root else None) == 0
     captured = capsys.readouterr()
     if destination == "stdout":
         envelope = json.loads(captured.out)
@@ -1297,15 +1300,26 @@ def test_cli_json_destinations(destination, tmp_path, monkeypatch, capsys):
     assert envelope["events"][0]["images"][0]["data"] == _PNG_B64
 
 
+@pytest.mark.parametrize("explicit_root", [False, True])
 @pytest.mark.parametrize("all_flag", [[], ["--all"]])
-def test_cli_batch_emits_only_json(all_flag, tmp_path, monkeypatch, capsys):
+def test_cli_batch_emits_only_json(
+    all_flag, tmp_path, monkeypatch, capsys, explicit_root
+):
     project = tmp_path / "project"
     project.mkdir()
     for name in ["a", "b"]:
         _write_jsonl(project / f"{name}.jsonl", _conversation_entries())
     output = tmp_path / "output"
-    monkeypatch.setattr(eclog, "PROJECT_ROOT", output)
-    assert main(all_flag + ["--project-dir", str(project)]) == 0
+    if not explicit_root:
+        output.mkdir()
+        monkeypatch.chdir(output)
+    assert (
+        main(
+            all_flag + ["--project-dir", str(project)],
+            project_root=output if explicit_root else None,
+        )
+        == 0
+    )
     assert sorted(p.name for p in output.iterdir()) == [
         "claude_session_log_raw_a.json",
         "claude_session_log_raw_b.json",
@@ -1424,7 +1438,7 @@ def test_cli_retains_malformed_line_diagnostics(capsys):
 
 
 def test_cli_file_keeps_size_warning(tmp_path, monkeypatch, capsys):
-    import session_log_envelope
+    from session_log_extractors import session_log_envelope
 
     monkeypatch.setattr(session_log_envelope, "SIZE_WARN_BYTES", 1)
     output = tmp_path / "session.json"
@@ -1441,7 +1455,7 @@ def test_cli_file_keeps_size_warning(tmp_path, monkeypatch, capsys):
 
 
 def test_cli_stdout_keeps_size_warning(monkeypatch, capsys):
-    import session_log_envelope
+    from session_log_extractors import session_log_envelope
 
     monkeypatch.setattr(session_log_envelope, "SIZE_WARN_BYTES", 1)
     transcript = FIXTURES / "baseline.jsonl"
@@ -1468,3 +1482,22 @@ def test_cli_no_event_input_keeps_existing_envelope_omission(mode, tmp_path, cap
     assert "session: no exportable events" in captured.err
     assert "no JSON written" in captured.err
     assert not list(tmp_path.rglob("*.json"))
+
+
+@pytest.mark.parametrize("batch", [False, True])
+def test_cli_default_root_uses_current_directory(batch, tmp_path, monkeypatch):
+    transcript = tmp_path / "session.jsonl"
+    _write_jsonl(transcript, _conversation_entries())
+    for name in ["first", "second"]:
+        output = tmp_path / name
+        output.mkdir()
+        monkeypatch.chdir(output)
+        arguments = (
+            ["--project-dir", str(tmp_path)]
+            if batch
+            else ["--transcript", str(transcript)]
+        )
+        assert main(arguments) == 0
+        assert json.loads((output / "claude_session_log_raw_session.json").read_text())[
+            "events"
+        ]

@@ -1,15 +1,10 @@
 #!/usr/bin/env python3
 """Build the raw session-log envelope shared by all three session-log extractors.
 
-The markdown log each extractor writes is a *condensed* view: tool calls collapse
-to one bullet, tool results collapse to a short note, and pasted images are
-dumped to a temp file and replaced with a text marker. That is the right shape
-for scoring, but it means the image bytes and the agent's actual output never
-leave the machine the session ran on.
-
-This module builds the second artifact — a normalized JSON envelope carrying the
-full conversation with images inlined as base64, so a grader can examine what the
-candidate actually pasted and what the agent actually did.
+Each extractor writes a normalized JSON envelope carrying the conversation with
+images inlined as base64. Tool inputs remain complete and tool results retain
+their configured byte cap. Markdown already recorded in messages is content;
+this module does not generate a separate presentation artifact.
 
 One schema serves all three harnesses. That matters because they store images
 very differently: Claude Code already has them inline as base64 in the
@@ -59,13 +54,7 @@ _MEDIA_TYPE_BY_EXT = {
 
 
 def raw_filename(harness: str, session_id: str) -> str:
-    """Filename for a harness's raw envelope.
-
-    Every harness gets an explicit prefix, including Claude — unlike the markdown
-    log, whose Claude variant is unprefixed (``session_log_<id>.md``) and must
-    stay that way: the consumer that selects it matches only ``codex_`` and
-    ``copilot_`` prefixes, so renaming it would make it unselectable.
-    """
+    """Filename for a harness's JSON envelope, with an explicit harness prefix."""
     return f"{harness}_session_log_raw_{session_id}.json"
 
 

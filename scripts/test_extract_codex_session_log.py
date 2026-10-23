@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Minimal asserts for extract_codex_session_log.
 
-Run: python3 scripts/test_extract_codex_session_log.py
+Run: uv run --locked python scripts/test_extract_codex_session_log.py
 """
 
 from __future__ import annotations
@@ -32,11 +32,8 @@ from extract_codex_session_log import (
     build_raw_envelope,
     build_turns,
     clean_user_text,
-    date_only,
     extract_transcript,
     first_timestamp,
-    format_elapsed,
-    format_timestamp,
     image_refs_from_event,
     image_refs_from_user_message_payload,
     is_startup_context,
@@ -680,28 +677,6 @@ def test_parse_ts_handles_missing_and_bad_values():
     assert _parse_ts(None) is None
     assert _parse_ts(123) is None
     assert _parse_ts("not-a-timestamp") is None
-
-
-def test_format_timestamp_missing_and_unparsable():
-    assert format_timestamp(None) == "(no timestamp)"
-    assert format_timestamp(123) == "(no timestamp)"
-    assert format_timestamp("garbage") == "garbage"
-
-
-def test_format_elapsed_missing_timestamps():
-    assert format_elapsed(None, "2026-01-01T00:00:00Z") == ""
-    assert format_elapsed("2026-01-01T00:00:00Z", None) == ""
-
-
-def test_format_elapsed_hours_and_minutes():
-    start = "2026-01-01T00:00:00Z"
-    assert format_elapsed(start, "2026-01-01T01:02:03Z") == "+1:02:03"
-    assert format_elapsed(start, "2026-01-01T00:02:03Z") == "+2:03"
-    assert format_elapsed(start, "2026-01-01T00:00:05Z") == "+5s"
-
-
-def test_date_only_missing_timestamp():
-    assert date_only(None) == "unknown"
 
 
 # --- file discovery / selection ---------------------------------------
@@ -1958,7 +1933,7 @@ def test_cli_no_events_writes_no_json(batch, tmp_path, monkeypatch, capsys):
 
 @pytest.mark.parametrize("stdout", [False, True])
 def test_cli_warnings_stay_on_stderr(stdout, tmp_path, monkeypatch, capsys):
-    import session_log_envelope
+    from session_log_extractors import session_log_envelope
 
     monkeypatch.setattr(session_log_envelope, "SIZE_WARN_BYTES", 1)
     transcript = tmp_path / "s.jsonl"

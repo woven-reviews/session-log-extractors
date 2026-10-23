@@ -13,7 +13,7 @@ Run the Copilot session-log extractor for every Copilot CLI session associated w
 
 ```bash
 image="rfp-monster-session-log-extractor:local"
-docker build -q -t "$image" scripts >/dev/null
+docker build -q -f scripts/Dockerfile -t "$image" . >/dev/null
 mounts=(-v "$PWD:$PWD" -v /tmp:/tmp:ro)
 [ -d "$HOME/.copilot" ] && mounts+=(-v "$HOME/.copilot:$HOME/.copilot:ro")
 docker run --rm -e HOME="$HOME" -u "$(id -u):$(id -g)" -w "$PWD" "${mounts[@]}" "$image" \

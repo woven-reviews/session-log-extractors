@@ -2,7 +2,10 @@
 
 ## Scope
 
-Plan to make JSON the sole extraction output. Implementation has not changed.
+All three CLIs now emit JSON only and no longer load external skill/command
+definitions or generate Markdown/image descriptions. The remaining structured
+interpretation and fixture acceptance requirements below are the broader
+pipeline contract; this cleanup does not claim they are all implemented.
 
 Preserve **all existing JSON fields and contents**, plus the Markdown-only information required for the frontend behavior described in this discussion. The frontend inventory determines those additions only. It does not narrow the existing JSON contract.
 
