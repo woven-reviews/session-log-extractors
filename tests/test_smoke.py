@@ -19,7 +19,7 @@ def test_package_imports():
     assert raw_filename("claude", "smoke") == "claude_session_log_raw_smoke.json"
 
 
-@pytest.mark.parametrize("harness", ["claude", "copilot"])
+@pytest.mark.parametrize("harness", ["claude", "codex", "copilot"])
 def test_help_uses_call_time_output_root(harness, tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("COLUMNS", "1000")
     module = importlib.import_module(
@@ -223,10 +223,9 @@ def test_wrapper_delegates_with_checkout_root(harness, monkeypatch):
     extractor = import_module(f"session_log_extractors.extract_{harness}_session_log")
 
     root = Path(__file__).resolve().parents[1]
-    monkeypatch.setattr(extractor, "PROJECT_ROOT", extractor.PROJECT_ROOT)
 
-    def main():
-        assert extractor.PROJECT_ROOT == root
+    def main(*, project_root):
+        assert project_root == root
         return 7
 
     monkeypatch.setattr(extractor, "main", main)

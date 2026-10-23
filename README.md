@@ -62,7 +62,7 @@ and supply the checkout root for default output paths, including from subdirecto
 Copilot retains `~/.copilot/session-store.db` and `~/.copilot/session-state`
 for discovery; `--db PATH` still overrides the database location.
 Repository matching uses the current working directory; default output uses the checkout root.
-Direct calls to the Claude and Copilot package modules' `main()` use the working
+Direct calls to the package modules' `main()` use the working
 directory at call time for default output, or an explicit `project_root=Path(...)`.
 Run `uv run --locked pytest tests/test_smoke.py` to check package imports and
 fixture exports through all three local script entrypoints.

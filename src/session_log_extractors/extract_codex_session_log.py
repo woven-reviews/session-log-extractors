@@ -73,7 +73,6 @@ from session_log_extractors.session_log_envelope import (
 )
 
 CODEX_SESSIONS_ROOT = Path.home() / ".codex" / "sessions"
-PROJECT_ROOT = Path.cwd()
 
 _IMAGE_EXT = {
     "image/png": "png",
@@ -1323,7 +1322,8 @@ def session_models(entries: List[Dict[str, Any]]) -> List[str]:
     return models
 
 
-def build_arg_parser() -> argparse.ArgumentParser:
+def build_arg_parser(project_root: Optional[Path] = None) -> argparse.ArgumentParser:
+    project_root = Path.cwd() if project_root is None else project_root
     parser = argparse.ArgumentParser(
         prog="extract_codex_session_log.py",
         description=(
@@ -1382,7 +1382,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "for all-session extraction, the output directory (default: project "
             "root); for a selected single session, the JSON file (default: "
-            "codex_session_log_raw_<session-id>.json in the project root). "
+            f"codex_session_log_raw_<session-id>.json in the project root, {project_root}). "
             "Use '-' for stdout and the newest single session"
         ),
     )
@@ -1430,10 +1430,13 @@ def _extract_all(
     output: Optional[str],
     strict: bool = False,
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
+    *,
+    project_root: Optional[Path] = None,
 ) -> int:
     """Extract every matching Codex transcript, one JSON file each."""
     root = Path(sessions_root).expanduser() if sessions_root else CODEX_SESSIONS_ROOT
     cwd = Path.cwd()
+    project_root = cwd if project_root is None else project_root
     files = sorted(
         matching_transcripts(root, cwd, strict=strict),
         key=lambda p: (p.stat().st_mtime, str(p)),
@@ -1445,7 +1448,7 @@ def _extract_all(
         )
         return 1
 
-    out_dir = Path(output).expanduser() if output else PROJECT_ROOT
+    out_dir = Path(output).expanduser() if output else project_root
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"extracting {len(files)} Codex session(s) from {root}", file=sys.stderr)
 
@@ -1476,8 +1479,11 @@ def _extract_all(
     return 0 if written else 1
 
 
-def main(argv: Optional[List[str]] = None) -> int:
-    args = build_arg_parser().parse_args(argv)
+def main(
+    argv: Optional[List[str]] = None, *, project_root: Optional[Path] = None
+) -> int:
+    project_root = Path.cwd() if project_root is None else project_root
+    args = build_arg_parser(project_root).parse_args(argv)
 
     default_all = not args.session and not args.transcript and args.output != "-"
     if args.all or default_all:
@@ -1487,6 +1493,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             out,
             strict=args.strict,
             tool_result_max_bytes=args.tool_result_bytes,
+            project_root=project_root,
         )
 
     try:
@@ -1517,7 +1524,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         warn_if_oversized("stdout JSON", payload, CAP_FLAG)
     else:
         out_path = (
-            PROJECT_ROOT / raw_filename("codex", output_identifier(transcript))
+            project_root / raw_filename("codex", output_identifier(transcript))
             if args.output is None
             else Path(args.output).expanduser()
         )

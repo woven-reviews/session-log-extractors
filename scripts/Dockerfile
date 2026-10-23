@@ -10,6 +10,5 @@ WORKDIR /extractor
 COPY pyproject.toml ./
 COPY src/ ./src/
 RUN pip install --no-cache-dir .
-COPY scripts/extract_claude_session_log.py scripts/extract_codex_session_log.py scripts/extract_copilot_session_log.py ./scripts/
 
 ENTRYPOINT ["python3"]
