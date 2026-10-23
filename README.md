@@ -57,11 +57,13 @@ docker run --rm session-log-extractor -c 'from session_log_extractors import ses
 
 The repository extraction helpers mount the verified checkout and invoke its
 `scripts/extract_*_session_log.py` with the image's Python and installed package.
-The Claude and Codex scripts delegate to
-`session_log_extractors.extract_claude_session_log` and
-`session_log_extractors.extract_codex_session_log`
+The Claude, Codex, and Copilot scripts delegate to their `session_log_extractors` modules
 and supply the checkout root for default output paths, including from subdirectories.
-This keeps discovery and default output paths relative to that checkout.
+Copilot retains `~/.copilot/session-store.db` and `~/.copilot/session-state`
+for discovery; `--db PATH` still overrides the database location.
+Repository matching uses the current working directory; default output uses the checkout root.
+Direct calls to the Claude and Copilot package modules' `main()` use the working
+directory at call time for default output, or an explicit `project_root=Path(...)`.
 Run `uv run --locked pytest tests/test_smoke.py` to check package imports and
 fixture exports through all three local script entrypoints.
 
@@ -150,9 +152,9 @@ Algorithms and interfaces are preserved in this tooling change.
 | `src/session_log_extractors/extract_codex_session_log.py` | `image_refs_from_event` | C901, PLR0912 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |
 | `src/session_log_extractors/extract_codex_session_log.py` | `select_transcript` | C901 | [QUAL-2515](https://linear.app/andela/issue/QUAL-2515) |
 | `src/session_log_extractors/extract_codex_session_log.py` | `skill_refs_from_call` | C901 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |
-| `extract_copilot_session_log.py` | `_build_turn_objects` | C901, PLR0912, PLR0915 | [QUAL-2519](https://linear.app/andela/issue/QUAL-2519) |
-| `extract_copilot_session_log.py` | `_permissions_from_events` | C901 | [QUAL-2519](https://linear.app/andela/issue/QUAL-2519) |
-| `extract_copilot_session_log.py` | `get_state_attachments` | C901, PLR0912 | [QUAL-2516](https://linear.app/andela/issue/QUAL-2516) |
+| `src/session_log_extractors/extract_copilot_session_log.py` | `_build_turn_objects` | C901, PLR0912, PLR0915 | [QUAL-2519](https://linear.app/andela/issue/QUAL-2519) |
+| `src/session_log_extractors/extract_copilot_session_log.py` | `_permissions_from_events` | C901 | [QUAL-2519](https://linear.app/andela/issue/QUAL-2519) |
+| `src/session_log_extractors/extract_copilot_session_log.py` | `get_state_attachments` | C901, PLR0912 | [QUAL-2516](https://linear.app/andela/issue/QUAL-2516) |
 | `generate_claude_fixtures.py` | `run_case` | C901, PLR0912, PLR0915 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
 | `generate_codex_fixtures.py` | `capture_interactive` | C901, PLR0915 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
 | `generate_codex_fixtures.py` | `clean` | C901, PLR0912 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |

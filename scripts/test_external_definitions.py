@@ -1,10 +1,14 @@
 """Extraction must use recorded evidence without reading local definitions."""
 
-import extract_copilot_session_log as copilot
+import json
+import shutil
+from pathlib import Path
+
 import pytest
 
 from session_log_extractors import extract_claude_session_log as claude
 from session_log_extractors import extract_codex_session_log as codex
+from session_log_extractors import extract_copilot_session_log as copilot
 
 
 @pytest.mark.parametrize("extractor", [claude, codex, copilot])
@@ -38,3 +42,39 @@ def test_command_invocations_do_not_load_definitions(extractor, monkeypatch):
     )
     turn.add_command("/recorded-command")
     assert turn.command_args is None
+
+
+FIXTURES = Path(__file__).parent / "fixtures" / "claude"
+
+
+def test_local_definitions_are_not_read_or_added_to_the_envelope(tmp_path, monkeypatch):
+    project = (tmp_path / "project").resolve()
+    shutil.copytree(FIXTURES / "project", project)
+    definitions = {
+        project / ".claude/skills/fixture-skill/SKILL.md": "LOCAL_SKILL_ONLY_MARKER",
+        project / ".claude/commands/fixture-command.md": "LOCAL_COMMAND_ONLY_MARKER",
+    }
+    for path, marker in definitions.items():
+        path.write_text(path.read_text(encoding="utf-8") + marker, encoding="utf-8")
+
+    monkeypatch.chdir(project)
+    original_open = Path.open
+
+    def guarded_open(path, *args, **kwargs):
+        if path.resolve() in definitions:
+            pytest.fail(f"Extraction must not read local definitions: {path}")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", guarded_open)
+    transcript = FIXTURES / "skill_command.jsonl"
+    turns, _ = claude.build_turns(claude.load_entries(transcript))
+    assert turns[0].skills_used == ["fixture-skill"]
+    assert turns[1].command == "/fixture-command"
+    envelope = claude.extract_transcript(transcript)
+    assert envelope is not None
+    output = json.dumps(envelope)
+    for marker in definitions.values():
+        assert marker not in output
+    # These markers belong to recorded assistant replies and must remain.
+    assert "SKILL_FIXTURE_MARKER" in output
+    assert "COMMAND_FIXTURE_MARKER" in output

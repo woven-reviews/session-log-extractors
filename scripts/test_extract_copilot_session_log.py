@@ -12,9 +12,10 @@ import shutil
 import sqlite3
 from pathlib import Path
 
-import extract_copilot_session_log as copilot_log
 import pytest
-from extract_copilot_session_log import (
+
+from session_log_extractors import extract_copilot_session_log as copilot_log
+from session_log_extractors.extract_copilot_session_log import (
     Turn,
     _permissions_from_events,
     _skills_from_events,
@@ -502,9 +503,10 @@ def test_copilot_build_events_emits_one_timestamped_event_per_tool_call():
 def test_copilot_main_defaults_to_all_without_a_selector(monkeypatch, tmp_path):
     called = {}
 
-    def fake_extract_all(conn, output, strict, tool_result_max_bytes):
+    def fake_extract_all(conn, output, strict, tool_result_max_bytes, *, project_root):
         called["output"] = output
         called["strict"] = strict
+        called["project_root"] = project_root
         return 0
 
     monkeypatch.setattr(copilot_log, "_extract_all", fake_extract_all)
@@ -513,7 +515,7 @@ def test_copilot_main_defaults_to_all_without_a_selector(monkeypatch, tmp_path):
     )
     rc = copilot_log.main(["--db", str(tmp_path / "x.db")])
     assert rc == 0
-    assert called == {"output": None, "strict": False}
+    assert called == {"output": None, "strict": False, "project_root": Path.cwd()}
 
 
 # -- tool/result/skill descriptor edge cases -------------------------------
@@ -1115,13 +1117,16 @@ def test_copilot_main_reports_session_extraction_error(monkeypatch, tmp_path, ca
     assert "error" in captured.err
 
 
+@pytest.mark.parametrize("explicit_root", [False, True])
 def test_copilot_main_with_explicit_session_id_and_default_output(
-    monkeypatch, tmp_path
+    tmp_path, monkeypatch, explicit_root
 ):
-    monkeypatch.setattr(copilot_log, "PROJECT_ROOT", tmp_path)
+    if not explicit_root:
+        monkeypatch.chdir(tmp_path)
     assert (
         copilot_log.main(
-            [NATIVE_IDS["baseline"], "--db", str(FIXTURES / "session-store.db")]
+            [NATIVE_IDS["baseline"], "--db", str(FIXTURES / "session-store.db")],
+            project_root=tmp_path if explicit_root else None,
         )
         == 0
     )
@@ -1213,13 +1218,12 @@ def test_copilot_cli_tool_result_cap(tmp_path):
 
 
 @pytest.mark.parametrize("selector", [True, False])
-def test_copilot_empty_session_writes_no_json(tmp_path, monkeypatch, capsys, selector):
+def test_copilot_empty_session_writes_no_json(tmp_path, capsys, selector):
     db_path = _make_test_db(tmp_path, "empty", [])
-    monkeypatch.setattr(copilot_log, "PROJECT_ROOT", tmp_path / "output")
     args = ["--db", str(db_path)]
     if selector:
         args = ["empty", "--output", "-", *args]
-    assert copilot_log.main(args) == 1
+    assert copilot_log.main(args, project_root=tmp_path / "output") == 1
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "no exportable events" in captured.err
@@ -1293,14 +1297,21 @@ def test_copilot_tool_result_cap_boundaries(cap):
         assert "TOOL_FIXTURE_MARKER" in call["result"]
 
 
-def test_copilot_all_default_destination_and_colliding_names(tmp_path, monkeypatch):
+@pytest.mark.parametrize("explicit_root", [False, True])
+def test_copilot_all_default_destination_and_colliding_names(
+    tmp_path, monkeypatch, explicit_root
+):
     db_path = _native_db_copy(tmp_path, "UPDATE sessions SET cwd=?", (str(tmp_path),))
-    output = tmp_path / "output"
-    monkeypatch.setattr(copilot_log, "PROJECT_ROOT", output)
+    output = tmp_path / "output" if explicit_root else tmp_path
     monkeypatch.setattr(copilot_log, "output_identifier", lambda session: "same")
     monkeypatch.chdir(tmp_path)
-    assert copilot_log.main(["--db", str(db_path)]) == 0
-    paths = sorted(output.iterdir())
+    assert (
+        copilot_log.main(
+            ["--db", str(db_path)], project_root=output if explicit_root else None
+        )
+        == 0
+    )
+    paths = sorted(output.glob("*.json"))
     assert len(paths) == len(NATIVE_IDS)
     assert (output / "copilot_session_log_raw_same.json").is_file()
     assert (output / "copilot_session_log_raw_same-2.json").is_file()
@@ -1350,3 +1361,19 @@ def test_copilot_retained_database_metadata_readers(tmp_path):
                 "created_at": "2026-01-01T00:05:00Z",
             }
         ]
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_main_closes_connection(monkeypatch, fail):
+    from unittest.mock import Mock
+
+    conn = Mock()
+    monkeypatch.setattr(copilot_log, "get_db_connection", lambda path: conn)
+    extract = Mock(return_value=0, side_effect=ValueError("failure") if fail else None)
+    monkeypatch.setattr(copilot_log, "_extract_selected", extract)
+    if fail:
+        with pytest.raises(ValueError, match="failure"):
+            copilot_log.main(["selected"])
+    else:
+        assert copilot_log.main(["selected"]) == 0
+    conn.close.assert_called_once_with()

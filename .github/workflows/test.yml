@@ -25,3 +25,6 @@ jobs:
       - run: >
           uv run --locked pytest scripts/test_extract_claude_session_log.py
           --cov=session_log_extractors.extract_claude_session_log --cov-fail-under=95
+      - run: >
+          uv run --locked pytest scripts/test_extract_copilot_session_log.py
+          --cov=session_log_extractors.extract_copilot_session_log --cov-fail-under=95
