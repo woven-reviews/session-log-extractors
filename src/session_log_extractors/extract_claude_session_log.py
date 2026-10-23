@@ -1122,7 +1122,7 @@ def attribute_subagents(turns: List[Turn], subs: List[Dict[str, Any]]) -> None:
 
 
 def build_arg_parser(project_root: Optional[Path] = None) -> argparse.ArgumentParser:
-    project_root = project_root if project_root is not None else Path.cwd()
+    project_root = Path.cwd() if project_root is None else project_root
     p = argparse.ArgumentParser(
         prog="extract_claude_session_log.py",
         description=(
@@ -1225,6 +1225,7 @@ def _extract_all(
     output: Optional[str],
     strict: bool = False,
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
+    *,
     project_root: Optional[Path] = None,
 ) -> int:
     """Extract every transcript in the project dir, one JSON file each.
@@ -1233,6 +1234,7 @@ def _extract_all(
     written to ``output`` (treated as a directory) or the project root.
     """
     cwd = Path.cwd()
+    project_root = cwd if project_root is None else project_root
     proj = project_dir or resolve_project_dir(None, cwd, strict=strict)
     if proj is None or not proj.is_dir():
         where = (
@@ -1246,7 +1248,7 @@ def _extract_all(
         print(f"error: no .jsonl transcripts in {proj}", file=sys.stderr)
         return 1
 
-    out_dir = Path(output).expanduser() if output else project_root or cwd
+    out_dir = Path(output).expanduser() if output else project_root
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"extracting {len(files)} session(s) from {proj}", file=sys.stderr)
 
@@ -1277,7 +1279,7 @@ def _extract_all(
 def main(
     argv: Optional[List[str]] = None, *, project_root: Optional[Path] = None
 ) -> int:
-    project_root = project_root if project_root is not None else Path.cwd()
+    project_root = Path.cwd() if project_root is None else project_root
     args = build_arg_parser(project_root).parse_args(argv)
 
     # all-sessions is the default; a session id, --transcript or stdout opts out

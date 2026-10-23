@@ -13,7 +13,8 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from extract_codex_session_log import (
+
+from session_log_extractors.extract_codex_session_log import (
     _cwd_matches,
     _decode_jsonish,
     _extract_all,
@@ -1569,7 +1570,7 @@ def test_extract_all_reports_error_when_nothing_matches():
 
 
 def test_extract_all_skips_unparseable_transcript_and_still_succeeds(monkeypatch):
-    import extract_codex_session_log as mod
+    from session_log_extractors import extract_codex_session_log as mod
 
     with tempfile.TemporaryDirectory() as tmp_name:
         tmp = Path(tmp_name)
@@ -1758,7 +1759,7 @@ def test_image_bytes_and_ext_data_url_bad_base64_padding():
 
 
 def test_unique_identifier_suffixes_duplicates():
-    from extract_codex_session_log import _unique_identifier
+    from session_log_extractors.extract_codex_session_log import _unique_identifier
 
     used: set = set()
     assert _unique_identifier("sess", used) == "sess"
@@ -1812,7 +1813,7 @@ def test_main_write_failure_for_explicit_output_path(tmp_path):
 
 @pytest.mark.parametrize("mode", ["stdout", "file", "default", "batch"])
 def test_json_entrypoints_bypass_presentation(mode, tmp_path, monkeypatch, capsys):
-    import extract_codex_session_log as mod
+    from session_log_extractors import extract_codex_session_log as mod
 
     transcript = tmp_path / "session.jsonl"
     entries = _session_entries("s1", tmp_path, "# Recorded Markdown")
@@ -1821,7 +1822,6 @@ def test_json_entrypoints_bypass_presentation(mode, tmp_path, monkeypatch, capsy
     _write_jsonl(transcript, entries)
     expected = build_events(entries)
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(mod, "PROJECT_ROOT", tmp_path / "out")
 
     def presentation_forbidden(*args, **kwargs):
         pytest.fail("JSON extraction invoked presentation")
@@ -1836,7 +1836,7 @@ def test_json_entrypoints_bypass_presentation(mode, tmp_path, monkeypatch, capsy
         args += ["--output", str(destination)]
     elif mode == "batch":
         args = ["--all", "--sessions-root", str(tmp_path)]
-    assert main(args) == 0
+    assert main(args, project_root=tmp_path / "out") == 0
     captured = capsys.readouterr()
     envelope = json.loads(captured.out if mode == "stdout" else destination.read_text())
     assert envelope["events"] == expected
@@ -1977,3 +1977,27 @@ def test_batch_duplicate_identifiers_preserve_both_json_files(tmp_path, monkeypa
         "codex_session_log_raw_same.json",
         "codex_session_log_raw_same-2.json",
     }
+
+
+@pytest.mark.parametrize("batch", [False, True])
+@pytest.mark.parametrize("explicit_root", [False, True])
+def test_main_output_root_is_resolved_at_call_time(
+    batch, explicit_root, tmp_path, monkeypatch
+):
+    for name in ["first", "second"]:
+        cwd = tmp_path / name
+        cwd.mkdir()
+        monkeypatch.chdir(cwd)
+        transcript = cwd / "session.jsonl"
+        _write_jsonl(transcript, _session_entries("s1", cwd, "hello"))
+        args = (
+            ["--all", "--sessions-root", str(cwd)]
+            if batch
+            else ["--transcript", str(transcript)]
+        )
+        output_root = cwd / "exports" if explicit_root else cwd
+        assert main(args, project_root=output_root if explicit_root else None) == 0
+        output = output_root / "codex_session_log_raw_s1.json"
+        assert json.loads(output.read_text())["events"][0]["text"] == "hello"
+        if explicit_root:
+            assert not (cwd / output.name).exists()
