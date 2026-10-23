@@ -21,7 +21,6 @@ def test_local_definitions_are_not_read_or_added_to_the_envelope(tmp_path, monke
     for path, marker in definitions.items():
         path.write_text(path.read_text(encoding="utf-8") + marker, encoding="utf-8")
 
-    monkeypatch.setattr(claude, "PROJECT_ROOT", project)
     monkeypatch.chdir(project)
     original_open = Path.open
 

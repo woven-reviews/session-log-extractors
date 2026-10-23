@@ -100,10 +100,9 @@ def test_claude_wrapper_delegates_with_checkout_root(monkeypatch):
     from session_log_extractors import extract_claude_session_log as claude
 
     root = Path(__file__).resolve().parents[1]
-    monkeypatch.setattr(claude, "PROJECT_ROOT", claude.PROJECT_ROOT)
 
-    def main():
-        assert claude.PROJECT_ROOT == root
+    def main(*, project_root):
+        assert project_root == root
         return 7
 
     monkeypatch.setattr(claude, "main", main)

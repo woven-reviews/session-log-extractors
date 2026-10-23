@@ -46,8 +46,6 @@ from session_log_extractors.session_log_envelope import (
 
 PROJECTS_ROOT = Path.home() / ".claude" / "projects"
 
-# The checkout CLI sets this to its root, independent of the working directory.
-PROJECT_ROOT = Path.cwd()
 # Tool calls whose inputs touch files we want to collect for "Files changed".
 FILE_WRITING_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "Create"}
 
@@ -1123,7 +1121,8 @@ def attribute_subagents(turns: List[Turn], subs: List[Dict[str, Any]]) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def build_arg_parser() -> argparse.ArgumentParser:
+def build_arg_parser(project_root: Optional[Path] = None) -> argparse.ArgumentParser:
+    project_root = project_root if project_root is not None else Path.cwd()
     p = argparse.ArgumentParser(
         prog="extract_claude_session_log.py",
         description=(
@@ -1184,7 +1183,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "output JSON file (default: claude_session_log_raw_<session-id>.json "
-            f"in the project root, {PROJECT_ROOT}; use '-' for stdout). "
+            f"in the project root, {project_root}; use '-' for stdout). "
             "With --all, an output "
             "directory instead (default: project root)."
         ),
@@ -1226,6 +1225,7 @@ def _extract_all(
     output: Optional[str],
     strict: bool = False,
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
+    project_root: Optional[Path] = None,
 ) -> int:
     """Extract every transcript in the project dir, one JSON file each.
 
@@ -1246,7 +1246,7 @@ def _extract_all(
         print(f"error: no .jsonl transcripts in {proj}", file=sys.stderr)
         return 1
 
-    out_dir = Path(output).expanduser() if output else PROJECT_ROOT
+    out_dir = Path(output).expanduser() if output else project_root or cwd
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"extracting {len(files)} session(s) from {proj}", file=sys.stderr)
 
@@ -1274,8 +1274,11 @@ def _extract_all(
     return 0 if written else 1
 
 
-def main(argv: Optional[List[str]] = None) -> int:
-    args = build_arg_parser().parse_args(argv)
+def main(
+    argv: Optional[List[str]] = None, *, project_root: Optional[Path] = None
+) -> int:
+    project_root = project_root if project_root is not None else Path.cwd()
+    args = build_arg_parser(project_root).parse_args(argv)
 
     # all-sessions is the default; a session id, --transcript or stdout opts out
     if args.all or not (args.session or args.transcript or args.output == "-"):
@@ -1286,6 +1289,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             out,
             strict=args.strict,
             tool_result_max_bytes=args.tool_result_bytes,
+            project_root=project_root,
         )
 
     try:
@@ -1316,7 +1320,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         warn_if_oversized("stdout JSON", payload, CAP_FLAG)
     else:
         out_path = (
-            PROJECT_ROOT / raw_filename("claude", transcript.stem)
+            project_root / raw_filename("claude", transcript.stem)
             if args.output is None
             else Path(args.output).expanduser()
         )

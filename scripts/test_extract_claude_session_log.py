@@ -1262,7 +1262,6 @@ def test_cli_json_destinations(destination, tmp_path, monkeypatch, capsys):
     _write_jsonl(transcript, entries)
     output = tmp_path / "output"
     output.mkdir()
-    monkeypatch.setattr(eclog, "PROJECT_ROOT", output)
 
     def no_turn_rendering(*args, **kwargs):
         pytest.fail("JSON extraction must not assemble Markdown turns")
@@ -1273,7 +1272,7 @@ def test_cli_json_destinations(destination, tmp_path, monkeypatch, capsys):
         args += ["--output", "-"]
     elif destination == "explicit":
         args += ["--output", str(output / "custom.json")]
-    assert main(args) == 0
+    assert main(args, project_root=output) == 0
     captured = capsys.readouterr()
     if destination == "stdout":
         envelope = json.loads(captured.out)
@@ -1297,14 +1296,13 @@ def test_cli_json_destinations(destination, tmp_path, monkeypatch, capsys):
 
 
 @pytest.mark.parametrize("all_flag", [[], ["--all"]])
-def test_cli_batch_emits_only_json(all_flag, tmp_path, monkeypatch, capsys):
+def test_cli_batch_emits_only_json(all_flag, tmp_path, capsys):
     project = tmp_path / "project"
     project.mkdir()
     for name in ["a", "b"]:
         _write_jsonl(project / f"{name}.jsonl", _conversation_entries())
     output = tmp_path / "output"
-    monkeypatch.setattr(eclog, "PROJECT_ROOT", output)
-    assert main(all_flag + ["--project-dir", str(project)]) == 0
+    assert main(all_flag + ["--project-dir", str(project)], project_root=output) == 0
     assert sorted(p.name for p in output.iterdir()) == [
         "claude_session_log_raw_a.json",
         "claude_session_log_raw_b.json",
@@ -1467,3 +1465,22 @@ def test_cli_no_event_input_keeps_existing_envelope_omission(mode, tmp_path, cap
     assert "session: no exportable events" in captured.err
     assert "no JSON written" in captured.err
     assert not list(tmp_path.rglob("*.json"))
+
+
+@pytest.mark.parametrize("batch", [False, True])
+def test_cli_default_root_uses_current_directory(batch, tmp_path, monkeypatch):
+    transcript = tmp_path / "session.jsonl"
+    _write_jsonl(transcript, _conversation_entries())
+    for name in ["first", "second"]:
+        output = tmp_path / name
+        output.mkdir()
+        monkeypatch.chdir(output)
+        arguments = (
+            ["--project-dir", str(tmp_path)]
+            if batch
+            else ["--transcript", str(transcript)]
+        )
+        assert main(arguments) == 0
+        assert json.loads((output / "claude_session_log_raw_session.json").read_text())[
+            "events"
+        ]
