@@ -39,6 +39,7 @@ from session_log_extractors.session_log_envelope import (
     warn_if_oversized,
     write_envelope,
 )
+from session_log_extractors.session_model import Session
 
 # --------------------------------------------------------------------------- #
 # Constants
@@ -1014,12 +1015,14 @@ def build_raw_envelope(
 
     session_id = transcript.stem
     return build_envelope(
-        harness="claude",
-        session_id=session_id,
-        events=events,
-        cwd=session_cwd(entries),
-        started_at=first_timestamp(entries),
-        models=session_models(entries),
+        Session(
+            harness="claude",
+            session_id=session_id,
+            events=events,
+            cwd=session_cwd(entries),
+            started_at=first_timestamp(entries),
+            models=session_models(entries),
+        ),
         tool_result_max_bytes=tool_result_max_bytes,
     )
 

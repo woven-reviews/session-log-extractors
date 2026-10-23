@@ -57,6 +57,7 @@ from session_log_extractors.session_log_envelope import (
     build_envelope,
     write_envelope,
 )
+from session_log_extractors.session_model import Session
 
 # 1x1 transparent PNG.
 _PNG_B64 = (
@@ -373,7 +374,9 @@ def test_large_native_result_reaches_envelope_size_warning():
     )
     # Repeated native Read results simulate a long session without checking in 8 MB.
     copies = SIZE_WARN_BYTES // len(json.dumps(events).encode()) + 2
-    envelope = build_envelope("claude", "large-session", events * copies)
+    envelope = build_envelope(
+        Session(harness="claude", session_id="large-session", events=events * copies)
+    )
     out = Path(tempfile.mkdtemp()) / "large.json"
     stderr = io.StringIO()
     with contextlib.redirect_stderr(stderr):
@@ -1378,12 +1381,14 @@ def test_cli_preserves_native_payloads(fixture, limit, capsys):
     envelope = json.loads(captured.out)
     entries = load_entries(transcript)
     assert envelope == build_envelope(
-        "claude",
-        transcript.stem,
-        build_events(entries, limit),
-        cwd=session_cwd(entries),
-        started_at=first_timestamp(entries),
-        models=session_models(entries),
+        Session(
+            harness="claude",
+            session_id=transcript.stem,
+            events=build_events(entries, limit),
+            cwd=session_cwd(entries),
+            started_at=first_timestamp(entries),
+            models=session_models(entries),
+        ),
         tool_result_max_bytes=limit,
     )
 

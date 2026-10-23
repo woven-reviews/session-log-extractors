@@ -58,6 +58,7 @@ from session_log_extractors.session_log_envelope import (
     warn_if_oversized,
     write_envelope,
 )
+from session_log_extractors.session_model import Session
 
 COPILOT_DB = Path.home() / ".copilot" / "session-store.db"
 COPILOT_STATE_ROOT = Path.home() / ".copilot" / "session-state"
@@ -1137,12 +1138,14 @@ def extract_session(
     if not events:
         return None
     return build_envelope(
-        harness="copilot",
-        session_id=output_identifier(session),
-        events=events,
-        cwd=session.get("cwd"),
-        started_at=session.get("created_at"),
-        models=get_session_models(conn, session["id"]),
+        Session(
+            harness="copilot",
+            session_id=output_identifier(session),
+            events=events,
+            cwd=session.get("cwd"),
+            started_at=session.get("created_at"),
+            models=get_session_models(conn, session["id"]),
+        ),
         tool_result_max_bytes=tool_result_max_bytes,
     )
 
