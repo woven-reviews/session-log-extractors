@@ -1482,3 +1482,22 @@ def test_cli_no_event_input_keeps_existing_envelope_omission(mode, tmp_path, cap
     assert "session: no exportable events" in captured.err
     assert "no JSON written" in captured.err
     assert not list(tmp_path.rglob("*.json"))
+
+
+@pytest.mark.parametrize("batch", [False, True])
+def test_cli_default_root_uses_current_directory(batch, tmp_path, monkeypatch):
+    transcript = tmp_path / "session.jsonl"
+    _write_jsonl(transcript, _conversation_entries())
+    for name in ["first", "second"]:
+        output = tmp_path / name
+        output.mkdir()
+        monkeypatch.chdir(output)
+        arguments = (
+            ["--project-dir", str(tmp_path)]
+            if batch
+            else ["--transcript", str(transcript)]
+        )
+        assert main(arguments) == 0
+        assert json.loads((output / "claude_session_log_raw_session.json").read_text())[
+            "events"
+        ]
