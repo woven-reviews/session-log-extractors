@@ -1307,7 +1307,3 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _extract_selected(conn, args)
     finally:
         conn.close()
-
-
-if __name__ == "__main__":
-    sys.exit(main())
