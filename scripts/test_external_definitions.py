@@ -4,10 +4,10 @@ import json
 import shutil
 from pathlib import Path
 
-import extract_codex_session_log as codex
 import pytest
 
 from session_log_extractors import extract_claude_session_log as claude
+from session_log_extractors import extract_codex_session_log as codex
 from session_log_extractors import extract_copilot_session_log as copilot
 
 

@@ -23,7 +23,7 @@ def test_package_imports():
     assert raw_filename("claude", "smoke") == "claude_session_log_raw_smoke.json"
 
 
-@pytest.mark.parametrize("harness", ["claude", "copilot"])
+@pytest.mark.parametrize("harness", ["claude", "codex", "copilot"])
 def test_help_uses_call_time_output_root(harness, tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("COLUMNS", "1000")
     module = importlib.import_module(
@@ -210,3 +210,79 @@ def test_copilot_wrapper_delegates_with_checkout_root(monkeypatch):
             str(root / "scripts/extract_copilot_session_log.py"), run_name="__main__"
         )
     assert exc.value.code == 7
+
+
+@pytest.mark.parametrize("harness", ["codex"])
+def test_wrapper_delegates_with_checkout_root(harness, monkeypatch):
+    extractor = importlib.import_module(
+        f"session_log_extractors.extract_{harness}_session_log"
+    )
+
+    root = Path(__file__).resolve().parents[1]
+
+    def main(*, project_root):
+        assert project_root == root
+        return 7
+
+    monkeypatch.setattr(extractor, "main", main)
+    with pytest.raises(SystemExit) as exc:
+        runpy.run_path(
+            str(root / "scripts" / f"extract_{harness}_session_log.py"),
+            run_name="__main__",
+        )
+    assert exc.value.code == 7
+
+
+@pytest.mark.parametrize("subdirectory", [False, True])
+@pytest.mark.parametrize("selection", ["transcript", "prefix", "all", "discovery"])
+@pytest.mark.parametrize("destination", ["default", "explicit", "stdout"])
+def test_codex_checkout_paths(subdirectory, selection, destination, tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    checkout = tmp_path / "checkout"
+    scripts = checkout / "scripts"
+    scripts.mkdir(parents=True)
+    wrapper = scripts / "extract_codex_session_log.py"
+    shutil.copyfile(root / "scripts" / wrapper.name, wrapper)
+    cwd = checkout / "nested" if subdirectory else checkout
+    cwd.mkdir(exist_ok=True)
+    home = tmp_path / "home"
+    sessions = home / ".codex" / "sessions"
+    sessions.mkdir(parents=True)
+    rows = [
+        {"type": "session_meta", "payload": {"id": "session", "cwd": str(checkout)}},
+        {"type": "event_msg", "payload": {"type": "user_message", "message": "hello"}},
+    ]
+    transcript = sessions / "rollout-session.jsonl"
+    transcript.write_text("\n".join(json.dumps(row) for row in rows))
+    arguments = {
+        "transcript": ["--transcript", str(transcript)],
+        "prefix": ["sess", "--sessions-root", str(sessions)],
+        "all": ["--all", "--sessions-root", str(sessions)],
+        "discovery": [],
+    }[selection]
+    output = checkout / "codex_session_log_raw_session.json"
+    if destination == "explicit":
+        output = tmp_path / "exports" / output.name
+        output.parent.mkdir()
+        target = output.parent if selection in ("all", "discovery") else output
+        arguments += ["--output", str(target)]
+    elif destination == "stdout":
+        arguments += ["--output", "-"]
+    result = subprocess.run(
+        [sys.executable, str(wrapper), *arguments],
+        cwd=cwd,
+        env={**os.environ, "HOME": str(home)},
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    # Explicit --all retains file output even when --output is '-'.
+    stdout = destination == "stdout" and selection != "all"
+    envelope = json.loads(result.stdout if stdout else output.read_text())
+    assert envelope["harness"] == "codex"
+    assert envelope["session_id"] == "session"
+    assert envelope["events"][0]["text"] == "hello"
+    assert output.exists() is not stdout
+    assert not (scripts / output.name).exists()
+    if subdirectory:
+        assert not (cwd / output.name).exists()
