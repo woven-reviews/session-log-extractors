@@ -7,5 +7,8 @@ from pathlib import Path
 from session_log_extractors import extract_claude_session_log
 
 if __name__ == "__main__":
-    extract_claude_session_log.PROJECT_ROOT = Path(__file__).resolve().parent.parent
-    sys.exit(extract_claude_session_log.main())
+    sys.exit(
+        extract_claude_session_log.main(
+            project_root=Path(__file__).resolve().parent.parent
+        )
+    )

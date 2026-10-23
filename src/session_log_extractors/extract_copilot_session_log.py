@@ -61,7 +61,6 @@ from session_log_extractors.session_log_envelope import (
 
 COPILOT_DB = Path.home() / ".copilot" / "session-store.db"
 COPILOT_STATE_ROOT = Path.home() / ".copilot" / "session-state"
-PROJECT_ROOT = Path.cwd()
 
 _NOISE_TAG_BLOCK = re.compile(
     r"<(system-reminder|system-notification|local-command-stdout|local-command-stderr|"
@@ -1148,7 +1147,8 @@ def extract_session(
     )
 
 
-def build_arg_parser() -> argparse.ArgumentParser:
+def build_arg_parser(project_root: Optional[Path] = None) -> argparse.ArgumentParser:
+    project_root = Path.cwd() if project_root is None else project_root
     parser = argparse.ArgumentParser(
         description="Extract GitHub Copilot CLI session logs as JSON.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1191,7 +1191,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "output JSON file (default: copilot_session_log_raw_<identifier>.json "
-            f"in the project root, {PROJECT_ROOT}; use '-' for stdout). With --all, "
+            f"in the project root, {project_root}; use '-' for stdout). With --all, "
             "an output directory instead (default: project root)."
         ),
     )
@@ -1218,14 +1218,17 @@ def _extract_all(
     output: Optional[str],
     strict: bool = False,
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
+    *,
+    project_root: Optional[Path] = None,
 ) -> int:
     """Extract every matching Copilot session, one JSON file each."""
+    project_root = Path.cwd() if project_root is None else project_root
     sessions = matching_sessions(conn, Path.cwd(), strict=strict)
     if not sessions:
         print(f"error: no Copilot sessions for {Path.cwd()}", file=sys.stderr)
         return 1
     sessions.sort(key=lambda s: s.get("created_at", ""))
-    out_dir = Path(output).expanduser() if output else PROJECT_ROOT
+    out_dir = Path(output).expanduser() if output else project_root
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"extracting {len(sessions)} Copilot session(s)", file=sys.stderr)
     written = 0
@@ -1264,7 +1267,9 @@ def _select_session(conn: sqlite3.Connection, args: argparse.Namespace):
     return session
 
 
-def _extract_selected(conn: sqlite3.Connection, args: argparse.Namespace) -> int:
+def _extract_selected(
+    conn: sqlite3.Connection, args: argparse.Namespace, project_root: Path
+) -> int:
     session = _select_session(conn, args)
     if session is None:
         return 1
@@ -1282,7 +1287,7 @@ def _extract_selected(conn: sqlite3.Connection, args: argparse.Namespace) -> int
             out_path = (
                 Path(args.output).expanduser()
                 if args.output
-                else PROJECT_ROOT / raw_filename("copilot", output_identifier(session))
+                else project_root / raw_filename("copilot", output_identifier(session))
             )
             write_envelope(out_path, envelope, CAP_FLAG)
             print(f"wrote {out_path}", file=sys.stderr)
@@ -1292,8 +1297,11 @@ def _extract_selected(conn: sqlite3.Connection, args: argparse.Namespace) -> int
     return 0
 
 
-def main(argv: Optional[List[str]] = None) -> int:
-    args = build_arg_parser().parse_args(argv)
+def main(
+    argv: Optional[List[str]] = None, *, project_root: Optional[Path] = None
+) -> int:
+    project_root = Path.cwd() if project_root is None else project_root
+    args = build_arg_parser(project_root).parse_args(argv)
     db_path = Path(args.db).expanduser() if args.db else COPILOT_DB
     try:
         conn = get_db_connection(db_path)
@@ -1303,7 +1311,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         if args.all or (not args.session and args.output != "-"):
             out = None if args.output == "-" else args.output
-            return _extract_all(conn, out, args.strict, args.tool_result_bytes)
-        return _extract_selected(conn, args)
+            return _extract_all(
+                conn,
+                out,
+                args.strict,
+                args.tool_result_bytes,
+                project_root=project_root,
+            )
+        return _extract_selected(conn, args, project_root)
     finally:
         conn.close()

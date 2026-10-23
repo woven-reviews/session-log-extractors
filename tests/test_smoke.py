@@ -1,3 +1,4 @@
+import importlib
 import json
 import os
 import runpy
@@ -16,6 +17,26 @@ from session_log_extractors.session_log_envelope import raw_filename
 def test_package_imports():
     assert session_log_extractors is not None
     assert raw_filename("claude", "smoke") == "claude_session_log_raw_smoke.json"
+
+
+@pytest.mark.parametrize("harness", ["claude", "copilot"])
+def test_help_uses_call_time_output_root(harness, tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("COLUMNS", "1000")
+    module = importlib.import_module(
+        f"session_log_extractors.extract_{harness}_session_log"
+    )
+    for name in ["first", "second"]:
+        cwd = tmp_path / name
+        cwd.mkdir()
+        monkeypatch.chdir(cwd)
+        with pytest.raises(SystemExit) as exc:
+            module.main(["--help"])
+        assert exc.value.code == 0
+        assert str(cwd) in capsys.readouterr().out
+    with pytest.raises(SystemExit) as exc:
+        module.main(["--help"], project_root=tmp_path / "explicit")
+    assert exc.value.code == 0
+    assert str(tmp_path / "explicit") in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(
@@ -101,10 +122,9 @@ def test_claude_wrapper_delegates_with_checkout_root(monkeypatch):
     from session_log_extractors import extract_claude_session_log as claude
 
     root = Path(__file__).resolve().parents[1]
-    monkeypatch.setattr(claude, "PROJECT_ROOT", claude.PROJECT_ROOT)
 
-    def main():
-        assert claude.PROJECT_ROOT == root
+    def main(*, project_root):
+        assert project_root == root
         return 7
 
     monkeypatch.setattr(claude, "main", main)
@@ -183,10 +203,9 @@ def test_copilot_wrapper_delegates_with_checkout_root(monkeypatch):
     from session_log_extractors import extract_copilot_session_log as copilot
 
     root = Path(__file__).resolve().parents[1]
-    monkeypatch.setattr(copilot, "PROJECT_ROOT", copilot.PROJECT_ROOT)
 
-    def main():
-        assert copilot.PROJECT_ROOT == root
+    def main(*, project_root):
+        assert project_root == root
         return 7
 
     monkeypatch.setattr(copilot, "main", main)

@@ -1254,15 +1254,17 @@ def test_extract_all_skips_unparseable_file():
     assert "skip bad" in err.getvalue()
 
 
+@pytest.mark.parametrize("explicit_root", [False, True])
 @pytest.mark.parametrize("destination", ["stdout", "explicit", "default"])
-def test_cli_json_destinations(destination, tmp_path, monkeypatch, capsys):
+def test_cli_json_destinations(
+    destination, tmp_path, monkeypatch, capsys, explicit_root
+):
     transcript = tmp_path / "session.jsonl"
     entries = _conversation_entries()
     entries[0]["message"]["content"][0]["text"] = "# Keep **recorded Markdown**"
     _write_jsonl(transcript, entries)
     output = tmp_path / "output"
     output.mkdir()
-    monkeypatch.setattr(eclog, "PROJECT_ROOT", output)
 
     def no_turn_rendering(*args, **kwargs):
         pytest.fail("JSON extraction must not assemble Markdown turns")
@@ -1273,7 +1275,9 @@ def test_cli_json_destinations(destination, tmp_path, monkeypatch, capsys):
         args += ["--output", "-"]
     elif destination == "explicit":
         args += ["--output", str(output / "custom.json")]
-    assert main(args) == 0
+    if not explicit_root:
+        monkeypatch.chdir(output)
+    assert main(args, project_root=output if explicit_root else None) == 0
     captured = capsys.readouterr()
     if destination == "stdout":
         envelope = json.loads(captured.out)
@@ -1296,15 +1300,26 @@ def test_cli_json_destinations(destination, tmp_path, monkeypatch, capsys):
     assert envelope["events"][0]["images"][0]["data"] == _PNG_B64
 
 
+@pytest.mark.parametrize("explicit_root", [False, True])
 @pytest.mark.parametrize("all_flag", [[], ["--all"]])
-def test_cli_batch_emits_only_json(all_flag, tmp_path, monkeypatch, capsys):
+def test_cli_batch_emits_only_json(
+    all_flag, tmp_path, monkeypatch, capsys, explicit_root
+):
     project = tmp_path / "project"
     project.mkdir()
     for name in ["a", "b"]:
         _write_jsonl(project / f"{name}.jsonl", _conversation_entries())
     output = tmp_path / "output"
-    monkeypatch.setattr(eclog, "PROJECT_ROOT", output)
-    assert main(all_flag + ["--project-dir", str(project)]) == 0
+    if not explicit_root:
+        output.mkdir()
+        monkeypatch.chdir(output)
+    assert (
+        main(
+            all_flag + ["--project-dir", str(project)],
+            project_root=output if explicit_root else None,
+        )
+        == 0
+    )
     assert sorted(p.name for p in output.iterdir()) == [
         "claude_session_log_raw_a.json",
         "claude_session_log_raw_b.json",
