@@ -71,6 +71,7 @@ from session_log_extractors.session_log_envelope import (
     warn_if_oversized,
     write_envelope,
 )
+from session_log_extractors.session_model import Session
 
 CODEX_SESSIONS_ROOT = Path.home() / ".codex" / "sessions"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -1245,12 +1246,14 @@ def build_raw_envelope(
     if not events:
         return None
     return build_envelope(
-        harness="codex",
-        session_id=output_identifier(transcript),
-        events=events,
-        cwd=session_cwd_from_file(transcript),
-        started_at=first_timestamp(entries),
-        models=session_models(entries),
+        Session(
+            harness="codex",
+            session_id=output_identifier(transcript),
+            events=events,
+            cwd=session_cwd_from_file(transcript),
+            started_at=first_timestamp(entries),
+            models=session_models(entries),
+        ),
         tool_result_max_bytes=tool_result_max_bytes,
     )
 

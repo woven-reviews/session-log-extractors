@@ -24,6 +24,7 @@ from session_log_extractors.session_log_envelope import (
     user_event,
     write_envelope,
 )
+from session_log_extractors.session_model import Session
 
 # 1x1 transparent PNG.
 _PNG_B64 = (
@@ -115,12 +116,14 @@ def test_tool_call_coerces_unserializable_input():
 
 def test_build_envelope_shape():
     env = build_envelope(
-        harness="claude",
-        session_id="s1",
-        events=[user_event(0, "2026-08-01T00:00:00Z", "hi")],
-        cwd="/work",
-        started_at="2026-08-01T00:00:00Z",
-        models=["claude-opus-4-8"],
+        Session(
+            harness="claude",
+            session_id="s1",
+            events=[user_event(0, "2026-08-01T00:00:00Z", "hi")],
+            cwd="/work",
+            started_at="2026-08-01T00:00:00Z",
+            models=["claude-opus-4-8"],
+        ),
         tool_result_max_bytes=4096,
     )
     assert env["schema"] == SCHEMA == "raw-session-log/1"
@@ -132,11 +135,15 @@ def test_build_envelope_shape():
 
 def test_write_envelope_round_trips_through_json():
     env = build_envelope(
-        harness="codex",
-        session_id="s2",
-        events=[
-            user_event(0, None, "see this", [image_from_base64(_PNG_B64, "image/png")])
-        ],
+        Session(
+            harness="codex",
+            session_id="s2",
+            events=[
+                user_event(
+                    0, None, "see this", [image_from_base64(_PNG_B64, "image/png")]
+                )
+            ],
+        )
     )
     out = Path(tempfile.mkdtemp()) / raw_filename("codex", "s2")
     size = write_envelope(out, env)
