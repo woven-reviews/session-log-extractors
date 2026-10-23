@@ -17,9 +17,10 @@ git fetch origin main
 uv run --locked diff-cover coverage.xml --compare-branch=origin/main --fail-under=95
 uv run --locked pytest scripts/test_extract_codex_session_log.py --cov=extract_codex_session_log --cov-fail-under=95
 uv run --locked pytest scripts/test_extract_claude_session_log.py --cov=session_log_extractors.extract_claude_session_log --cov-fail-under=95
+uv run --locked pytest scripts/test_extract_copilot_session_log.py --cov=session_log_extractors.extract_copilot_session_log --cov-fail-under=95
 ```
 
-Keep all four coverage thresholds at 95% or higher. Overall coverage excludes
+Keep all five coverage thresholds at 95% or higher. Overall coverage excludes
 test modules; run diff-cover after the overall run produces `coverage.xml`.
 Keep mechanical formatting separate from behavioral changes. Do not run paid
 fixture-generator CLIs in tests.

@@ -4,6 +4,7 @@ import runpy
 import shutil
 import subprocess
 import sys
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -133,9 +134,10 @@ def test_copilot_checkout_defaults(subdirectory, selection, tmp_path):
     db = copilot_home / "session-store.db"
     shutil.copyfile(root / "scripts/fixtures/copilot/session-store.db", db)
     session_id = "7e20450a-af9e-45a5-9aac-be9dcf027221"
-    with sqlite3.connect(db) as conn:
+    with closing(sqlite3.connect(db)) as conn:
         conn.execute("DELETE FROM sessions WHERE id != ?", (session_id,))
         conn.execute("UPDATE sessions SET cwd = ?", (str(checkout),))
+        conn.commit()
     state = copilot_home / "session-state" / session_id
     state.mkdir(parents=True)
     (state / "events.jsonl").write_text(
