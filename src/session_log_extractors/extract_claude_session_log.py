@@ -24,6 +24,7 @@ import argparse
 import json
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -647,8 +648,6 @@ def _parse_ts(ts: Optional[str]):
     if not ts or not isinstance(ts, str):
         return None
     try:
-        from datetime import datetime
-
         # Python's fromisoformat dislikes a trailing 'Z' before 3.11.
         return datetime.fromisoformat(ts.replace("Z", "+00:00"))
     except (ValueError, TypeError):

@@ -140,9 +140,10 @@ to upgrade the locked dependencies.
 CI runs Ruff across application code, generators, and tests. E4/E7/E9 and F
 catch basic Python errors; B catches common bugs; I orders imports; C4 and PIE
 catch unnecessary collection/redundant patterns. PT011/PT012/PT017 strengthen
-exception tests. PGH004 rejects blanket noqa comments and RUF100 rejects stale
-ones. C901/PLR0915/PLR0912/PLR0913 enforce complexity/statements/branches/arguments
-at 10/50/12/5. These are Ruff's configurable defaults, not universal quality
+exception tests. PLC0415 requires module-level imports, including in tests.
+PGH004 rejects blanket noqa comments and RUF100 rejects stale ones.
+C901/PLR0915/PLR0912/PLR0913 enforce complexity/statements/branches/arguments at
+10/50/12/5. These are Ruff's configurable defaults, not universal quality
 standards. Lint supplements behavioral tests; it does not prove extraction
 correctness or complete native-format coverage. UP/SIM adoption is deferred.
 

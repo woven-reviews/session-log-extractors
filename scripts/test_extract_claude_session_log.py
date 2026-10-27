@@ -16,6 +16,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 import pytest
 
 from session_log_extractors import extract_claude_session_log as eclog
+from session_log_extractors import session_log_envelope
 from session_log_extractors.claude_sources import (
     ClaudeSource,
     read_source,
@@ -1448,8 +1449,6 @@ def test_cli_retains_malformed_line_diagnostics(capsys):
 
 
 def test_cli_file_keeps_size_warning(tmp_path, monkeypatch, capsys):
-    from session_log_extractors import session_log_envelope
-
     monkeypatch.setattr(session_log_envelope, "SIZE_WARN_BYTES", 1)
     output = tmp_path / "session.json"
     assert (
@@ -1465,8 +1464,6 @@ def test_cli_file_keeps_size_warning(tmp_path, monkeypatch, capsys):
 
 
 def test_cli_stdout_keeps_size_warning(monkeypatch, capsys):
-    from session_log_extractors import session_log_envelope
-
     monkeypatch.setattr(session_log_envelope, "SIZE_WARN_BYTES", 1)
     transcript = FIXTURES / "baseline.jsonl"
     assert main(["--transcript", str(transcript), "--output", "-"]) == 0
