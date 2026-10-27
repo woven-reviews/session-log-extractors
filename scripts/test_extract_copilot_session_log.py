@@ -126,7 +126,9 @@ def test_copilot_noise_cleaning():
 
 
 def test_copilot_skill_invocation_is_recorded_and_attributed():
-    skills = _skills_from_events(_native_lines("skill"))
+    skills = _skills_from_events(
+        copilot_log.parse_state_records(_native_lines("skill"))
+    )
     assert len(skills) == 1
     assert skills[0]["name"] == "fixture-skill"
     assert skills[0]["path"] == "/workspace/.github/skills/fixture-skill/SKILL.md"
@@ -136,7 +138,9 @@ def test_copilot_skill_invocation_is_recorded_and_attributed():
 
 
 def test_copilot_permissions_join_approval_denial_and_pending():
-    perms = _permissions_from_events(_hand_lines("permissions.jsonl"))
+    perms = _permissions_from_events(
+        copilot_log.parse_state_records(_hand_lines("permissions.jsonl"))
+    )
     assert [
         (p["tool"], p["decision"], p["feedback"], p["timestamp"]) for p in perms
     ] == [
@@ -308,8 +312,9 @@ def _copilot_turn_with_image(tmp_path):
     return turn
 
 
-def test_build_events_inlines_an_attachment_resolved_from_disk(tmp_path):
-    user = build_events([_copilot_turn_with_image(tmp_path)])[0]
+def test_build_events_inlines_a_preloaded_attachment(tmp_path):
+    turn = _copilot_turn_with_image(tmp_path)
+    user = build_events([turn], image_inputs={str(tmp_path / "a.png"): PNG})[0]
     assert base64.b64decode(user["images"][0]["data"]) == PNG
 
 
@@ -343,7 +348,9 @@ def test_build_events_emits_an_assistant_event_for_a_reply(tmp_path):
 
 
 def test_copilot_tools_from_events_join_start_and_complete():
-    calls = copilot_log._tools_from_events(_native_lines("tool_success"))
+    calls = copilot_log._tools_from_events(
+        copilot_log.parse_state_records(_native_lines("tool_success"))
+    )
     assert len(calls) == 1
     assert calls[0]["name"] == "bash"
     assert calls[0]["arguments"]["command"] == "printf TOOL_FIXTURE_MARKER"
@@ -674,11 +681,21 @@ def test_copilot_state_log_readers_return_empty_on_os_error(monkeypatch):
 
 
 def test_copilot_permissions_from_events_skips_malformed_lines():
-    assert _permissions_from_events(_hand_lines("malformed.jsonl")) == []
+    assert (
+        _permissions_from_events(
+            copilot_log.parse_state_records(_hand_lines("malformed.jsonl"))
+        )
+        == []
+    )
 
 
 def test_copilot_skills_from_events_skips_malformed_and_bad_data():
-    assert _skills_from_events(_hand_lines("malformed.jsonl")) == []
+    assert (
+        _skills_from_events(
+            copilot_log.parse_state_records(_hand_lines("malformed.jsonl"))
+        )
+        == []
+    )
 
 
 def test_copilot_result_text_variants():
@@ -690,7 +707,12 @@ def test_copilot_result_text_variants():
 
 
 def test_copilot_tools_from_events_skips_malformed_lines_and_orphan_events():
-    assert copilot_log._tools_from_events(_hand_lines("malformed.jsonl")) == []
+    assert (
+        copilot_log._tools_from_events(
+            copilot_log.parse_state_records(_hand_lines("malformed.jsonl"))
+        )
+        == []
+    )
 
 
 def test_copilot_attribute_tools_falls_back_to_first_turn_without_timestamp():
@@ -709,7 +731,9 @@ def test_copilot_attribute_tools_with_no_turns_is_a_noop():
 
 
 def test_copilot_attribute_tools_registers_skill_from_call():
-    tools = copilot_log._tools_from_events(_native_lines("skill"))
+    tools = copilot_log._tools_from_events(
+        copilot_log.parse_state_records(_native_lines("skill"))
+    )
     assert [t["name"] for t in tools] == ["skill"]
     turn = Turn("use the skill", "", "2026-01-01T00:00:00Z", 0)
     copilot_log.attribute_tools([turn], tools)
@@ -1376,3 +1400,97 @@ def test_main_closes_connection(monkeypatch, fail):
     else:
         assert copilot_log.main(["selected"]) == 0
     conn.close.assert_called_once_with()
+
+
+@pytest.mark.parametrize("case", NATIVE_IDS)
+@pytest.mark.parametrize("with_state", [False, True])
+def test_copilot_loaded_inputs_interpret_without_io(case, with_state, monkeypatch):
+    if with_state:
+        _install_native_events(case)
+    conn = _native_db()
+    try:
+        session = get_session_by_id(conn, NATIVE_IDS[case])
+        expected = copilot_log.extract_session(conn, session)
+        loaded = copilot_log.load_session_inputs(conn, session)
+    finally:
+        conn.close()
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Interpretation attempted source access")
+
+    monkeypatch.setattr(sqlite3, "connect", forbidden)
+    monkeypatch.setattr(Path, "open", forbidden)
+    monkeypatch.setattr(Path, "is_file", forbidden)
+    monkeypatch.setattr(Path, "exists", forbidden)
+    assert loaded.session == session
+    assert copilot_log.interpret_session(loaded) == expected
+    assert copilot_log.interpret_session(loaded) == expected
+
+
+def test_copilot_extraction_reads_and_parses_state_once(monkeypatch):
+    _install_native_events("image")
+    # Count reads on the concrete state path, leaving fixture setup outside.
+    original_read = Path.read_text
+    reads = []
+
+    def read(path, *args, **kwargs):
+        reads.append(path)
+        return original_read(path, *args, **kwargs)
+
+    loads = Mock(wraps=json.loads)
+    monkeypatch.setattr(Path, "read_text", read)
+    monkeypatch.setattr(json, "loads", loads)
+    with _native_db() as conn:
+        session = get_session_by_id(conn, NATIVE_IDS["image"])
+        copilot_log.extract_session(conn, session)
+    assert len(reads) == 1
+    assert loads.call_count == len(original_read(reads[0]).splitlines())
+
+
+@pytest.mark.parametrize("inline", ["data_url", "data", "invalid", "path"])
+def test_copilot_loaded_path_image_precedence(tmp_path, monkeypatch, inline):
+    session_id = NATIVE_IDS["image"]
+    events = [json.loads(line) for line in _native_lines("image")]
+    # Replace the native asset reference with each legacy encoding. The path
+    # exists at loading time and is removed before interpretation.
+    path = tmp_path / "pixel.png"
+    path.write_bytes(PNG)
+    for event in events:
+        if event["type"] == "user.message":
+            attachment = event["data"]["attachments"][0]
+            attachment.pop("assetId", None)
+            attachment["path"] = str(path)
+            if inline == "data_url":
+                attachment["dataUrl"] = (
+                    "data:image/png;base64," + base64.b64encode(b"inline").decode()
+                )
+            elif inline in ("data", "invalid"):
+                attachment["data"] = (
+                    "A" if inline == "invalid" else base64.b64encode(b"inline").decode()
+                )
+                attachment["mediaType"] = "image/png"
+    _write_events_log(session_id, [json.dumps(event) for event in events])
+    with _native_db() as conn:
+        loaded = copilot_log.load_session_inputs(
+            conn, get_session_by_id(conn, session_id)
+        )
+    path.unlink()
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Interpretation read an image file")
+
+    monkeypatch.setattr(Path, "open", forbidden)
+    envelope = copilot_log.interpret_session(loaded)
+    image = next(e for e in envelope["events"] if e["role"] == "user")["images"][0]
+    if inline == "invalid":
+        assert image["unavailable"] is True
+    else:
+        assert base64.b64decode(image["data"]) == (
+            PNG if inline == "path" else b"inline"
+        )
+
+
+def test_copilot_preloaded_image_extension_is_per_reference():
+    refs = [{"path": "/noext", "type": mime} for mime in ("image/png", "image/jpeg")]
+    images = copilot_log.envelope_images(refs, {"/noext": PNG})
+    assert [image["media_type"] for image in images] == ["image/png", "image/jpeg"]
