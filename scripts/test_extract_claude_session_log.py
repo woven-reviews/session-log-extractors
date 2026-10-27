@@ -1506,3 +1506,121 @@ def test_cli_default_root_uses_current_directory(batch, tmp_path, monkeypatch):
         assert json.loads((output / "claude_session_log_raw_session.json").read_text())[
             "events"
         ]
+
+
+@pytest.mark.parametrize("limit", [0, 17, -1])
+def test_interpret_supplied_source_without_filesystem(limit, monkeypatch):
+    from session_log_extractors.claude_sources import ClaudeSource
+
+    entries = _conversation_entries()
+    source = ClaudeSource(Path("/unavailable/session.jsonl"), entries)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("interpretation accessed the filesystem")
+
+    for method in ["open", "is_file", "is_dir", "iterdir", "stat", "read_text"]:
+        monkeypatch.setattr(Path, method, forbidden)
+    session = eclog.interpret_source(source, limit)
+    assert session.session_id == "session"
+    assert session.events == build_events(entries, limit)
+    assert session.cwd == "/work/app"
+    assert session.started_at == first_timestamp(entries)
+    assert session.models == session_models(entries)
+    assert session.events[0]["images"][0]["data"] == _PNG_B64
+    assert eclog.interpret_source(ClaudeSource(source.path, [])) is None
+
+
+def test_interpret_supplied_subagent_without_filesystem(monkeypatch):
+    from session_log_extractors.claude_sources import ClaudeSource
+
+    entries = [
+        {
+            "type": "user",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "message": {"content": "task"},
+        },
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "text", "text": "first"},
+                    {"type": "tool_use", "name": "Read"},
+                    {"type": "tool_use", "name": "Read"},
+                    {"type": "text", "text": "last"},
+                ]
+            },
+        },
+    ]
+    source = ClaudeSource(
+        Path("/unavailable/agent.jsonl"), entries, {"agentType": "Explore"}
+    )
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("interpretation accessed the filesystem")
+
+    monkeypatch.setattr(Path, "open", forbidden)
+    monkeypatch.setattr(Path, "is_file", forbidden)
+    assert eclog.summarize_subagent_source(source) == {
+        "agent_type": "Explore",
+        "start_ts": "2026-01-01T00:00:00Z",
+        "task": "task",
+        "tool_count": 2,
+        "tool_names": ["Read"],
+        "result": "last",
+    }
+    assert eclog.summarize_subagent_source(ClaudeSource(source.path, [])) is None
+
+
+@pytest.mark.parametrize("metadata", [None, "bad JSON", "[]", "null", "{}"])
+def test_source_reader_metadata_fallback(metadata, tmp_path):
+    from session_log_extractors.claude_sources import read_source
+
+    transcript = tmp_path / "agent.jsonl"
+    _write_jsonl(transcript, [{"type": "user", "message": {"content": "task"}}])
+    if metadata is not None:
+        transcript.with_suffix(".meta.json").write_text(metadata)
+    source = read_source(transcript, read_metadata=True)
+    assert source.path == transcript
+    assert eclog.summarize_subagent_source(source)["agent_type"] == "subagent"
+
+
+def test_source_reader_metadata_read_error(tmp_path, monkeypatch):
+    from session_log_extractors.claude_sources import read_source
+
+    transcript = tmp_path / "agent.jsonl"
+    _write_jsonl(transcript, [{"type": "user"}])
+    transcript.with_suffix(".meta.json").touch()
+
+    def unreadable(*args, **kwargs):
+        raise OSError("unreadable metadata")
+
+    monkeypatch.setattr(Path, "read_text", unreadable)
+    assert read_source(transcript, read_metadata=True).metadata == {}
+
+
+def test_source_reader_keeps_diagnostics_and_read_errors(tmp_path, capsys):
+    from session_log_extractors.claude_sources import read_source
+
+    transcript = tmp_path / "session.jsonl"
+    transcript.write_bytes(b'\n{"type":"user"}\ninvalid\n{"text":"\xff"}\n[]\n')
+    source = read_source(transcript)
+    assert source.entries == [{"type": "user"}, {"text": "\ufffd"}]
+    assert "skipping malformed JSON on line 3" in capsys.readouterr().err
+    with pytest.raises(FileNotFoundError):
+        read_source(tmp_path / "missing.jsonl")
+
+
+def test_source_reader_discovers_sidecars_in_filename_order(tmp_path):
+    from session_log_extractors.claude_sources import read_subagent_sources
+
+    transcript = tmp_path / "session.jsonl"
+    assert read_subagent_sources(transcript) == []
+    directory = tmp_path / "session" / "subagents"
+    directory.mkdir(parents=True)
+    for name in ["b", "a"]:
+        _write_jsonl(directory / f"{name}.jsonl", [{"type": "user"}])
+    (directory / "ignored.txt").touch()
+    (directory / "directory.jsonl").mkdir()
+    sources = read_subagent_sources(transcript)
+    assert [source.path.name for source in sources] == ["a.jsonl", "b.jsonl"]
+    assert all(source.path.parent == directory for source in sources)
