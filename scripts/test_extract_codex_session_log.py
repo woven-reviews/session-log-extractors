@@ -14,9 +14,11 @@ import os
 import tempfile
 from pathlib import Path
 
-import extract_codex_session_log as mod
 import pytest
-from extract_codex_session_log import (
+
+from session_log_extractors import extract_codex_session_log as mod
+from session_log_extractors import session_log_envelope
+from session_log_extractors.extract_codex_session_log import (
     _cwd_matches,
     _decode_jsonish,
     _extract_all,
@@ -59,8 +61,6 @@ from extract_codex_session_log import (
     user_text_from_event,
     user_text_from_response_item,
 )
-
-from session_log_extractors import session_log_envelope
 
 # 1x1 transparent PNG.
 _PNG_B64 = (
@@ -1818,7 +1818,6 @@ def test_json_entrypoints_bypass_presentation(mode, tmp_path, monkeypatch, capsy
     _write_jsonl(transcript, entries)
     expected = build_events(entries)
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(mod, "PROJECT_ROOT", tmp_path / "out")
 
     def presentation_forbidden(*args, **kwargs):
         pytest.fail("JSON extraction invoked presentation")
@@ -1833,7 +1832,7 @@ def test_json_entrypoints_bypass_presentation(mode, tmp_path, monkeypatch, capsy
         args += ["--output", str(destination)]
     elif mode == "batch":
         args = ["--all", "--sessions-root", str(tmp_path)]
-    assert main(args) == 0
+    assert main(args, project_root=tmp_path / "out") == 0
     captured = capsys.readouterr()
     envelope = json.loads(captured.out if mode == "stdout" else destination.read_text())
     assert envelope["events"] == expected
@@ -1972,3 +1971,27 @@ def test_batch_duplicate_identifiers_preserve_both_json_files(tmp_path, monkeypa
         "codex_session_log_raw_same.json",
         "codex_session_log_raw_same-2.json",
     }
+
+
+@pytest.mark.parametrize("batch", [False, True])
+@pytest.mark.parametrize("explicit_root", [False, True])
+def test_main_output_root_is_resolved_at_call_time(
+    batch, explicit_root, tmp_path, monkeypatch
+):
+    for name in ["first", "second"]:
+        cwd = tmp_path / name
+        cwd.mkdir()
+        monkeypatch.chdir(cwd)
+        transcript = cwd / "session.jsonl"
+        _write_jsonl(transcript, _session_entries("s1", cwd, "hello"))
+        args = (
+            ["--all", "--sessions-root", str(cwd)]
+            if batch
+            else ["--transcript", str(transcript)]
+        )
+        output_root = cwd / "exports" if explicit_root else cwd
+        assert main(args, project_root=output_root if explicit_root else None) == 0
+        output = output_root / "codex_session_log_raw_s1.json"
+        assert json.loads(output.read_text())["events"][0]["text"] == "hello"
+        if explicit_root:
+            assert not (cwd / output.name).exists()
