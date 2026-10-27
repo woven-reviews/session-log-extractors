@@ -11,6 +11,7 @@ import json
 import shutil
 import sqlite3
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -1365,8 +1366,6 @@ def test_copilot_retained_database_metadata_readers(tmp_path):
 
 @pytest.mark.parametrize("fail", [False, True])
 def test_main_closes_connection(monkeypatch, fail):
-    from unittest.mock import Mock
-
     conn = Mock()
     monkeypatch.setattr(copilot_log, "get_db_connection", lambda path: conn)
     extract = Mock(return_value=0, side_effect=ValueError("failure") if fail else None)

@@ -3,6 +3,7 @@ import json
 import os
 import runpy
 import shutil
+import sqlite3
 import subprocess
 import sys
 from contextlib import closing
@@ -11,6 +12,9 @@ from pathlib import Path
 import pytest
 
 import session_log_extractors
+from session_log_extractors import extract_claude_session_log as claude
+from session_log_extractors import extract_copilot_session_log as copilot
+from session_log_extractors.extract_claude_session_log import encode_project_path
 from session_log_extractors.session_log_envelope import raw_filename
 
 
@@ -79,8 +83,6 @@ def test_script_exports_fixture_json(harness, arguments, tmp_path):
 @pytest.mark.parametrize("subdirectory", [False, True])
 @pytest.mark.parametrize("selection", ["transcript", "all", "discovery"])
 def test_claude_checkout_defaults(subdirectory, selection, tmp_path):
-    from session_log_extractors.extract_claude_session_log import encode_project_path
-
     root = Path(__file__).resolve().parents[1]
     checkout = tmp_path / "checkout"
     scripts = checkout / "scripts"
@@ -119,8 +121,6 @@ def test_claude_checkout_defaults(subdirectory, selection, tmp_path):
 
 
 def test_claude_wrapper_delegates_with_checkout_root(monkeypatch):
-    from session_log_extractors import extract_claude_session_log as claude
-
     root = Path(__file__).resolve().parents[1]
 
     def main(*, project_root):
@@ -138,8 +138,6 @@ def test_claude_wrapper_delegates_with_checkout_root(monkeypatch):
 @pytest.mark.parametrize("subdirectory", [False, True])
 @pytest.mark.parametrize("selection", ["selected", "discovery", "overrides"])
 def test_copilot_checkout_defaults(subdirectory, selection, tmp_path):
-    import sqlite3
-
     root = Path(__file__).resolve().parents[1]
     checkout = tmp_path / "checkout"
     scripts = checkout / "scripts"
@@ -200,8 +198,6 @@ def test_copilot_checkout_defaults(subdirectory, selection, tmp_path):
 
 
 def test_copilot_wrapper_delegates_with_checkout_root(monkeypatch):
-    from session_log_extractors import extract_copilot_session_log as copilot
-
     root = Path(__file__).resolve().parents[1]
 
     def main(*, project_root):

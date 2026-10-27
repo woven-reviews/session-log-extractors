@@ -7,11 +7,14 @@ Run: uv run --locked python scripts/test_extract_codex_session_log.py
 from __future__ import annotations
 
 import base64
+import contextlib
+import io
 import json
 import os
 import tempfile
 from pathlib import Path
 
+import extract_codex_session_log as mod
 import pytest
 from extract_codex_session_log import (
     _cwd_matches,
@@ -25,6 +28,7 @@ from extract_codex_session_log import (
     _paths_overlap,
     _plan_update,
     _structured_answer_for_question,
+    _unique_identifier,
     _value_to_answer_text,
     append_unique_path,
     assistant_text_from_payload,
@@ -55,6 +59,8 @@ from extract_codex_session_log import (
     user_text_from_event,
     user_text_from_response_item,
 )
+
+from session_log_extractors import session_log_envelope
 
 # 1x1 transparent PNG.
 _PNG_B64 = (
@@ -1569,8 +1575,6 @@ def test_extract_all_reports_error_when_nothing_matches():
 
 
 def test_extract_all_skips_unparseable_transcript_and_still_succeeds(monkeypatch):
-    import extract_codex_session_log as mod
-
     with tempfile.TemporaryDirectory() as tmp_name:
         tmp = Path(tmp_name)
         project = tmp / "project"
@@ -1613,9 +1617,6 @@ def test_main_errors_when_transcript_not_found():
 
 
 def test_main_single_session_to_stdout():
-    import contextlib
-    import io
-
     captured = io.StringIO()
     with contextlib.redirect_stdout(captured):
         rc = main(
@@ -1758,8 +1759,6 @@ def test_image_bytes_and_ext_data_url_bad_base64_padding():
 
 
 def test_unique_identifier_suffixes_duplicates():
-    from extract_codex_session_log import _unique_identifier
-
     used: set = set()
     assert _unique_identifier("sess", used) == "sess"
     assert _unique_identifier("sess", used) == "sess-2"
@@ -1812,8 +1811,6 @@ def test_main_write_failure_for_explicit_output_path(tmp_path):
 
 @pytest.mark.parametrize("mode", ["stdout", "file", "default", "batch"])
 def test_json_entrypoints_bypass_presentation(mode, tmp_path, monkeypatch, capsys):
-    import extract_codex_session_log as mod
-
     transcript = tmp_path / "session.jsonl"
     entries = _session_entries("s1", tmp_path, "# Recorded Markdown")
     entries += load_entries(FIXTURES / "image.jsonl")[1:]
@@ -1933,8 +1930,6 @@ def test_cli_no_events_writes_no_json(batch, tmp_path, monkeypatch, capsys):
 
 @pytest.mark.parametrize("stdout", [False, True])
 def test_cli_warnings_stay_on_stderr(stdout, tmp_path, monkeypatch, capsys):
-    from session_log_extractors import session_log_envelope
-
     monkeypatch.setattr(session_log_envelope, "SIZE_WARN_BYTES", 1)
     transcript = tmp_path / "s.jsonl"
     _write_jsonl(transcript, _session_entries("s1", tmp_path, "hello"))

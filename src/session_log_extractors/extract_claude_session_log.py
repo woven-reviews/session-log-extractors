@@ -24,9 +24,18 @@ import argparse
 import json
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from session_log_extractors.claude_sources import (
+    ClaudeSource,
+    read_source,
+    read_subagent_sources,
+)
+from session_log_extractors.claude_sources import (
+    load_entries as load_entries,
+)
 from session_log_extractors.session_log_envelope import (
     DEFAULT_TOOL_RESULT_MAX_BYTES,
     assistant_event,
@@ -229,8 +238,7 @@ def newest(paths: Iterable[Path]) -> Optional[Path]:
     return max(paths, key=lambda p: p.stat().st_mtime)
 
 
-# Existing transcript selection; remove in QUAL-2514.
-def select_transcript(  # noqa: C901, PLR0912
+def select_transcript(
     selector: Optional[str],
     transcript: Optional[str],
     project_dir: Optional[str],
@@ -255,34 +263,18 @@ def select_transcript(  # noqa: C901, PLR0912
     cwd = Path.cwd()
 
     if transcript:
-        p = Path(transcript).expanduser()
-        if not p.is_file():
-            raise FileNotFoundError(f"--transcript path does not exist: {p}")
-        return p
+        return _explicit_transcript(transcript)
 
-    # A positional selector that points directly at a file.
-    if selector:
-        as_path = Path(selector).expanduser()
-        if as_path.is_file():
-            return as_path
+    direct = _selector_path(selector)
+    if direct is not None:
+        return direct
 
     proj = resolve_project_dir(project_dir, cwd, strict=strict)
 
-    # A positional selector treated as a session id within the project dir.
     if selector and proj is not None:
-        for name in (selector, f"{selector}.jsonl"):
-            candidate = proj / name
-            if candidate.is_file():
-                return candidate
-        # Allow a prefix match on the session id (ids are long UUIDs).
-        prefix_matches = [p for p in _jsonl_files(proj) if p.stem.startswith(selector)]
-        if len(prefix_matches) == 1:
-            return prefix_matches[0]
-        if len(prefix_matches) > 1:
-            joined = "\n  ".join(str(p) for p in prefix_matches)
-            raise FileNotFoundError(
-                f"session id {selector!r} is ambiguous; matches:\n  {joined}"
-            )
+        picked = _select_project_session(selector, proj)
+        if picked is not None:
+            return picked
 
     # Newest in the resolved project dir.
     if proj is not None:
@@ -303,12 +295,7 @@ def select_transcript(  # noqa: C901, PLR0912
             "(--strict: parent-walk and global fallback disabled)"
         )
 
-    # Global fallback: newest .jsonl across all project dirs.
-    all_files: List[Path] = []
-    if PROJECTS_ROOT.is_dir():
-        for d in PROJECTS_ROOT.iterdir():
-            all_files.extend(_jsonl_files(d))
-    picked = newest(all_files)
+    picked = _newest_global_transcript()
     if picked is not None:
         return picked
 
@@ -318,44 +305,43 @@ def select_transcript(  # noqa: C901, PLR0912
     )
 
 
-# --------------------------------------------------------------------------- #
-# JSONL loading
-# --------------------------------------------------------------------------- #
+def _explicit_transcript(transcript: str) -> Path:
+    path = Path(transcript).expanduser()
+    if not path.is_file():
+        raise FileNotFoundError(f"--transcript path does not exist: {path}")
+    return path
 
 
-def load_entries(path: Path) -> List[Dict[str, Any]]:
-    """Load a JSONL transcript, skipping blank/malformed lines.
+def _selector_path(selector: Optional[str]) -> Optional[Path]:
+    if selector:
+        path = Path(selector).expanduser()
+        if path.is_file():
+            return path
+    return None
 
-    A single bad line never aborts the run; it is reported to stderr (rate
-    limited) and skipped.
-    """
-    entries: List[Dict[str, Any]] = []
-    bad = 0
-    with path.open("r", encoding="utf-8", errors="replace") as fh:
-        for lineno, line in enumerate(fh, 1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                bad += 1
-                if bad <= 5:
-                    print(
-                        f"warning: skipping malformed JSON on line {lineno}",
-                        file=sys.stderr,
-                    )
-                continue
-            if isinstance(obj, dict):
-                entries.append(obj)
-            else:
-                bad += 1
-    if bad > 5:
-        print(
-            f"warning: skipped {bad} malformed/blank lines total",
-            file=sys.stderr,
+
+def _select_project_session(selector: str, project: Path) -> Optional[Path]:
+    for name in (selector, f"{selector}.jsonl"):
+        candidate = project / name
+        if candidate.is_file():
+            return candidate
+    matches = [p for p in _jsonl_files(project) if p.stem.startswith(selector)]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        joined = "\n  ".join(str(p) for p in matches)
+        raise FileNotFoundError(
+            f"session id {selector!r} is ambiguous; matches:\n  {joined}"
         )
-    return entries
+    return None
+
+
+def _newest_global_transcript() -> Optional[Path]:
+    all_files: List[Path] = []
+    if PROJECTS_ROOT.is_dir():
+        for directory in PROJECTS_ROOT.iterdir():
+            all_files.extend(_jsonl_files(directory))
+    return newest(all_files)
 
 
 # --------------------------------------------------------------------------- #
@@ -662,8 +648,6 @@ def _parse_ts(ts: Optional[str]):
     if not ts or not isinstance(ts, str):
         return None
     try:
-        from datetime import datetime
-
         # Python's fromisoformat dislikes a trailing 'Z' before 3.11.
         return datetime.fromisoformat(ts.replace("Z", "+00:00"))
     except (ValueError, TypeError):
@@ -1009,21 +993,27 @@ def build_raw_envelope(
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
 ) -> Optional[Dict[str, Any]]:
     """Build the JSON envelope, or None when there are no exportable events."""
-    events = build_events(entries, tool_result_max_bytes)
+    session = interpret_source(ClaudeSource(transcript, entries), tool_result_max_bytes)
+    if session is None:
+        return None
+    return build_envelope(session, tool_result_max_bytes=tool_result_max_bytes)
+
+
+def interpret_source(
+    source: ClaudeSource,
+    tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
+) -> Optional[Session]:
+    """Interpret supplied records, inline images and source identity without I/O."""
+    events = build_events(source.entries, tool_result_max_bytes)
     if not events:
         return None
-
-    session_id = transcript.stem
-    return build_envelope(
-        Session(
-            harness="claude",
-            session_id=session_id,
-            events=events,
-            cwd=session_cwd(entries),
-            started_at=first_timestamp(entries),
-            models=session_models(entries),
-        ),
-        tool_result_max_bytes=tool_result_max_bytes,
+    return Session(
+        harness="claude",
+        session_id=source.path.stem,
+        events=events,
+        cwd=session_cwd(source.entries),
+        started_at=first_timestamp(source.entries),
+        models=session_models(source.entries),
     )
 
 
@@ -1032,27 +1022,20 @@ def build_raw_envelope(
 # --------------------------------------------------------------------------- #
 
 
-# Existing source loading and interpretation; remove in QUAL-2514.
-def summarize_subagent(path: Path) -> Optional[Dict[str, Any]]:  # noqa: C901, PLR0912
-    """Condense one subagent transcript into task / tools / result.
+def summarize_subagent(path: Path) -> Optional[Dict[str, Any]]:
+    """Read and summarize a sidecar; retained for existing callers."""
+    return summarize_subagent_source(read_source(path, read_metadata=True))
 
-    There is no reliable link from the main transcript to a subagent file (no
-    Task tool_use id, no back-reference), so we attribute by time elsewhere. The
-    only sidecar metadata is ``agentType`` in ``agent-<id>.meta.json``.
+
+def summarize_subagent_source(source: ClaudeSource) -> Optional[Dict[str, Any]]:
+    """Condense supplied sidecar records into task / tools / result without I/O.
+
+    No Task tool-use id links sidecars to main records; attribution remains
+    timestamp based. The optional metadata supplies only ``agentType``.
     """
-    entries = load_entries(path)
+    entries = source.entries
     if not entries:
         return None
-
-    agent_type = "subagent"
-    meta_path = path.parent / (path.stem + ".meta.json")
-    if meta_path.is_file():
-        try:
-            agent_type = json.loads(meta_path.read_text("utf-8")).get(
-                "agentType", agent_type
-            )
-        except (OSError, ValueError):
-            pass
 
     # The spawning prompt is the first real (non-tool-result) user message.
     task = ""
@@ -1063,24 +1046,9 @@ def summarize_subagent(path: Path) -> Optional[Dict[str, Any]]:  # noqa: C901, P
                 task = t
                 break
 
-    # Tool calls and the final assistant text, in one pass.
-    tools: List[str] = []
-    result = ""
-    for e in entries:
-        if e.get("type") != "assistant":
-            continue
-        for b in _content_blocks(e):
-            if not isinstance(b, dict):
-                continue
-            if b.get("type") == "tool_use":
-                tools.append(b.get("name", "tool"))
-            elif b.get("type") == "text":
-                txt = b.get("text")
-                if isinstance(txt, str) and txt.strip():
-                    result = txt.strip()  # keep the last one
-
+    tools, result = _subagent_activity(entries)
     return {
-        "agent_type": agent_type,
+        "agent_type": source.metadata.get("agentType", "subagent"),
         "start_ts": first_timestamp(entries),
         "task": task,
         "tool_count": len(tools),
@@ -1089,17 +1057,32 @@ def summarize_subagent(path: Path) -> Optional[Dict[str, Any]]:  # noqa: C901, P
     }
 
 
+def _subagent_activity(entries: List[Dict[str, Any]]) -> Tuple[List[str], str]:
+    tools: List[str] = []
+    result = ""
+    for entry in entries:
+        if entry.get("type") != "assistant":
+            continue
+        for block in _content_blocks(entry):
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_use":
+                tools.append(block.get("name", "tool"))
+            elif block.get("type") == "text":
+                text = block.get("text")
+                if isinstance(text, str) and text.strip():
+                    result = text.strip()
+    return tools, result
+
+
 def load_subagents(transcript: Path) -> List[Dict[str, Any]]:
     """Summarize every subagent transcript for this session, oldest first."""
-    d = transcript.parent / transcript.stem / "subagents"
-    subs: List[Dict[str, Any]] = []
-    if d.is_dir():
-        for p in sorted(d.iterdir()):
-            if p.is_file() and p.suffix == ".jsonl":
-                s = summarize_subagent(p)
-                if s:
-                    subs.append(s)
-    subs.sort(key=lambda s: s.get("start_ts") or "")
+    subs = [
+        summary
+        for source in read_subagent_sources(transcript)
+        if (summary := summarize_subagent_source(source)) is not None
+    ]
+    subs.sort(key=lambda summary: summary.get("start_ts") or "")
     return subs
 
 
@@ -1217,10 +1200,10 @@ def extract_transcript(
 
     Keep the existing parse-error and no-exportable-events behavior.
     """
-    entries = load_entries(transcript)
-    if not entries:
+    source = read_source(transcript)
+    if not source.entries:
         raise ValueError(f"no parseable JSON entries found in {transcript}")
-    return build_raw_envelope(transcript, entries, tool_result_max_bytes)
+    return build_raw_envelope(source.path, source.entries, tool_result_max_bytes)
 
 
 def _extract_all(

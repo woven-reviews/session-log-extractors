@@ -67,6 +67,15 @@ directory at call time for default output, or an explicit `project_root=Path(...
 Run `uv run --locked pytest tests/test_smoke.py` to check package imports and
 fixture exports through all three local script entrypoints.
 
+Claude readers live in `session_log_extractors.claude_sources`. `read_source(path)`
+loads main records; `read_subagent_sources(path)` reads the sibling sidecars with
+optional metadata and retains each source path. For replay without filesystem
+access, construct `ClaudeSource(path, entries, metadata)` directly and call
+`extract_claude_session_log.interpret_source(source)` or
+`summarize_subagent_source(source)`. Images remain inline in the recorded entries.
+Main JSON extraction continues to omit sidecars; `load_subagents(path)` retains
+its timestamp-ordered summaries for existing callers.
+
 ## Shared session/export boundary
 
 Adapters can supply `Session`, `Event`, `ToolCall`, and `Image` dictionaries from
@@ -131,9 +140,10 @@ to upgrade the locked dependencies.
 CI runs Ruff across application code, generators, and tests. E4/E7/E9 and F
 catch basic Python errors; B catches common bugs; I orders imports; C4 and PIE
 catch unnecessary collection/redundant patterns. PT011/PT012/PT017 strengthen
-exception tests. PGH004 rejects blanket noqa comments and RUF100 rejects stale
-ones. C901/PLR0915/PLR0912/PLR0913 enforce complexity/statements/branches/arguments
-at 10/50/12/5. These are Ruff's configurable defaults, not universal quality
+exception tests. PLC0415 requires module-level imports, including in tests.
+PGH004 rejects blanket noqa comments and RUF100 rejects stale ones.
+C901/PLR0915/PLR0912/PLR0913 enforce complexity/statements/branches/arguments at
+10/50/12/5. These are Ruff's configurable defaults, not universal quality
 standards. Lint supplements behavioral tests; it does not prove extraction
 correctness or complete native-format coverage. UP/SIM adoption is deferred.
 
@@ -158,8 +168,6 @@ Algorithms and interfaces are preserved in this tooling change.
 | `src/session_log_extractors/extract_claude_session_log.py` | `build_events` | C901, PLR0912, PLR0915 | [QUAL-2517](https://linear.app/andela/issue/QUAL-2517) |
 | `src/session_log_extractors/extract_claude_session_log.py` | `build_turns` | C901, PLR0912, PLR0915 | [QUAL-2517](https://linear.app/andela/issue/QUAL-2517) |
 | `src/session_log_extractors/extract_claude_session_log.py` | `result_note` | C901, PLR0912 | [QUAL-2517](https://linear.app/andela/issue/QUAL-2517) |
-| `src/session_log_extractors/extract_claude_session_log.py` | `select_transcript` | C901, PLR0912 | [QUAL-2514](https://linear.app/andela/issue/QUAL-2514) |
-| `src/session_log_extractors/extract_claude_session_log.py` | `summarize_subagent` | C901, PLR0912 | [QUAL-2514](https://linear.app/andela/issue/QUAL-2514) |
 | `extract_codex_session_log.py` | `_flatten_result_text` | C901 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |
 | `extract_codex_session_log.py` | `_image_bytes_and_ext` | C901 | [QUAL-2515](https://linear.app/andela/issue/QUAL-2515) |
 | `extract_codex_session_log.py` | `_structured_answer_for_question` | C901, PLR0912 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |

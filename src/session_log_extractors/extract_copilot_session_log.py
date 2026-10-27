@@ -42,6 +42,7 @@ import json
 import re
 import sqlite3
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -194,8 +195,6 @@ def _parse_ts(ts: Optional[str]):
     if not ts or not isinstance(ts, str):
         return None
     try:
-        from datetime import datetime, timezone
-
         parsed = datetime.fromisoformat(ts.replace("Z", "+00:00"))
     except (TypeError, ValueError):
         return None
@@ -205,8 +204,6 @@ def _parse_ts(ts: Optional[str]):
 
 def format_timestamp(ts: Optional[str]) -> str:
     """Render as 'YYYY-MM-DD HH:MM:SS UTC' -- always UTC, never machine-local."""
-    from datetime import timezone
-
     if not ts or not isinstance(ts, str):
         return "(no timestamp)"
     dt = _parse_ts(ts)
