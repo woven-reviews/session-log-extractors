@@ -41,6 +41,14 @@ Extraction uses recorded skill/command invocations and payloads without reading
 local definitions. Recorded Markdown remains message content; the extractors do
 not generate Markdown or image descriptions.
 
+Codex filesystem discovery, selection, transcript loading, and optional image
+asset reads live in `session_log_extractors.codex_sources`. The extractor's
+`read_source(path)` loads a `CodexSource` with records, bounded session metadata,
+and image inputs. `build_raw_envelope(source)` and `build_events(entries,
+image_inputs=...)` interpret supplied inputs without filesystem access. Missing
+path inputs retain unavailable-image markers. Export reuses loaded metadata;
+discovery retains the original 50-line ID and 80-line cwd lookup windows.
+
 ## Running the installed package
 
 Run local commands above from the repository root after `uv sync --locked`.
@@ -169,12 +177,10 @@ Algorithms and interfaces are preserved in this tooling change.
 | `src/session_log_extractors/extract_claude_session_log.py` | `build_turns` | C901, PLR0912, PLR0915 | [QUAL-2517](https://linear.app/andela/issue/QUAL-2517) |
 | `src/session_log_extractors/extract_claude_session_log.py` | `result_note` | C901, PLR0912 | [QUAL-2517](https://linear.app/andela/issue/QUAL-2517) |
 | `src/session_log_extractors/extract_codex_session_log.py` | `_flatten_result_text` | C901 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |
-| `src/session_log_extractors/extract_codex_session_log.py` | `_image_bytes_and_ext` | C901 | [QUAL-2515](https://linear.app/andela/issue/QUAL-2515) |
 | `src/session_log_extractors/extract_codex_session_log.py` | `_structured_answer_for_question` | C901, PLR0912 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |
 | `src/session_log_extractors/extract_codex_session_log.py` | `build_events` | C901, PLR0912, PLR0915 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |
 | `src/session_log_extractors/extract_codex_session_log.py` | `build_turns` | C901, PLR0912, PLR0915 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |
 | `src/session_log_extractors/extract_codex_session_log.py` | `image_refs_from_event` | C901, PLR0912 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |
-| `src/session_log_extractors/extract_codex_session_log.py` | `select_transcript` | C901 | [QUAL-2515](https://linear.app/andela/issue/QUAL-2515) |
 | `src/session_log_extractors/extract_codex_session_log.py` | `skill_refs_from_call` | C901 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |
 | `src/session_log_extractors/extract_copilot_session_log.py` | `_build_turn_objects` | C901, PLR0912, PLR0915 | [QUAL-2519](https://linear.app/andela/issue/QUAL-2519) |
 | `src/session_log_extractors/extract_copilot_session_log.py` | `_permissions_from_events` | C901 | [QUAL-2519](https://linear.app/andela/issue/QUAL-2519) |
