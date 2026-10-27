@@ -42,6 +42,7 @@ import json
 import re
 import sqlite3
 import sys
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -456,86 +457,95 @@ def get_session_attachments(
     return [dict(row) for row in cursor]
 
 
-# Existing source loading and interpretation; remove in QUAL-2516.
-def get_state_attachments(session_id: str) -> List[Dict[str, Any]]:  # noqa: C901, PLR0912
-    """Retrieve attachment records from the per-session events log if present."""
+def parse_state_records(lines: List[str]) -> List[Dict[str, Any]]:
+    """Decode state JSONL once, retaining object records in source order."""
+    records = []
+    for line in lines:
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(obj, dict):
+            records.append(obj)
+    return records
+
+
+def load_state_records(session_id: str) -> List[Dict[str, Any]]:
+    """Read optional state input, preserving the missing/unreadable fallback."""
     events_path = COPILOT_STATE_ROOT / session_id / "events.jsonl"
     if not events_path.is_file():
         return []
-
-    attachments: List[Dict[str, Any]] = []
     try:
         lines = events_path.read_text(encoding="utf-8").splitlines()
     except OSError:
         return []
+    return parse_state_records(lines)
 
-    events = []
-    for line in lines:
-        try:
-            events.append(json.loads(line))
-        except ValueError:
-            continue
 
-    # Copilot logs each attached image's bytes as a session.binary_asset keyed by
-    # assetId, so the image survives even after its source file is deleted.
-    assets: Dict[str, tuple] = {}
+def _binary_assets(events: List[Dict[str, Any]]) -> Dict[str, tuple]:
+    assets = {}
     for obj in events:
-        if isinstance(obj, dict) and obj.get("type") == "session.binary_asset":
-            asset = obj.get("data")
-            if (
-                isinstance(asset, dict)
-                and isinstance(asset.get("assetId"), str)
-                and isinstance(asset.get("data"), str)
-            ):
-                assets[asset["assetId"]] = (asset["data"], asset.get("mimeType"))
+        asset = obj.get("data")
+        if (
+            obj.get("type") == "session.binary_asset"
+            and isinstance(asset, dict)
+            and isinstance(asset.get("assetId"), str)
+            and isinstance(asset.get("data"), str)
+        ):
+            assets[asset["assetId"]] = (asset["data"], asset.get("mimeType"))
+    return assets
 
+
+def _state_attachment(item: Dict[str, Any], timestamp: Any, assets: Dict) -> Dict:
+    rec = {"timestamp": timestamp}
+    for source, target in (
+        ("displayName", "display_name"),
+        ("path", "path"),
+        ("mimeType", "type"),
+    ):
+        value = item.get(source)
+        rec[target] = value if isinstance(value, str) else ""
+    for source, target in (
+        ("dataUrl", "data_url"),
+        ("data", "data"),
+        ("mediaType", "media_type"),
+    ):
+        if isinstance(item.get(source), str):
+            rec[target] = item[source]
+    asset_id = item.get("assetId")
+    if "data" not in rec and isinstance(asset_id, str) and asset_id in assets:
+        rec["data"], media_type = assets[asset_id]
+        # An asset overrides the attachment's media type, including a missing one.
+        rec.pop("media_type", None)
+        if isinstance(media_type, str):
+            rec["media_type"] = media_type
+    return rec
+
+
+def _attachments_from_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    assets = _binary_assets(events)
+    attachments = []
     for obj in events:
-        if not isinstance(obj, dict) or obj.get("type") != "user.message":
-            continue
-
         data = obj.get("data")
-        if not isinstance(data, dict):
+        if obj.get("type") != "user.message" or not isinstance(data, dict):
             continue
-        event_attachments = data.get("attachments")
-        if not isinstance(event_attachments, list):
-            continue
-
-        for item in event_attachments:
-            if not isinstance(item, dict):
-                continue
-            display_name = item.get("displayName")
-            path_value = item.get("path")
-            mime_type = item.get("mimeType")
-            data_url = item.get("dataUrl")
-            data_b64 = item.get("data")
-            media_type = item.get("mediaType")
-            asset_id = item.get("assetId")
-            if (
-                not isinstance(data_b64, str)
-                and isinstance(asset_id, str)
-                and asset_id in assets
-            ):
-                data_b64, media_type = assets[asset_id]
-
-            rec: Dict[str, Any] = {
-                "display_name": display_name if isinstance(display_name, str) else "",
-                "path": path_value if isinstance(path_value, str) else "",
-                "type": mime_type if isinstance(mime_type, str) else "",
-                "timestamp": obj.get("timestamp"),
-            }
-            if isinstance(data_url, str):
-                rec["data_url"] = data_url
-            if isinstance(data_b64, str):
-                rec["data"] = data_b64
-            if isinstance(media_type, str):
-                rec["media_type"] = media_type
-            attachments.append(rec)
-
+        items = data.get("attachments")
+        if isinstance(items, list):
+            attachments.extend(
+                _state_attachment(item, obj.get("timestamp"), assets)
+                for item in items
+                if isinstance(item, dict)
+            )
     return attachments
 
 
+def get_state_attachments(session_id: str) -> List[Dict[str, Any]]:
+    """Load state attachments for callers needing only this evidence."""
+    return _attachments_from_events(load_state_records(session_id))
+
+
 # Existing native interpretation; remove in QUAL-2519.
-def _permissions_from_events(lines: List[str]) -> List[Dict[str, Any]]:  # noqa: C901
+def _permissions_from_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Join ``permission.requested`` / ``permission.completed`` events into one
     record per decision: the tool asked about, the outcome, and any feedback.
 
@@ -546,11 +556,7 @@ def _permissions_from_events(lines: List[str]) -> List[Dict[str, Any]]:  # noqa:
     requests: Dict[str, Dict[str, Any]] = {}
     decided: set = set()
     out: List[Dict[str, Any]] = []
-    for line in lines:
-        try:
-            obj = json.loads(line)
-        except ValueError:
-            continue
+    for obj in events:
         if not isinstance(obj, dict):
             continue
         etype = obj.get("type")
@@ -605,24 +611,13 @@ def _permissions_from_events(lines: List[str]) -> List[Dict[str, Any]]:  # noqa:
 
 def get_state_permissions(session_id: str) -> List[Dict[str, Any]]:
     """Read permission decisions from the per-session events log, if present."""
-    events_path = COPILOT_STATE_ROOT / session_id / "events.jsonl"
-    if not events_path.is_file():
-        return []
-    try:
-        lines = events_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return []
-    return _permissions_from_events(lines)
+    return _permissions_from_events(load_state_records(session_id))
 
 
-def _skills_from_events(lines: List[str]) -> List[Dict[str, Any]]:
+def _skills_from_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Extract Copilot's first-class ``skill.invoked`` events."""
     skills: List[Dict[str, Any]] = []
-    for line in lines:
-        try:
-            obj = json.loads(line)
-        except ValueError:
-            continue
+    for obj in events:
         if not isinstance(obj, dict) or obj.get("type") != "skill.invoked":
             continue
         data = obj.get("data")
@@ -643,14 +638,7 @@ def _skills_from_events(lines: List[str]) -> List[Dict[str, Any]]:
 
 def get_state_skills(session_id: str) -> List[Dict[str, Any]]:
     """Read invoked skills from the per-session events log, if present."""
-    events_path = COPILOT_STATE_ROOT / session_id / "events.jsonl"
-    if not events_path.is_file():
-        return []
-    try:
-        lines = events_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return []
-    return _skills_from_events(lines)
+    return _skills_from_events(load_state_records(session_id))
 
 
 def _result_text(result: Any) -> str:
@@ -671,7 +659,7 @@ def _result_text(result: Any) -> str:
         return ""
 
 
-def _tools_from_events(lines: List[str]) -> List[Dict[str, Any]]:
+def _tools_from_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Join ``tool.execution_start`` / ``tool.execution_complete`` events.
 
     Copilot records the full tool call (name and arguments) and its result in the
@@ -681,11 +669,7 @@ def _tools_from_events(lines: List[str]) -> List[Dict[str, Any]]:
     """
     starts: Dict[str, Dict[str, Any]] = {}
     order: List[str] = []
-    for line in lines:
-        try:
-            obj = json.loads(line)
-        except ValueError:
-            continue
+    for obj in events:
         if not isinstance(obj, dict):
             continue
         etype = obj.get("type")
@@ -721,14 +705,7 @@ def _tools_from_events(lines: List[str]) -> List[Dict[str, Any]]:
 
 def get_state_tools(session_id: str) -> List[Dict[str, Any]]:
     """Read tool calls + results from the per-session events log, if present."""
-    events_path = COPILOT_STATE_ROOT / session_id / "events.jsonl"
-    if not events_path.is_file():
-        return []
-    try:
-        lines = events_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return []
-    return _tools_from_events(lines)
+    return _tools_from_events(load_state_records(session_id))
 
 
 def _turn_for(turns: List[Turn], ts: Optional[str]) -> Optional[Turn]:
@@ -964,7 +941,9 @@ def _image_source(ref: Dict[str, Any]) -> Optional[str]:
     return ref.get("path") or ref.get("data_url") or ref.get("data")
 
 
-def envelope_images(refs: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+def envelope_images(
+    refs: List[Dict[str, str]], image_inputs: Dict[str, Optional[bytes]]
+) -> List[Dict[str, Any]]:
     """Resolve Copilot image refs to inline base64 entries.
 
     Copilot stores image payloads outside DB turns. Image tokens and timestamped
@@ -973,7 +952,11 @@ def envelope_images(refs: List[Dict[str, str]]) -> List[Dict[str, Any]]:
     """
     images: List[Dict[str, Any]] = []
     for ref in refs:
-        decoded = _image_bytes_and_ext(ref)
+        decoded = _inline_image_bytes(ref)
+        if decoded is None and not _has_inline_image(ref):
+            raw = image_inputs.get(ref.get("path", ""))
+            if raw is not None:
+                decoded = (raw, _path_image_ext(ref))
         if decoded is None:
             images.append(unavailable_image(ref.get("name") or ref.get("path")))
             continue
@@ -985,6 +968,8 @@ def envelope_images(refs: List[Dict[str, str]]) -> List[Dict[str, Any]]:
 def build_events(
     turns: List["Turn"],
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
+    *,
+    image_inputs: Optional[Dict[str, Optional[bytes]]] = None,
 ) -> List[Dict[str, Any]]:
     """Produce raw-envelope events from already-built Copilot turns.
 
@@ -1002,7 +987,7 @@ def build_events(
     index = 0
 
     for turn in turns:
-        images = envelope_images(turn.image_refs)
+        images = envelope_images(turn.image_refs, image_inputs or {})
         if turn.user_text.strip() or images:
             events.append(user_event(index, turn.timestamp, turn.user_text, images))
             index += 1
@@ -1042,7 +1027,7 @@ def build_events(
     return events
 
 
-def _image_bytes_and_ext(ref: Dict[str, str]) -> Optional[tuple[bytes, str]]:
+def _inline_image_bytes(ref: Dict[str, str]) -> Optional[tuple[bytes, str]]:
     data_url = ref.get("data_url")
     if isinstance(data_url, str) and data_url:
         match = _DATA_IMAGE_URL.match(data_url)
@@ -1066,6 +1051,31 @@ def _image_bytes_and_ext(ref: Dict[str, str]) -> Optional[tuple[bytes, str]]:
         )
         return raw, ext
 
+    return None
+
+
+def _has_inline_image(ref: Dict[str, str]) -> bool:
+    data_url = ref.get("data_url")
+    return bool(
+        isinstance(data_url, str)
+        and _DATA_IMAGE_URL.match(data_url)
+        or isinstance(ref.get("data"), str)
+        and ref["data"]
+    )
+
+
+def _path_image_ext(ref: Dict[str, str]) -> str:
+    ext = Path(ref["path"]).suffix.lstrip(".")
+    if ext:
+        return ext
+    guessed = ref.get("type", "")
+    return guessed.split("/")[-1] if "/" in guessed else "img"
+
+
+def _image_bytes_and_ext(ref: Dict[str, str]) -> Optional[tuple[bytes, str]]:
+    """Load image bytes with inline encodings taking precedence over paths."""
+    if _has_inline_image(ref):
+        return _inline_image_bytes(ref)
     source_path = ref.get("path")
     if isinstance(source_path, str) and source_path.strip():
         src = Path(source_path).expanduser()
@@ -1073,11 +1083,7 @@ def _image_bytes_and_ext(ref: Dict[str, str]) -> Optional[tuple[bytes, str]]:
             raw = src.read_bytes()
         except OSError:
             return None
-        ext = src.suffix.lstrip(".")
-        if not ext:
-            guessed = ref.get("type", "")
-            ext = guessed.split("/")[-1] if "/" in guessed else "img"
-        return raw, ext
+        return raw, _path_image_ext(ref)
 
     return None
 
@@ -1104,34 +1110,76 @@ def _unique_identifier(base: str, used: set) -> str:
     return ident
 
 
-def load_session_turns(conn: sqlite3.Connection, session: Dict[str, Any]) -> List[Turn]:
-    """Load turns with file, attachment, tool, permission, and skill evidence."""
+@dataclass
+class LoadedCopilotSession:
+    """Source snapshot; interpretation needs no connection or filesystem."""
+
+    session: Dict[str, Any]
+    turns: List[Dict[str, Any]]
+    files: List[Dict[str, Any]]
+    attachments: List[Dict[str, Any]]
+    state_records: List[Dict[str, Any]]
+    models: List[str]
+    image_inputs: Dict[str, Optional[bytes]]
+
+
+def load_session_inputs(
+    conn: sqlite3.Connection, session: Dict[str, Any]
+) -> LoadedCopilotSession:
+    """Snapshot required rows, ordered state records, and external image bytes."""
     session_id = session["id"]
+    records = load_state_records(session_id)
     attachments = get_session_attachments(conn, session_id)
-    attachments.extend(get_state_attachments(session_id))
-    turns = _build_turn_objects(
-        get_session_turns(conn, session_id),
-        get_session_files(conn, session_id),
-        attachments,
+    image_inputs = {}
+    for ref in attachments + _attachments_from_events(records):
+        path = ref.get("path")
+        if _has_inline_image(ref):
+            continue
+        if isinstance(path, str) and path.strip() and path not in image_inputs:
+            decoded = _image_bytes_and_ext(ref)
+            image_inputs[path] = decoded[0] if decoded is not None else None
+    return LoadedCopilotSession(
+        session=dict(session),
+        turns=get_session_turns(conn, session_id),
+        files=get_session_files(conn, session_id),
+        attachments=attachments,
+        state_records=records,
+        models=get_session_models(conn, session_id),
+        image_inputs=image_inputs,
     )
-    tools = get_state_tools(session_id)
+
+
+def interpret_turns(loaded: LoadedCopilotSession) -> List[Turn]:
+    """Attribute already-loaded evidence without source access."""
+    turns = _build_turn_objects(
+        loaded.turns,
+        loaded.files,
+        loaded.attachments + _attachments_from_events(loaded.state_records),
+    )
+    tools = _tools_from_events(loaded.state_records)
     if tools:
-        # Events carry full calls and results; discard coarser DB file targets.
         for turn in turns:
             turn.tools = []
         attribute_tools(turns, tools)
-    attribute_permissions(turns, get_state_permissions(session_id))
-    attribute_skills(turns, get_state_skills(session_id))
+    attribute_permissions(turns, _permissions_from_events(loaded.state_records))
+    attribute_skills(turns, _skills_from_events(loaded.state_records))
     return turns
 
 
-def extract_session(
-    conn: sqlite3.Connection,
-    session: Dict[str, Any],
+def load_session_turns(conn: sqlite3.Connection, session: Dict[str, Any]) -> List[Turn]:
+    """Compatibility helper for callers needing attributed Turn objects."""
+    return interpret_turns(load_session_inputs(conn, session))
+
+
+def interpret_session(
+    loaded: LoadedCopilotSession,
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
 ) -> Optional[Dict[str, Any]]:
-    """Build a session envelope without changing its content for display."""
-    events = build_events(load_session_turns(conn, session), tool_result_max_bytes)
+    """Build an envelope entirely from the loaded source snapshot."""
+    session = loaded.session
+    events = build_events(
+        interpret_turns(loaded), tool_result_max_bytes, image_inputs=loaded.image_inputs
+    )
     if not events:
         return None
     return build_envelope(
@@ -1141,10 +1189,19 @@ def extract_session(
             events=events,
             cwd=session.get("cwd"),
             started_at=session.get("created_at"),
-            models=get_session_models(conn, session["id"]),
+            models=loaded.models,
         ),
         tool_result_max_bytes=tool_result_max_bytes,
     )
+
+
+def extract_session(
+    conn: sqlite3.Connection,
+    session: Dict[str, Any],
+    tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
+) -> Optional[Dict[str, Any]]:
+    """Load once, then interpret independently of the source store."""
+    return interpret_session(load_session_inputs(conn, session), tool_result_max_bytes)
 
 
 def build_arg_parser(project_root: Optional[Path] = None) -> argparse.ArgumentParser:
