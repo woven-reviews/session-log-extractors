@@ -42,11 +42,12 @@ import json
 import re
 import sqlite3
 import sys
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from session_log_extractors import copilot_sources
+from session_log_extractors.copilot_sources import CopilotSource, ImageInputs
 from session_log_extractors.session_log_envelope import (
     DEFAULT_TOOL_RESULT_MAX_BYTES,
     assistant_event,
@@ -61,9 +62,6 @@ from session_log_extractors.session_log_envelope import (
     write_envelope,
 )
 from session_log_extractors.session_model import Session
-
-COPILOT_DB = Path.home() / ".copilot" / "session-store.db"
-COPILOT_STATE_ROOT = Path.home() / ".copilot" / "session-state"
 
 _NOISE_TAG_BLOCK = re.compile(
     r"<(system-reminder|system-notification|local-command-stdout|local-command-stderr|"
@@ -254,234 +252,6 @@ class Turn:
             self.skills_used.append(name)
 
 
-def get_db_connection(db_path: Path) -> sqlite3.Connection:
-    """Open a read-only connection to the Copilot session database."""
-    if not db_path.exists():
-        raise FileNotFoundError(f"Copilot database not found: {db_path}")
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ? LIMIT 1",
-        (name,),
-    ).fetchone()
-    return row is not None
-
-
-def _table_columns(conn: sqlite3.Connection, name: str) -> set:
-    if not _table_exists(conn, name):
-        return set()
-    rows = conn.execute(f"PRAGMA table_info({name})").fetchall()
-    cols = set()
-    for row in rows:
-        if isinstance(row, sqlite3.Row):
-            col = row["name"]
-        else:
-            col = row[1]
-        if isinstance(col, str):
-            cols.add(col)
-    return cols
-
-
-def _paths_overlap(a: Path, b: Path) -> bool:
-    try:
-        a.resolve().relative_to(b.resolve())
-        return True
-    except ValueError:
-        pass
-    try:
-        b.resolve().relative_to(a.resolve())
-        return True
-    except ValueError:
-        return False
-
-
-def _cwd_matches(session_cwd: Optional[str], cwd: Path, strict: bool = False) -> bool:
-    if not session_cwd:
-        return False
-    rec = Path(session_cwd).expanduser()
-    if strict:
-        return rec.resolve() == cwd.resolve()
-    return _paths_overlap(rec, cwd)
-
-
-def matching_sessions(
-    conn: sqlite3.Connection, cwd: Path, strict: bool = False
-) -> List[Dict[str, Any]]:
-    """Return every Copilot session whose cwd overlaps the given path.
-
-    In ``strict`` mode the recorded cwd must equal ``cwd`` exactly (no
-    ancestor/descendant overlap).
-    """
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT id, cwd, repository, branch, summary, created_at, updated_at
-        FROM sessions
-        ORDER BY created_at DESC
-    """)
-
-    sessions = []
-    for row in cursor:
-        session = dict(row)
-        if _cwd_matches(session.get("cwd"), cwd, strict=strict):
-            sessions.append(session)
-
-    return sessions
-
-
-def newest_session(
-    conn: sqlite3.Connection, cwd: Path, strict: bool = False
-) -> Optional[Dict[str, Any]]:
-    """Return the most recently updated session for cwd (or newest globally)."""
-    sessions = matching_sessions(conn, cwd, strict=strict)
-    if not sessions and not strict:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT id, cwd, repository, branch, summary, created_at, updated_at
-            FROM sessions
-            ORDER BY updated_at DESC, created_at DESC
-            LIMIT 1
-        """)
-        row = cursor.fetchone()
-        return dict(row) if row else None
-    if not sessions:
-        return None
-    return max(sessions, key=lambda s: s.get("updated_at", s.get("created_at", "")))
-
-
-def get_session_by_id(
-    conn: sqlite3.Connection, session_id: str
-) -> Optional[Dict[str, Any]]:
-    """Retrieve a session by its ID."""
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        SELECT id, cwd, repository, branch, summary, created_at, updated_at
-        FROM sessions
-        WHERE id = ? OR id LIKE ?
-    """,
-        (session_id, f"{session_id}%"),
-    )
-    row = cursor.fetchone()
-    return dict(row) if row else None
-
-
-def get_session_turns(
-    conn: sqlite3.Connection, session_id: str
-) -> List[Dict[str, Any]]:
-    """Retrieve all turns for a session."""
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        SELECT turn_index, user_message, assistant_response, timestamp
-        FROM turns
-        WHERE session_id = ?
-        ORDER BY turn_index
-    """,
-        (session_id,),
-    )
-    return [dict(row) for row in cursor]
-
-
-def get_session_checkpoints(
-    conn: sqlite3.Connection, session_id: str
-) -> List[Dict[str, Any]]:
-    """Retrieve all checkpoints for a session."""
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        SELECT checkpoint_number, title, overview, created_at
-        FROM checkpoints
-        WHERE session_id = ?
-        ORDER BY checkpoint_number
-    """,
-        (session_id,),
-    )
-    return [dict(row) for row in cursor]
-
-
-def get_session_files(
-    conn: sqlite3.Connection, session_id: str
-) -> List[Dict[str, Any]]:
-    """Retrieve all files touched in a session."""
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        SELECT file_path, tool_name, turn_index, first_seen_at
-        FROM session_files
-        WHERE session_id = ?
-        ORDER BY first_seen_at
-    """,
-        (session_id,),
-    )
-    return [dict(row) for row in cursor]
-
-
-def get_session_refs(conn: sqlite3.Connection, session_id: str) -> List[Dict[str, Any]]:
-    """Retrieve all refs (commits, PRs, issues) for a session."""
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        SELECT ref_type, ref_value, turn_index, created_at
-        FROM session_refs
-        WHERE session_id = ?
-        ORDER BY created_at
-    """,
-        (session_id,),
-    )
-    return [dict(row) for row in cursor]
-
-
-def get_session_attachments(
-    conn: sqlite3.Connection, session_id: str
-) -> List[Dict[str, Any]]:
-    """Retrieve image attachment records for a session if available."""
-    cols = _table_columns(conn, "attachments")
-    required = {"session_id", "display_name", "path", "type"}
-    if not required.issubset(cols):
-        return []
-
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        SELECT display_name, path, type
-        FROM attachments
-        WHERE session_id = ?
-        ORDER BY rowid
-    """,
-        (session_id,),
-    )
-    return [dict(row) for row in cursor]
-
-
-def parse_state_records(lines: List[str]) -> List[Dict[str, Any]]:
-    """Decode state JSONL once, retaining object records in source order."""
-    records = []
-    for line in lines:
-        try:
-            obj = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(obj, dict):
-            records.append(obj)
-    return records
-
-
-def load_state_records(session_id: str) -> List[Dict[str, Any]]:
-    """Read optional state input, preserving the missing/unreadable fallback."""
-    events_path = COPILOT_STATE_ROOT / session_id / "events.jsonl"
-    if not events_path.is_file():
-        return []
-    try:
-        lines = events_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return []
-    return parse_state_records(lines)
-
-
 def _binary_assets(events: List[Dict[str, Any]]) -> Dict[str, tuple]:
     assets = {}
     for obj in events:
@@ -541,7 +311,7 @@ def _attachments_from_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any
 
 def get_state_attachments(session_id: str) -> List[Dict[str, Any]]:
     """Load state attachments for callers needing only this evidence."""
-    return _attachments_from_events(load_state_records(session_id))
+    return _attachments_from_events(copilot_sources.load_state_records(session_id))
 
 
 # Existing native interpretation; remove in QUAL-2519.
@@ -611,7 +381,7 @@ def _permissions_from_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any
 
 def get_state_permissions(session_id: str) -> List[Dict[str, Any]]:
     """Read permission decisions from the per-session events log, if present."""
-    return _permissions_from_events(load_state_records(session_id))
+    return _permissions_from_events(copilot_sources.load_state_records(session_id))
 
 
 def _skills_from_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -638,7 +408,7 @@ def _skills_from_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 def get_state_skills(session_id: str) -> List[Dict[str, Any]]:
     """Read invoked skills from the per-session events log, if present."""
-    return _skills_from_events(load_state_records(session_id))
+    return _skills_from_events(copilot_sources.load_state_records(session_id))
 
 
 def _result_text(result: Any) -> str:
@@ -705,7 +475,7 @@ def _tools_from_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 def get_state_tools(session_id: str) -> List[Dict[str, Any]]:
     """Read tool calls + results from the per-session events log, if present."""
-    return _tools_from_events(load_state_records(session_id))
+    return _tools_from_events(copilot_sources.load_state_records(session_id))
 
 
 def _turn_for(turns: List[Turn], ts: Optional[str]) -> Optional[Turn]:
@@ -774,42 +544,6 @@ def attribute_permissions(turns: List[Turn], perms: List[Dict[str, Any]]) -> Non
         target = _turn_for(turns, p.get("timestamp"))
         if target is not None:
             target.permission_decisions.append(p)
-
-
-def get_session_models(conn: sqlite3.Connection, session_id: str) -> List[str]:
-    """Distinct model ids from the session's usage events, if available.
-
-    Reads assistant_usage_events (Copilot CLI 1.0.90-5); falls back to the
-    events.usage_model layout that earlier CLIs are assumed to have written.
-    """
-    for table, column, order in (
-        ("assistant_usage_events", "model", "id"),
-        ("events", "usage_model", "timestamp"),
-    ):
-        cols = _table_columns(conn, table)
-        if {"session_id", column, order} <= set(cols):
-            break
-    else:
-        return []
-
-    cursor = conn.cursor()
-    cursor.execute(
-        f"""
-        SELECT {column} AS model
-        FROM {table}
-        WHERE session_id = ?
-          AND {column} IS NOT NULL
-          AND {column} != ''
-        ORDER BY {order}
-    """,
-        (session_id,),
-    )
-    models: List[str] = []
-    for row in cursor:
-        model = row["model"]
-        if isinstance(model, str) and model not in models:
-            models.append(model)
-    return models
 
 
 def _attachment_lookup(attachments: List[Dict[str, Any]]) -> Dict[str, Dict[str, str]]:
@@ -942,7 +676,7 @@ def _image_source(ref: Dict[str, Any]) -> Optional[str]:
 
 
 def envelope_images(
-    refs: List[Dict[str, str]], image_inputs: Dict[str, Optional[bytes]]
+    refs: List[Dict[str, str]], image_inputs: ImageInputs
 ) -> List[Dict[str, Any]]:
     """Resolve Copilot image refs to inline base64 entries.
 
@@ -969,7 +703,7 @@ def build_events(
     turns: List["Turn"],
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
     *,
-    image_inputs: Optional[Dict[str, Optional[bytes]]] = None,
+    image_inputs: Optional[ImageInputs] = None,
 ) -> List[Dict[str, Any]]:
     """Produce raw-envelope events from already-built Copilot turns.
 
@@ -1072,22 +806,6 @@ def _path_image_ext(ref: Dict[str, str]) -> str:
     return guessed.split("/")[-1] if "/" in guessed else "img"
 
 
-def _image_bytes_and_ext(ref: Dict[str, str]) -> Optional[tuple[bytes, str]]:
-    """Load image bytes with inline encodings taking precedence over paths."""
-    if _has_inline_image(ref):
-        return _inline_image_bytes(ref)
-    source_path = ref.get("path")
-    if isinstance(source_path, str) and source_path.strip():
-        src = Path(source_path).expanduser()
-        try:
-            raw = src.read_bytes()
-        except OSError:
-            return None
-        return raw, _path_image_ext(ref)
-
-    return None
-
-
 def output_identifier(session: Dict[str, Any]) -> str:
     """Generate a short identifier for output filenames."""
     session_id = session.get("id", "unknown")
@@ -1110,89 +828,72 @@ def _unique_identifier(base: str, used: set) -> str:
     return ident
 
 
-@dataclass
-class LoadedCopilotSession:
-    """Source snapshot; interpretation needs no connection or filesystem."""
-
-    session: Dict[str, Any]
-    turns: List[Dict[str, Any]]
-    files: List[Dict[str, Any]]
-    attachments: List[Dict[str, Any]]
-    state_records: List[Dict[str, Any]]
-    models: List[str]
-    image_inputs: Dict[str, Optional[bytes]]
-
-
-def load_session_inputs(
-    conn: sqlite3.Connection, session: Dict[str, Any]
-) -> LoadedCopilotSession:
-    """Snapshot required rows, ordered state records, and external image bytes."""
-    session_id = session["id"]
-    records = load_state_records(session_id)
-    attachments = get_session_attachments(conn, session_id)
-    image_inputs = {}
-    for ref in attachments + _attachments_from_events(records):
-        path = ref.get("path")
-        if _has_inline_image(ref):
-            continue
-        if isinstance(path, str) and path.strip() and path not in image_inputs:
-            decoded = _image_bytes_and_ext(ref)
-            image_inputs[path] = decoded[0] if decoded is not None else None
-    return LoadedCopilotSession(
-        session=dict(session),
-        turns=get_session_turns(conn, session_id),
-        files=get_session_files(conn, session_id),
-        attachments=attachments,
-        state_records=records,
-        models=get_session_models(conn, session_id),
-        image_inputs=image_inputs,
+def read_source(conn: sqlite3.Connection, session: Dict[str, Any]) -> CopilotSource:
+    """Load database/state records and snapshot referenced external images."""
+    source = copilot_sources.read_source(conn, session)
+    turns = _build_turn_objects(
+        source.turns,
+        source.files,
+        source.attachments + _attachments_from_events(source.state_records),
     )
+    source.image_inputs = copilot_sources.load_image_inputs(
+        ref for turn in turns for ref in turn.image_refs if not _has_inline_image(ref)
+    )
+    return source
 
 
-def interpret_turns(loaded: LoadedCopilotSession) -> List[Turn]:
+def interpret_turns(source: CopilotSource) -> List[Turn]:
     """Attribute already-loaded evidence without source access."""
     turns = _build_turn_objects(
-        loaded.turns,
-        loaded.files,
-        loaded.attachments + _attachments_from_events(loaded.state_records),
+        source.turns,
+        source.files,
+        source.attachments + _attachments_from_events(source.state_records),
     )
-    tools = _tools_from_events(loaded.state_records)
+    tools = _tools_from_events(source.state_records)
     if tools:
         for turn in turns:
             turn.tools = []
         attribute_tools(turns, tools)
-    attribute_permissions(turns, _permissions_from_events(loaded.state_records))
-    attribute_skills(turns, _skills_from_events(loaded.state_records))
+    attribute_permissions(turns, _permissions_from_events(source.state_records))
+    attribute_skills(turns, _skills_from_events(source.state_records))
     return turns
 
 
 def load_session_turns(conn: sqlite3.Connection, session: Dict[str, Any]) -> List[Turn]:
     """Compatibility helper for callers needing attributed Turn objects."""
-    return interpret_turns(load_session_inputs(conn, session))
+    return interpret_turns(read_source(conn, session))
 
 
-def interpret_session(
-    loaded: LoadedCopilotSession,
+def interpret_source(
+    source: CopilotSource,
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
-) -> Optional[Dict[str, Any]]:
-    """Build an envelope entirely from the loaded source snapshot."""
-    session = loaded.session
+) -> Optional[Session]:
+    """Interpret supplied rows, records, and image inputs without source access."""
+    session = source.session
     events = build_events(
-        interpret_turns(loaded), tool_result_max_bytes, image_inputs=loaded.image_inputs
+        interpret_turns(source), tool_result_max_bytes, image_inputs=source.image_inputs
     )
     if not events:
         return None
-    return build_envelope(
-        Session(
-            harness="copilot",
-            session_id=output_identifier(session),
-            events=events,
-            cwd=session.get("cwd"),
-            started_at=session.get("created_at"),
-            models=loaded.models,
-        ),
-        tool_result_max_bytes=tool_result_max_bytes,
+    return Session(
+        harness="copilot",
+        session_id=output_identifier(session),
+        events=events,
+        cwd=session.get("cwd"),
+        started_at=session.get("created_at"),
+        models=source.models,
     )
+
+
+def build_raw_envelope(
+    source: CopilotSource,
+    tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
+) -> Optional[Dict[str, Any]]:
+    """Export interpreted source content through the shared envelope boundary."""
+    session = interpret_source(source, tool_result_max_bytes)
+    if session is None:
+        return None
+    return build_envelope(session, tool_result_max_bytes=tool_result_max_bytes)
 
 
 def extract_session(
@@ -1201,7 +902,7 @@ def extract_session(
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
 ) -> Optional[Dict[str, Any]]:
     """Load once, then interpret independently of the source store."""
-    return interpret_session(load_session_inputs(conn, session), tool_result_max_bytes)
+    return build_raw_envelope(read_source(conn, session), tool_result_max_bytes)
 
 
 def build_arg_parser(project_root: Optional[Path] = None) -> argparse.ArgumentParser:
@@ -1221,7 +922,7 @@ def build_arg_parser(project_root: Optional[Path] = None) -> argparse.ArgumentPa
         "--db",
         metavar="PATH",
         default=None,
-        help=f"path to Copilot session database (default: {COPILOT_DB})",
+        help=f"path to Copilot session database (default: {copilot_sources.COPILOT_DB})",
     )
     parser.add_argument(
         "--strict",
@@ -1280,7 +981,7 @@ def _extract_all(
 ) -> int:
     """Extract every matching Copilot session, one JSON file each."""
     project_root = Path.cwd() if project_root is None else project_root
-    sessions = matching_sessions(conn, Path.cwd(), strict=strict)
+    sessions = copilot_sources.matching_sessions(conn, Path.cwd(), strict=strict)
     if not sessions:
         print(f"error: no Copilot sessions for {Path.cwd()}", file=sys.stderr)
         return 1
@@ -1310,11 +1011,11 @@ def _extract_all(
 
 def _select_session(conn: sqlite3.Connection, args: argparse.Namespace):
     if args.session:
-        session = get_session_by_id(conn, args.session)
+        session = copilot_sources.get_session_by_id(conn, args.session)
         if session is None:
             print(f"error: no session found matching {args.session!r}", file=sys.stderr)
         return session
-    session = newest_session(conn, Path.cwd(), strict=args.strict)
+    session = copilot_sources.newest_session(conn, Path.cwd(), strict=args.strict)
     if session is None:
         print(
             f"error: no Copilot sessions for {Path.cwd()}"
@@ -1359,9 +1060,9 @@ def main(
 ) -> int:
     project_root = Path.cwd() if project_root is None else project_root
     args = build_arg_parser(project_root).parse_args(argv)
-    db_path = Path(args.db).expanduser() if args.db else COPILOT_DB
+    db_path = Path(args.db).expanduser() if args.db else copilot_sources.COPILOT_DB
     try:
-        conn = get_db_connection(db_path)
+        conn = copilot_sources.get_db_connection(db_path)
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

@@ -84,14 +84,16 @@ access, construct `ClaudeSource(path, entries, metadata)` directly and call
 Main JSON extraction continues to omit sidecars; `load_subagents(path)` retains
 its timestamp-ordered summaries for existing callers.
 
-Copilot's `load_session_inputs(connection, session)` snapshots session metadata,
-required database rows, ordered parsed state records, models, and external image
-bytes in `LoadedCopilotSession`. `interpret_session(loaded)` and
-`interpret_turns(loaded)` consume that snapshot without database or filesystem
-access. State JSONL is read and decoded once per extraction. Direct `build_events`
-callers supply preloaded path images through `image_inputs`; inline image data
-remains part of the attachment records. CLI discovery and read-only connection
-ownership remain in the loading/orchestration layer.
+Copilot readers and discovery live in `session_log_extractors.copilot_sources`.
+`read_source(connection, session)` loads metadata, required database rows, models,
+and ordered state records into `CopilotSource`. The extractor's `read_source`
+also snapshots referenced external image bytes, following the Codex reader pattern.
+`interpret_source(source)` returns a shared `Session` without database or filesystem
+access; `build_raw_envelope(source)` exports it. For replay, construct `CopilotSource`
+directly from supplied rows, state records, and optional `image_inputs`.
+State JSONL is read and decoded once per extraction. Image bytes are keyed by
+recorded path, with media type inferred per reference; inline images remain in
+the records. CLI selection and read-only connection ownership stay in orchestration.
 
 ## Shared session/export boundary
 
