@@ -32,6 +32,11 @@ the threshold.
 
 ## Lint policy
 
+Put imports at module scope by default, including in tests. Use function-local
+imports only when required for a concrete reason, such as an optional dependency
+or import cycle, and explain that reason in a comment. During refactoring,
+consolidate repeated imports.
+
 Ruff checks application code, fixture generators, and tests. Keep the enabled
 rules and initial configurable limits (complexity 10, statements 50, branches
 12, arguments 5); these are Ruff defaults, not universal quality standards.
