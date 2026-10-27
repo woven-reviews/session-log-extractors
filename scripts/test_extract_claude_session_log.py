@@ -1518,16 +1518,17 @@ def test_interpret_supplied_source_without_filesystem(limit, monkeypatch):
     def forbidden(*args, **kwargs):
         pytest.fail("interpretation accessed the filesystem")
 
-    for method in ["open", "is_file", "is_dir", "iterdir", "stat", "read_text"]:
-        monkeypatch.setattr(Path, method, forbidden)
-    session = eclog.interpret_source(source, limit)
-    assert session.session_id == "session"
-    assert session.events == build_events(entries, limit)
-    assert session.cwd == "/work/app"
-    assert session.started_at == first_timestamp(entries)
-    assert session.models == session_models(entries)
-    assert session.events[0]["images"][0]["data"] == _PNG_B64
-    assert eclog.interpret_source(ClaudeSource(source.path, [])) is None
+    with monkeypatch.context() as guard:
+        for method in ["open", "is_file", "is_dir", "iterdir", "stat", "read_text"]:
+            guard.setattr(Path, method, forbidden)
+        session = eclog.interpret_source(source, limit)
+        assert session["session_id"] == "session"
+        assert session["events"] == build_events(entries, limit)
+        assert session["cwd"] == "/work/app"
+        assert session["started_at"] == first_timestamp(entries)
+        assert session["models"] == session_models(entries)
+        assert session["events"][0]["images"][0]["data"] == _PNG_B64
+        assert eclog.interpret_source(ClaudeSource(source.path, [])) is None
 
 
 def test_interpret_supplied_subagent_without_filesystem(monkeypatch):
@@ -1624,3 +1625,45 @@ def test_source_reader_discovers_sidecars_in_filename_order(tmp_path):
     sources = read_subagent_sources(transcript)
     assert [source.path.name for source in sources] == ["a.jsonl", "b.jsonl"]
     assert all(source.path.parent == directory for source in sources)
+
+
+def test_subagent_reader_skips_empty_metadata_and_preserves_summary_order(tmp_path):
+    transcript = tmp_path / "session.jsonl"
+    directory = tmp_path / "session" / "subagents"
+    directory.mkdir(parents=True)
+    # Filename order breaks timestamp ties; missing timestamps sort first.
+    for name, timestamp in [
+        ("a", "2026-01-02"),
+        ("b", "2026-01-01"),
+        ("c", "2026-01-01"),
+        ("d", None),
+    ]:
+        _write_jsonl(
+            directory / f"{name}.jsonl",
+            [{"type": "user", "timestamp": timestamp, "message": {"content": name}}],
+        )
+    (directory / "empty.jsonl").touch()
+    # A directory at the metadata path must not be read for an empty sidecar.
+    (directory / "empty.meta.json").mkdir()
+    assert [summary["task"] for summary in load_subagents(transcript)] == [
+        "d",
+        "b",
+        "c",
+        "a",
+    ]
+
+
+def test_main_source_does_not_read_sidecars_or_metadata(tmp_path, monkeypatch):
+    transcript = tmp_path / "session.jsonl"
+    entries = _conversation_entries()
+    _write_jsonl(transcript, entries)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("main JSON extraction attempted sidecar discovery")
+
+    with monkeypatch.context() as guard:
+        guard.setattr(Path, "iterdir", forbidden)
+        guard.setattr(Path, "is_file", forbidden)
+        guard.setattr(Path, "read_text", forbidden)
+        envelope = extract_transcript(transcript)
+    assert envelope == build_raw_envelope(transcript, entries)

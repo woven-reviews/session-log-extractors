@@ -67,6 +67,15 @@ directory at call time for default output, or an explicit `project_root=Path(...
 Run `uv run --locked pytest tests/test_smoke.py` to check package imports and
 fixture exports through all three local script entrypoints.
 
+Claude readers live in `session_log_extractors.claude_sources`. `read_source(path)`
+loads main records; `read_subagent_sources(path)` reads the sibling sidecars with
+optional metadata and retains each source path. For replay without filesystem
+access, construct `ClaudeSource(path, entries, metadata)` directly and call
+`extract_claude_session_log.interpret_source(source)` or
+`summarize_subagent_source(source)`. Images remain inline in the recorded entries.
+Main JSON extraction continues to omit sidecars; `load_subagents(path)` retains
+its timestamp-ordered summaries for existing callers.
+
 ## Shared session/export boundary
 
 Adapters can supply `Session`, `Event`, `ToolCall`, and `Image` dictionaries from
@@ -158,8 +167,6 @@ Algorithms and interfaces are preserved in this tooling change.
 | `src/session_log_extractors/extract_claude_session_log.py` | `build_events` | C901, PLR0912, PLR0915 | [QUAL-2517](https://linear.app/andela/issue/QUAL-2517) |
 | `src/session_log_extractors/extract_claude_session_log.py` | `build_turns` | C901, PLR0912, PLR0915 | [QUAL-2517](https://linear.app/andela/issue/QUAL-2517) |
 | `src/session_log_extractors/extract_claude_session_log.py` | `result_note` | C901, PLR0912 | [QUAL-2517](https://linear.app/andela/issue/QUAL-2517) |
-| `src/session_log_extractors/extract_claude_session_log.py` | `select_transcript` | C901, PLR0912 | [QUAL-2514](https://linear.app/andela/issue/QUAL-2514) |
-| `src/session_log_extractors/extract_claude_session_log.py` | `summarize_subagent` | C901, PLR0912 | [QUAL-2514](https://linear.app/andela/issue/QUAL-2514) |
 | `extract_codex_session_log.py` | `_flatten_result_text` | C901 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |
 | `extract_codex_session_log.py` | `_image_bytes_and_ext` | C901 | [QUAL-2515](https://linear.app/andela/issue/QUAL-2515) |
 | `extract_codex_session_log.py` | `_structured_answer_for_question` | C901, PLR0912 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |
