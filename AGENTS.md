@@ -32,10 +32,6 @@ the threshold.
 
 ## Lint policy
 
-Put imports at module scope, including in tests; Ruff PLC0415 enforces this.
-During refactoring, consolidate repeated imports. Resolve import cycles or
-optional-dependency needs within the enabled rules without adding suppressions.
-
 Ruff checks application code, fixture generators, and tests. Keep the enabled
 rules and initial configurable limits (complexity 10, statements 50, branches
 12, arguments 5); these are Ruff defaults, not universal quality standards.
