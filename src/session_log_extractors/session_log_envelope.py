@@ -16,7 +16,7 @@ The envelope is deliberately *not* a copy of the harness's own transcript. A
 verbatim copy would carry three incompatible schemas downstream and, for Codex
 and Copilot, would not carry the images at all.
 
-Standard library only; works on Python 3.8+.
+Standard library only; works on Python 3.11+.
 """
 
 from __future__ import annotations
@@ -24,8 +24,11 @@ from __future__ import annotations
 import base64
 import json
 import sys
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from session_log_extractors.session_model import Session
 
 SCHEMA = "raw-session-log/1"
 
@@ -178,26 +181,50 @@ def tool_call(
     return call
 
 
-# Existing export signature; remove in QUAL-2513.
-def build_envelope(  # noqa: PLR0913
-    harness: str,
-    session_id: str,
-    events: List[Dict[str, Any]],
-    cwd: Optional[str] = None,
-    started_at: Optional[str] = None,
-    models: Optional[List[str]] = None,
+def build_envelope(
+    session: Session,
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
 ) -> Dict[str, Any]:
+    """Wrap content without applying policy to already exported legacy events.
+
+    New adapters use export_session with complete interpreted content instead.
+    """
     return {
         "schema": SCHEMA,
-        "harness": harness,
-        "session_id": session_id,
-        "cwd": cwd,
-        "started_at": started_at,
-        "models": models or [],
+        "harness": session["harness"],
+        "session_id": session["session_id"],
+        "cwd": None,
+        "started_at": None,
+        "models": [],
         "truncation": {"tool_result_max_bytes": tool_result_max_bytes},
-        "events": events,
+        **session,
     }
+
+
+def export_session(
+    session: Session,
+    tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
+) -> Dict[str, Any]:
+    """Export complete interpreted content without mutating the adapter's data.
+
+    Lossy policy belongs here: cap textual results using the existing UTF-8
+    byte policy. Structured results and other nested payloads pass through
+    unchanged; do not stringify them. Missing results remain missing. Legacy
+    harnesses still apply their own limits until their interpretation migrations.
+    """
+    envelope = build_envelope(deepcopy(session), tool_result_max_bytes)
+    for event in envelope["events"]:
+        for call in event.get("tool_calls") or []:
+            if "result" in call and (
+                call["result"] is None or isinstance(call["result"], str)
+            ):
+                capped = truncate_result(call["result"], tool_result_max_bytes)
+                capped["result_bytes"] = call.get(
+                    "result_bytes", capped["result_bytes"]
+                )
+                capped["result_truncated"] |= call.get("result_truncated", False)
+                call.update(capped)
+    return envelope
 
 
 def write_envelope(

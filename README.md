@@ -67,6 +67,22 @@ directory at call time for default output, or an explicit `project_root=Path(...
 Run `uv run --locked pytest tests/test_smoke.py` to check package imports and
 fixture exports through all three local script entrypoints.
 
+## Shared session/export boundary
+
+Adapters can supply `Session`, `Event`, `ToolCall`, and `Image` dictionaries from
+`session_log_extractors.session_model` directly to
+`session_log_extractors.session_log_envelope.export_session(session, tool_result_max_bytes=4096)`.
+Supply complete interpreted content: export copies it before applying the existing
+UTF-8 byte cap to textual tool results, retaining original byte counts and
+truncation flags. Negative limits retain full text. Structured results, nested
+payloads, images, ordering, and missing/null/empty values pass through unchanged.
+The model has no presentation state, adapter base class, or runtime validation.
+
+Existing harnesses continue applying their own limits and use
+`build_envelope(Session(...), tool_result_max_bytes=...)` only to assemble the
+legacy envelope. Their interpretation migrations and shared policy rollout are
+separate follow-ups; current CLI behavior and defaults are unchanged.
+
 ## Ownership
 
 This repository is owned and maintained by Andela. The source is published
@@ -133,8 +149,8 @@ No directory exclusion or raised threshold hides them.
 
 The exception reasons are existing selection and asset I/O (source-boundary
 tickets), presentation being removed (JSON-only tickets), interpretation being
-consolidated (pipeline tickets), the existing shared export signature (model
-ticket), or generator/test orchestration (dedicated cleanup ticket QUAL-2547).
+consolidated (pipeline tickets), or generator/test orchestration (dedicated
+cleanup ticket QUAL-2547).
 Algorithms and interfaces are preserved in this tooling change.
 
 | File (relative to `scripts/` unless shown) | Function | Rules | Removal ticket |
@@ -161,7 +177,6 @@ Algorithms and interfaces are preserved in this tooling change.
 | `generate_codex_fixtures.py` | `validate` | C901, PLR0912 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
 | `generate_codex_fixtures.py` | `wait_for` | C901 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
 | `generate_copilot_fixtures.py` | `main` | C901, PLR0912, PLR0915 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
-| `src/session_log_extractors/session_log_envelope.py` | `build_envelope` | PLR0913 | [QUAL-2513](https://linear.app/andela/issue/QUAL-2513) |
 | `test_generate_claude_fixtures.py` | `_fake_claude` | PLR0913 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
 | `test_generate_codex_fixtures.py` | `_fake_cli` | PLR0913 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
 | `test_generate_codex_fixtures.py` | `test_interactive_main_drives_requests_and_stages_native_rollouts` | C901 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
