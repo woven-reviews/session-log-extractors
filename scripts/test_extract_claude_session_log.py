@@ -16,6 +16,11 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 import pytest
 
 from session_log_extractors import extract_claude_session_log as eclog
+from session_log_extractors.claude_sources import (
+    ClaudeSource,
+    read_source,
+    read_subagent_sources,
+)
 from session_log_extractors.extract_claude_session_log import (
     Turn,
     _candidate_project_dirs,
@@ -1510,8 +1515,6 @@ def test_cli_default_root_uses_current_directory(batch, tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("limit", [0, 17, -1])
 def test_interpret_supplied_source_without_filesystem(limit, monkeypatch):
-    from session_log_extractors.claude_sources import ClaudeSource
-
     entries = _conversation_entries()
     source = ClaudeSource(Path("/unavailable/session.jsonl"), entries)
 
@@ -1532,8 +1535,6 @@ def test_interpret_supplied_source_without_filesystem(limit, monkeypatch):
 
 
 def test_interpret_supplied_subagent_without_filesystem(monkeypatch):
-    from session_log_extractors.claude_sources import ClaudeSource
-
     entries = [
         {
             "type": "user",
@@ -1574,8 +1575,6 @@ def test_interpret_supplied_subagent_without_filesystem(monkeypatch):
 
 @pytest.mark.parametrize("metadata", [None, "bad JSON", "[]", "null", "{}"])
 def test_source_reader_metadata_fallback(metadata, tmp_path):
-    from session_log_extractors.claude_sources import read_source
-
     transcript = tmp_path / "agent.jsonl"
     _write_jsonl(transcript, [{"type": "user", "message": {"content": "task"}}])
     if metadata is not None:
@@ -1586,8 +1585,6 @@ def test_source_reader_metadata_fallback(metadata, tmp_path):
 
 
 def test_source_reader_metadata_read_error(tmp_path, monkeypatch):
-    from session_log_extractors.claude_sources import read_source
-
     transcript = tmp_path / "agent.jsonl"
     _write_jsonl(transcript, [{"type": "user"}])
     transcript.with_suffix(".meta.json").touch()
@@ -1600,8 +1597,6 @@ def test_source_reader_metadata_read_error(tmp_path, monkeypatch):
 
 
 def test_source_reader_keeps_diagnostics_and_read_errors(tmp_path, capsys):
-    from session_log_extractors.claude_sources import read_source
-
     transcript = tmp_path / "session.jsonl"
     transcript.write_bytes(b'\n{"type":"user"}\ninvalid\n{"text":"\xff"}\n[]\n')
     source = read_source(transcript)
@@ -1612,8 +1607,6 @@ def test_source_reader_keeps_diagnostics_and_read_errors(tmp_path, capsys):
 
 
 def test_source_reader_discovers_sidecars_in_filename_order(tmp_path):
-    from session_log_extractors.claude_sources import read_subagent_sources
-
     transcript = tmp_path / "session.jsonl"
     assert read_subagent_sources(transcript) == []
     directory = tmp_path / "session" / "subagents"
