@@ -8,10 +8,10 @@ from types import SimpleNamespace
 import generate_codex_fixtures as generator
 import pytest
 
+from session_log_extractors.codex_sources import load_entries
 from session_log_extractors.extract_codex_session_log import (
     build_events,
     build_turns,
-    load_entries,
     session_models,
 )
 
