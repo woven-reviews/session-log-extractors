@@ -18,8 +18,17 @@ import pytest
 
 from session_log_extractors import extract_codex_session_log as mod
 from session_log_extractors import session_log_envelope
-from session_log_extractors.extract_codex_session_log import (
+from session_log_extractors.codex_sources import (
     _cwd_matches,
+    _paths_overlap,
+    load_entries,
+    newest,
+    output_identifier,
+    select_transcript,
+    session_cwd_from_file,
+    session_id_from_file,
+)
+from session_log_extractors.extract_codex_session_log import (
     _decode_jsonish,
     _extract_all,
     _extract_answer_from_item,
@@ -27,7 +36,6 @@ from session_log_extractors.extract_codex_session_log import (
     _image_bytes_and_ext,
     _parse_chosen,
     _parse_ts,
-    _paths_overlap,
     _plan_update,
     _structured_answer_for_question,
     _unique_identifier,
@@ -43,17 +51,11 @@ from session_log_extractors.extract_codex_session_log import (
     image_refs_from_event,
     image_refs_from_user_message_payload,
     is_startup_context,
-    load_entries,
     main,
-    newest,
     option_qa_from_output,
-    output_identifier,
     parse_permission_denial,
     patch_paths,
     result_note,
-    select_transcript,
-    session_cwd_from_file,
-    session_id_from_file,
     session_models,
     skill_names_from_call,
     skill_refs_from_call,
@@ -616,7 +618,9 @@ def test_build_events_keeps_local_and_unresolvable_images():
     # Codex keeps images out of band, so the envelope is where they become
     # portable.
     img = FIXTURES / "pixel.png"
-    user = build_events(_codex_entries(img))[0]
+    user = build_events(
+        _codex_entries(img), image_inputs={str(img): (img.read_bytes(), "png")}
+    )[0]
     assert user["role"] == "user"
     assert base64.b64decode(user["images"][0]["data"]) == img.read_bytes()
     assert user["images"][0]["media_type"] == "image/png"
@@ -1561,8 +1565,7 @@ def test_build_raw_envelope_returns_none_for_no_events():
         tmp = Path(tmp_name)
         transcript = tmp / "t.jsonl"
         transcript.write_text(json.dumps({"type": "session_meta", "payload": {}}))
-        entries = load_entries(transcript)
-        assert build_raw_envelope(transcript, entries) is None
+        assert build_raw_envelope(mod.read_source(transcript)) is None
 
 
 def test_extract_all_reports_error_when_nothing_matches():
@@ -1592,14 +1595,14 @@ def test_extract_all_skips_unparseable_transcript_and_still_succeeds(monkeypatch
             _session_entries("bad", project, "Bad session"),
         )
 
-        original_extract_transcript = mod.extract_transcript
+        original_build_envelope = mod.build_raw_envelope
 
-        def flaky_extract_transcript(transcript, *args):
-            if "bad" in transcript.name:
+        def flaky_build_envelope(source, *args):
+            if "bad" in source.path.name:
                 raise ValueError("boom")
-            return original_extract_transcript(transcript, *args)
+            return original_build_envelope(source, *args)
 
-        monkeypatch.setattr(mod, "extract_transcript", flaky_extract_transcript)
+        monkeypatch.setattr(mod, "build_raw_envelope", flaky_build_envelope)
         monkeypatch.chdir(project)
         rc = mod._extract_all(str(sessions), str(out))
 

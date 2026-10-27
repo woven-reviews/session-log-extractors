@@ -56,8 +56,10 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
+from session_log_extractors import codex_sources
+from session_log_extractors.codex_sources import CodexSource, ImageInputs
 from session_log_extractors.session_log_envelope import (
     DEFAULT_TOOL_RESULT_MAX_BYTES,
     assistant_event,
@@ -73,8 +75,6 @@ from session_log_extractors.session_log_envelope import (
     write_envelope,
 )
 from session_log_extractors.session_model import Session
-
-CODEX_SESSIONS_ROOT = Path.home() / ".codex" / "sessions"
 
 _IMAGE_EXT = {
     "image/png": "png",
@@ -169,208 +169,9 @@ def _parse_ts(ts: Optional[str]):
         return None
 
 
-def _jsonl_files(root: Path) -> List[Path]:
-    if not root.is_dir():
-        return []
-    return [p for p in root.rglob("*.jsonl") if p.is_file()]
-
-
-def newest(paths: Iterable[Path]) -> Optional[Path]:
-    paths = list(paths)
-    if not paths:
-        return None
-    return max(paths, key=lambda p: p.stat().st_mtime)
-
-
-def load_entries(path: Path) -> List[Dict[str, Any]]:
-    entries: List[Dict[str, Any]] = []
-    bad = 0
-    with path.open("r", encoding="utf-8", errors="replace") as fh:
-        for lineno, line in enumerate(fh, 1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                bad += 1
-                if bad <= 5:
-                    print(
-                        f"warning: skipping malformed JSON on line {lineno}",
-                        file=sys.stderr,
-                    )
-                continue
-            if isinstance(obj, dict):
-                entries.append(obj)
-            else:
-                bad += 1
-    if bad > 5:
-        print(f"warning: skipped {bad} malformed/blank lines total", file=sys.stderr)
-    return entries
-
-
 def _payload(entry: Dict[str, Any]) -> Dict[str, Any]:
     payload = entry.get("payload")
     return payload if isinstance(payload, dict) else {}
-
-
-def session_id_from_file(path: Path) -> Optional[str]:
-    try:
-        with path.open("r", encoding="utf-8", errors="replace") as fh:
-            for _, line in zip(range(50), fh, strict=False):
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if obj.get("type") == "session_meta":
-                    sid = _payload(obj).get("id")
-                    return sid if isinstance(sid, str) else None
-    except OSError:
-        return None
-    return None
-
-
-def session_cwd_from_file(path: Path) -> Optional[str]:
-    try:
-        with path.open("r", encoding="utf-8", errors="replace") as fh:
-            for _, line in zip(range(80), fh, strict=False):
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                payload = _payload(obj)
-                if obj.get("type") == "session_meta":
-                    cwd = payload.get("cwd")
-                    if isinstance(cwd, str) and cwd:
-                        return cwd
-                if obj.get("type") == "turn_context":
-                    cwd = payload.get("cwd")
-                    if isinstance(cwd, str) and cwd:
-                        return cwd
-    except OSError:
-        return None
-    return None
-
-
-def _paths_overlap(a: Path, b: Path) -> bool:
-    try:
-        a.resolve().relative_to(b.resolve())
-        return True
-    except ValueError:
-        pass
-    try:
-        b.resolve().relative_to(a.resolve())
-        return True
-    except ValueError:
-        return False
-
-
-def _cwd_matches(
-    transcript_cwd: Optional[str], cwd: Path, strict: bool = False
-) -> bool:
-    if not transcript_cwd:
-        return False
-    rec = Path(transcript_cwd).expanduser()
-    if strict:
-        return rec.resolve() == cwd.resolve()
-    return _paths_overlap(rec, cwd)
-
-
-def matching_transcripts(root: Path, cwd: Path, strict: bool = False) -> List[Path]:
-    """Return every Codex transcript whose recorded cwd overlaps ``cwd``.
-
-    In ``strict`` mode the recorded cwd must equal ``cwd`` exactly (no
-    ancestor/descendant overlap).
-    """
-    return [
-        p
-        for p in _jsonl_files(root)
-        if _cwd_matches(session_cwd_from_file(p), cwd, strict=strict)
-    ]
-
-
-def output_identifier(transcript: Path) -> str:
-    """Stable filename identifier for one transcript.
-
-    Prefer Codex's session id from ``session_meta``. Fall back to the rollout
-    filename stem when older logs do not carry an id.
-    """
-    raw = session_id_from_file(transcript) or transcript.stem
-    ident = re.sub(r"[^A-Za-z0-9_.-]+", "-", raw).strip("-")
-    return ident or transcript.stem
-
-
-# Existing transcript selection; remove in QUAL-2515.
-def select_transcript(  # noqa: C901
-    selector: Optional[str],
-    transcript: Optional[str],
-    sessions_root: Optional[str],
-    strict: bool = False,
-) -> Path:
-    """Pick a Codex transcript.
-
-    Precedence:
-      1. --transcript PATH
-      2. positional selector that is an existing file
-      3. positional selector as filename/session-id prefix
-      4. newest transcript whose recorded cwd overlaps the current cwd
-      5. newest transcript anywhere under ~/.codex/sessions
-
-    In ``strict`` mode step 4 requires an exact cwd match and step 5 (newest
-    anywhere) is disabled, so only sessions started in the current directory
-    are ever selected.
-    """
-    if transcript:
-        p = Path(transcript).expanduser()
-        if not p.is_file():
-            raise FileNotFoundError(f"--transcript path does not exist: {p}")
-        return p
-
-    if selector:
-        p = Path(selector).expanduser()
-        if p.is_file():
-            return p
-
-    root = Path(sessions_root).expanduser() if sessions_root else CODEX_SESSIONS_ROOT
-    files = _jsonl_files(root)
-
-    if selector:
-        matches: List[Path] = []
-        for p in files:
-            sid = session_id_from_file(p)
-            if p.stem.startswith(selector) or (sid and sid.startswith(selector)):
-                matches.append(p)
-        if len(matches) == 1:
-            return matches[0]
-        if len(matches) > 1:
-            joined = "\n  ".join(str(p) for p in matches)
-            raise FileNotFoundError(
-                f"session selector {selector!r} is ambiguous; matches:\n  {joined}"
-            )
-        raise FileNotFoundError(f"no Codex transcript matching {selector!r}")
-
-    cwd = Path.cwd()
-    cwd_matches = [
-        p for p in files if _cwd_matches(session_cwd_from_file(p), cwd, strict=strict)
-    ]
-    picked = newest(cwd_matches)
-    if picked is not None:
-        return picked
-
-    if strict:
-        raise FileNotFoundError(
-            f"no Codex transcript for {cwd} under {root} "
-            "(--strict: cwd-overlap and newest-anywhere fallback disabled)"
-        )
-
-    picked = newest(files)
-    if picked is not None:
-        return picked
-
-    raise FileNotFoundError(
-        f"could not locate any Codex transcript (looked under {root}); "
-        "pass --transcript PATH"
-    )
 
 
 def _content_text(content: Any, text_keys: Tuple[str, ...]) -> str:
@@ -1109,8 +910,10 @@ def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]: 
     return turns, files_changed
 
 
-def envelope_images(refs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Resolve Codex image refs to inline base64 entries.
+def envelope_images(
+    refs: List[Dict[str, Any]], image_inputs: Optional[ImageInputs] = None
+) -> List[Dict[str, Any]]:
+    """Interpret Codex image refs using supplied bytes as inline base64 entries.
 
     Codex records images out of band — as a filesystem path, a data URL, or raw
     base64 — so every ref has to be resolved to bytes before it can travel with
@@ -1121,7 +924,7 @@ def envelope_images(refs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     images: List[Dict[str, Any]] = []
     for ref in refs:
-        decoded = _image_bytes_and_ext(ref)
+        decoded = _image_bytes_and_ext(ref, image_inputs)
         if decoded is None:
             images.append(unavailable_image(ref.get("path") or ref.get("type")))
             continue
@@ -1134,6 +937,8 @@ def envelope_images(refs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 def build_events(  # noqa: C901, PLR0912, PLR0915
     entries: List[Dict[str, Any]],
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
+    *,
+    image_inputs: Optional[ImageInputs] = None,
 ) -> List[Dict[str, Any]]:
     """Walk Codex entries in order, producing raw-envelope events.
 
@@ -1152,7 +957,9 @@ def build_events(  # noqa: C901, PLR0912, PLR0915
         if pending_response_user is None:
             return
         text, timestamp, refs = pending_response_user
-        events.append(user_event(index, timestamp, text, envelope_images(refs)))
+        events.append(
+            user_event(index, timestamp, text, envelope_images(refs, image_inputs))
+        )
         index += 1
         pending_response_user = None
 
@@ -1171,7 +978,7 @@ def build_events(  # noqa: C901, PLR0912, PLR0915
                 response_refs or pending_user_images or image_refs_from_event(payload)
             )
             pending_user_images = []
-            images = envelope_images(refs)
+            images = envelope_images(refs, image_inputs)
             if not text and not images:
                 continue
             events.append(user_event(index, entry.get("timestamp"), text, images))
@@ -1235,20 +1042,22 @@ def build_events(  # noqa: C901, PLR0912, PLR0915
 
 
 def build_raw_envelope(
-    transcript: Path,
-    entries: List[Dict[str, Any]],
+    source: CodexSource,
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
 ) -> Optional[Dict[str, Any]]:
     """Build the JSON envelope for one Codex transcript."""
-    events = build_events(entries, tool_result_max_bytes)
+    entries = source.entries
+    events = build_events(
+        entries, tool_result_max_bytes, image_inputs=source.image_inputs
+    )
     if not events:
         return None
     return build_envelope(
         Session(
             harness="codex",
-            session_id=output_identifier(transcript),
+            session_id=source.identifier,
             events=events,
-            cwd=session_cwd_from_file(transcript),
+            cwd=source.cwd,
             started_at=first_timestamp(entries),
             models=session_models(entries),
         ),
@@ -1256,49 +1065,29 @@ def build_raw_envelope(
     )
 
 
-# Existing source loading and interpretation; remove in QUAL-2515.
-def _image_bytes_and_ext(ref: Dict[str, Any]) -> Optional[Tuple[bytes, str]]:  # noqa: C901
-    kind = ref.get("type")
+def _decode_image(data: Any, media_type: Any) -> Optional[Tuple[bytes, str]]:
+    if not isinstance(data, str):
+        return None
+    try:
+        raw = base64.b64decode(data, validate=False)
+    except (ValueError, TypeError):
+        return None
+    ext = _IMAGE_EXT.get(media_type, "img") if isinstance(media_type, str) else "img"
+    return raw, ext
 
+
+def _image_bytes_and_ext(
+    ref: Dict[str, Any], image_inputs: Optional[ImageInputs] = None
+) -> Optional[Tuple[bytes, str]]:
+    kind = ref.get("type")
     if kind == "data_url":
         data_url = ref.get("data_url")
-        if not isinstance(data_url, str):
-            return None
-        match = _DATA_IMAGE_URL.match(data_url)
-        if not match:
-            return None
-        media_type, data = match.groups()
-        try:
-            raw = base64.b64decode(data, validate=False)
-        except (ValueError, TypeError):
-            return None
-        return raw, _IMAGE_EXT.get(media_type, "img")
-
+        match = _DATA_IMAGE_URL.match(data_url) if isinstance(data_url, str) else None
+        return _decode_image(match[2], match[1]) if match else None
     if kind == "base64":
-        data = ref.get("data")
-        if not isinstance(data, str):
-            return None
-        try:
-            raw = base64.b64decode(data, validate=False)
-        except (ValueError, TypeError):
-            return None
-        media_type = ref.get("media_type")
-        return raw, _IMAGE_EXT.get(media_type, "img") if isinstance(
-            media_type, str
-        ) else "img"
-
-    if kind == "path":
-        path_value = ref.get("path")
-        if not isinstance(path_value, str):
-            return None
-        path = Path(path_value).expanduser()
-        try:
-            raw = path.read_bytes()
-        except OSError:
-            return None
-        ext = path.suffix.lstrip(".") or "img"
-        return raw, ext
-
+        return _decode_image(ref.get("data"), ref.get("media_type"))
+    if kind == "path" and isinstance(ref.get("path"), str):
+        return (image_inputs or {}).get(ref["path"])
     return None
 
 
@@ -1406,15 +1195,34 @@ CAP_FLAG = "--tool-result-bytes"
 NO_EVENTS_NOTE = "no exportable events (no user or assistant messages); no JSON written"
 
 
+def read_source(path: Path) -> CodexSource:
+    """Load native records, metadata, and optional path image inputs."""
+    source = codex_sources.read_source(path)
+    refs = []
+    for entry in source.entries:
+        payload = _payload(entry)
+        if entry.get("type") == "event_msg" and payload.get("type") == "user_message":
+            refs.extend(image_refs_from_event(payload))
+        if entry.get("type") == "response_item" and payload.get("role") == "user":
+            refs.extend(image_refs_from_user_message_payload(payload))
+    source.image_inputs = codex_sources.load_image_inputs(refs)
+    return source
+
+
 def extract_transcript(
     transcript: Path,
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
 ) -> Optional[Dict[str, Any]]:
     """Read one transcript directly into its JSON envelope."""
-    entries = load_entries(transcript)
-    if not entries:
-        raise ValueError(f"no parseable JSON entries found in {transcript}")
-    return build_raw_envelope(transcript, entries, tool_result_max_bytes)
+    return _extract_source(read_source(transcript), tool_result_max_bytes)
+
+
+def _extract_source(
+    source: CodexSource, tool_result_max_bytes: int
+) -> Optional[Dict[str, Any]]:
+    if not source.entries:
+        raise ValueError(f"no parseable JSON entries found in {source.path}")
+    return build_raw_envelope(source, tool_result_max_bytes)
 
 
 def _unique_identifier(base: str, used: set) -> str:
@@ -1436,11 +1244,15 @@ def _extract_all(
     project_root: Optional[Path] = None,
 ) -> int:
     """Extract every matching Codex transcript, one JSON file each."""
-    root = Path(sessions_root).expanduser() if sessions_root else CODEX_SESSIONS_ROOT
+    root = (
+        Path(sessions_root).expanduser()
+        if sessions_root
+        else codex_sources.CODEX_SESSIONS_ROOT
+    )
     cwd = Path.cwd()
     project_root = cwd if project_root is None else project_root
     files = sorted(
-        matching_transcripts(root, cwd, strict=strict),
+        codex_sources.matching_transcripts(root, cwd, strict=strict),
         key=lambda p: (p.stat().st_mtime, str(p)),
     )
     if not files:
@@ -1457,13 +1269,17 @@ def _extract_all(
     written = 0
     used_ids = set()
     for transcript in files:
-        ident = _unique_identifier(output_identifier(transcript), used_ids)
+        ident = CodexSource(transcript, []).identifier
         try:
-            envelope = extract_transcript(transcript, tool_result_max_bytes)
+            source = read_source(transcript)
+            ident = source.identifier
+            envelope = _extract_source(source, tool_result_max_bytes)
         except (OSError, ValueError) as exc:
+            ident = _unique_identifier(ident, used_ids)
             print(f"  skip {ident}: {exc}", file=sys.stderr)
             continue
 
+        ident = _unique_identifier(ident, used_ids)
         if envelope is None:
             print(f"  skip {ident}: {NO_EVENTS_NOTE}", file=sys.stderr)
             continue
@@ -1499,7 +1315,7 @@ def main(
         )
 
     try:
-        transcript = select_transcript(
+        transcript = codex_sources.select_transcript(
             selector=args.session,
             transcript=args.transcript,
             sessions_root=args.sessions_root,
@@ -1526,7 +1342,7 @@ def main(
         warn_if_oversized("stdout JSON", payload, CAP_FLAG)
     else:
         out_path = (
-            project_root / raw_filename("codex", output_identifier(transcript))
+            project_root / raw_filename("codex", envelope["session_id"])
             if args.output is None
             else Path(args.output).expanduser()
         )
