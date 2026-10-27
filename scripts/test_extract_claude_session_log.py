@@ -10,6 +10,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import tempfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
@@ -1269,7 +1270,8 @@ def test_cli_json_destinations(
     destination, tmp_path, monkeypatch, capsys, explicit_root
 ):
     transcript = tmp_path / "session.jsonl"
-    entries = _conversation_entries()
+    entries = _fixture_entries("images.jsonl")
+    # Keep the Markdown preservation probe while retaining recorded image blocks.
     entries[0]["message"]["content"][0]["text"] = "# Keep **recorded Markdown**"
     _write_jsonl(transcript, entries)
     output = tmp_path / "output"
@@ -1306,7 +1308,7 @@ def test_cli_json_destinations(
     assert envelope["session_id"] == "session"
     assert envelope["events"] == build_events(entries, 3)
     assert envelope["events"][0]["text"] == "# Keep **recorded Markdown**"
-    assert envelope["events"][0]["images"][0]["data"] == _PNG_B64
+    assert len(envelope["events"][0]["images"]) == 4
 
 
 @pytest.mark.parametrize("explicit_root", [False, True])
@@ -1317,7 +1319,7 @@ def test_cli_batch_emits_only_json(
     project = tmp_path / "project"
     project.mkdir()
     for name in ["a", "b"]:
-        _write_jsonl(project / f"{name}.jsonl", _conversation_entries())
+        shutil.copyfile(FIXTURES / "continued.jsonl", project / f"{name}.jsonl")
     output = tmp_path / "output"
     if not explicit_root:
         output.mkdir()
@@ -1335,7 +1337,7 @@ def test_cli_batch_emits_only_json(
     ]
     for path in output.iterdir():
         assert json.loads(path.read_text())["events"] == build_events(
-            _conversation_entries()
+            _fixture_entries("continued.jsonl")
         )
     captured = capsys.readouterr()
     assert captured.out == ""
@@ -1494,7 +1496,7 @@ def test_cli_no_event_input_keeps_existing_envelope_omission(mode, tmp_path, cap
 @pytest.mark.parametrize("batch", [False, True])
 def test_cli_default_root_uses_current_directory(batch, tmp_path, monkeypatch):
     transcript = tmp_path / "session.jsonl"
-    _write_jsonl(transcript, _conversation_entries())
+    shutil.copyfile(FIXTURES / "baseline.jsonl", transcript)
     for name in ["first", "second"]:
         output = tmp_path / name
         output.mkdir()
@@ -1511,9 +1513,11 @@ def test_cli_default_root_uses_current_directory(batch, tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("limit", [0, 17, -1])
-def test_interpret_supplied_source_without_filesystem(limit, monkeypatch):
-    entries = _conversation_entries()
+@pytest.mark.parametrize("fixture", ["continued.jsonl", "images.jsonl", "model.jsonl"])
+def test_interpret_supplied_source_without_filesystem(limit, fixture, monkeypatch):
+    entries = _fixture_entries(fixture)
     source = ClaudeSource(Path("/unavailable/session.jsonl"), entries)
+    expected_events = build_events(entries, limit)
 
     def forbidden(*args, **kwargs):
         pytest.fail("interpretation accessed the filesystem")
@@ -1523,35 +1527,44 @@ def test_interpret_supplied_source_without_filesystem(limit, monkeypatch):
             guard.setattr(Path, method, forbidden)
         session = eclog.interpret_source(source, limit)
         assert session["session_id"] == "session"
-        assert session["events"] == build_events(entries, limit)
-        assert session["cwd"] == "/work/app"
+        assert session["events"] == expected_events
+        assert session["cwd"] == session_cwd(entries)
         assert session["started_at"] == first_timestamp(entries)
         assert session["models"] == session_models(entries)
-        assert session["events"][0]["images"][0]["data"] == _PNG_B64
         assert eclog.interpret_source(ClaudeSource(source.path, [])) is None
 
 
-def test_interpret_supplied_subagent_without_filesystem(monkeypatch):
-    entries = [
-        {
-            "type": "user",
-            "timestamp": "2026-01-01T00:00:00Z",
-            "message": {"content": "task"},
-        },
-        {
-            "type": "assistant",
-            "message": {
-                "content": [
-                    {"type": "text", "text": "first"},
-                    {"type": "tool_use", "name": "Read"},
-                    {"type": "tool_use", "name": "Read"},
-                    {"type": "text", "text": "last"},
-                ]
+@pytest.mark.parametrize(
+    ("fixture", "expected"),
+    [
+        (
+            "subagent/subagents/agent-fixture.jsonl",
+            {
+                "agent_type": "claude",
+                "start_ts": "2026-10-09T13:58:32.852Z",
+                "task": "What is 2 + 2?",
+                "tool_count": 0,
+                "tool_names": [],
+                "result": "2 + 2 = 4",
             },
-        },
-    ]
+        ),
+        (
+            "continued.jsonl",
+            {
+                "agent_type": "subagent",
+                "start_ts": "2026-10-09T13:58:43.401Z",
+                "task": "Read context.txt, then tell me the launch and fallback codenames.",
+                "tool_count": 1,
+                "tool_names": ["Read"],
+                "result": "RED-FOX-23 was the fallback codename in my previous answer.",
+            },
+        ),
+    ],
+)
+def test_interpret_supplied_subagent_without_filesystem(fixture, expected, monkeypatch):
+    recorded = read_source(FIXTURES / fixture, read_metadata=True)
     source = ClaudeSource(
-        Path("/unavailable/agent.jsonl"), entries, {"agentType": "Explore"}
+        Path("/unavailable/agent.jsonl"), recorded.entries, recorded.metadata
     )
 
     def forbidden(*args, **kwargs):
@@ -1559,21 +1572,14 @@ def test_interpret_supplied_subagent_without_filesystem(monkeypatch):
 
     monkeypatch.setattr(Path, "open", forbidden)
     monkeypatch.setattr(Path, "is_file", forbidden)
-    assert eclog.summarize_subagent_source(source) == {
-        "agent_type": "Explore",
-        "start_ts": "2026-01-01T00:00:00Z",
-        "task": "task",
-        "tool_count": 2,
-        "tool_names": ["Read"],
-        "result": "last",
-    }
+    assert eclog.summarize_subagent_source(source) == expected
     assert eclog.summarize_subagent_source(ClaudeSource(source.path, [])) is None
 
 
 @pytest.mark.parametrize("metadata", [None, "bad JSON", "[]", "null", "{}"])
 def test_source_reader_metadata_fallback(metadata, tmp_path):
     transcript = tmp_path / "agent.jsonl"
-    _write_jsonl(transcript, [{"type": "user", "message": {"content": "task"}}])
+    shutil.copyfile(FIXTURES / "subagent/subagents/agent-fixture.jsonl", transcript)
     if metadata is not None:
         transcript.with_suffix(".meta.json").write_text(metadata)
     source = read_source(transcript, read_metadata=True)
@@ -1583,8 +1589,11 @@ def test_source_reader_metadata_fallback(metadata, tmp_path):
 
 def test_source_reader_metadata_read_error(tmp_path, monkeypatch):
     transcript = tmp_path / "agent.jsonl"
-    _write_jsonl(transcript, [{"type": "user"}])
-    transcript.with_suffix(".meta.json").touch()
+    recorded = FIXTURES / "subagent/subagents/agent-fixture.jsonl"
+    shutil.copyfile(recorded, transcript)
+    shutil.copyfile(
+        recorded.with_suffix(".meta.json"), transcript.with_suffix(".meta.json")
+    )
 
     def unreadable(*args, **kwargs):
         raise OSError("unreadable metadata")
@@ -1609,12 +1618,19 @@ def test_source_reader_discovers_sidecars_in_filename_order(tmp_path):
     directory = tmp_path / "session" / "subagents"
     directory.mkdir(parents=True)
     for name in ["b", "a"]:
-        _write_jsonl(directory / f"{name}.jsonl", [{"type": "user"}])
+        shutil.copyfile(
+            FIXTURES / "subagent/subagents/agent-fixture.jsonl",
+            directory / f"{name}.jsonl",
+        )
     (directory / "ignored.txt").touch()
     (directory / "directory.jsonl").mkdir()
     sources = read_subagent_sources(transcript)
     assert [source.path.name for source in sources] == ["a.jsonl", "b.jsonl"]
     assert all(source.path.parent == directory for source in sources)
+    assert all(
+        source.entries == _fixture_entries("subagent/subagents/agent-fixture.jsonl")
+        for source in sources
+    )
 
 
 def test_subagent_reader_skips_empty_metadata_and_preserves_summary_order(tmp_path):
@@ -1628,10 +1644,13 @@ def test_subagent_reader_skips_empty_metadata_and_preserves_summary_order(tmp_pa
         ("c", "2026-01-01"),
         ("d", None),
     ]:
-        _write_jsonl(
-            directory / f"{name}.jsonl",
-            [{"type": "user", "timestamp": timestamp, "message": {"content": name}}],
-        )
+        entries = _fixture_entries("subagent/subagents/agent-fixture.jsonl")
+        # Vary timestamps and label each task so ordering remains observable.
+        for entry in entries:
+            entry["timestamp"] = timestamp
+            if entry.get("type") == "user":
+                entry["message"]["content"] = name
+        _write_jsonl(directory / f"{name}.jsonl", entries)
     (directory / "empty.jsonl").touch()
     # A directory at the metadata path must not be read for an empty sidecar.
     (directory / "empty.meta.json").mkdir()
@@ -1643,10 +1662,9 @@ def test_subagent_reader_skips_empty_metadata_and_preserves_summary_order(tmp_pa
     ]
 
 
-def test_main_source_does_not_read_sidecars_or_metadata(tmp_path, monkeypatch):
-    transcript = tmp_path / "session.jsonl"
-    entries = _conversation_entries()
-    _write_jsonl(transcript, entries)
+def test_main_source_does_not_read_sidecars_or_metadata(monkeypatch):
+    transcript = FIXTURES / "subagent.jsonl"
+    entries = load_entries(transcript)
 
     def forbidden(*args, **kwargs):
         pytest.fail("main JSON extraction attempted sidecar discovery")

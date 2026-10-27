@@ -30,6 +30,24 @@ Their tests replace the CLI with a fake, so their code is still covered.
 Use diff-cover to identify missing coverage; add tests rather than lowering
 the threshold.
 
+## Test data policy
+
+Prefer existing committed fixtures for new or substantially changed extractor
+tests, especially captured native session logs. Inspect the relevant fixture
+files and their provenance before constructing transcript entries by hand.
+Load fixtures directly for interpretation tests; when testing filesystem
+behavior, copy them into temporary directories. For tests that prohibit
+filesystem access during interpretation, load fixtures before enabling the
+filesystem guard.
+
+Use small, targeted changes to fixture data when a test needs a specific
+boundary condition, and explain those changes in the test. Preserve the
+behavioral assertions when replacing synthetic inputs with fixtures.
+Hand-authored inputs remain appropriate for malformed data, missing files,
+filesystem errors, and other cases that existing fixtures cannot meaningfully
+exercise. Do not replace a focused edge-case test with a fixture that no longer
+tests that edge case, or invoke paid fixture generators as part of tests.
+
 ## Lint policy
 
 Ruff checks application code, fixture generators, and tests. Keep the enabled
