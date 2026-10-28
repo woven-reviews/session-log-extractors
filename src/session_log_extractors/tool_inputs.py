@@ -92,6 +92,22 @@ class NotebookEditInput(FilePathInput, total=False):
     edit_mode: str
 
 
+class CopilotViewInput(TypedDict, total=False):
+    path: str
+    view_range: list[int]
+
+
+class CopilotEditInput(TypedDict, total=False):
+    path: str
+    old_str: str
+    new_str: str
+
+
+class CopilotCreateInput(TypedDict, total=False):
+    path: str
+    file_text: str
+
+
 KnownToolInput: TypeAlias = (
     BashInput
     | ReadInput
@@ -103,6 +119,9 @@ KnownToolInput: TypeAlias = (
     | EditInput
     | MultiEditInput
     | NotebookEditInput
+    | CopilotViewInput
+    | CopilotEditInput
+    | CopilotCreateInput
 )
 ToolInput: TypeAlias = KnownToolInput | JsonValue
 ToolInputSchema: TypeAlias = Literal[
@@ -117,10 +136,18 @@ ToolInputSchema: TypeAlias = Literal[
     "MultiEdit",
     "NotebookEdit",
     "Create",
+    "CopilotView",
+    "CopilotEdit",
+    "CopilotCreate",
     "unsupported",
 ]
 
 _INPUT_SCHEMAS: dict[str, ToolInputSchema] = {
+    "bash": "Bash",
+    "view": "CopilotView",
+    "edit": "CopilotEdit",
+    "create": "CopilotCreate",
+    "skill": "Skill",
     "Bash": "Bash",
     "Read": "Read",
     "AskUserQuestion": "AskUserQuestion",

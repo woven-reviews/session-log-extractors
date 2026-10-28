@@ -71,6 +71,9 @@ class NativeIdentity(TypedDict, total=False):
     id: str
     parent_id: str
     message_id: str
+    originating_message_id: str
+    interaction_id: str
+    turn_id: str
 
 
 class ToolResult(NativeIdentity):
@@ -80,6 +83,23 @@ class ToolResult(NativeIdentity):
     ts: str | None
     content: JsonValue
     is_error: bool
+
+
+class ToolExecution(NativeIdentity, total=False):
+    """The recorded execution start, distinct from its assistant request."""
+
+    ts: str | None
+    name: str
+    input: ToolInput
+
+
+class PermissionDecision(TypedDict):
+    """Recorded Copilot permission lifecycle, without inferred ownership."""
+
+    tool: str
+    decision: str
+    feedback: str
+    ts: str | None
 
 
 class ToolCall(TypedDict, total=False):
@@ -95,6 +115,7 @@ class ToolCall(TypedDict, total=False):
     is_error: bool
     error: JsonValue
     result_record: ToolResult
+    execution: ToolExecution
     questions: list[QuestionAnswer]
     plan_decision: PlanDecision
     permission_denial: PermissionDenial
@@ -137,6 +158,15 @@ class Event(MessageContent, total=False):
 Message: TypeAlias = UserMessage | AssistantMessage | Event
 
 
+class FileActivity(TypedDict):
+    """Recorded database file activity without inferred file-action semantics."""
+
+    file_path: str
+    tool_name: str
+    turn_index: int | None
+    first_seen_at: str | None
+
+
 class Session(TypedDict):
     """Interpreted session supplied directly to the shared exporter."""
 
@@ -150,4 +180,6 @@ class Session(TypedDict):
     subagent_count: NotRequired[int]
     unmatched_tool_results: NotRequired[list[ToolResult]]
     unsupported_tools: NotRequired[list[str]]
+    permission_decisions: NotRequired[list[PermissionDecision]]
     files_changed: NotRequired[list[str]]
+    file_activity: NotRequired[list[FileActivity]]

@@ -106,8 +106,19 @@ Copilot readers and discovery live in `session_log_extractors.copilot_sources`.
 `read_source(connection, session)` loads metadata, required database rows, models,
 and ordered state records into `CopilotSource`. The extractor's `read_source`
 also snapshots referenced external image bytes, following the Codex reader pattern.
-`interpret_source(source)` returns a shared `Session` without database or filesystem
-access; `build_raw_envelope(source)` exports it. For replay, construct `CopilotSource`
+`EXTRACTOR: Extractor[CopilotRequest, CopilotSource]` exposes the production stages.
+`CopilotRequest` holds the selected metadata and caller-owned connection.
+`interpret_source(source)` returns an uncapped shared `Session` without database
+or filesystem access; `build_raw_envelope(source)` applies `export_session`.
+Ordered native messages own their tool requests and images; results join by
+recorded call ID. Repeated and orphan results remain in `unmatched_tool_results`,
+and the complete native result stays in `result_record` beside the compatible
+textual JSON result. Database-only inputs retain file targets by `turn_index`.
+Recorded database file activity stays in `file_activity`, including when native
+tools supply the JSON.
+Permission lifecycle records remain session facts without inferred turn ownership.
+Unsupported tool schemas are listed in `unsupported_tools`; opaque inputs survive.
+For replay, construct `CopilotSource`
 directly from supplied rows, state records, and optional `image_inputs`.
 State JSONL is read and decoded once per extraction. Image bytes are keyed by
 recorded path, with media type inferred per reference; inline images remain in
@@ -242,7 +253,6 @@ Algorithms and interfaces are preserved in this tooling change.
 | `src/session_log_extractors/extract_codex_session_log.py` | `build_turns` | C901, PLR0912, PLR0915 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |
 | `src/session_log_extractors/extract_codex_session_log.py` | `image_refs_from_event` | C901, PLR0912 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |
 | `src/session_log_extractors/extract_codex_session_log.py` | `skill_refs_from_call` | C901 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |
-| `src/session_log_extractors/extract_copilot_session_log.py` | `_build_turn_objects` | C901, PLR0912, PLR0915 | [QUAL-2519](https://linear.app/andela/issue/QUAL-2519) |
 | `generate_claude_fixtures.py` | `run_case` | C901, PLR0912, PLR0915 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
 | `generate_codex_fixtures.py` | `capture_interactive` | C901, PLR0915 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
 | `generate_codex_fixtures.py` | `clean` | C901, PLR0912 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
