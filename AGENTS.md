@@ -25,6 +25,10 @@ test modules; run diff-cover after the overall run produces `coverage.xml`.
 Keep mechanical formatting separate from behavioral changes. Do not run paid
 fixture-generator CLIs in tests.
 
+When extracting code into a new module, move its existing unit and boundary
+tests into the corresponding test module in the same change; keep integration
+tests with the behavior they exercise.
+
 The fixture generators (`scripts/generate_*_fixtures.py`) make paid CLI calls.
 Their tests replace the CLI with a fake, so their code is still covered.
 Use diff-cover to identify missing coverage; add tests rather than lowering
