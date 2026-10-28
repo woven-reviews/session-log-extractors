@@ -113,6 +113,27 @@ State JSONL is read and decoded once per extraction. Image bytes are keyed by
 recorded path, with media type inferred per reference; inline images remain in
 the records. CLI selection and read-only connection ownership stay in orchestration.
 
+## Public extractor stages
+
+`session_log_extractors.extractor_contract.Extractor[Request, Source]` defines
+`read_source(request) -> Source` and `interpret_source(source) -> Session | None`.
+The request and source types remain specific to each harness. Readers snapshot
+all required records/assets; interpreters do no source I/O and apply no export
+limits. Selection, connection ownership, diagnostics, and writing remain in the
+CLI. All implementations use the shared exporter rather than overriding export.
+
+Claude implements this protocol in `ClaudeExtractor`; its typed `EXTRACTOR`
+instance is used by production extraction. The existing public functions remain
+compatible. Mypy checks conformance in CI, and `scripts/test_extractor_contract.py`
+checks signature rejection, source-free interpretation, full results, and
+non-mutating export using native fixtures. The package includes `py.typed` so
+imports retain their annotations when checked outside the source directory.
+
+Codex and Copilot contract adoption remains in QUAL-2518 and QUAL-2519. Codex
+still combines interpretation with envelope construction; Copilot interpretation
+still applies result caps and uses legacy turn state. Their existing behavior
+has not been rewritten here; annotation-only fixes allow package-wide checking.
+
 ## Shared session/export boundary
 
 Adapters can supply `Session`, `Event`, `ToolCall`, and `Image` dictionaries from

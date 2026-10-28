@@ -36,6 +36,7 @@ from session_log_extractors.claude_sources import (
 from session_log_extractors.claude_sources import (
     load_entries as load_entries,
 )
+from session_log_extractors.extractor_contract import Extractor
 from session_log_extractors.session_log_envelope import (
     DEFAULT_TOOL_RESULT_MAX_BYTES,
     assistant_event,
@@ -865,7 +866,7 @@ def build_raw_envelope(
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
 ) -> Optional[Dict[str, Any]]:
     """Build the JSON envelope, or None when there are no exportable events."""
-    session = interpret_source(ClaudeSource(transcript, entries))
+    session = EXTRACTOR.interpret_source(ClaudeSource(transcript, entries))
     if session is None:
         return None
     return session_log_envelope.export_session(session, tool_result_max_bytes)
@@ -893,6 +894,19 @@ def interpret_source(
         started_at=first_timestamp(source.entries),
         models=session_models(source.entries),
     )
+
+
+class ClaudeExtractor:
+    """Claude implementation of the shared public extraction stages."""
+
+    def read_source(self, request: Path) -> ClaudeSource:
+        return read_source(request)
+
+    def interpret_source(self, source: ClaudeSource) -> Session | None:
+        return interpret_source(source)
+
+
+EXTRACTOR: Extractor[Path, ClaudeSource] = ClaudeExtractor()
 
 
 # --------------------------------------------------------------------------- #
@@ -1062,10 +1076,10 @@ def extract_transcript(
 
     Keep the existing parse-error and no-exportable-events behavior.
     """
-    source = read_source(transcript)
+    source = EXTRACTOR.read_source(transcript)
     if not source.entries:
         raise ValueError(f"no parseable JSON entries found in {transcript}")
-    session = interpret_source(source)
+    session = EXTRACTOR.interpret_source(source)
     if session is None:
         return None
     if session["unsupported_tools"]:

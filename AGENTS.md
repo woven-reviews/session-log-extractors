@@ -40,6 +40,13 @@ the threshold.
 
 ## Shared model and export boundaries
 
+Use `extractor_contract.Extractor[Request, Source]` for public reader/interpreter
+stages. Implementations must satisfy the protocol under mypy and be exercised
+by the native-fixture contract tests. Keep source access in `read_source` and
+return an uncapped shared `Session` from `interpret_source`. Extend the shared
+contract test matrix when another harness adopts it; do not claim conformance
+through a wrapper that still applies export policy during interpretation.
+
 Preserve meaningful domain information in named, typed fields on the shared
 model, with named record types for structured concepts. Do not introduce generic
 `metadata`, `extra`, or `interpretation` dictionaries for information whose

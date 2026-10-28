@@ -14,6 +14,9 @@ test = ["pytest", "pytest-cov", "ruff==0.14.0", "diff-cover==9.7.1", "mypy==2.4.
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+session_log_extractors = ["py.typed"]
+
 [tool.ruff]
 target-version = "py311"
 
