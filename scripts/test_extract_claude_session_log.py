@@ -1675,3 +1675,31 @@ def test_main_source_does_not_read_sidecars_or_metadata(monkeypatch):
         guard.setattr(Path, "read_text", forbidden)
         envelope = extract_transcript(transcript)
     assert envelope == build_raw_envelope(transcript, entries)
+
+
+def test_interpretation_retains_full_results_until_shared_export():
+    entries = _fixture_entries("large_result.jsonl")
+    source = ClaudeSource(Path("/unavailable/session.jsonl"), entries)
+    session = eclog.interpret_source(source)
+    call = session["events"][1]["tool_calls"][0]
+    assert len(call["result"].encode()) > 10_000
+    assert "result_truncated" not in call
+    exported = session_log_envelope.export_session(session, 17)
+    assert len(exported["events"][1]["tool_calls"][0]["result"].encode()) == 17
+    assert len(call["result"].encode()) > 10_000
+
+
+def test_cli_reaches_shared_exporter(monkeypatch, capsys):
+    original = session_log_envelope.export_session
+    seen = []
+
+    def exporting(session, tool_result_max_bytes):
+        seen.append(session)
+        return original(session, tool_result_max_bytes)
+
+    monkeypatch.setattr(session_log_envelope, "export_session", exporting)
+    assert (
+        main(["--transcript", str(FIXTURES / "baseline.jsonl"), "--output", "-"]) == 0
+    )
+    assert json.loads(capsys.readouterr().out)["events"]
+    assert len(seen) == 1
