@@ -69,6 +69,9 @@ def test_current_dependencies_satisfy_contracts(contract_id, graph):
         ("claude-schemas", "extract_copilot_session_log", "tool_inputs.claude"),
         ("copilot-schemas", "extract_claude_session_log", "tool_inputs.copilot"),
         ("claude-schemas", "session_model", "tool_inputs.claude"),
+        ("codex-schemas", "extract_claude_session_log", "tool_inputs.codex"),
+        ("codex-schemas", "extract_copilot_session_log", "tool_inputs.codex"),
+        ("codex-schemas", "session_model", "tool_inputs.codex"),
         ("copilot-schemas", "session_log_envelope", "tool_inputs.copilot"),
     ],
 )
@@ -85,7 +88,7 @@ def test_indirect_prohibited_dependencies_are_rejected(contract_id, graph):
     assert not _check(contract_id, graph).kept
 
 
-@pytest.mark.parametrize("harness", ["claude", "copilot"])
+@pytest.mark.parametrize("harness", ["claude", "copilot", "codex"])
 def test_shared_union_and_own_extractor_can_import_harness_schema(harness, graph):
     for importer in ["tool_inputs", f"extract_{harness}_session_log"]:
         graph.add_import(

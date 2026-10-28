@@ -13,6 +13,10 @@ from session_log_extractors.tool_inputs.claude import (
 from session_log_extractors.tool_inputs.claude import (
     ToolInputSchema as ClaudeToolInputSchema,
 )
+from session_log_extractors.tool_inputs.codex import KnownToolInput as CodexToolInput
+from session_log_extractors.tool_inputs.codex import (
+    ToolInputSchema as CodexToolInputSchema,
+)
 from session_log_extractors.tool_inputs.copilot import (
     KnownToolInput as CopilotToolInput,
 )
@@ -20,6 +24,8 @@ from session_log_extractors.tool_inputs.copilot import (
     ToolInputSchema as CopilotToolInputSchema,
 )
 
-KnownToolInput: TypeAlias = ClaudeToolInput | CopilotToolInput
+KnownToolInput: TypeAlias = ClaudeToolInput | CopilotToolInput | CodexToolInput
 ToolInput: TypeAlias = KnownToolInput | JsonValue
-ToolInputSchema: TypeAlias = ClaudeToolInputSchema | CopilotToolInputSchema
+ToolInputSchema: TypeAlias = (
+    ClaudeToolInputSchema | CopilotToolInputSchema | CodexToolInputSchema
+)

@@ -35,16 +35,13 @@ from session_log_extractors.extract_codex_session_log import (
     _flatten_result_text,
     _image_bytes_and_ext,
     _parse_chosen,
-    _parse_ts,
     _plan_update,
     _structured_answer_for_question,
     _unique_identifier,
     _value_to_answer_text,
     append_unique_path,
     assistant_text_from_payload,
-    build_events,
     build_raw_envelope,
-    build_turns,
     clean_user_text,
     extract_transcript,
     first_timestamp,
@@ -55,11 +52,9 @@ from session_log_extractors.extract_codex_session_log import (
     option_qa_from_output,
     parse_permission_denial,
     patch_paths,
-    result_note,
     session_models,
     skill_names_from_call,
     skill_refs_from_call,
-    tool_descriptor,
     user_text_from_event,
     user_text_from_response_item,
 )
@@ -87,6 +82,28 @@ QUESTIONS = [
 ]
 
 
+def _interpret(entries, image_inputs=None):
+    source = mod.CodexSource(
+        Path("unused.jsonl"), entries, image_inputs=image_inputs or {}
+    )
+    return mod.interpret_source(source) or {"events": [], "files_changed": []}
+
+
+def _events(entries, tool_result_max_bytes=4096, *, image_inputs=None):
+    return session_log_envelope.export_session(
+        {"harness": "codex", "session_id": "test", **_interpret(entries, image_inputs)},
+        tool_result_max_bytes,
+    )["events"]
+
+
+def _users(entries):
+    return [e for e in _interpret(entries)["events"] if e["role"] == "user"]
+
+
+def _calls(entries):
+    return [c for e in _interpret(entries)["events"] for c in e.get("tool_calls", [])]
+
+
 def test_codex_structured_skill_call_is_recorded():
     entries = [
         {
@@ -105,63 +122,38 @@ def test_codex_structured_skill_call_is_recorded():
             },
         },
     ]
-    turns, files_changed = build_turns(entries)
-    assert turns[0].skills_used == ["pdf:pdf"]
+    assert _interpret(entries)["skills_used"] == ["pdf:pdf"]
 
 
 def test_codex_initial_response_item_user_message_is_exported_once():
-    entries = [
-        {
-            "type": "response_item",
-            "timestamp": "2026-01-01T00:00:00Z",
-            "payload": {
-                "type": "message",
-                "role": "user",
-                "content": [{"type": "input_text", "text": "Initial task"}],
-            },
-        },
-        {
-            "type": "response_item",
-            "timestamp": "2026-01-01T00:00:01Z",
-            "payload": {
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "output_text", "text": "Working on it"}],
-            },
-        },
-        {
-            "type": "response_item",
-            "timestamp": "2026-01-01T00:00:02Z",
-            "payload": {
-                "type": "message",
-                "role": "user",
-                "content": [{"type": "input_text", "text": "Follow up"}],
-            },
-        },
+    entries = load_entries(FIXTURES / "model.jsonl")
+    users = [e for e in entries if e["payload"].get("role") == "user"]
+    # Add the event_msg view of the second captured input to test deduplication.
+    second = users[1]
+    entries.insert(
+        entries.index(second) + 1,
         {
             "type": "event_msg",
-            "timestamp": "2026-01-01T00:00:02Z",
-            "payload": {"type": "user_message", "message": "Follow up"},
+            "timestamp": second["timestamp"],
+            "payload": {
+                "type": "user_message",
+                "message": second["payload"]["content"][0]["text"],
+            },
         },
-    ]
-
-    turns, _ = build_turns(entries)
-    assert [turn.user_text for turn in turns] == ["Initial task", "Follow up"]
-    assert [
-        event["text"] for event in build_events(entries) if event["role"] == "user"
-    ] == [
-        "Initial task",
-        "Follow up",
+    )
+    assert [e["text"] for e in _users(entries)] == [
+        "Reply with FIRST_MODEL_FIXTURE_MARKER.",
+        "Reply with SECOND_MODEL_FIXTURE_MARKER.",
     ]
 
 
 def test_codex_slash_command_is_recorded():
     entries = load_entries(FIXTURES / "slash.jsonl")
-    turns, files_changed = build_turns(entries)
-    assert len(turns) == 1
-    assert turns[0].user_text == ""
-    assert turns[0].command == "/review"
-    assert turns[0].command_args == "fixture"
+    users = _users(entries)
+    assert len(users) == 1
+    assert users[0]["text"] == "/review fixture"
+    assert users[0]["command"] == "/review"
+    assert users[0]["command_args"] == "fixture"
 
 
 def test_codex_tagged_slash_command_is_recorded():
@@ -180,10 +172,9 @@ def test_codex_tagged_slash_command_is_recorded():
         }
     ]
 
-    turns, _ = build_turns(entries)
-
-    assert turns[0].command == "/review"
-    assert turns[0].command_args == "frontend src"
+    user = _users(entries)[0]
+    assert user["command"] == "/review"
+    assert user["command_args"] == "frontend src"
 
 
 def test_codex_skill_md_read_is_recorded():
@@ -255,20 +246,21 @@ def test_codex_handwritten_assistant_denial_branch():
             },
         },
     ]
-    turns, files_changed = build_turns(entries)
-    assert len(turns) == 1
-    assert turns[0].permission_denials == [
-        {"tool": "external_agent", "message": "not like that"}
-    ]
-    # The canned denial text must not leak into assistant prose.
-    assert turns[0].assistant_text_blocks == []
+    messages = _interpret(entries)["events"]
+    assert messages[-1]["permission_denial"] == {
+        "tool": "(tool call)",
+        "message": "not like that",
+        "by": "user",
+    }
+    assert "permission_denial" not in _calls(entries)[0]
+    assert "not like that" in messages[-1]["text"]
 
 
 def test_codex_native_denial_fixture_records_declined_command():
     entries = load_entries(FIXTURES / "denial.jsonl")
-    turns, files_changed = build_turns(entries)
-    assert turns[0].permission_denials == [{"tool": "exec", "message": ""}]
-    assert turns[0].result_notes == []
+    call = _calls(entries)[0]
+    assert call["permission_denial"] == {"tool": "exec", "message": "", "by": "user"}
+    assert "rejected by user" in call["result"].lower()
 
 
 def test_codex_handwritten_plan_mode_update_plan_branch():
@@ -329,24 +321,21 @@ def test_codex_handwritten_plan_mode_update_plan_branch():
         },
     ]
 
-    turns, files_changed = build_turns(entries)
-    assert turns[0].collaboration_mode == "plan"
-    assert turns[0].tool_bullets == []
-    assert turns[0].result_notes == []
-    assert turns[0].plan_updates[0]["steps"] == [
+    session = _interpret(entries)
+    assert session["events"][0]["collaboration_mode"] == "plan"
+    assert _calls(entries)[0]["plan_update"]["steps"] == [
         {"step": "Inspect schema", "status": "completed"},
         {"step": "Design change", "status": "in_progress"},
     ]
-    assert turns[0].assistant_text_blocks == ["Here is the plan."]
+    assert session["events"][-1]["text"] == "Here is the plan."
 
 
 def test_codex_native_plan_fixture_records_plan_mode():
     entries = load_entries(FIXTURES / "plan.jsonl")
-    turns, files_changed = build_turns(entries)
-    assert len(turns) == 1
-    assert turns[0].collaboration_mode == "plan"
-    assert turns[0].plan_updates == []
-    assert "<proposed_plan>" in "\n".join(turns[0].assistant_text_blocks)
+    session = _interpret(entries)
+    assert len(_users(entries)) == 1
+    assert session["events"][0]["collaboration_mode"] == "plan"
+    assert "<proposed_plan>" in "\n".join(e.get("text", "") for e in session["events"])
 
 
 def test_codex_default_mode_update_plan_remains_execution_tool():
@@ -376,10 +365,10 @@ def test_codex_default_mode_update_plan_remains_execution_tool():
             },
         },
     ]
-    turns, _ = build_turns(entries)
-    assert turns[0].collaboration_mode == "default"
-    assert turns[0].plan_updates == []
-    assert turns[0].tool_bullets[0].startswith("- update_plan")
+    assert _users(entries)[0]["collaboration_mode"] == "default"
+    call = _calls(entries)[0]
+    assert "plan_update" not in call
+    assert call["name"] == "update_plan"
 
 
 def test_codex_noise_cleaning():
@@ -434,17 +423,15 @@ def test_codex_summary_options_and_shell_command():
         },
     ]
 
-    turns, files_changed = build_turns(entries)
-    assert files_changed == []
-    assert len(turns) == 2
-    assert turns[0].option_qas[0]["chosen_labels"] == ["QUAL"]
-    assert turns[1].shell_command == "ls -la"
+    assert _interpret(entries)["files_changed"] == []
+    assert len(_users(entries)) == 2
+    assert _calls(entries)[0]["questions"][0]["chosen_labels"] == ["QUAL"]
+    assert _users(entries)[1]["shell_command"] == "ls -la"
 
 
 def test_codex_native_question_fixture_marks_answered_option():
     entries = load_entries(FIXTURES / "question.jsonl")
-    turns, files_changed = build_turns(entries)
-    assert turns[0].option_qas[0]["chosen_labels"] == ["QUAL"]
+    assert _calls(entries)[0]["questions"][0]["chosen_labels"] == ["QUAL"]
 
 
 def _write_jsonl(path: Path, entries):
@@ -614,11 +601,11 @@ def _codex_entries(image_path, missing_path="/gone/missing.png"):
     ]
 
 
-def test_build_events_keeps_local_and_unresolvable_images():
+def test_interpret_events_keeps_local_and_unresolvable_images():
     # Codex keeps images out of band, so the envelope is where they become
     # portable.
     img = FIXTURES / "pixel.png"
-    user = build_events(
+    user = _events(
         _codex_entries(img), image_inputs={str(img): (img.read_bytes(), "png")}
     )[0]
     assert user["role"] == "user"
@@ -648,8 +635,8 @@ def test_image_fixture_inlines_response_item_image_in_json(tmp_path):
     assert base64.b64decode(images[0]["data"]) == (FIXTURES / "pixel.png").read_bytes()
 
 
-def test_build_events_attaches_output_to_its_function_call():
-    events = build_events(
+def test_interpret_events_attaches_output_to_its_function_call():
+    events = _events(
         load_entries(FIXTURES / "tool_patch_large.jsonl"), tool_result_max_bytes=100
     )
     calls = [c for e in events for c in e.get("tool_calls", [])]
@@ -663,13 +650,6 @@ def test_build_events_attaches_output_to_its_function_call():
     assert call["result_truncated"] is True
 
 
-def test_build_events_does_not_disturb_interpreted_turns():
-    entries = load_entries(FIXTURES / "tool_patch_large.jsonl")
-    before = [t.user_text for t in build_turns(entries)[0]]
-    build_events(entries)
-    assert [t.user_text for t in build_turns(entries)[0]] == before
-
-
 # --- timestamp / formatting helpers ---------------------------------------
 
 
@@ -681,12 +661,6 @@ def test_parse_permission_denial_rejects_non_string():
 def test_clean_user_text_empty_returns_empty():
     assert clean_user_text("") == ""
     assert clean_user_text(None) == ""
-
-
-def test_parse_ts_handles_missing_and_bad_values():
-    assert _parse_ts(None) is None
-    assert _parse_ts(123) is None
-    assert _parse_ts("not-a-timestamp") is None
 
 
 # --- file discovery / selection ---------------------------------------
@@ -989,33 +963,7 @@ def test_content_text_list_of_plain_strings():
     )
 
 
-# --- tool descriptor / skill refs / result note ---------------------------------------
-
-
-def test_tool_descriptor_empty_args_and_parallel_tool_uses():
-    assert tool_descriptor("noop", "") == ""
-    assert tool_descriptor("noop", None) == ""
-    args = json.dumps(
-        {
-            "tool_uses": [
-                {"recipient_name": "one"},
-                {"recipient_name": "two"},
-                {"not_recipient": "x"},
-            ]
-        }
-    )
-    assert tool_descriptor("multi_tool_use.parallel", args) == "one, two"
-
-
-def test_tool_descriptor_falls_back_to_json_dump():
-    assert tool_descriptor("thing", {"foo": "bar"}) == '{"foo": "bar"}'
-
-
-def test_tool_descriptor_unserializable_args_returns_empty():
-    class Weird:
-        pass
-
-    assert tool_descriptor("thing", {"foo": Weird()}) == ""
+# --- skill references ---------------------------------------
 
 
 def test_skill_refs_from_call_skill_tool_without_value_adds_nothing():
@@ -1028,15 +976,6 @@ def test_skill_refs_from_call_dedupes_repeated_skill_path_mention():
     blob = "/plugins/documents/skills/pdf/SKILL.md and again /plugins/documents/skills/pdf/SKILL.md"
     refs = skill_names_from_call("exec_command", {"cmd": blob})
     assert refs == ["pdf"]
-
-
-def test_result_note_handles_dict_and_unserializable():
-    assert result_note({"a": 1}) == '{"a": 1}'
-
-    class Weird:
-        pass
-
-    assert result_note({"a": Weird()}) == ""
 
 
 # --- plan / structured-answer parsing ---------------------------------------
@@ -1180,10 +1119,10 @@ def test_append_unique_path_skips_empty_and_duplicates():
     assert paths == ["src/a.py", "src/a.py/extra"]
 
 
-# --- build_turns edge cases ---------------------------------------
+# --- canonical interpretation edge cases ---------------------------------------
 
 
-def test_build_turns_turn_context_sets_mode_on_existing_turn_without_one():
+def test_interpret_turn_context_sets_mode_on_existing_turn_without_one():
     entries = [
         {
             "type": "event_msg",
@@ -1196,11 +1135,10 @@ def test_build_turns_turn_context_sets_mode_on_existing_turn_without_one():
             "payload": {"collaboration_mode": {"mode": "plan"}},
         },
     ]
-    turns, _ = build_turns(entries)
-    assert turns[0].collaboration_mode == "plan"
+    assert _users(entries)[0]["collaboration_mode"] == "plan"
 
 
-def test_build_turns_patch_apply_end_records_paths_and_result_note():
+def test_interpret_patch_apply_end_records_paths_and_stdout():
     entries = [
         {
             "type": "event_msg",
@@ -1217,12 +1155,12 @@ def test_build_turns_patch_apply_end_records_paths_and_result_note():
             },
         },
     ]
-    turns, files_changed = build_turns(entries)
-    assert files_changed == ["src/a.py"]
-    assert turns[0].result_notes == ["apply_patch: patched ok"]
+    session = _interpret(entries)
+    assert session["files_changed"] == ["src/a.py"]
+    assert session["patch_results"][0]["stdout"] == "patched ok"
 
 
-def test_build_turns_patch_apply_end_before_any_turn_only_records_path():
+def test_interpret_patch_apply_end_before_any_turn_only_records_path():
     entries = [
         {
             "type": "event_msg",
@@ -1233,29 +1171,19 @@ def test_build_turns_patch_apply_end_before_any_turn_only_records_path():
             },
         }
     ]
-    turns, files_changed = build_turns(entries)
-    assert files_changed == ["src/a.py"]
-    assert turns == []
+    session = _interpret(entries)
+    assert session["files_changed"] == ["src/a.py"]
+    assert session["events"] == []
 
 
-def test_build_turns_assistant_message_before_any_user_turn_creates_turn():
-    entries = [
-        {
-            "type": "response_item",
-            "timestamp": "2026-01-01T00:00:00Z",
-            "payload": {
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "output_text", "text": "Hello first"}],
-            },
-        }
-    ]
-    turns, _ = build_turns(entries)
-    assert len(turns) == 1
-    assert turns[0].assistant_text_blocks == ["Hello first"]
+def test_interpret_assistant_message_before_any_user_is_preserved():
+    entries = load_entries(FIXTURES / "model.jsonl")
+    # Omit preceding inputs to exercise an assistant-only partial transcript.
+    assistant = next(e for e in entries if e["payload"].get("role") == "assistant")
+    assert _interpret([assistant])["events"][0]["text"] == "FIRST_MODEL_FIXTURE_MARKER"
 
 
-def test_build_turns_function_call_before_any_user_turn_creates_turn():
+def test_interpret_function_call_before_any_user_turn_creates_turn():
     entries = [
         {
             "type": "response_item",
@@ -1268,12 +1196,11 @@ def test_build_turns_function_call_before_any_user_turn_creates_turn():
             },
         }
     ]
-    turns, _ = build_turns(entries)
-    assert len(turns) == 1
-    assert turns[0].tool_bullets == ["- shell -> ls"]
+    assert _calls(entries)[0]["name"] == "shell"
+    assert _calls(entries)[0]["input"] == {"command": "ls"}
 
 
-def test_build_turns_apply_patch_tool_call_records_file_paths():
+def test_interpret_apply_patch_tool_call_records_file_paths():
     entries = [
         {
             "type": "event_msg",
@@ -1291,11 +1218,10 @@ def test_build_turns_apply_patch_tool_call_records_file_paths():
             },
         },
     ]
-    _, files_changed = build_turns(entries)
-    assert files_changed == ["new.py"]
+    assert _interpret(entries)["files_changed"] == ["new.py"]
 
 
-def test_build_turns_function_call_output_before_any_turn_is_ignored():
+def test_interpret_function_call_output_before_any_user_is_retained():
     entries = [
         {
             "type": "response_item",
@@ -1307,11 +1233,12 @@ def test_build_turns_function_call_output_before_any_turn_is_ignored():
             },
         }
     ]
-    turns, _ = build_turns(entries)
-    assert turns == []
+    session = _interpret(entries)
+    assert session["events"] == []
+    assert session["unmatched_tool_results"][0]["content"] == "result"
 
 
-def test_build_turns_empty_tool_bullet_has_no_arrow():
+def test_interpret_empty_tool_input_is_preserved():
     entries = [
         {
             "type": "event_msg",
@@ -1329,14 +1256,14 @@ def test_build_turns_empty_tool_bullet_has_no_arrow():
             },
         },
     ]
-    turns, _ = build_turns(entries)
-    assert turns[0].tool_bullets == ["- noop_tool"]
+    assert _calls(entries)[0]["name"] == "noop_tool"
+    assert _calls(entries)[0]["input"] == ""
 
 
-# --- build_events edge cases ---------------------------------------
+# --- event export edge cases ---------------------------------------
 
 
-def test_build_events_skips_blank_user_event_without_text_or_images():
+def test_interpret_events_skips_blank_user_event_without_text_or_images():
     entries = [
         {
             "type": "event_msg",
@@ -1349,12 +1276,12 @@ def test_build_events_skips_blank_user_event_without_text_or_images():
             "payload": {"type": "user_message", "message": "real text"},
         },
     ]
-    events = build_events(entries)
+    events = _events(entries)
     assert len(events) == 1
     assert events[0]["text"] == "real text"
 
 
-def test_build_events_startup_context_sets_pending_images_not_text():
+def test_interpret_events_startup_context_sets_pending_images_not_text():
     startup_text = "<recommended_plugins>x</recommended_plugins>\n# AGENTS.md instructions\n<environment_context>y</environment_context>"
     entries = [
         {
@@ -1372,12 +1299,12 @@ def test_build_events_startup_context_sets_pending_images_not_text():
             "payload": {"type": "user_message", "message": "actual turn"},
         },
     ]
-    events = build_events(entries)
+    events = _events(entries)
     assert len(events) == 1
     assert events[0]["text"] == "actual turn"
 
 
-def test_build_events_assistant_blank_text_is_skipped():
+def test_interpret_events_assistant_blank_text_is_skipped():
     entries = [
         {
             "type": "response_item",
@@ -1389,10 +1316,10 @@ def test_build_events_assistant_blank_text_is_skipped():
             },
         }
     ]
-    assert build_events(entries) == []
+    assert _events(entries) == []
 
 
-def test_build_events_function_call_flushes_pending_user_message():
+def test_interpret_events_function_call_flushes_pending_user_message():
     entries = load_entries(FIXTURES / "question.jsonl")
     calls = [
         entry["payload"]
@@ -1402,7 +1329,7 @@ def test_build_events_function_call_flushes_pending_user_message():
     assert [call["type"] for call in calls] == ["function_call", "function_call_output"]
     assert calls[0]["call_id"] == calls[1]["call_id"]
 
-    events = build_events(entries)
+    events = _events(entries)
     assert events[0]["role"] == "user"
     assert (
         "Which team" in events[1]["tool_calls"][0]["input"]["questions"][0]["question"]
@@ -1411,7 +1338,7 @@ def test_build_events_function_call_flushes_pending_user_message():
     assert events[1]["tool_calls"][0]["result"] == "QUAL"
 
 
-def test_build_events_output_with_unknown_call_id_is_ignored():
+def test_export_omits_unmatched_result_without_inventing_a_message():
     entries = [
         {
             "type": "response_item",
@@ -1423,7 +1350,7 @@ def test_build_events_output_with_unknown_call_id_is_ignored():
             },
         }
     ]
-    assert build_events(entries) == []
+    assert _events(entries) == []
 
 
 # --- image byte decoding ---------------------------------------
@@ -1505,8 +1432,9 @@ def test_custom_answer_without_chosen_label():
             },
         },
     ]
-    turns, files_changed = build_turns(entries)
-    assert turns[0].option_qas[0]["answer_text"] == "Something else entirely"
+    assert (
+        _calls(entries)[0]["questions"][0]["answer_text"] == "Something else entirely"
+    )
 
 
 def test_multiple_plan_updates():
@@ -1536,8 +1464,7 @@ def test_multiple_plan_updates():
                 },
             }
         )
-    turns, files_changed = build_turns(entries)
-    assert [p["steps"][0]["step"] for p in turns[0].plan_updates] == [
+    assert [c["plan_update"]["steps"][0]["step"] for c in _calls(entries)] == [
         "Step 0",
         "Step 1",
     ]
@@ -1545,8 +1472,7 @@ def test_multiple_plan_updates():
 
 def test_records_files_changed():
     entries = load_entries(FIXTURES / "tool_patch_large.jsonl")
-    turns, files_changed = build_turns(entries)
-    assert files_changed == ["/workspace/fixture.txt"]
+    assert _interpret(entries)["files_changed"] == ["/workspace/fixture.txt"]
 
 
 # --- extract_transcript / build_raw_envelope / _extract_all / main errors ---------------------------------------
@@ -1595,14 +1521,14 @@ def test_extract_all_skips_unparseable_transcript_and_still_succeeds(monkeypatch
             _session_entries("bad", project, "Bad session"),
         )
 
-        original_build_envelope = mod.build_raw_envelope
+        original_interpret = mod.interpret_source
 
         def flaky_build_envelope(source, *args):
             if "bad" in source.path.name:
                 raise ValueError("boom")
-            return original_build_envelope(source, *args)
+            return original_interpret(source, *args)
 
-        monkeypatch.setattr(mod, "build_raw_envelope", flaky_build_envelope)
+        monkeypatch.setattr(mod, "interpret_source", flaky_build_envelope)
         monkeypatch.chdir(project)
         rc = mod._extract_all(str(sessions), str(out))
 
@@ -1697,7 +1623,7 @@ def test_skill_refs_from_call_unserializable_args_skips_regex_scan():
     assert skill_names_from_call("exec_command", {"cmd": Weird()}) == []
 
 
-def test_build_turns_tagged_command_without_leading_slash_is_ignored():
+def test_interpret_tagged_command_without_leading_slash_is_ignored():
     entries = [
         {
             "type": "event_msg",
@@ -1708,12 +1634,11 @@ def test_build_turns_tagged_command_without_leading_slash_is_ignored():
             },
         }
     ]
-    turns, _ = build_turns(entries)
-    assert turns[0].command is None
-    assert turns[0].user_text
+    assert "command" not in _users(entries)[0]
+    assert _users(entries)[0]["text"] == "some text"
 
 
-def test_build_turns_startup_context_response_item_sets_pending_images_only():
+def test_interpret_startup_context_response_item_sets_pending_images_only():
     startup_text = (
         "<recommended_plugins>x</recommended_plugins>\n"
         "# AGENTS.md instructions\n<environment_context>y</environment_context>"
@@ -1734,11 +1659,11 @@ def test_build_turns_startup_context_response_item_sets_pending_images_only():
             "payload": {"type": "user_message", "message": "actual turn"},
         },
     ]
-    turns, _ = build_turns(entries)
-    assert [t.user_text for t in turns] == ["actual turn"]
+    assert len(_users(entries)) == 1
+    assert _users(entries)[0]["text"] == "actual turn"
 
 
-def test_build_events_function_call_arguments_fallback_to_input():
+def test_interpret_events_function_call_arguments_fallback_to_input():
     entries = [
         {
             "type": "response_item",
@@ -1751,7 +1676,7 @@ def test_build_events_function_call_arguments_fallback_to_input():
             },
         }
     ]
-    events = build_events(entries)
+    events = _events(entries)
     call = events[0]["tool_calls"][0]
     assert call["input"] == {"command": "ls"}
 
@@ -1819,13 +1744,10 @@ def test_json_entrypoints_bypass_presentation(mode, tmp_path, monkeypatch, capsy
     entries += load_entries(FIXTURES / "image.jsonl")[1:]
     entries += load_entries(FIXTURES / "tool_patch_large.jsonl")[1:]
     _write_jsonl(transcript, entries)
-    expected = build_events(entries)
+    expected = _events(entries)
     monkeypatch.chdir(tmp_path)
 
-    def presentation_forbidden(*args, **kwargs):
-        pytest.fail("JSON extraction invoked presentation")
-
-    monkeypatch.setattr(mod, "build_turns", presentation_forbidden)
+    assert not hasattr(mod, "build_turns")
     args = ["--transcript", str(transcript)]
     destination = tmp_path / "out" / "codex_session_log_raw_s1.json"
     if mode == "stdout":
@@ -2058,3 +1980,100 @@ def test_codex_preserves_native_results_and_identity():
     assert session["unmatched_tool_results"][0]["content"] == ""
     assert session["unsupported_tools"] == ["exec"]
     assert all("result_truncated" not in c for c in interpreted)
+
+
+def test_native_results_match_ids_across_user_messages_and_export_without_mutation():
+    entries = load_entries(FIXTURES / "tool_patch_large.jsonl")
+    calls = [e for e in entries if e["payload"].get("type") == "custom_tool_call"]
+    outputs = [
+        e for e in entries if e["payload"].get("type") == "custom_tool_call_output"
+    ]
+    user = next(e for e in entries if e["payload"].get("role") == "user")
+    # Retain the native envelope and call IDs, delaying the results past a
+    # second human message and returning them in reverse call order.
+    outputs[0]["payload"]["output"] = "é" * 12_000
+    outputs[0]["payload"]["is_error"] = True
+    entries = [user, *calls, user, *reversed(outputs)]
+    session = _interpret(entries)
+    interpreted = [c for e in session["events"] for c in e.get("tool_calls", [])]
+    assert interpreted[0]["result"] == "é" * 12_000
+    assert interpreted[0]["result_record"]["content"] == "é" * 12_000
+    assert interpreted[0]["is_error"] is True
+    assert interpreted[1]["result_record"]["content"] == outputs[1]["payload"]["output"]
+    original = json.dumps(session)
+    capped = session_log_envelope.export_session(session, 7)
+    exported = capped["events"][1]["tool_calls"][0]
+    assert exported["result"] == "é" * 3
+    assert exported["result_bytes"] == 24_000
+    assert exported["result_truncated"] is True
+    assert (
+        session_log_envelope.export_session(session, -1)["events"][1]["tool_calls"][0][
+            "result"
+        ]
+        == "é" * 12_000
+    )
+    assert json.dumps(session) == original
+
+
+@pytest.mark.parametrize("output", ["", None, "missing"])
+def test_native_result_missing_null_and_empty_stay_distinct(output):
+    source = mod.read_source(FIXTURES / "question.jsonl")
+    result = next(
+        e["payload"]
+        for e in source.entries
+        if e["payload"].get("type") == "function_call_output"
+    )
+    if output == "missing":
+        del result["output"]
+    else:
+        result["output"] = output
+    session = mod.interpret_source(source)
+    call = next(c for e in session["events"] for c in e.get("tool_calls", []))
+    exported = next(
+        c
+        for e in session_log_envelope.export_session(session)["events"]
+        for c in e.get("tool_calls", [])
+    )
+    if output == "missing":
+        assert "content" not in call["result_record"]
+        assert "result" not in call
+        assert "result" not in exported
+    else:
+        assert call["result_record"]["content"] == output
+        assert call["result"] == output
+        assert exported["result"] == output
+
+
+def test_native_message_ids_and_image_ownership_survive():
+    source = mod.read_source(FIXTURES / "image.jsonl")
+    user = next(e for e in source.entries if e["payload"].get("role") == "user")
+    user["payload"].update(
+        id="image-owner", message_id="message-1", parent_id="parent-1"
+    )
+    # Add a second, text-only user input after the captured conversation.
+    source.entries.append(
+        {
+            "type": "event_msg",
+            "payload": {"type": "user_message", "message": "Continue"},
+        }
+    )
+    session = mod.interpret_source(source)
+    users = [e for e in session["events"] if e["role"] == "user"]
+    assert users[0]["id"] == "image-owner"
+    assert users[0]["message_id"] == "message-1"
+    assert users[0]["parent_id"] == "parent-1"
+    assert len(users[0]["images"]) == 1
+    assert "images" not in users[-1]
+
+
+def test_cli_reports_unsupported_schema_once_and_retains_input(tmp_path, capsys):
+    source = mod.read_source(FIXTURES / "tool_patch_large.jsonl")
+    _write_jsonl(tmp_path / "s.jsonl", source.entries)
+    assert main(["--transcript", str(tmp_path / "s.jsonl"), "--output", "-"]) == 0
+    captured = capsys.readouterr()
+    assert captured.err.count("warning: unsupported tool input schemas: exec") == 1
+    calls = [
+        c for e in json.loads(captured.out)["events"] for c in e.get("tool_calls", [])
+    ]
+    assert len(calls) == 2
+    assert "printf TOOL_FIXTURE_MARKER" in calls[0]["input"]
