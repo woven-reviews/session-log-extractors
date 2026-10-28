@@ -12,9 +12,10 @@ CI checks:
 ```sh
 uv run --locked ruff format --check .
 uv run --locked ruff check .
-uv run --locked mypy src
+uv run --locked mypy src scripts/check_type_escapes.py
 uv run --locked pytest --cov=scripts --cov=src --cov-report=term --cov-report=xml --cov-fail-under=95
 git fetch origin main
+uv run --locked python scripts/check_type_escapes.py --compare-branch=origin/main
 uv run --locked diff-cover coverage.xml --compare-branch=origin/main --fail-under=95
 uv run --locked pytest scripts/test_extract_codex_session_log.py --cov=session_log_extractors.extract_codex_session_log --cov-fail-under=95
 uv run --locked pytest scripts/test_extract_claude_session_log.py --cov=session_log_extractors.extract_claude_session_log --cov-fail-under=95
@@ -22,7 +23,15 @@ uv run --locked pytest scripts/test_extract_copilot_session_log.py --cov=session
 ```
 
 Run mypy across the entire source package, including bodies of untyped functions.
-Fix type errors without adding ignores, exclusions, or weakening checker settings.
+Fix type errors through accurate types, typed construction, and checked narrowing.
+Casts and `no_type_check` APIs are banned by Ruff. Do not replace casts with
+broader `Any` annotations, unchecked validators, or ignored errors.
+The type exception inventory (`scripts/typecheck_exceptions.json`) is currently
+empty. CI compares it with origin/main and rejects new or broadened exceptions,
+stale entries, policy-disabling comments/configuration, and unapproved ignores.
+The inventory may only shrink; never add ignores or weaken enforcement to pass
+checks. Existing exceptions, if any, must name exact error codes, the file,
+enclosing symbol, statement, reason, and removal ticket.
 
 Keep all five coverage thresholds at 95% or higher. Overall coverage excludes
 test modules; run diff-cover after the overall run produces `coverage.xml`.

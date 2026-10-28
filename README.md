@@ -132,7 +132,8 @@ imports retain their annotations when checked outside the source directory.
 Codex and Copilot contract adoption remains in QUAL-2518 and QUAL-2519. Codex
 still combines interpretation with envelope construction; Copilot interpretation
 still applies result caps and uses legacy turn state. Their existing behavior
-has not been rewritten here; annotation-only fixes allow package-wide checking.
+has not been rewritten here; typed builders and checked narrowing allow
+package-wide checking without casts or ignores.
 
 ## Shared session/export boundary
 
@@ -179,9 +180,10 @@ checks as CI before opening a PR:
 ```sh
 uv run --locked ruff format --check .
 uv run --locked ruff check .
-uv run --locked mypy src
+uv run --locked mypy src scripts/check_type_escapes.py
 uv run --locked pytest --cov=scripts --cov=src --cov-report=term --cov-report=xml --cov-fail-under=95
 git fetch origin main
+uv run --locked python scripts/check_type_escapes.py --compare-branch=origin/main
 uv run --locked diff-cover coverage.xml --compare-branch=origin/main --fail-under=95
 uv run --locked pytest scripts/test_extract_codex_session_log.py --cov=session_log_extractors.extract_codex_session_log --cov-fail-under=95
 uv run --locked pytest scripts/test_extract_claude_session_log.py --cov=session_log_extractors.extract_claude_session_log --cov-fail-under=95
@@ -194,6 +196,26 @@ run, which generates `coverage.xml`.
 After intentionally changing dependencies in `pyproject.toml`, run `uv lock`
 and commit `uv.lock` with the change. Use `uv lock --upgrade` only when intending
 to upgrade the locked dependencies.
+
+## Type escape policy
+
+The package has no casts or type ignores. Ruff's `TID251` bans `typing.cast`,
+`typing_extensions.cast`, and both `no_type_check` APIs; `PGH003` requires coded
+ignores. Mypy also requires error codes and rejects unused ignores.
+
+`scripts/typecheck_exceptions.json` is an empty inventory. The CI guard
+`scripts/check_type_escapes.py` compares it with origin/main and permits only
+removal of exceptions. An exception is identified by file, enclosing symbol,
+normalized statement, and exact error codes, with a reason and removal ticket.
+Moving lines does not change identity; changing scope, statement, codes, or
+adding another occurrence requires a new exception and fails CI. Editing the
+inventory in the same PR does not approve an addition.
+
+The guard scans real comments in all tracked and unignored Python files,
+including tests and generators. It rejects blanket/file-level ignores, inline
+checker configuration, suppressions of the protected Ruff rules, and weakened
+type-policy settings. Existing unrelated Ruff complexity exceptions remain
+subject to the historical inventory below. Examples inside strings are ignored.
 
 ## Ruff lint policy and initial inventory
 
