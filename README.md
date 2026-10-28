@@ -150,13 +150,15 @@ uv sync --locked --extra test
 
 uv manages `.venv` automatically; no activation is needed. Python 3.11 or newer
 is supported; CI uses 3.11 (`uv sync --locked --extra test --python 3.11` to match).
-Ruff is pinned in `pyproject.toml` and all test dependencies are locked in
+Ruff and mypy are pinned in `pyproject.toml`; mypy checks the entire source
+package, including bodies of untyped functions. All test dependencies are locked in
 `uv.lock`. Format Python with `uv run --locked ruff format .`. Run the same
 checks as CI before opening a PR:
 
 ```sh
 uv run --locked ruff format --check .
 uv run --locked ruff check .
+uv run --locked mypy src
 uv run --locked pytest --cov=scripts --cov=src --cov-report=term --cov-report=xml --cov-fail-under=95
 git fetch origin main
 uv run --locked diff-cover coverage.xml --compare-branch=origin/main --fail-under=95

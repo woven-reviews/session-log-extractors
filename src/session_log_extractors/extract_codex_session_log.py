@@ -56,7 +56,7 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 from session_log_extractors import codex_sources
 from session_log_extractors.codex_sources import CodexSource, ImageInputs
@@ -74,7 +74,7 @@ from session_log_extractors.session_log_envelope import (
     warn_if_oversized,
     write_envelope,
 )
-from session_log_extractors.session_model import Session
+from session_log_extractors.session_model import Message, Session
 
 _IMAGE_EXT = {
     "image/png": "png",
@@ -680,9 +680,9 @@ class Turn:
 def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]:  # noqa: C901, PLR0912, PLR0915
     turns: List[Turn] = []
     files_changed: List[str] = []
-    files_seen = set()
+    files_seen: set[str] = set()
     current: Optional[Turn] = None
-    call_names: Dict[str, str] = {}
+    call_names: Dict[object, str] = {}
     pending_questions: Dict[str, List[Any]] = {}
     pending_plan_calls = set()
     pending_user_images: List[Dict[str, Any]] = []
@@ -838,7 +838,9 @@ def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]: 
                 current = Turn("", entry.get("timestamp"), pending_mode)
                 turns.append(current)
             name = (
-                payload.get("name") if isinstance(payload.get("name"), str) else "tool"
+                cast(str, payload.get("name"))
+                if isinstance(payload.get("name"), str)
+                else "tool"
             )
             last_tool = name
             call_id = payload.get("call_id")
@@ -894,8 +896,8 @@ def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]: 
             )
             if (
                 ptype == "custom_tool_call_output"
-                and "exec_command failed: CreateProcess" in result
-                and "rejected by user" in result.lower()
+                and "exec_command failed: CreateProcess" in cast(str, result)
+                and "rejected by user" in cast(str, result).lower()
             ):
                 current.permission_denials.append(
                     {"tool": call_names.get(call_id, "(tool call)"), "message": ""}
@@ -945,7 +947,7 @@ def build_events(  # noqa: C901, PLR0912, PLR0915
     Retain native message, tool-result, and image interpretation.
     """
     events: List[Dict[str, Any]] = []
-    pending_calls: Dict[str, Dict[str, Any]] = {}
+    pending_calls: Dict[object, Dict[str, Any]] = {}
     pending_user_images: List[Dict[str, Any]] = []
     pending_response_user: Optional[Tuple[str, Optional[str], List[Dict[str, Any]]]] = (
         None
@@ -1011,7 +1013,9 @@ def build_events(  # noqa: C901, PLR0912, PLR0915
         if ptype in ("function_call", "custom_tool_call"):
             flush_pending_response_user()
             name = (
-                payload.get("name") if isinstance(payload.get("name"), str) else "tool"
+                cast(str, payload.get("name"))
+                if isinstance(payload.get("name"), str)
+                else "tool"
             )
             arguments = payload.get("arguments")
             if arguments is None:
@@ -1027,10 +1031,10 @@ def build_events(  # noqa: C901, PLR0912, PLR0915
             continue
 
         if ptype in ("function_call_output", "custom_tool_call_output"):
-            call = pending_calls.pop(payload.get("call_id"), None)
-            if call is None:
+            pending_call = pending_calls.pop(payload.get("call_id"), None)
+            if pending_call is None:
                 continue
-            call.update(
+            pending_call.update(
                 truncate_result(
                     _flatten_result_text(payload.get("output")), tool_result_max_bytes
                 )
@@ -1056,7 +1060,7 @@ def build_raw_envelope(
         Session(
             harness="codex",
             session_id=source.identifier,
-            events=events,
+            events=cast(List[Message], events),
             cwd=source.cwd,
             started_at=first_timestamp(entries),
             models=session_models(entries),
@@ -1267,7 +1271,7 @@ def _extract_all(
     print(f"extracting {len(files)} Codex session(s) from {root}", file=sys.stderr)
 
     written = 0
-    used_ids = set()
+    used_ids: set[str] = set()
     for transcript in files:
         ident = CodexSource(transcript, []).identifier
         try:

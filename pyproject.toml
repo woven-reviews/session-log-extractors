@@ -9,13 +9,17 @@ description = "Reusable extractors for Claude, Codex, and Copilot session logs"
 requires-python = ">=3.11"
 
 [project.optional-dependencies]
-test = ["pytest", "pytest-cov", "ruff==0.14.0", "diff-cover==9.7.1"]
+test = ["pytest", "pytest-cov", "ruff==0.14.0", "diff-cover==9.7.1", "mypy==2.4.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.ruff]
 target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+check_untyped_defs = true
 
 [tool.coverage.run]
 source = ["scripts", "src"]

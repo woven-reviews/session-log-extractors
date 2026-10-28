@@ -25,7 +25,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple, cast
 
 from session_log_extractors import session_log_envelope
 from session_log_extractors.claude_sources import (
@@ -47,6 +47,8 @@ from session_log_extractors.session_log_envelope import (
 )
 from session_log_extractors.session_model import (
     AssistantMessage,
+    Message,
+    NativeIdentity,
     PermissionDenial,
     PlanDecision,
     QuestionAnswer,
@@ -56,7 +58,7 @@ from session_log_extractors.session_model import (
     ToolResult,
     UserMessage,
 )
-from session_log_extractors.tool_inputs import input_schema
+from session_log_extractors.tool_inputs import QuestionOption, input_schema
 
 # --------------------------------------------------------------------------- #
 # Constants
@@ -539,8 +541,8 @@ def option_qa_from_result(
                 {
                     "question": q.get("question", ""),
                     "header": q.get("header", ""),
-                    "options": options,
-                    "chosen_labels": [o.get("label") for o in chosen],
+                    "options": cast(List[QuestionOption], options),
+                    "chosen_labels": [o["label"] for o in chosen],
                     "answer_text": val,
                 }
             )
@@ -609,16 +611,18 @@ def permission_denials_from_result(
     return out
 
 
-def _message_identity(entry: Dict[str, Any]) -> Dict[str, str]:
+def _message_identity(entry: Dict[str, Any]) -> NativeIdentity:
     """Retain native record, parent, and API-message IDs without guessing links."""
-    identity = {}
-    for target, value in (
-        ("id", entry.get("uuid")),
-        ("parent_id", entry.get("parentUuid")),
-        ("message_id", _get_message(entry).get("id")),
-    ):
-        if isinstance(value, str):
-            identity[target] = value
+    identity = NativeIdentity()
+    record_id = entry.get("uuid")
+    parent_id = entry.get("parentUuid")
+    message_id = _get_message(entry).get("id")
+    if isinstance(record_id, str):
+        identity["id"] = record_id
+    if isinstance(parent_id, str):
+        identity["parent_id"] = parent_id
+    if isinstance(message_id, str):
+        identity["message_id"] = message_id
     return identity
 
 
@@ -631,7 +635,11 @@ def _questions(tool_input: Any) -> List[QuestionAnswer]:
         QuestionAnswer(
             question=q.get("question", ""),
             header=q.get("header", ""),
-            options=[o for o in q.get("options", []) if isinstance(o, dict)],
+            options=[
+                cast(QuestionOption, o)
+                for o in q.get("options", [])
+                if isinstance(o, dict)
+            ],
         )
         for q in tool_input["questions"]
         if isinstance(q, dict)
@@ -641,8 +649,8 @@ def _questions(tool_input: Any) -> List[QuestionAnswer]:
 class _ClaudeInterpreter:
     """Interpret ordered messages and associate tool activity by native call ID."""
 
-    def __init__(self):
-        self.events: List[UserMessage | AssistantMessage] = []
+    def __init__(self) -> None:
+        self.events: List[Message] = []
         self.files_changed: List[str] = []
         self.skills_used: List[str] = []
         self.subagent_count = 0
@@ -678,10 +686,12 @@ class _ClaudeInterpreter:
         command = command if command.startswith("/") else ""
         if not text and not images and not command:
             return
-        message = UserMessage(
-            **user_event(len(self.events), entry.get("timestamp"), text, images),
-            **_message_identity(entry),
+        # The legacy builder constructs exactly this role/content schema.
+        message = cast(
+            UserMessage,
+            user_event(len(self.events), entry.get("timestamp"), text, images),
         )
+        message.update(_message_identity(entry))
         if command:
             args = _COMMAND_ARGS.search(raw)
             message["command"] = command
@@ -706,17 +716,17 @@ class _ClaudeInterpreter:
             elif block.get("type") == "tool_use":
                 calls.append(self.call(block))
         if texts or calls:
-            self.events.append(
-                AssistantMessage(
-                    **assistant_event(
-                        len(self.events),
-                        entry.get("timestamp"),
-                        "\n\n".join(texts),
-                        calls,
-                    ),
-                    **_message_identity(entry),
-                )
+            message = cast(
+                AssistantMessage,
+                assistant_event(
+                    len(self.events),
+                    entry.get("timestamp"),
+                    "\n\n".join(texts),
+                    cast(List[Dict[str, Any]], calls),
+                ),
             )
+            message.update(_message_identity(entry))
+            self.events.append(message)
 
     def call(self, block: Dict[str, Any]) -> ToolCall:
         name = block.get("name", "tool")
@@ -771,7 +781,11 @@ class _ClaudeInterpreter:
                 is_error=bool(block.get("is_error")),
                 **_message_identity(entry),
             )
-            call = self.pending_calls.pop(tool_id, None)
+            call = (
+                self.pending_calls.pop(tool_id, None)
+                if isinstance(tool_id, str)
+                else None
+            )
             if call is None:
                 self.unmatched_tool_results.append(record)
                 continue
@@ -785,7 +799,7 @@ class _ClaudeInterpreter:
         # Apply existing semantic parsers to this ID-matched call only. A later
         # user message, or another result in the same entry, cannot change ownership.
         entry = {"message": {"content": [block]}}
-        tool_id = block.get("tool_use_id")
+        tool_id = call["id"]
         if "plan_decision" in call:
             apply_plan_decisions(entry, {tool_id: call["plan_decision"]})
             return

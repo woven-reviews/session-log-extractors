@@ -26,9 +26,9 @@ import json
 import sys
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional, cast
 
-from session_log_extractors.session_model import Session
+from session_log_extractors.session_model import Event, Session
 
 SCHEMA = "raw-session-log/1"
 
@@ -233,9 +233,9 @@ def export_session(
     return envelope
 
 
-def _export_event(event: Dict[str, Any], limit: int) -> Dict[str, Any]:
+def _export_event(event: Mapping[str, Any], limit: int) -> Event:
     """Select current message fields without serializing semantic model fields."""
-    exported = {
+    exported: Dict[str, Any] = {
         key: event[key]
         for key in ("i", "role", "ts", "text", "images", "tool_calls")
         if key in event
@@ -244,11 +244,12 @@ def _export_event(event: Dict[str, Any], limit: int) -> Dict[str, Any]:
         exported["tool_calls"] = [
             _export_call(call, limit) for call in event["tool_calls"]
         ]
-    return exported
+    # The projection keeps the required event keys and only schema-owned fields.
+    return cast(Event, exported)
 
 
-def _export_call(call: Dict[str, Any], limit: int) -> Dict[str, Any]:
-    exported = {
+def _export_call(call: Mapping[str, Any], limit: int) -> Dict[str, Any]:
+    exported: Dict[str, Any] = {
         key: call[key]
         for key in (
             "name",

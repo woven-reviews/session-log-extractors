@@ -44,7 +44,7 @@ import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from session_log_extractors import copilot_sources
 from session_log_extractors.copilot_sources import CopilotSource, ImageInputs
@@ -61,7 +61,7 @@ from session_log_extractors.session_log_envelope import (
     warn_if_oversized,
     write_envelope,
 )
-from session_log_extractors.session_model import Session
+from session_log_extractors.session_model import Message, Session
 
 _NOISE_TAG_BLOCK = re.compile(
     r"<(system-reminder|system-notification|local-command-stdout|local-command-stderr|"
@@ -294,7 +294,7 @@ def _state_attachment(item: Dict[str, Any], timestamp: Any, assets: Dict) -> Dic
 
 def _attachments_from_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     assets = _binary_assets(events)
-    attachments = []
+    attachments: List[Dict[str, Any]] = []
     for obj in events:
         data = obj.get("data")
         if obj.get("type") != "user.message" or not isinstance(data, dict):
@@ -651,7 +651,9 @@ def _build_turn_objects(  # noqa: C901, PLR0912, PLR0915
             and _DATA_IMAGE_URL.match(data_url)
         ):
             continue
-        target = _turn_for(built, attachment.get("timestamp"))
+        target = cast(
+            Turn, _turn_for(built, attachment.get("timestamp"))
+        )  # built is nonempty
         ref = {"name": name}
         for key in ("path", "type", "data_url", "data", "media_type"):
             if attachment.get(key):
@@ -878,7 +880,7 @@ def interpret_source(
     return Session(
         harness="copilot",
         session_id=output_identifier(session),
-        events=events,
+        events=cast(List[Message], events),
         cwd=session.get("cwd"),
         started_at=session.get("created_at"),
         models=source.models,
@@ -990,7 +992,7 @@ def _extract_all(
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"extracting {len(sessions)} Copilot session(s)", file=sys.stderr)
     written = 0
-    used_ids = set()
+    used_ids: set[str] = set()
     for session in sessions:
         ident = _unique_identifier(output_identifier(session), used_ids)
         out_path = out_dir / raw_filename("copilot", ident)

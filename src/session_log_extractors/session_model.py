@@ -7,7 +7,7 @@ fields in the current JSON schema and preserves nested event payloads. Additiona
 session semantics remain available on the model for other consumers.
 """
 
-from typing import Literal, NotRequired, Required, TypedDict
+from typing import Literal, NotRequired, Required, TypeAlias, TypedDict
 
 from session_log_extractors.tool_inputs import (
     JsonValue,
@@ -65,12 +65,17 @@ class SubagentSummary(TypedDict, total=False):
     result: str
 
 
-class ToolResult(TypedDict):
+class NativeIdentity(TypedDict, total=False):
+    """Identifiers recorded by the source; absent IDs remain absent."""
+
+    id: str
+    parent_id: str
+    message_id: str
+
+
+class ToolResult(NativeIdentity):
     """A recorded result, associated by native call ID when available."""
 
-    id: NotRequired[str]
-    parent_id: NotRequired[str]
-    message_id: NotRequired[str]
     tool_call_id: str | None
     ts: str | None
     content: JsonValue
@@ -96,16 +101,13 @@ class ToolCall(TypedDict, total=False):
     skill: str
 
 
-class MessageContent(TypedDict, total=False):
+class MessageContent(NativeIdentity, total=False):
     """Content and native identity shared by ordered conversation messages."""
 
     i: Required[int]
     ts: str | None
     text: str | None
     images: list[Image] | None
-    id: str
-    parent_id: str
-    message_id: str
 
 
 class UserMessage(MessageContent):
@@ -131,12 +133,15 @@ class Event(MessageContent, total=False):
     tool_calls: list[ToolCall] | None
 
 
+Message: TypeAlias = UserMessage | AssistantMessage | Event
+
+
 class Session(TypedDict):
     """Interpreted session supplied directly to the shared exporter."""
 
     harness: str
     session_id: str
-    events: list[UserMessage | AssistantMessage | Event]
+    events: list[Message]
     cwd: NotRequired[str | None]
     started_at: NotRequired[str | None]
     models: NotRequired[list[str] | None]
