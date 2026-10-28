@@ -39,6 +39,36 @@ def test_cli_uses_the_public_extractor_stages(monkeypatch, capsys):
     assert stages == ["read", "interpret"]
 
 
+def _read_contract_source(extractor, selection, harness, full_result, monkeypatch):
+    """Load each harness's native fixtures before enabling the source-access guard."""
+    if harness == "copilot":
+        fixtures = FIXTURES.parent / "copilot"
+        cases = json.loads((fixtures / "manifest.json").read_text())["cases"]
+        records = copilot_sources.parse_state_records(
+            (fixtures / selection / "events.jsonl").read_text().splitlines()
+        )
+        monkeypatch.setattr(
+            copilot_sources, "load_state_records", lambda session_id: records
+        )
+        with copilot_sources.get_db_connection(fixtures / "session-store.db") as conn:
+            request = copilot.CopilotRequest(
+                conn, copilot_sources.get_session_by_id(conn, cases[selection])
+            )
+            source = extractor.read_source(request)
+        conn.close()
+        if full_result:
+            # Extend a captured completion past the default export cap.
+            next(
+                r
+                for r in source.state_records
+                if r["type"] == "tool.execution_complete"
+            )["data"]["result"]["content"] = "x" * 20000
+    else:
+        source = extractor.read_source(selection)
+
+    return source
+
+
 # Extend this native-fixture matrix as other harnesses adopt Extractor.
 @pytest.mark.parametrize(
     ("extractor", "selection", "harness", "full_result"),
@@ -70,30 +100,9 @@ def test_cli_uses_the_public_extractor_stages(monkeypatch, capsys):
 def test_public_interpretation_is_source_free_and_export_is_non_mutating(
     extractor, selection, harness, full_result, monkeypatch
 ):
-    if harness == "copilot":
-        fixtures = FIXTURES.parent / "copilot"
-        cases = json.loads((fixtures / "manifest.json").read_text())["cases"]
-        records = copilot_sources.parse_state_records(
-            (fixtures / selection / "events.jsonl").read_text().splitlines()
-        )
-        monkeypatch.setattr(
-            copilot_sources, "load_state_records", lambda session_id: records
-        )
-        with copilot_sources.get_db_connection(fixtures / "session-store.db") as conn:
-            request = copilot.CopilotRequest(
-                conn, copilot_sources.get_session_by_id(conn, cases[selection])
-            )
-            source = extractor.read_source(request)
-        conn.close()
-        if full_result:
-            # Extend a captured completion past the default export cap.
-            next(
-                r
-                for r in source.state_records
-                if r["type"] == "tool.execution_complete"
-            )["data"]["result"]["content"] = "x" * 20000
-    else:
-        source = extractor.read_source(selection)
+    source = _read_contract_source(
+        extractor, selection, harness, full_result, monkeypatch
+    )
 
     def forbidden(*args, **kwargs):
         pytest.fail("interpret_source accessed its source store")

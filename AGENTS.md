@@ -93,6 +93,17 @@ filesystem errors, and other cases that existing fixtures cannot meaningfully
 exercise. Do not replace a focused edge-case test with a fixture that no longer
 tests that edge case, or invoke paid fixture generators as part of tests.
 
+## Readability review
+
+Review changed functions for readability even when lint passes. For functions
+exceeding roughly 50 body lines, explicitly check whether they mix
+responsibilities, obscure the main flow, or contain dense nested expressions.
+Treat length as a review signal, not a hard limit. Extract helpers only when
+they name a meaningful operation and make the caller easier to follow; do not
+split code merely to reduce line counts. Long declarative structures, test
+setup, and expected data can remain together when that improves understanding.
+Apply the same judgment to shorter functions with dense or mixed logic.
+
 ## Lint policy
 
 Ruff checks application code, fixture generators, and tests. Keep the enabled

@@ -576,13 +576,12 @@ def _attachment_ref(attachment: dict[str, JsonValue]) -> dict[str, str] | None:
     data_url = attachment.get("data_url")
     if isinstance(mime, str) and mime and not mime.startswith("image/"):
         return None
-    if not name or not (
-        isinstance(mime, str)
-        and mime.startswith("image/")
-        or media_type_for_ext(Path(path).suffix)
-        or isinstance(data_url, str)
-        and _DATA_IMAGE_URL.match(data_url)
-    ):
+    has_image_type = isinstance(mime, str) and mime.startswith("image/")
+    has_image_extension = bool(media_type_for_ext(Path(path).suffix))
+    has_image_data_url = isinstance(data_url, str) and bool(
+        _DATA_IMAGE_URL.match(data_url)
+    )
+    if not name or not (has_image_type or has_image_extension or has_image_data_url):
         return None
     ref = {"name": name}
     for key in ("path", "type", "data_url", "data", "media_type"):
@@ -631,39 +630,48 @@ class NativeActivity:
         self.messages: dict[str, AssistantMessage] = {}
         self.unmatched: list[ToolResult] = []
 
-    def message(self, record: dict[str, JsonValue], data: dict[str, JsonValue]) -> None:
+    def user_message(
+        self, record: dict[str, JsonValue], data: dict[str, JsonValue]
+    ) -> None:
         text = _string(data.get("content")) or ""
-        timestamp = _string(record.get("timestamp"))
-        if record["type"] == "user.message":
-            # Only this message's attachments belong here; assets may occur anywhere.
-            assets = _binary_assets(self.source.state_records)
-            items = data.get("attachments")
-            attachments = (
-                [
-                    _state_attachment(item, record.get("timestamp"), assets)
-                    for item in items
-                    if isinstance(item, dict)
-                ]
-                if isinstance(items, list)
-                else []
-            )
-            refs = (
-                _image_refs(text, attachments)
-                if attachments
-                else _image_refs(text, self.source.attachments, explicit=False)
-            )
-            message: Message = _user_message(text, timestamp, refs, self.source)
-        else:
-            assistant = assistant_event(0, timestamp, text)
-            requests = data.get("toolRequests")
-            if isinstance(requests, list):
-                for request in requests:
-                    if isinstance(request, dict):
-                        call = self.request(request)
-                        assistant.setdefault("tool_calls", []).append(call)
-            self.messages[str(record.get("id"))] = assistant
-            message = assistant
+        refs = self.user_image_refs(record, data)
+        message = _user_message(
+            text, _string(record.get("timestamp")), refs, self.source
+        )
         _apply_identity(message, _identity(record, data))
+        self.events.append(message)
+
+    def user_image_refs(
+        self, record: dict[str, JsonValue], data: dict[str, JsonValue]
+    ) -> list[dict[str, str]]:
+        # Only this message's attachments belong here; assets may occur anywhere.
+        assets = _binary_assets(self.source.state_records)
+        items = data.get("attachments")
+        attachments = []
+        if isinstance(items, list):
+            for item in items:
+                if isinstance(item, dict):
+                    attachments.append(
+                        _state_attachment(item, record.get("timestamp"), assets)
+                    )
+
+        text = _string(data.get("content")) or ""
+        if attachments:
+            return _image_refs(text, attachments)
+        return _image_refs(text, self.source.attachments, explicit=False)
+
+    def assistant_message(
+        self, record: dict[str, JsonValue], data: dict[str, JsonValue]
+    ) -> None:
+        text = _string(data.get("content")) or ""
+        message = assistant_event(0, _string(record.get("timestamp")), text)
+        requests = data.get("toolRequests")
+        if isinstance(requests, list):
+            for request in requests:
+                if isinstance(request, dict):
+                    message.setdefault("tool_calls", []).append(self.request(request))
+        _apply_identity(message, _identity(record, data))
+        self.messages[str(record.get("id"))] = message
         self.events.append(message)
 
     def request(self, data: dict[str, JsonValue]) -> ToolCall:
@@ -682,25 +690,28 @@ class NativeActivity:
             return
         call = self.calls.get(call_id)
         if call is None:
-            call = self.request({**data, "name": data.get("toolName")})
-            parent = self.messages.get(str(record.get("parentId")))
-            if parent is not None:
-                parent.setdefault("tool_calls", []).append(call)
-            else:
-                message = assistant_event(
-                    0, _string(record.get("timestamp")), "", [call]
-                )
-                if isinstance(record.get("id"), str):
-                    message["id"] = str(record["id"])
-                if isinstance(record.get("parentId"), str):
-                    message["parent_id"] = str(record["parentId"])
-                self.events.append(message)
+            call = self.recover_request(record, data)
         call["execution"] = {
             **_identity(record, data),
             "ts": _string(record.get("timestamp")),
             "name": _string(data.get("toolName")) or "tool",
             "input": _decode_arguments(data.get("arguments")),
         }
+
+    def recover_request(
+        self, record: dict[str, JsonValue], data: dict[str, JsonValue]
+    ) -> ToolCall:
+        """Keep a start without a request, attaching only to a recorded parent."""
+        call = self.request({**data, "name": data.get("toolName")})
+        parent = self.messages.get(str(record.get("parentId")))
+        if parent is not None:
+            parent.setdefault("tool_calls", []).append(call)
+            return call
+
+        message = assistant_event(0, _string(record.get("timestamp")), "", [call])
+        _apply_identity(message, _identity(record, {}))
+        self.events.append(message)
+        return call
 
     def complete(
         self, record: dict[str, JsonValue], data: dict[str, JsonValue]
@@ -724,8 +735,8 @@ class NativeActivity:
 
     def build(self) -> list[Message]:
         handlers = {
-            "user.message": self.message,
-            "assistant.message": self.message,
+            "user.message": self.user_message,
+            "assistant.message": self.assistant_message,
             "tool.execution_start": self.start,
             "tool.execution_complete": self.complete,
         }
@@ -753,37 +764,33 @@ def _database_events(
         if user["text"] or user.get("images"):
             events.append(user)
         turn_index = row.get("turn_index", index)
-        calls = [
-            _new_call(
-                str(file.get("tool_name") or "tool"),
-                {"target": str(file["file_path"])} if file.get("file_path") else {},
-            )
-            for file in source.files
-            if include_files
-            if file.get("turn_index") == turn_index
-        ]
+        calls = []
+        if include_files:
+            calls = [
+                _file_call(file)
+                for file in source.files
+                if file.get("turn_index") == turn_index
+            ]
         text = (_string(row.get("assistant_response")) or "").strip()
         if text or calls:
             events.append(assistant_event(0, timestamp, text, calls))
     return events
 
 
+def _file_call(file: dict[str, JsonValue]) -> ToolCall:
+    """Translate the database's tool name and target without parsing display text."""
+    name = str(file.get("tool_name") or "tool")
+    target = file.get("file_path")
+    return _new_call(name, {"target": str(target)} if target else {})
+
+
 def _file_events(source: CopilotSource) -> list[Message]:
     """Keep DB file fallback as explicit activity without guessing native owners."""
-    return [
-        assistant_event(
-            0,
-            _string(file.get("first_seen_at")),
-            "",
-            [
-                _new_call(
-                    str(file.get("tool_name") or "tool"),
-                    {"target": str(file["file_path"])} if file.get("file_path") else {},
-                )
-            ],
-        )
-        for file in source.files
-    ]
+    events: list[Message] = []
+    for file in source.files:
+        timestamp = _string(file.get("first_seen_at"))
+        events.append(assistant_event(0, timestamp, "", [_file_call(file)]))
+    return events
 
 
 def read_source(conn: sqlite3.Connection, session: Dict[str, Any]) -> CopilotSource:
@@ -809,32 +816,63 @@ def _file_activity(source: CopilotSource) -> list[FileActivity]:
     return activity
 
 
-def interpret_source(source: CopilotSource) -> Session | None:
-    """Interpret complete supplied activity without I/O or export limits."""
-    activity = NativeActivity(source)
-    events = activity.build()
-    if not any(
+def _apply_database_fallbacks(
+    source: CopilotSource, activity: NativeActivity
+) -> list[Message]:
+    """Supplement partial native activity without guessing message ownership."""
+    events = activity.events
+    has_native_messages = any(
         record.get("type") in ("user.message", "assistant.message")
         for record in source.state_records
-    ):
+    )
+    if not has_native_messages:
         events = _database_events(source, include_files=not activity.calls) + events
     if not activity.calls and events and any(event.get("id") for event in events):
         events.extend(_file_events(source))
+    return events
+
+
+def _session_skills(source: CopilotSource, calls: list[ToolCall]) -> list[str]:
+    """Combine recorded skill invocations and tool evidence in encounter order."""
+    skills = [str(skill["name"]) for skill in _skills_from_events(source.state_records)]
+    for call in calls:
+        for ref in skill_refs_from_call(call["name"], call.get("input")):
+            if ref["name"] and ref["name"] not in skills:
+                skills.append(ref["name"])
+    return list(dict.fromkeys(skills))
+
+
+def _permission_decisions(source: CopilotSource) -> list[PermissionDecision]:
+    return [
+        PermissionDecision(
+            tool=_string(record["tool"]) or "tool",
+            decision=_string(record["decision"]) or "unknown",
+            feedback=_string(record["feedback"]) or "",
+            ts=_string(record["timestamp"]),
+        )
+        for record in _permissions_from_events(source.state_records)
+    ]
+
+
+def interpret_source(source: CopilotSource) -> Session | None:
+    """Interpret complete supplied activity without I/O or export limits."""
+    activity = NativeActivity(source)
+    activity.build()
+    conversation = _apply_database_fallbacks(source, activity)
     events = [
         event
-        for event in events
+        for event in conversation
         if event.get("text") or event.get("images") or event.get("tool_calls")
     ]
     if not events:
         return None
     for index, event in enumerate(events):
         event["i"] = index
-    skills = [str(skill["name"]) for skill in _skills_from_events(source.state_records)]
+
     calls = [call for event in events for call in event.get("tool_calls") or []]
-    for call in calls:
-        for ref in skill_refs_from_call(call["name"], call.get("input")):
-            if ref["name"] and ref["name"] not in skills:
-                skills.append(ref["name"])
+    unsupported_tools = {
+        call["name"] for call in calls if call.get("input_schema") == "unsupported"
+    }
     return Session(
         harness="copilot",
         session_id=output_identifier(source.session),
@@ -842,25 +880,11 @@ def interpret_source(source: CopilotSource) -> Session | None:
         cwd=source.session.get("cwd"),
         started_at=source.session.get("created_at"),
         models=source.models,
-        skills_used=list(dict.fromkeys(skills)),
+        skills_used=_session_skills(source, calls),
         unmatched_tool_results=activity.unmatched,
         file_activity=_file_activity(source),
-        unsupported_tools=sorted(
-            {
-                call["name"]
-                for call in calls
-                if call.get("input_schema") == "unsupported"
-            }
-        ),
-        permission_decisions=[
-            PermissionDecision(
-                tool=_string(p["tool"]) or "tool",
-                decision=_string(p["decision"]) or "unknown",
-                feedback=_string(p["feedback"]) or "",
-                ts=_string(p["timestamp"]),
-            )
-            for p in _permissions_from_events(source.state_records)
-        ],
+        unsupported_tools=sorted(unsupported_tools),
+        permission_decisions=_permission_decisions(source),
     )
 
 
