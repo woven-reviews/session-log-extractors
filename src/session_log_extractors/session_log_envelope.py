@@ -209,10 +209,12 @@ def export_session(
 
     Lossy policy belongs here: cap textual results using the existing UTF-8
     byte policy. Structured results and other nested payloads pass through
-    unchanged; do not stringify them. Missing results remain missing. Legacy
+    unchanged; do not stringify them. Internal interpretation metadata is omitted.
+    Missing results remain missing. Legacy
     harnesses still apply their own limits until their interpretation migrations.
     """
     envelope = build_envelope(deepcopy(session), tool_result_max_bytes)
+    envelope.pop("interpretation", None)
     for event in envelope["events"]:
         for call in event.get("tool_calls") or []:
             if "result" in call and (

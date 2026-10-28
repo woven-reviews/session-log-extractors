@@ -12,6 +12,7 @@ import json
 import os
 import shutil
 import tempfile
+from copy import deepcopy
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
@@ -24,7 +25,6 @@ from session_log_extractors.claude_sources import (
     read_subagent_sources,
 )
 from session_log_extractors.extract_claude_session_log import (
-    Turn,
     _candidate_project_dirs,
     _content_blocks,
     _extract_all,
@@ -37,7 +37,6 @@ from session_log_extractors.extract_claude_session_log import (
     attribute_subagents,
     build_events,
     build_raw_envelope,
-    build_turns,
     clean_user_text,
     encode_project_path,
     extract_file_path,
@@ -52,7 +51,6 @@ from session_log_extractors.extract_claude_session_log import (
     parse_plan_decision,
     permission_denials_from_result,
     resolve_project_dir,
-    result_note,
     select_transcript,
     session_cwd,
     session_models,
@@ -85,6 +83,12 @@ def _fixture_entries(name):
     return load_entries(FIXTURES / name)
 
 
+def _activity(entries):
+    session = eclog.interpret_source(ClaudeSource(Path("session.jsonl"), entries))
+    semantics = session["interpretation"]
+    return semantics["interactions"], semantics["files_changed"]
+
+
 def test_skill_tool_use_is_recorded():
     entries = [
         {
@@ -107,15 +111,15 @@ def test_skill_tool_use_is_recorded():
             },
         },
     ]
-    turns, _ = build_turns(entries)
-    assert turns[0].skills_used == ["documents"]
+    turns, _ = _activity(entries)
+    assert turns[0]["skills_used"] == ["documents"]
 
 
 def test_native_skill_and_command_invocations_are_retained():
     entries = _fixture_entries("skill_command.jsonl")
-    turns, _ = build_turns(entries)
-    assert turns[0].skills_used == ["fixture-skill"]
-    assert turns[1].command == "/fixture-command"
+    turns, _ = _activity(entries)
+    assert turns[0]["skills_used"] == ["fixture-skill"]
+    assert turns[1]["command"] == "/fixture-command"
     events = build_events(entries)
     calls = [call for event in events for call in event.get("tool_calls", [])]
     assert any(call["input"].get("skill") == "fixture-skill" for call in calls)
@@ -130,8 +134,8 @@ def test_single_choice():
 
 
 def test_multiselect_comma():
-    turns, _ = build_turns(_fixture_entries("questions.jsonl"))
-    qa = turns[0].option_qas[0]
+    turns, _ = _activity(_fixture_entries("questions.jsonl"))
+    qa = turns[0]["option_qas"][0]
     assert qa["answer_text"] == "section, manufacturer_part_no"
     assert qa["chosen_labels"] == ["section", "manufacturer_part_no"]
 
@@ -170,10 +174,11 @@ def test_native_dont_ask_denial_is_recorded():
     )
     assert "Permission to use Bash has been denied" in result
     assert parse_permission_denial(result) == ""
-    turns, _ = build_turns(entries)
-    assert [d["tool"].split(" — ")[0] for d in turns[0].permission_denials] == ["Bash"]
-    assert turns[0].permission_denials[0]["by"] == "settings"
-    assert not any("has been denied" in note for note in turns[0].result_notes)
+    turns, _ = _activity(entries)
+    assert [d["tool"].split(" — ")[0] for d in turns[0]["permission_denials"]] == [
+        "Bash"
+    ]
+    assert turns[0]["permission_denials"][0]["by"] == "settings"
 
 
 def test_permission_denial_ignores_isc_license_text():
@@ -204,16 +209,19 @@ def test_permission_denials_from_result_names_tool():
 
 
 def test_custom_answer_matches_no_option():
-    turns, _ = build_turns(_fixture_entries("questions.jsonl"))
-    qa = turns[1].option_qas[0]
+    turns, _ = _activity(_fixture_entries("questions.jsonl"))
+    qa = turns[1]["option_qas"][0]
     assert qa["answer_text"] == "custom_value"
     assert qa["chosen_labels"] == []
 
 
 def test_multi_question_anchors_on_its_own_text():
-    turns, _ = build_turns(_fixture_entries("questions.jsonl"))
-    assert [qa["answer_text"] for qa in turns[1].option_qas] == ["custom_value", "JSON"]
-    assert turns[1].option_qas[1]["chosen_labels"] == ["JSON"]
+    turns, _ = _activity(_fixture_entries("questions.jsonl"))
+    assert [qa["answer_text"] for qa in turns[1]["option_qas"]] == [
+        "custom_value",
+        "JSON",
+    ]
+    assert turns[1]["option_qas"][1]["chosen_labels"] == ["JSON"]
 
 
 def test_task_notification_is_stripped_to_empty():
@@ -226,7 +234,7 @@ def test_bash_output_is_stripped_to_empty():
 
 
 def test_bash_input_survives_cleaning_for_detection():
-    # The command itself must NOT be stripped; build_turns extracts it.
+    # The command itself must survive cleaning for semantic interpretation.
     assert (
         clean_user_text("<bash-input>ls -la</bash-input>")
         == "<bash-input>ls -la</bash-input>"
@@ -416,9 +424,8 @@ def test_build_events_keeps_full_tool_input():
     assert build_events(entries)[0]["tool_calls"][0]["input"]["file_path"] == long_path
 
 
-def test_build_events_skips_sidechain_and_meta_like_build_turns():
-    # Events and turns must describe the same conversation, or a grader reading
-    # the raw log sees something the markdown never showed them.
+def test_events_and_activity_skip_sidechain_and_meta():
+    # Exported events and semantic activity describe the same filtered records.
     entries = _conversation_entries() + [
         {
             "type": "user",
@@ -432,9 +439,9 @@ def test_build_events_skips_sidechain_and_meta_like_build_turns():
         },
     ]
     events = build_events(entries)
-    turns, _ = build_turns(entries)
+    turns, _ = _activity(entries)
     assert [e["text"] for e in events if e["role"] == "user"] == [
-        t.user_text for t in turns
+        t["user_text"] for t in turns
     ]
 
 
@@ -462,45 +469,34 @@ def test_build_events_surfaces_slash_command_invocations():
     assert events[0]["text"] == "/extract-claude-session-logs --strict"
 
 
-def test_build_events_does_not_disturb_interpreted_turns():
-    # The whole point of a second pass: running it must not perturb build_turns.
-    entries = _conversation_entries()
-    before = [t.user_text for t in build_turns(entries)[0]]
-    build_events(entries)
-    assert [t.user_text for t in build_turns(entries)[0]] == before
-
-
 def test_plan_approved_is_captured():
-    turns, _ = build_turns(_fixture_entries("plan_modes.jsonl"))
-    (plan,) = turns[0].plans
+    turns, _ = _activity(_fixture_entries("plan_modes.jsonl"))
+    (plan,) = turns[0]["plans"]
     assert plan["plan"] == "# Plan\n\nStep one."
     assert plan["decision"] == "approved"
     # Unchanged plan echoed back under the "edited" heading is not an edit.
     assert plan["edited_plan"] == ""
-    # The plan is rendered as its own block, not as a tool bullet.
-    assert turns[0].tool_bullets == []
-    assert turns[0].result_notes == []
 
 
 def test_plan_approved_with_edit_keeps_final_version():
-    turns, _ = build_turns(_fixture_entries("plan_modes.jsonl"))
-    (plan,) = turns[1].plans
+    turns, _ = _activity(_fixture_entries("plan_modes.jsonl"))
+    (plan,) = turns[1]["plans"]
     assert plan["decision"] == "approved"
     assert plan["edited_plan"] == "# Plan\n\nStep one, but smaller."
 
 
 def test_plan_rejected_keeps_steering_message():
-    turns, _ = build_turns(_fixture_entries("plan_modes.jsonl"))
-    (plan,) = turns[2].plans
+    turns, _ = _activity(_fixture_entries("plan_modes.jsonl"))
+    (plan,) = turns[2]["plans"]
     assert plan["decision"] == "rejected"
     assert plan["message"] == "Too big, split it up"
     # Routed to the plan record, not the generic permission-denial list.
-    assert turns[2].permission_denials == []
+    assert turns[2]["permission_denials"] == []
 
 
 def test_plan_rejection_reason_is_captured():
     # The wording the harness actually uses when a plan is sent back in plan mode.
-    turns, _ = build_turns(
+    turns, _ = _activity(
         _plan_entries(
             "The user doesn't want to proceed with this tool use. The tool use "
             "was rejected (eg. if it was a file edit, the new_string was NOT "
@@ -510,7 +506,7 @@ def test_plan_rejection_reason_is_captured():
             "migration\n\nNote: The user's next message may contain a correction."
         )
     )
-    (plan,) = turns[0].plans
+    (plan,) = turns[0]["plans"]
     assert plan["decision"] == "rejected"
     assert (
         plan["message"] == "wrong table, use line_items\nand keep it in one migration"
@@ -519,7 +515,7 @@ def test_plan_rejection_reason_is_captured():
 
 def test_plan_without_result_is_marked_undecided():
     entries = _plan_entries("")[:2]
-    (plan,) = build_turns(entries)[0][0].plans
+    (plan,) = _activity(entries)[0][0]["plans"]
     assert plan["decision"] == "no decision recorded"
 
 
@@ -727,22 +723,6 @@ def test_extract_file_path_variants():
     assert extract_file_path("nope") is None
 
 
-def test_result_note_from_tool_use_result_fallback():
-    entry = {"message": {"content": []}, "toolUseResult": {"stdout": "all good"}}
-    assert result_note(entry) == "all good"
-    entry2 = {"message": {"content": []}, "toolUseResult": "plain string result"}
-    assert result_note(entry2) == "plain string result"
-
-
-def test_result_note_error_without_text_is_bare_error():
-    entry = {
-        "message": {
-            "content": [{"type": "tool_result", "is_error": True, "content": ""}]
-        }
-    }
-    assert result_note(entry) == "error"
-
-
 def test_option_qa_from_result_builds_record():
     pending = {"q1": [{"question": "Which?", "header": "H", "options": OPTS}]}
     entry = {
@@ -798,21 +778,6 @@ def test_clean_user_text_empty_input_is_empty():
     assert clean_user_text(None) == ""
 
 
-def test_result_note_skips_non_tool_result_blocks_and_reads_list_content():
-    entry = {
-        "message": {
-            "content": [
-                {"type": "text", "text": "ignored"},
-                {
-                    "type": "tool_result",
-                    "content": [{"type": "text", "text": "line one"}],
-                },
-            ]
-        }
-    }
-    assert result_note(entry) == "line one"
-
-
 def test_result_block_text_flattens_list_content():
     block = {"content": [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]}
     assert _result_block_text(block) == "a b"
@@ -836,22 +801,7 @@ def test_permission_denials_from_result_ignores_non_tool_result_blocks():
     assert permission_denials_from_result(entry, {}) == []
 
 
-def test_turn_add_tool_without_descriptor():
-    t = Turn("x", None)
-    t.add_tool("Read", "")
-    assert t.tool_bullets == ["- Read"]
-
-
-def test_turn_add_command_sets_fields_and_defaults_args_to_none():
-    t = Turn("x", None)
-    t.add_command("/foo", "bar")
-    assert t.command == "/foo"
-    assert t.command_args == "bar"
-    t.add_command("/foo")
-    assert t.command_args is None
-
-
-def test_build_turns_covers_command_args_shell_subagents_questions_and_files():
+def test_activity_keeps_commands_shell_subagents_questions_and_files():
     entries = [
         {"type": "summary"},  # summary/system entries are skipped outright
         {"type": "user", "isSidechain": True, "message": {"content": "spawn"}},
@@ -919,27 +869,17 @@ def test_build_turns_covers_command_args_shell_subagents_questions_and_files():
             },
         },
     ]
-    turns, files_changed = build_turns(entries)
+    turns, files_changed = _activity(entries)
     assert len(turns) == 1
-    assert turns[0].command == "/do-thing"
-    assert turns[0].command_args == "--flag"
-    assert turns[0].shell_command == "ls -la"
-    assert turns[0].subagent_count == 1
+    assert turns[0]["command"] == "/do-thing"
+    assert turns[0]["command_args"] == "--flag"
+    assert turns[0]["shell_command"] == "ls -la"
+    assert turns[0]["subagent_count"] == 1
     assert files_changed == ["/new/file.py"]
-    assert turns[0].option_qas[0]["chosen_labels"] == ["section"]
-    assert turns[0].permission_denials == [
+    assert turns[0]["option_qas"][0]["chosen_labels"] == ["section"]
+    assert turns[0]["permission_denials"] == [
         {"tool": "Bash — rm -rf build", "message": "no", "by": "user"}
     ]
-
-
-def test_build_turns_makes_stub_for_leading_assistant_activity():
-    # Assistant content arriving before any human turn, and a non-dict content
-    # block, both before a real user message exists yet.
-    entries = [{"type": "assistant", "timestamp": None, "message": {"content": ["x"]}}]
-    turns, _ = build_turns(entries)
-    assert len(turns) == 1
-    assert turns[0].user_text == ""
-    assert turns[0].tool_bullets == []
 
 
 def test_build_events_skips_non_dict_assistant_blocks_and_unmatched_calls():
@@ -995,21 +935,22 @@ def test_first_timestamp_session_models_and_cwd():
 def test_native_resumed_session_lists_both_models():
     entries = _fixture_entries("model.jsonl")
     assert session_models(entries) == ["claude-haiku-4-5-20251001", "claude-sonnet-5-5"]
-    turns, _ = build_turns(entries)
+    turns, _ = _activity(entries)
     assert any(
-        turn.command == "/model" and turn.command_args == "sonnet" for turn in turns
+        turn["command"] == "/model" and turn["command_args"] == "sonnet"
+        for turn in turns
     )
 
 
 def test_native_continued_conversation_keeps_follow_up_in_one_session():
     entries = _fixture_entries("continued.jsonl")
     assert len({entry["sessionId"] for entry in entries}) == 1
-    turns, _ = build_turns(entries)
+    turns, _ = _activity(entries)
     assert len(turns) == 2
-    assert "Read" in turns[0].tool_bullets[0]
-    assert "RED-FOX-23" in " ".join(turns[0].assistant_text_blocks)
-    assert "previous answer" in turns[1].user_text
-    assert "RED-FOX-23" in " ".join(turns[1].assistant_text_blocks)
+    assert turns[0]["tool_calls"][0]["name"] == "Read"
+    assert "RED-FOX-23" in " ".join(turns[0]["assistant_text_blocks"])
+    assert "previous answer" in turns[1]["user_text"]
+    assert "RED-FOX-23" in " ".join(turns[1]["assistant_text_blocks"])
     events = build_events(entries)
     assert [event["role"] for event in events] == [
         "user",
@@ -1128,10 +1069,10 @@ def test_native_subagent_sidecar_is_attributed_to_turn():
         *load_entries(transcript),
         turn("later", "2999-01-01T00:00:00Z"),
     ]
-    turns, _ = build_turns(entries)
-    assert [t.subagents for t in turns] == [[], [], []]
+    turns, _ = _activity(entries)
+    assert [t["subagents"] for t in turns] == [[], [], []]
     attribute_subagents(turns, subs)
-    assert [t.subagents for t in turns] == [[], subs, []]
+    assert [t["subagents"] for t in turns] == [[], subs, []]
     meta = json.loads(
         (FIXTURES / "subagent/subagents/agent-fixture.meta.json").read_text()
     )
@@ -1139,15 +1080,22 @@ def test_native_subagent_sidecar_is_attributed_to_turn():
 
 
 def test_attribute_subagents_assigns_by_start_time_and_falls_back():
-    t1 = Turn("first", "2026-01-01T00:00:00Z")
-    t2 = Turn("second", "2026-01-01T00:10:00Z")
+    t1, t2 = _activity(
+        [
+            {"type": "user", "timestamp": ts, "message": {"content": text}}
+            for text, ts in [
+                ("first", "2026-01-01T00:00:00Z"),
+                ("second", "2026-01-01T00:10:00Z"),
+            ]
+        ]
+    )[0]
     subs = [
         {"start_ts": "2026-01-01T00:05:00Z", "agent_type": "a"},
         {"start_ts": None, "agent_type": "b"},
     ]
     attribute_subagents([t1, t2], subs)
-    assert t1.subagents == [subs[0], subs[1]]
-    assert t2.subagents == []
+    assert t1["subagents"] == [subs[0], subs[1]]
+    assert t2["subagents"] == []
 
 
 def test_attribute_subagents_noop_when_no_turns():
@@ -1277,10 +1225,8 @@ def test_cli_json_destinations(
     output = tmp_path / "output"
     output.mkdir()
 
-    def no_turn_rendering(*args, **kwargs):
-        pytest.fail("JSON extraction must not assemble Markdown turns")
-
-    monkeypatch.setattr(eclog, "build_turns", no_turn_rendering)
+    assert not hasattr(eclog, "Turn")
+    assert not hasattr(eclog, "build_turns")
     args = ["--transcript", str(transcript), "--tool-result-bytes", "3"]
     if destination == "stdout":
         args += ["--output", "-"]
@@ -1525,9 +1471,12 @@ def test_interpret_supplied_source_without_filesystem(limit, fixture, monkeypatc
     with monkeypatch.context() as guard:
         for method in ["open", "is_file", "is_dir", "iterdir", "stat", "read_text"]:
             guard.setattr(Path, method, forbidden)
-        session = eclog.interpret_source(source, limit)
+        session = eclog.interpret_source(source)
         assert session["session_id"] == "session"
-        assert session["events"] == expected_events
+        assert (
+            session_log_envelope.export_session(session, limit)["events"]
+            == expected_events
+        )
         assert session["cwd"] == session_cwd(entries)
         assert session["started_at"] == first_timestamp(entries)
         assert session["models"] == session_models(entries)
@@ -1703,3 +1652,100 @@ def test_cli_reaches_shared_exporter(monkeypatch, capsys):
     )
     assert json.loads(capsys.readouterr().out)["events"]
     assert len(seen) == 1
+
+
+def _native_tool_pair():
+    entries = _fixture_entries("continued.jsonl")
+    assistant = next(
+        e
+        for e in entries
+        if any(
+            isinstance(b, dict) and b.get("type") == "tool_use"
+            for b in _content_blocks(e)
+        )
+    )
+    result = next(e for e in entries if _is_tool_result_entry(e))
+    return assistant, result
+
+
+@pytest.mark.parametrize("same_id", [False, True])
+def test_repeated_calls_keep_order_and_native_result_associations(same_id):
+    assistant, result = _native_tool_pair()
+    again = deepcopy(assistant)
+    again_result = deepcopy(result)
+    first_call = assistant["message"]["content"][0]
+    second_call = again["message"]["content"][0]
+    # Repeat the captured Read, changing only identity/output to expose association.
+    if not same_id:
+        second_call["id"] = "second-call"
+    again_result["message"]["content"][0]["tool_use_id"] = second_call["id"]
+    again_result["message"]["content"][0]["content"] = "second output"
+    if same_id:
+        entries = [assistant, result, again, again_result]
+    else:
+        entries = [assistant, again, again_result, result]
+    session = eclog.interpret_source(ClaudeSource(Path("s.jsonl"), entries))
+    assert [e["i"] for e in session["events"]] == [0, 1]
+    calls = [e["tool_calls"][0] for e in session["events"]]
+    assert [c["name"] for c in calls] == ["Read", "Read"]
+    assert calls[0]["input"] == first_call["input"]
+    assert "RED-FOX-23" in calls[0]["result"]
+    assert calls[1]["result"] == "second output"
+    assert calls[0] is not calls[1]
+
+
+@pytest.mark.parametrize("result_kind", ["missing", "empty", "null", "error"])
+def test_missing_and_empty_results_preserve_claude_json_contract(result_kind):
+    assistant, result = _native_tool_pair()
+    block = result["message"]["content"][0]
+    # Keep the captured association; vary only the result boundary under test.
+    block["content"] = None if result_kind == "null" else ""
+    if result_kind == "error":
+        block["is_error"] = True
+    entries = [assistant] if result_kind == "missing" else [assistant, result]
+    session = eclog.interpret_source(ClaudeSource(Path("s.jsonl"), entries))
+    call = session["events"][0]["tool_calls"][0]
+    assert call["result"] == (None if result_kind == "missing" else "")
+    exported = session_log_envelope.export_session(session)["events"][0]["tool_calls"][
+        0
+    ]
+    assert exported["result"] == call["result"]
+    assert exported["result_bytes"] == 0
+    assert exported["result_truncated"] is False
+    assert exported.get("is_error", False) is (result_kind == "error")
+
+
+def test_images_remain_owned_by_their_recorded_user_event():
+    image_entries = _fixture_entries("images.jsonl")
+    assistant, result = _native_tool_pair()
+    # Put captured image blocks on result/assistant records: the existing Claude
+    # JSON contract includes only human message images; expansion is deferred.
+    images = [b for b in image_entries[0]["message"]["content"] if b["type"] == "image"]
+    assistant["message"]["content"].extend(deepcopy(images))
+    result["message"]["content"].extend(deepcopy(images))
+    entries = [image_entries[0], assistant, result, deepcopy(image_entries[0])]
+    events = build_events(entries)
+    assert [e["role"] for e in events] == ["user", "assistant", "user"]
+    assert [len(e.get("images", [])) for e in events] == [4, 0, 4]
+    assert events[0]["images"] == events[2]["images"]
+    assert "RED-FOX-23" in events[1]["tool_calls"][0]["result"]
+
+
+def test_recorded_skills_deduplicate_and_ignore_empty_names():
+    entries = _fixture_entries("skill_command.jsonl")
+    content = next(
+        e["message"]["content"]
+        for e in entries
+        if any(
+            isinstance(b, dict) and b.get("name") == "Skill" for b in _content_blocks(e)
+        )
+    )
+    skill = next(b for b in content if b.get("name") == "Skill")
+    # Repeat the native invocation and add an empty name without dropping calls.
+    content.append(deepcopy(skill))
+    empty = deepcopy(skill)
+    empty["input"] = {"skill": ""}
+    content.append(empty)
+    interactions, _ = _activity(entries)
+    assert interactions[0]["skills_used"] == ["fixture-skill"]
+    assert len([c for c in interactions[0]["tool_calls"] if c["name"] == "Skill"]) == 3

@@ -11,7 +11,7 @@ from session_log_extractors import extract_codex_session_log as codex
 from session_log_extractors import extract_copilot_session_log as copilot
 
 
-@pytest.mark.parametrize("extractor", [claude, codex, copilot])
+@pytest.mark.parametrize("extractor", [codex, copilot])
 def test_skill_invocations_do_not_load_definitions(extractor, monkeypatch):
     def forbidden(*args):
         pytest.fail("Extraction must not load external skill definitions")
@@ -28,7 +28,7 @@ def test_skill_invocations_do_not_load_definitions(extractor, monkeypatch):
     assert turn.skills_used == ["recorded-skill"]
 
 
-@pytest.mark.parametrize("extractor", [claude, codex])
+@pytest.mark.parametrize("extractor", [codex])
 def test_command_invocations_do_not_load_definitions(extractor, monkeypatch):
     def forbidden(*args):
         pytest.fail("Extraction must not load external command definitions")
@@ -67,9 +67,10 @@ def test_local_definitions_are_not_read_or_added_to_the_envelope(tmp_path, monke
 
     monkeypatch.setattr(Path, "open", guarded_open)
     transcript = FIXTURES / "skill_command.jsonl"
-    turns, _ = claude.build_turns(claude.load_entries(transcript))
-    assert turns[0].skills_used == ["fixture-skill"]
-    assert turns[1].command == "/fixture-command"
+    session = claude.interpret_source(claude.read_source(transcript))
+    interactions = session["interpretation"]["interactions"]
+    assert interactions[0]["skills_used"] == ["fixture-skill"]
+    assert interactions[1]["command"] == "/fixture-command"
     envelope = claude.extract_transcript(transcript)
     assert envelope is not None
     output = json.dumps(envelope)

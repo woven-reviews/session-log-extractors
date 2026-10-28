@@ -28,6 +28,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from session_log_extractors import session_log_envelope
 from session_log_extractors.claude_sources import (
     ClaudeSource,
     read_source,
@@ -39,11 +40,8 @@ from session_log_extractors.claude_sources import (
 from session_log_extractors.session_log_envelope import (
     DEFAULT_TOOL_RESULT_MAX_BYTES,
     assistant_event,
-    build_envelope,
     image_from_base64,
     raw_filename,
-    tool_call,
-    truncate_result,
     user_event,
     warn_if_oversized,
     write_envelope,
@@ -74,8 +72,6 @@ FILE_PATH_KEYS = ("file_path", "path", "notebook_path", "filePath")
 
 # Max length for a condensed tool descriptor before it gets an ellipsis.
 TOOL_DESC_MAX = 100
-# Max length for a condensed tool-result note.
-RESULT_NOTE_MAX = 120
 
 # Patterns for harness noise embedded in user-message text. These wrappers are
 # injected by the CLI, not typed by the human, so we strip them while keeping
@@ -464,41 +460,6 @@ def extract_file_path(tool_input: Any) -> Optional[str]:
     return None
 
 
-# Existing native interpretation; remove in QUAL-2517.
-def result_note(entry: Dict[str, Any]) -> str:  # noqa: C901, PLR0912
-    """A terse note about a tool result (error flag / short output)."""
-    is_error = False
-    text_bits: List[str] = []
-    for block in _content_blocks(entry):
-        if not isinstance(block, dict) or block.get("type") != "tool_result":
-            continue
-        if block.get("is_error"):
-            is_error = True
-        content = block.get("content")
-        if isinstance(content, str):
-            text_bits.append(content)
-        elif isinstance(content, list):
-            for c in content:
-                if isinstance(c, dict) and isinstance(c.get("text"), str):
-                    text_bits.append(c["text"])
-
-    if not text_bits:
-        tur = entry.get("toolUseResult")
-        if isinstance(tur, str):
-            text_bits.append(tur)
-        elif isinstance(tur, dict):
-            for k in ("stdout", "stderr", "output", "content"):
-                v = tur.get(k)
-                if isinstance(v, str) and v.strip():
-                    text_bits.append(v)
-                    break
-
-    blob = _truncate(" ".join(text_bits), RESULT_NOTE_MAX)
-    if is_error:
-        return f"error: {blob}" if blob else "error"
-    return blob
-
-
 def _result_block_text(block: Dict[str, Any]) -> str:
     """Flatten a tool_result block's content to a string."""
     content = block.get("content")
@@ -582,7 +543,7 @@ def apply_plan_decisions(
     """Record the human's approve/reject decision on any plan in this result.
 
     ``pending_plans`` maps a tool_use id to the plan record already attached to
-    the turn, so filling it in here updates the rendered log. Returns True when
+    the turn, so filling it in here updates the interpreted activity. Returns True when
     the entry was a plan decision (and so should not also be folded in as a
     generic result note or permission denial).
     """
@@ -613,7 +574,7 @@ def permission_denials_from_result(
 ) -> List[Dict[str, Any]]:
     """Build a record for each permission the human denied in this tool_result.
 
-    ``tool_uses`` maps a tool_use id to its rendered label ("Name — descriptor")
+    ``tool_uses`` maps a tool_use id to its recorded tool label ("Name — descriptor")
     so we can name the tool that was denied. Returns [] when nothing was denied.
     """
     out: List[Dict[str, Any]] = []
@@ -654,301 +615,195 @@ def _parse_ts(ts: Optional[str]):
         return None
 
 
-# --------------------------------------------------------------------------- #
-# Turn assembly
-# --------------------------------------------------------------------------- #
+def _interaction(text: str, timestamp: Optional[str]) -> Dict[str, Any]:
+    """Semantic activity following a human input, without display summaries."""
+    return {
+        "user_text": text,
+        "timestamp": timestamp,
+        "images": [],
+        "shell_command": None,
+        "command": None,
+        "command_args": None,
+        "assistant_text_blocks": [],
+        "tool_calls": [],
+        "skills_used": [],
+        "option_qas": [],
+        "permission_denials": [],
+        "plans": [],
+        "subagents": [],
+        "subagent_count": 0,
+    }
 
 
-class Turn:
-    """One human message and the assistant activity that followed it."""
+class _ClaudeInterpreter:
+    """One native-record traversal for export payloads and semantic activity."""
 
-    def __init__(self, user_text: str, timestamp: Optional[str]):
-        self.user_text = user_text
-        self.timestamp = timestamp
-        self.images: List[Dict[str, Any]] = []  # base64 source dicts, in order
-        # Set when the user's input was a `!`-prefixed shell command.
-        self.shell_command: Optional[str] = None
-        # Set when the user's input was a `/`-prefixed slash command.
-        self.command: Optional[str] = None
-        self.command_args: Optional[str] = None
-        self.assistant_text_blocks: List[str] = []
-        self.tool_bullets: List[str] = []  # already-rendered "- Name — desc"
-        self.skills_used: List[str] = []
-        self.result_notes: List[str] = []
-        self.option_qas: List[
-            Dict[str, Any]
-        ] = []  # AskUserQuestion: Q + options + choice
-        self.permission_denials: List[Dict[str, Any]] = []  # denied tool + message
-        self.plans: List[Dict[str, Any]] = []  # plan mode: plan text + decision
-        self.subagents: List[Dict[str, Any]] = []  # folded subagent summaries
-        self.subagent_count = 0
+    def __init__(self):
+        self.events: List[Dict[str, Any]] = []
+        self.interactions: List[Dict[str, Any]] = []
+        self.files_changed: List[str] = []
+        self.current: Optional[Dict[str, Any]] = None
+        self.pending_calls: Dict[str, Dict[str, Any]] = {}
+        self.pending_questions: Dict[str, Any] = {}
+        self.pending_plans: Dict[str, Dict[str, Any]] = {}
+        self.tool_uses: Dict[str, str] = {}
+        self.pending_subagents = 0
 
-    def add_assistant_text(self, text: str) -> None:
-        if text and text.strip():
-            self.assistant_text_blocks.append(text.strip())
-
-    def add_tool(self, name: str, descriptor: str) -> None:
-        if descriptor:
-            self.tool_bullets.append(f"- {name} — {descriptor}")
-        else:
-            self.tool_bullets.append(f"- {name}")
-
-    def add_skill(self, name: str) -> None:
-        if name and name not in self.skills_used:
-            self.skills_used.append(name)
-
-    def add_command(self, name: str, args: str = "") -> None:
-        self.command = name
-        self.command_args = args or None
-
-    def add_result_note(self, note: str) -> None:
-        if note:
-            self.result_notes.append(note)
-
-
-# Existing native interpretation; remove in QUAL-2517.
-def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]:  # noqa: C901, PLR0912, PLR0915
-    """Walk entries in order, producing turns and the changed-files list."""
-    turns: List[Turn] = []
-    files_changed: List[str] = []
-    files_seen = set()
-    current: Optional[Turn] = None
-    pending_subagents = 0  # sidechain entries seen since the last real user msg
-    pending_questions: Dict[str, Any] = {}  # tool_use id -> AskUserQuestion questions
-    pending_plans: Dict[str, Dict[str, Any]] = {}  # tool_use id -> plan record
-    tool_uses: Dict[str, str] = {}  # tool_use id -> "Name — descriptor" label
-
-    for entry in entries:
+    def consume(self, entry: Dict[str, Any]) -> None:
         etype = entry.get("type")
-
-        # Meta and summary entries never participate in the main flow.
-        if entry.get("isMeta") is True:
-            continue
-        if etype in ("summary", "system"):
-            continue
-
-        # Sidechain (subagent) entries are kept out of the flow; we only count
-        # the user-prompt that *spawns* a subagent so we can note it.
+        if entry.get("isMeta") is True or etype in ("summary", "system"):
+            return
         if entry.get("isSidechain") is True:
             if etype == "user" and not _is_tool_result_entry(entry):
-                pending_subagents += 1
-            continue
-
+                self.pending_subagents += 1
+            return
         if etype == "user":
             if _is_tool_result_entry(entry):
-                # Fold the result into the current turn, condensed.
-                if current is not None:
-                    if apply_plan_decisions(entry, pending_plans):
-                        continue
-                    denials = permission_denials_from_result(entry, tool_uses)
-                    qas = option_qa_from_result(entry, pending_questions)
-                    if denials:
-                        current.permission_denials.extend(denials)
-                    if qas:
-                        current.option_qas.extend(qas)
-                    elif not denials:
-                        note = result_note(entry)
-                        if note:
-                            current.add_result_note(note)
-                continue
-            # A real human message: start a new turn.
-            raw = _human_text(entry)
-            text = clean_user_text(raw)
-            images = _image_sources(entry)
-            cmd_match = _COMMAND_NAME.search(raw)
-            command = cmd_match.group(1).strip() if cmd_match else ""
-            if not command.startswith("/"):  # only slash commands, not stray tags
-                command = ""
-            # An entry that becomes empty after stripping harness noise is not a
-            # meaningful turn on its own; skip it -- unless it carried images or
-            # was a slash-command invocation.
-            if not text and not images and not command:
-                continue
-            current = Turn(text, entry.get("timestamp"))
-            current.images = images
-            if command:
-                args_match = _COMMAND_ARGS.search(raw)
-                current.add_command(
-                    command, args_match.group(1).strip() if args_match else ""
-                )
-            cmds = [c.strip() for c in _BASH_INPUT.findall(text) if c.strip()]
-            if cmds:
-                current.shell_command = "\n".join(cmds)
-            if pending_subagents:
-                current.subagent_count += pending_subagents
-                pending_subagents = 0
-            turns.append(current)
-
+                self.results(entry)
+            else:
+                self.user(entry)
         elif etype == "assistant":
-            if current is None:
-                # Assistant activity before any human turn (rare); make a stub.
-                current = Turn("", entry.get("timestamp"))
-                turns.append(current)
-            for block in _content_blocks(entry):
-                if not isinstance(block, dict):
-                    continue
-                btype = block.get("type")
-                if btype == "text":
-                    current.add_assistant_text(block.get("text", ""))
-                elif btype == "tool_use":
-                    name = block.get("name", "tool")
-                    tool_input = block.get("input")
-                    if name in PLAN_TOOLS:
-                        # Rendered as its own plan block, not a tool bullet.
-                        record = {
-                            "plan": (tool_input or {}).get("plan", "")
-                            if isinstance(tool_input, dict)
-                            else "",
-                            "decision": "no decision recorded",
-                            "edited_plan": "",
-                            "message": "",
-                        }
-                        current.plans.append(record)
-                        if isinstance(block.get("id"), str):
-                            pending_plans[block["id"]] = record
-                        continue
-                    descriptor = tool_descriptor(name, tool_input)
-                    current.add_tool(name, descriptor)
-                    if str(name).lower() == "skill" and isinstance(tool_input, dict):
-                        skill_name = tool_input.get("skill") or tool_input.get("name")
-                        if isinstance(skill_name, str):
-                            current.add_skill(skill_name)
-                    if isinstance(block.get("id"), str):
-                        tool_uses[block["id"]] = (
-                            f"{name} — {descriptor}" if descriptor else name
-                        )
-                    if name in INTERACTION_TOOLS and isinstance(block.get("id"), str):
-                        qs = (
-                            tool_input.get("questions")
-                            if isinstance(tool_input, dict)
-                            else None
-                        )
-                        if isinstance(qs, list):
-                            pending_questions[block["id"]] = qs
-                    if name in FILE_WRITING_TOOLS:
-                        fp = extract_file_path(tool_input)
-                        if fp and fp not in files_seen:
-                            files_seen.add(fp)
-                            files_changed.append(fp)
-        # Unknown types are ignored silently (robust to schema additions).
+            self.assistant(entry)
 
-    # If subagents were spawned at the very end with no following user turn,
-    # attribute them to the last real turn.
-    if pending_subagents and turns:
-        turns[-1].subagent_count += pending_subagents
+    def user(self, entry: Dict[str, Any]) -> None:
+        raw = _human_text(entry)
+        text = clean_user_text(raw)
+        images = _image_sources(entry)
+        match = _COMMAND_NAME.search(raw)
+        command = match.group(1).strip() if match else ""
+        command = command if command.startswith("/") else ""
+        if not text and not images and not command:
+            return
+        current = _interaction(text, entry.get("timestamp"))
+        current["images"] = images
+        if command:
+            args = _COMMAND_ARGS.search(raw)
+            current["command"] = command
+            current["command_args"] = (args.group(1).strip() if args else "") or None
+        commands = [c.strip() for c in _BASH_INPUT.findall(text) if c.strip()]
+        current["shell_command"] = "\n".join(commands) or None
+        current["subagent_count"] = self.pending_subagents
+        self.pending_subagents = 0
+        self.current = current
+        self.interactions.append(current)
+        export_text = text or f"{command} {current['command_args'] or ''}".strip()
+        self.events.append(
+            user_event(
+                len(self.events),
+                entry.get("timestamp"),
+                export_text,
+                [
+                    image_from_base64(src["data"], src.get("media_type"))
+                    for src in images
+                ],
+            )
+        )
 
-    return turns, files_changed
+    def assistant(self, entry: Dict[str, Any]) -> None:
+        if self.current is None:
+            self.current = _interaction("", entry.get("timestamp"))
+            self.interactions.append(self.current)
+        texts: List[str] = []
+        calls: List[Dict[str, Any]] = []
+        for block in _content_blocks(entry):
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "text":
+                text = block.get("text", "")
+                if isinstance(text, str) and text.strip():
+                    texts.append(text.strip())
+            elif block.get("type") == "tool_use":
+                calls.append(self.call(block))
+        self.current["assistant_text_blocks"].extend(texts)
+        if texts or calls:
+            self.events.append(
+                assistant_event(
+                    len(self.events), entry.get("timestamp"), "\n\n".join(texts), calls
+                )
+            )
+
+    def call(self, block: Dict[str, Any]) -> Dict[str, Any]:
+        name = block.get("name", "tool")
+        tool_input = block.get("input")
+        # Claude historically exports unanswered calls with an explicit null result.
+        call = {"name": name, "input": tool_input, "result": None}
+        tool_id = block.get("id")
+        if isinstance(tool_id, str) and tool_id:
+            self.pending_calls[tool_id] = call
+        self.current["tool_calls"].append(call)
+        if name in PLAN_TOOLS:
+            record = {
+                "plan": tool_input.get("plan", "")
+                if isinstance(tool_input, dict)
+                else "",
+                "decision": "no decision recorded",
+                "edited_plan": "",
+                "message": "",
+            }
+            self.current["plans"].append(record)
+            if isinstance(tool_id, str):
+                self.pending_plans[tool_id] = record
+        else:
+            self.action(block)
+        return call
+
+    def action(self, block: Dict[str, Any]) -> None:
+        name = block.get("name", "tool")
+        tool_input = block.get("input")
+        tool_id = block.get("id")
+        descriptor = tool_descriptor(name, tool_input)
+        if isinstance(tool_id, str):
+            self.tool_uses[tool_id] = f"{name} — {descriptor}" if descriptor else name
+        if not isinstance(tool_input, dict):
+            return
+        if str(name).lower() == "skill":
+            skill = tool_input.get("skill") or tool_input.get("name")
+            if (
+                isinstance(skill, str)
+                and skill
+                and skill not in self.current["skills_used"]
+            ):
+                self.current["skills_used"].append(skill)
+        if name in INTERACTION_TOOLS and isinstance(tool_id, str):
+            questions = tool_input.get("questions")
+            if isinstance(questions, list):
+                self.pending_questions[tool_id] = questions
+        if name in FILE_WRITING_TOOLS:
+            path = extract_file_path(tool_input)
+            if path and path not in self.files_changed:
+                self.files_changed.append(path)
+
+    def results(self, entry: Dict[str, Any]) -> None:
+        for block in _content_blocks(entry):
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
+                continue
+            call = self.pending_calls.pop(block.get("tool_use_id"), None)
+            if call is not None:
+                call["result"] = _result_block_text(block)
+                if block.get("is_error"):
+                    call["is_error"] = True
+        if self.current is None or apply_plan_decisions(entry, self.pending_plans):
+            return
+        self.current["permission_denials"].extend(
+            permission_denials_from_result(entry, self.tool_uses)
+        )
+        self.current["option_qas"].extend(
+            option_qa_from_result(entry, self.pending_questions)
+        )
+
+    def finish(self) -> Dict[str, Any]:
+        if self.interactions:
+            self.interactions[-1]["subagent_count"] += self.pending_subagents
+        return {"interactions": self.interactions, "files_changed": self.files_changed}
 
 
-# Existing native interpretation; remove in QUAL-2517.
-def build_events(  # noqa: C901, PLR0912, PLR0915
+def build_events(
     entries: List[Dict[str, Any]],
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
 ) -> List[Dict[str, Any]]:
-    """Walk entries in order, producing raw-envelope events.
-
-    Entry filtering matches ``build_turns`` exactly (meta, summary/system, and
-    sidechain entries are skipped) so events and turns describe the same
-    conversation. User text is the harness-stripped prose, i.e. what the human
-    actually typed: the ``<system-reminder>`` blocks the CLI injects are neither
-    the candidate's words nor useful context, and they dwarf everything else.
-    """
-    events: List[Dict[str, Any]] = []
-    pending_calls: Dict[str, Dict[str, Any]] = {}  # tool_use id -> call awaiting result
-    index = 0
-
-    for entry in entries:
-        etype = entry.get("type")
-
-        if entry.get("isMeta") is True:
-            continue
-        if etype in ("summary", "system"):
-            continue
-        if entry.get("isSidechain") is True:
-            continue
-
-        if etype == "user":
-            if _is_tool_result_entry(entry):
-                # Attach each result to the call it answers. Results arrive as
-                # their own user-role entry, well after the assistant event was
-                # emitted, so the call dict is mutated in place.
-                for block in _content_blocks(entry):
-                    if (
-                        not isinstance(block, dict)
-                        or block.get("type") != "tool_result"
-                    ):
-                        continue
-                    call = pending_calls.pop(block.get("tool_use_id"), None)
-                    if call is None:
-                        continue
-                    call.update(
-                        truncate_result(
-                            _result_block_text(block), tool_result_max_bytes
-                        )
-                    )
-                    if block.get("is_error"):
-                        call["is_error"] = True
-                continue
-
-            raw = _human_text(entry)
-            text = clean_user_text(raw)
-            images = [
-                image_from_base64(src.get("data", ""), src.get("media_type"))
-                for src in _image_sources(entry)
-            ]
-
-            # A slash command cleans to nothing (its text lives entirely in
-            # harness tags), but invoking one is a real thing the human did.
-            cmd_match = _COMMAND_NAME.search(raw)
-            command = cmd_match.group(1).strip() if cmd_match else ""
-            if command.startswith("/") and not text:
-                args_match = _COMMAND_ARGS.search(raw)
-                args = args_match.group(1).strip() if args_match else ""
-                text = f"{command} {args}".strip()
-
-            if not text and not images:
-                continue
-            events.append(user_event(index, entry.get("timestamp"), text, images))
-            index += 1
-
-        elif etype == "assistant":
-            text_parts: List[str] = []
-            calls: List[Dict[str, Any]] = []
-            ids: List[Optional[str]] = []
-
-            for block in _content_blocks(entry):
-                if not isinstance(block, dict):
-                    continue
-                btype = block.get("type")
-                if btype == "text":
-                    chunk = block.get("text", "")
-                    if isinstance(chunk, str) and chunk.strip():
-                        text_parts.append(chunk.strip())
-                elif btype == "tool_use":
-                    call = tool_call(
-                        block.get("name", "tool"),
-                        block.get("input"),
-                        None,
-                        tool_result_max_bytes,
-                    )
-                    calls.append(call)
-                    ids.append(
-                        block.get("id") if isinstance(block.get("id"), str) else None
-                    )
-
-            if not text_parts and not calls:
-                continue
-            events.append(
-                assistant_event(
-                    index, entry.get("timestamp"), "\n\n".join(text_parts), calls
-                )
-            )
-            index += 1
-            for call, tool_id in zip(calls, ids, strict=True):
-                if tool_id:
-                    pending_calls[tool_id] = call
-
-    return events
+    """Compatibility export helper; native interpretation is shared with the CLI."""
+    envelope = build_raw_envelope(Path("session.jsonl"), entries, tool_result_max_bytes)
+    return envelope["events"] if envelope is not None else []
 
 
 def first_timestamp(entries: List[Dict[str, Any]]) -> Optional[str]:
@@ -993,24 +848,27 @@ def build_raw_envelope(
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
 ) -> Optional[Dict[str, Any]]:
     """Build the JSON envelope, or None when there are no exportable events."""
-    session = interpret_source(ClaudeSource(transcript, entries), tool_result_max_bytes)
+    session = interpret_source(ClaudeSource(transcript, entries))
     if session is None:
         return None
-    return build_envelope(session, tool_result_max_bytes=tool_result_max_bytes)
+    return session_log_envelope.export_session(session, tool_result_max_bytes)
 
 
 def interpret_source(
     source: ClaudeSource,
-    tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
 ) -> Optional[Session]:
     """Interpret supplied records, inline images and source identity without I/O."""
-    events = build_events(source.entries, tool_result_max_bytes)
-    if not events:
+    adapter = _ClaudeInterpreter()
+    for entry in source.entries:
+        adapter.consume(entry)
+    interpretation = adapter.finish()
+    if not adapter.events:
         return None
     return Session(
         harness="claude",
         session_id=source.path.stem,
-        events=events,
+        events=adapter.events,
+        interpretation=interpretation,
         cwd=session_cwd(source.entries),
         started_at=first_timestamp(source.entries),
         models=session_models(source.entries),
@@ -1086,20 +944,22 @@ def load_subagents(transcript: Path) -> List[Dict[str, Any]]:
     return subs
 
 
-def attribute_subagents(turns: List[Turn], subs: List[Dict[str, Any]]) -> None:
-    """Fold each subagent under the latest turn that started at or before it."""
-    parsed = [(_parse_ts(t.timestamp), t) for t in turns]
+def attribute_subagents(
+    interactions: List[Dict[str, Any]], subs: List[Dict[str, Any]]
+) -> None:
+    """Associate sidecars with the latest human interaction before their start."""
+    parsed = [(_parse_ts(t["timestamp"]), t) for t in interactions]
     for s in subs:
         st = _parse_ts(s.get("start_ts"))
-        target: Optional[Turn] = None
+        target: Optional[Dict[str, Any]] = None
         if st is not None:
             for ts, t in parsed:  # turns are in order; last match wins
                 if ts is not None and ts <= st:
                     target = t
-        if target is None and turns:
-            target = turns[0]
+        if target is None and interactions:
+            target = interactions[0]
         if target is not None:
-            target.subagents.append(s)
+            target["subagents"].append(s)
 
 
 # --------------------------------------------------------------------------- #

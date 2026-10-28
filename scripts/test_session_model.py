@@ -158,3 +158,15 @@ def test_export_preserves_recorded_result_provenance(limit):
     assert actual["result"] == ("re" if limit == 2 else "retained")
     assert exported["events"][1]["tool_calls"] is None
     assert call["result"] == "retained"
+
+
+def test_export_omits_internal_interpretation_without_mutating_it():
+    session = Session(
+        harness="claude",
+        session_id="s",
+        events=[],
+        interpretation={"interactions": [{"plans": [{"decision": "approved"}]}]},
+    )
+    original = deepcopy(session)
+    assert "interpretation" not in export_session(session)
+    assert session == original

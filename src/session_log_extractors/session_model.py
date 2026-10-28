@@ -3,7 +3,8 @@
 Adapters supply complete JSON-compatible interpreted content, including full
 tool results. No presentation state or export limits belong in these records.
 Optional keys retain their missing/null/empty meanings; additional recorded
-payload keys are passed through by the exporter without filtering.
+payload keys are passed through by the exporter without filtering. The optional
+``interpretation`` key holds internal adapter semantics and is omitted at export.
 """
 
 from typing import Any, NotRequired, Required, TypedDict
@@ -51,3 +52,5 @@ class Session(TypedDict):
     cwd: NotRequired[str | None]
     started_at: NotRequired[str | None]
     models: NotRequired[list[str] | None]
+    # Adapter semantics retained for callers, outside the current JSON schema.
+    interpretation: NotRequired[dict[str, Any]]

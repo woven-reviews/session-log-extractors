@@ -81,8 +81,14 @@ optional metadata and retains each source path. For replay without filesystem
 access, construct `ClaudeSource(path, entries, metadata)` directly and call
 `extract_claude_session_log.interpret_source(source)` or
 `summarize_subagent_source(source)`. Images remain inline in the recorded entries.
-Main JSON extraction continues to omit sidecars; `load_subagents(path)` retains
-its timestamp-ordered summaries for existing callers.
+Claude interprets main records once into the shared session and exports with
+`export_session`; byte limits apply only at export. `interpret_source` accepts
+no result cap. Its internal `interpretation` metadata retains questions, plans,
+denials, skill/command invocations, shell actions, changed files, and subagent
+counts without rendered summaries. The shared exporter omits this metadata from
+the existing JSON schema. `build_events` remains an export convenience wrapper;
+`Turn` and `build_turns` have been removed. Main JSON extraction omits sidecars;
+`load_subagents(path)` retains its timestamp-ordered summaries for existing callers.
 
 Copilot readers and discovery live in `session_log_extractors.copilot_sources`.
 `read_source(connection, session)` loads metadata, required database rows, models,
@@ -106,7 +112,7 @@ truncation flags. Negative limits retain full text. Structured results, nested
 payloads, images, ordering, and missing/null/empty values pass through unchanged.
 The model has no presentation state, adapter base class, or runtime validation.
 
-Existing harnesses continue applying their own limits and use
+Codex and Copilot continue applying their own limits and use
 `build_envelope(Session(...), tool_result_max_bytes=...)` only to assemble the
 legacy envelope. Their interpretation migrations and shared policy rollout are
 separate follow-ups; current CLI behavior and defaults are unchanged.
@@ -184,9 +190,6 @@ Algorithms and interfaces are preserved in this tooling change.
 
 | File (relative to `scripts/` unless shown) | Function | Rules | Removal ticket |
 | --- | --- | --- | --- |
-| `src/session_log_extractors/extract_claude_session_log.py` | `build_events` | C901, PLR0912, PLR0915 | [QUAL-2517](https://linear.app/andela/issue/QUAL-2517) |
-| `src/session_log_extractors/extract_claude_session_log.py` | `build_turns` | C901, PLR0912, PLR0915 | [QUAL-2517](https://linear.app/andela/issue/QUAL-2517) |
-| `src/session_log_extractors/extract_claude_session_log.py` | `result_note` | C901, PLR0912 | [QUAL-2517](https://linear.app/andela/issue/QUAL-2517) |
 | `src/session_log_extractors/extract_codex_session_log.py` | `_flatten_result_text` | C901 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |
 | `src/session_log_extractors/extract_codex_session_log.py` | `_structured_answer_for_question` | C901, PLR0912 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |
 | `src/session_log_extractors/extract_codex_session_log.py` | `build_events` | C901, PLR0912, PLR0915 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |
