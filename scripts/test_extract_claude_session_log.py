@@ -1806,3 +1806,29 @@ def test_unmatched_result_retains_content_without_inventing_an_owner():
     assert record["tool_call_id"] == "unknown-call"
     assert record["content"] == block["content"]
     assert record["id"] == result["uuid"]
+
+
+def test_unknown_tool_payload_is_preserved_and_reported(tmp_path, capsys):
+    assistant, result = _native_tool_pair()
+    # Change only the captured tool name and extend its input to model a plugin.
+    block = assistant["message"]["content"][0]
+    block["name"] = "plugin__DeployService"
+    block["input"]["plugin_options"] = {
+        "targets": [None, True, 1.5, {"region": "east"}]
+    }
+    session = _session([assistant, result])
+    call = session["events"][0]["tool_calls"][0]
+    assert call["input_schema"] == "unsupported"
+    assert session["unsupported_tools"] == ["plugin__DeployService"]
+    assert call["input"] == block["input"]
+    assert (
+        call["result_record"]["content"] == result["message"]["content"][0]["content"]
+    )
+    transcript = tmp_path / "s.jsonl"
+    _write_jsonl(transcript, [assistant, result, deepcopy(assistant)])
+    envelope = extract_transcript(transcript, -1)
+    assert envelope["events"][0]["tool_calls"][0]["input"] == block["input"]
+    assert "input_schema" not in envelope["events"][0]["tool_calls"][0]
+    diagnostic = capsys.readouterr().err
+    assert "unsupported tool input schemas" in diagnostic
+    assert diagnostic.count("plugin__DeployService") == 1

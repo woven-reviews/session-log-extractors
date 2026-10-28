@@ -56,6 +56,7 @@ from session_log_extractors.session_model import (
     ToolResult,
     UserMessage,
 )
+from session_log_extractors.tool_inputs import input_schema
 
 # --------------------------------------------------------------------------- #
 # Constants
@@ -647,6 +648,7 @@ class _ClaudeInterpreter:
         self.subagent_count = 0
         self.pending_calls: Dict[str, ToolCall] = {}
         self.unmatched_tool_results: List[ToolResult] = []
+        self.unsupported_tools: List[str] = []
 
     def consume(self, entry: Dict[str, Any]) -> None:
         etype = entry.get("type")
@@ -720,7 +722,11 @@ class _ClaudeInterpreter:
         name = block.get("name", "tool")
         tool_input = block.get("input")
         # Preserve Claude's explicit null result for unanswered calls.
-        call = ToolCall(name=name, input=tool_input, result=None)
+        schema = input_schema(name, tool_input)
+        call = ToolCall(name=name, input=tool_input, input_schema=schema, result=None)
+        diagnostic_name = str(name)
+        if schema == "unsupported" and diagnostic_name not in self.unsupported_tools:
+            self.unsupported_tools.append(diagnostic_name)
         tool_id = block.get("id")
         if isinstance(tool_id, str):
             call["id"] = tool_id
@@ -867,6 +873,7 @@ def interpret_source(
         skills_used=adapter.skills_used,
         subagent_count=adapter.subagent_count,
         unmatched_tool_results=adapter.unmatched_tool_results,
+        unsupported_tools=adapter.unsupported_tools,
         files_changed=adapter.files_changed,
         cwd=session_cwd(source.entries),
         started_at=first_timestamp(source.entries),
@@ -1044,7 +1051,17 @@ def extract_transcript(
     source = read_source(transcript)
     if not source.entries:
         raise ValueError(f"no parseable JSON entries found in {transcript}")
-    return build_raw_envelope(source.path, source.entries, tool_result_max_bytes)
+    session = interpret_source(source)
+    if session is None:
+        return None
+    if session["unsupported_tools"]:
+        print(
+            "warning: unsupported tool input schemas: "
+            + ", ".join(session["unsupported_tools"])
+            + "; recorded payloads preserved",
+            file=sys.stderr,
+        )
+    return session_log_envelope.export_session(session, tool_result_max_bytes)
 
 
 def _extract_all(

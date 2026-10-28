@@ -7,7 +7,14 @@ fields in the current JSON schema and preserves nested event payloads. Additiona
 session semantics remain available on the model for other consumers.
 """
 
-from typing import Any, Literal, NotRequired, Required, TypedDict
+from typing import Literal, NotRequired, Required, TypedDict
+
+from session_log_extractors.tool_inputs import (
+    JsonValue,
+    QuestionOption,
+    ToolInput,
+    ToolInputSchema,
+)
 
 
 class Image(TypedDict, total=False):
@@ -18,13 +25,6 @@ class Image(TypedDict, total=False):
     bytes: int
     unavailable: bool
     ref: str
-
-
-class QuestionOption(TypedDict, total=False):
-    """A recorded option offered to the human."""
-
-    label: str
-    description: str
 
 
 class QuestionAnswer(TypedDict):
@@ -73,7 +73,7 @@ class ToolResult(TypedDict):
     message_id: NotRequired[str]
     tool_call_id: str | None
     ts: str | None
-    content: Any
+    content: JsonValue
     is_error: bool
 
 
@@ -82,12 +82,13 @@ class ToolCall(TypedDict, total=False):
 
     name: Required[str]
     id: str
-    input: Any
-    result: Any
+    input: ToolInput
+    input_schema: ToolInputSchema
+    result: JsonValue
     result_bytes: int
     result_truncated: bool
     is_error: bool
-    error: Any
+    error: JsonValue
     result_record: ToolResult
     questions: list[QuestionAnswer]
     plan_decision: PlanDecision
@@ -142,4 +143,5 @@ class Session(TypedDict):
     skills_used: NotRequired[list[str]]
     subagent_count: NotRequired[int]
     unmatched_tool_results: NotRequired[list[ToolResult]]
+    unsupported_tools: NotRequired[list[str]]
     files_changed: NotRequired[list[str]]

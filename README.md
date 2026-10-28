@@ -88,7 +88,12 @@ no result cap. `Session.events` holds ordered `UserMessage` and
 actions; tool calls retain native IDs, results, questions, plan decisions,
 permission denials, and skill invocations. Results and decisions attach to their
 call by native ID even across later human messages. Native message/parent IDs
-and complete result records remain available on the model; unmatched results
+and complete result records remain available on the model. Known tool inputs
+have named schemas, including `BashInput` and `ReadInput`; opaque values use the
+recursive `JsonValue` type. Schema recognition preserves additional keys and
+does not validate payloads at runtime. `ToolCall.input_schema` and
+`Session.unsupported_tools` identify unsupported names or non-object inputs;
+the CLI reports them on stderr while preserving their payloads. Unmatched results
 are retained explicitly instead of assigned by proximity. `Session.files_changed`,
 `skills_used`, and `subagent_count` hold session facts without turn grouping.
 The shared exporter selects current JSON fields from messages and calls while
