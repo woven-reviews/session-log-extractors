@@ -81,8 +81,26 @@ optional metadata and retains each source path. For replay without filesystem
 access, construct `ClaudeSource(path, entries, metadata)` directly and call
 `extract_claude_session_log.interpret_source(source)` or
 `summarize_subagent_source(source)`. Images remain inline in the recorded entries.
-Main JSON extraction continues to omit sidecars; `load_subagents(path)` retains
-its timestamp-ordered summaries for existing callers.
+Claude interprets main records once into the shared session and exports with
+`export_session`; byte limits apply only at export. `interpret_source` accepts
+no result cap. `Session.events` holds ordered `UserMessage` and
+`AssistantMessage` records. User messages retain recognized commands and shell
+actions; tool calls retain native IDs, results, questions, plan decisions,
+permission denials, and skill invocations. Results and decisions attach to their
+call by native ID even across later human messages. Native message/parent IDs
+and complete result records remain available on the model. Known tool inputs
+have named schemas, including `BashInput` and `ReadInput`; opaque values use the
+recursive `JsonValue` type. Schema recognition preserves additional keys and
+does not validate payloads at runtime. `ToolCall.input_schema` and
+`Session.unsupported_tools` identify unsupported names or non-object inputs;
+the CLI reports them on stderr while preserving their payloads. Unmatched results
+are retained explicitly instead of assigned by proximity. `Session.files_changed`,
+`skills_used`, and `subagent_count` hold session facts without turn grouping.
+The shared exporter selects current JSON fields from messages and calls while
+preserving complete nested input/result payloads. `build_events` remains an
+export convenience wrapper. `Turn`, `Interaction`, and chronological sidecar
+attribution have been removed. Main JSON extraction omits sidecars;
+`load_subagents(path)` retains its timestamp-ordered summaries for existing callers.
 
 Copilot readers and discovery live in `session_log_extractors.copilot_sources`.
 `read_source(connection, session)` loads metadata, required database rows, models,
@@ -95,6 +113,28 @@ State JSONL is read and decoded once per extraction. Image bytes are keyed by
 recorded path, with media type inferred per reference; inline images remain in
 the records. CLI selection and read-only connection ownership stay in orchestration.
 
+## Public extractor stages
+
+`session_log_extractors.extractor_contract.Extractor[Request, Source]` defines
+`read_source(request) -> Source` and `interpret_source(source) -> Session | None`.
+The request and source types remain specific to each harness. Readers snapshot
+all required records/assets; interpreters do no source I/O and apply no export
+limits. Selection, connection ownership, diagnostics, and writing remain in the
+CLI. All implementations use the shared exporter rather than overriding export.
+
+Claude implements this protocol in `ClaudeExtractor`; its typed `EXTRACTOR`
+instance is used by production extraction. The existing public functions remain
+compatible. Mypy checks conformance in CI, and `scripts/test_extractor_contract.py`
+checks signature rejection, source-free interpretation, full results, and
+non-mutating export using native fixtures. The package includes `py.typed` so
+imports retain their annotations when checked outside the source directory.
+
+Codex and Copilot contract adoption remains in QUAL-2518 and QUAL-2519. Codex
+still combines interpretation with envelope construction; Copilot interpretation
+still applies result caps and uses legacy turn state. Their existing behavior
+has not been rewritten here; typed builders and checked narrowing allow
+package-wide checking without casts or ignores.
+
 ## Shared session/export boundary
 
 Adapters can supply `Session`, `Event`, `ToolCall`, and `Image` dictionaries from
@@ -106,7 +146,7 @@ truncation flags. Negative limits retain full text. Structured results, nested
 payloads, images, ordering, and missing/null/empty values pass through unchanged.
 The model has no presentation state, adapter base class, or runtime validation.
 
-Existing harnesses continue applying their own limits and use
+Codex and Copilot continue applying their own limits and use
 `build_envelope(Session(...), tool_result_max_bytes=...)` only to assemble the
 legacy envelope. Their interpretation migrations and shared policy rollout are
 separate follow-ups; current CLI behavior and defaults are unchanged.
@@ -132,13 +172,15 @@ uv sync --locked --extra test
 
 uv manages `.venv` automatically; no activation is needed. Python 3.11 or newer
 is supported; CI uses 3.11 (`uv sync --locked --extra test --python 3.11` to match).
-Ruff is pinned in `pyproject.toml` and all test dependencies are locked in
+Ruff and mypy are pinned in `pyproject.toml`; mypy checks the entire source
+package in strict mode. All test dependencies are locked in
 `uv.lock`. Format Python with `uv run --locked ruff format .`. Run the same
 checks as CI before opening a PR:
 
 ```sh
 uv run --locked ruff format --check .
 uv run --locked ruff check .
+uv run --locked mypy src
 uv run --locked pytest --cov=scripts --cov=src --cov-report=term --cov-report=xml --cov-fail-under=95
 git fetch origin main
 uv run --locked diff-cover coverage.xml --compare-branch=origin/main --fail-under=95
@@ -153,6 +195,16 @@ run, which generates `coverage.xml`.
 After intentionally changing dependencies in `pyproject.toml`, run `uv lock`
 and commit `uv.lock` with the change. Use `uv lock --upgrade` only when intending
 to upgrade the locked dependencies.
+
+## Type escape policy
+
+The package has no casts or type ignores. Ruff's `TID251` bans `typing.cast`,
+`typing_extensions.cast`, and both `no_type_check` APIs; `PGH003` requires coded
+ignores. Mypy runs in strict mode, requires error codes, and rejects unused ignores.
+
+Adding or broadening type-checker suppressions is prohibited by AGENTS.md and
+checked in PR review alongside Ruff exceptions. Remove existing ignores when
+fixing or replacing the code they cover; do not add new ones.
 
 ## Ruff lint policy and initial inventory
 
@@ -184,9 +236,6 @@ Algorithms and interfaces are preserved in this tooling change.
 
 | File (relative to `scripts/` unless shown) | Function | Rules | Removal ticket |
 | --- | --- | --- | --- |
-| `src/session_log_extractors/extract_claude_session_log.py` | `build_events` | C901, PLR0912, PLR0915 | [QUAL-2517](https://linear.app/andela/issue/QUAL-2517) |
-| `src/session_log_extractors/extract_claude_session_log.py` | `build_turns` | C901, PLR0912, PLR0915 | [QUAL-2517](https://linear.app/andela/issue/QUAL-2517) |
-| `src/session_log_extractors/extract_claude_session_log.py` | `result_note` | C901, PLR0912 | [QUAL-2517](https://linear.app/andela/issue/QUAL-2517) |
 | `src/session_log_extractors/extract_codex_session_log.py` | `_flatten_result_text` | C901 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |
 | `src/session_log_extractors/extract_codex_session_log.py` | `_structured_answer_for_question` | C901, PLR0912 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |
 | `src/session_log_extractors/extract_codex_session_log.py` | `build_events` | C901, PLR0912, PLR0915 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |

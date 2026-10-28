@@ -2,11 +2,19 @@
 
 Adapters supply complete JSON-compatible interpreted content, including full
 tool results. No presentation state or export limits belong in these records.
-Optional keys retain their missing/null/empty meanings; additional recorded
-payload keys are passed through by the exporter without filtering.
+Optional keys retain their missing/null/empty meanings. The exporter reads the
+fields in the current JSON schema and preserves nested event payloads. Additional
+session semantics remain available on the model for other consumers.
 """
 
-from typing import Any, NotRequired, Required, TypedDict
+from typing import Literal, Never, NotRequired, Required, TypeAlias, TypedDict
+
+from session_log_extractors.tool_inputs import (
+    JsonValue,
+    QuestionOption,
+    ToolInput,
+    ToolInputSchema,
+)
 
 
 class Image(TypedDict, total=False):
@@ -19,27 +27,114 @@ class Image(TypedDict, total=False):
     ref: str
 
 
+class QuestionAnswer(TypedDict):
+    """A question together with its options and the human's answer."""
+
+    question: str
+    header: str
+    options: list[QuestionOption]
+    chosen_labels: NotRequired[list[str]]
+    answer_text: NotRequired[str]
+
+
+class PlanDecision(TypedDict):
+    """A proposed plan and any recorded approval, edit, or rejection."""
+
+    plan: str
+    decision: str
+    edited_plan: str
+    message: str
+
+
+class PermissionDenial(TypedDict):
+    """A refused tool action and the recorded source of that refusal."""
+
+    tool: str
+    message: str
+    by: str
+
+
+class SubagentSummary(TypedDict, total=False):
+    """Recorded sidecar activity available independently of JSON export."""
+
+    agent_type: str
+    start_ts: str | None
+    task: str
+    tool_count: int
+    tool_names: list[str]
+    result: str
+
+
+class NativeIdentity(TypedDict, total=False):
+    """Identifiers recorded by the source; absent IDs remain absent."""
+
+    id: str
+    parent_id: str
+    message_id: str
+
+
+class ToolResult(NativeIdentity):
+    """A recorded result, associated by native call ID when available."""
+
+    tool_call_id: str | None
+    ts: str | None
+    content: JsonValue
+    is_error: bool
+
+
 class ToolCall(TypedDict, total=False):
-    """Complete interpreted tool data, before any textual result cap."""
+    """A complete call and the decisions/results belonging to that call."""
 
     name: Required[str]
-    input: Any
-    result: Any
+    id: str
+    input: ToolInput
+    input_schema: ToolInputSchema
+    result: JsonValue
     result_bytes: int
     result_truncated: bool
     is_error: bool
-    error: Any
+    error: JsonValue
+    result_record: ToolResult
+    questions: list[QuestionAnswer]
+    plan_decision: PlanDecision
+    permission_denial: PermissionDenial
+    skill: str
 
 
-class Event(TypedDict, total=False):
-    """One ordered event, retaining its recorded payload and metadata."""
+class MessageContent(NativeIdentity, total=False):
+    """Content and native identity shared by ordered conversation messages."""
 
     i: Required[int]
-    role: Required[str]
     ts: str | None
     text: str | None
     images: list[Image] | None
+
+
+class UserMessage(MessageContent):
+    """A recorded user input, with command actions recognized explicitly."""
+
+    role: Literal["user"]
+    tool_calls: NotRequired[Never]
+    command: NotRequired[str]
+    command_args: NotRequired[str | None]
+    shell_command: NotRequired[str]
+
+
+class AssistantMessage(MessageContent):
+    """An assistant message with its own ordered tool calls."""
+
+    role: Literal["assistant"]
+    tool_calls: NotRequired[list[ToolCall]]
+
+
+class Event(MessageContent, total=False):
+    """Compatibility record for adapters still migrating to typed messages."""
+
+    role: Required[str]
     tool_calls: list[ToolCall] | None
+
+
+Message: TypeAlias = UserMessage | AssistantMessage | Event
 
 
 class Session(TypedDict):
@@ -47,7 +142,12 @@ class Session(TypedDict):
 
     harness: str
     session_id: str
-    events: list[Event]
+    events: list[Message]
     cwd: NotRequired[str | None]
     started_at: NotRequired[str | None]
     models: NotRequired[list[str] | None]
+    skills_used: NotRequired[list[str]]
+    subagent_count: NotRequired[int]
+    unmatched_tool_results: NotRequired[list[ToolResult]]
+    unsupported_tools: NotRequired[list[str]]
+    files_changed: NotRequired[list[str]]

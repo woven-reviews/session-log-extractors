@@ -63,6 +63,7 @@ from session_log_extractors.codex_sources import CodexSource, ImageInputs
 from session_log_extractors.session_log_envelope import (
     DEFAULT_TOOL_RESULT_MAX_BYTES,
     assistant_event,
+    attach_result,
     build_envelope,
     image_from_bytes,
     media_type_for_ext,
@@ -74,7 +75,7 @@ from session_log_extractors.session_log_envelope import (
     warn_if_oversized,
     write_envelope,
 )
-from session_log_extractors.session_model import Session
+from session_log_extractors.session_model import Image, Message, Session, ToolCall
 
 _IMAGE_EXT = {
     "image/png": "png",
@@ -160,7 +161,7 @@ def clean_user_text(text: str) -> str:
     return cleaned.strip()
 
 
-def _parse_ts(ts: Optional[str]):
+def _parse_ts(ts: Optional[str]) -> Optional[datetime]:
     if not ts or not isinstance(ts, str):
         return None
     try:
@@ -373,6 +374,19 @@ def skill_refs_from_call(name: str, arguments: Any) -> List[Dict[str, Optional[s
 def skill_names_from_call(name: str, arguments: Any) -> List[str]:
     """Return skill names evidenced by a call (backwards-compatible helper)."""
     return [str(ref["name"]) for ref in skill_refs_from_call(name, arguments)]
+
+
+def _tool_name(payload: Dict[str, Any]) -> str:
+    name = payload.get("name")
+    return name if isinstance(name, str) else "tool"
+
+
+def _is_process_rejection(result: object) -> bool:
+    return (
+        isinstance(result, str)
+        and "exec_command failed: CreateProcess" in result
+        and "rejected by user" in result.lower()
+    )
 
 
 def result_note(output: Any) -> str:
@@ -619,7 +633,7 @@ def patch_paths(arguments: Any) -> List[str]:
     return paths
 
 
-def append_unique_path(paths: List[str], seen: set, path: str) -> None:
+def append_unique_path(paths: List[str], seen: set[str], path: str) -> None:
     """Append a changed path, avoiding relative/absolute duplicates."""
     if not path:
         return
@@ -680,9 +694,9 @@ class Turn:
 def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]:  # noqa: C901, PLR0912, PLR0915
     turns: List[Turn] = []
     files_changed: List[str] = []
-    files_seen = set()
+    files_seen: set[str] = set()
     current: Optional[Turn] = None
-    call_names: Dict[str, str] = {}
+    call_names: Dict[object, str] = {}
     pending_questions: Dict[str, List[Any]] = {}
     pending_plan_calls = set()
     pending_user_images: List[Dict[str, Any]] = []
@@ -837,9 +851,7 @@ def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]: 
             if current is None:
                 current = Turn("", entry.get("timestamp"), pending_mode)
                 turns.append(current)
-            name = (
-                payload.get("name") if isinstance(payload.get("name"), str) else "tool"
-            )
+            name = _tool_name(payload)
             last_tool = name
             call_id = payload.get("call_id")
             if isinstance(call_id, str):
@@ -892,11 +904,7 @@ def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]: 
                 if ptype == "custom_tool_call_output"
                 else output
             )
-            if (
-                ptype == "custom_tool_call_output"
-                and "exec_command failed: CreateProcess" in result
-                and "rejected by user" in result.lower()
-            ):
+            if ptype == "custom_tool_call_output" and _is_process_rejection(result):
                 current.permission_denials.append(
                     {"tool": call_names.get(call_id, "(tool call)"), "message": ""}
                 )
@@ -912,7 +920,7 @@ def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]: 
 
 def envelope_images(
     refs: List[Dict[str, Any]], image_inputs: Optional[ImageInputs] = None
-) -> List[Dict[str, Any]]:
+) -> List[Image]:
     """Interpret Codex image refs using supplied bytes as inline base64 entries.
 
     Codex records images out of band — as a filesystem path, a data URL, or raw
@@ -922,7 +930,7 @@ def envelope_images(
     screenshot we can no longer read" and "pasted nothing" are different facts,
     and only one of them is about the candidate.
     """
-    images: List[Dict[str, Any]] = []
+    images: List[Image] = []
     for ref in refs:
         decoded = _image_bytes_and_ext(ref, image_inputs)
         if decoded is None:
@@ -939,13 +947,13 @@ def build_events(  # noqa: C901, PLR0912, PLR0915
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
     *,
     image_inputs: Optional[ImageInputs] = None,
-) -> List[Dict[str, Any]]:
+) -> List[Message]:
     """Walk Codex entries in order, producing raw-envelope events.
 
     Retain native message, tool-result, and image interpretation.
     """
-    events: List[Dict[str, Any]] = []
-    pending_calls: Dict[str, Dict[str, Any]] = {}
+    events: List[Message] = []
+    pending_calls: Dict[object, ToolCall] = {}
     pending_user_images: List[Dict[str, Any]] = []
     pending_response_user: Optional[Tuple[str, Optional[str], List[Dict[str, Any]]]] = (
         None
@@ -1010,9 +1018,7 @@ def build_events(  # noqa: C901, PLR0912, PLR0915
 
         if ptype in ("function_call", "custom_tool_call"):
             flush_pending_response_user()
-            name = (
-                payload.get("name") if isinstance(payload.get("name"), str) else "tool"
-            )
+            name = _tool_name(payload)
             arguments = payload.get("arguments")
             if arguments is None:
                 arguments = payload.get("input")
@@ -1027,13 +1033,14 @@ def build_events(  # noqa: C901, PLR0912, PLR0915
             continue
 
         if ptype in ("function_call_output", "custom_tool_call_output"):
-            call = pending_calls.pop(payload.get("call_id"), None)
-            if call is None:
+            pending_call = pending_calls.pop(payload.get("call_id"), None)
+            if pending_call is None:
                 continue
-            call.update(
+            attach_result(
+                pending_call,
                 truncate_result(
                     _flatten_result_text(payload.get("output")), tool_result_max_bytes
-                )
+                ),
             )
             continue
 
@@ -1225,7 +1232,7 @@ def _extract_source(
     return build_raw_envelope(source, tool_result_max_bytes)
 
 
-def _unique_identifier(base: str, used: set) -> str:
+def _unique_identifier(base: str, used: set[str]) -> str:
     ident = base
     suffix = 2
     while ident in used:
@@ -1267,7 +1274,7 @@ def _extract_all(
     print(f"extracting {len(files)} Codex session(s) from {root}", file=sys.stderr)
 
     written = 0
-    used_ids = set()
+    used_ids: set[str] = set()
     for transcript in files:
         ident = CodexSource(transcript, []).identifier
         try:

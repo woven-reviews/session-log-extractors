@@ -24,10 +24,10 @@ import argparse
 import json
 import re
 import sys
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from session_log_extractors import session_log_envelope
 from session_log_extractors.claude_sources import (
     ClaudeSource,
     read_source,
@@ -36,19 +36,33 @@ from session_log_extractors.claude_sources import (
 from session_log_extractors.claude_sources import (
     load_entries as load_entries,
 )
+from session_log_extractors.extractor_contract import Extractor
 from session_log_extractors.session_log_envelope import (
     DEFAULT_TOOL_RESULT_MAX_BYTES,
     assistant_event,
-    build_envelope,
     image_from_base64,
     raw_filename,
-    tool_call,
-    truncate_result,
     user_event,
     warn_if_oversized,
     write_envelope,
 )
-from session_log_extractors.session_model import Session
+from session_log_extractors.session_model import (
+    Message,
+    MessageContent,
+    NativeIdentity,
+    PermissionDenial,
+    PlanDecision,
+    QuestionAnswer,
+    Session,
+    SubagentSummary,
+    ToolCall,
+    ToolResult,
+)
+from session_log_extractors.tool_inputs import (
+    QuestionOption,
+    input_schema,
+    is_question_option,
+)
 
 # --------------------------------------------------------------------------- #
 # Constants
@@ -74,8 +88,6 @@ FILE_PATH_KEYS = ("file_path", "path", "notebook_path", "filePath")
 
 # Max length for a condensed tool descriptor before it gets an ellipsis.
 TOOL_DESC_MAX = 100
-# Max length for a condensed tool-result note.
-RESULT_NOTE_MAX = 120
 
 # Patterns for harness noise embedded in user-message text. These wrappers are
 # injected by the CLI, not typed by the human, so we strip them while keeping
@@ -464,41 +476,6 @@ def extract_file_path(tool_input: Any) -> Optional[str]:
     return None
 
 
-# Existing native interpretation; remove in QUAL-2517.
-def result_note(entry: Dict[str, Any]) -> str:  # noqa: C901, PLR0912
-    """A terse note about a tool result (error flag / short output)."""
-    is_error = False
-    text_bits: List[str] = []
-    for block in _content_blocks(entry):
-        if not isinstance(block, dict) or block.get("type") != "tool_result":
-            continue
-        if block.get("is_error"):
-            is_error = True
-        content = block.get("content")
-        if isinstance(content, str):
-            text_bits.append(content)
-        elif isinstance(content, list):
-            for c in content:
-                if isinstance(c, dict) and isinstance(c.get("text"), str):
-                    text_bits.append(c["text"])
-
-    if not text_bits:
-        tur = entry.get("toolUseResult")
-        if isinstance(tur, str):
-            text_bits.append(tur)
-        elif isinstance(tur, dict):
-            for k in ("stdout", "stderr", "output", "content"):
-                v = tur.get(k)
-                if isinstance(v, str) and v.strip():
-                    text_bits.append(v)
-                    break
-
-    blob = _truncate(" ".join(text_bits), RESULT_NOTE_MAX)
-    if is_error:
-        return f"error: {blob}" if blob else "error"
-    return blob
-
-
 def _result_block_text(block: Dict[str, Any]) -> str:
     """Flatten a tool_result block's content to a string."""
     content = block.get("content")
@@ -514,8 +491,8 @@ def _result_block_text(block: Dict[str, Any]) -> str:
 
 
 def _parse_chosen(
-    question_text: str, options: List[Dict[str, Any]], result_text: str
-) -> Tuple[str, List[Dict[str, Any]]]:
+    question_text: str, options: Sequence[QuestionOption], result_text: str
+) -> Tuple[str, List[QuestionOption]]:
     """Pull the chosen answer for one question out of the result string.
 
     The AskUserQuestion result is self-describing, e.g.
@@ -539,18 +516,18 @@ def _parse_chosen(
             tail = parts[1]
             end = tail.find('"')
             val = tail[:end] if end != -1 else tail
-    chosen = [o for o in options if o.get("label") and o["label"] in val]
+    chosen = [o for o in options if (label := o.get("label")) and label in val]
     return val, chosen
 
 
 def option_qa_from_result(
     entry: Dict[str, Any], pending_questions: Dict[str, Any]
-) -> List[Dict[str, Any]]:
+) -> List[QuestionAnswer]:
     """Build structured Q/options/choice records for an AskUserQuestion result.
 
     Returns [] for any tool_result that isn't a tracked pop-up question.
     """
-    out: List[Dict[str, Any]] = []
+    out: List[QuestionAnswer] = []
     for block in _content_blocks(entry):
         if not isinstance(block, dict) or block.get("type") != "tool_result":
             continue
@@ -562,14 +539,14 @@ def option_qa_from_result(
         for q in questions:
             if not isinstance(q, dict):
                 continue
-            options = [o for o in q.get("options", []) if isinstance(o, dict)]
+            options = _question_options(q.get("options"))
             val, chosen = _parse_chosen(q.get("question", ""), options, result_text)
             out.append(
                 {
                     "question": q.get("question", ""),
                     "header": q.get("header", ""),
                     "options": options,
-                    "chosen_labels": [o.get("label") for o in chosen],
+                    "chosen_labels": [o["label"] for o in chosen],
                     "answer_text": val,
                 }
             )
@@ -577,12 +554,12 @@ def option_qa_from_result(
 
 
 def apply_plan_decisions(
-    entry: Dict[str, Any], pending_plans: Dict[str, Dict[str, Any]]
+    entry: Dict[str, Any], pending_plans: Dict[str, PlanDecision]
 ) -> bool:
     """Record the human's approve/reject decision on any plan in this result.
 
     ``pending_plans`` maps a tool_use id to the plan record already attached to
-    the turn, so filling it in here updates the rendered log. Returns True when
+    the turn, so filling it in here updates the interpreted activity. Returns True when
     the entry was a plan decision (and so should not also be folded in as a
     generic result note or permission denial).
     """
@@ -610,13 +587,13 @@ def apply_plan_decisions(
 
 def permission_denials_from_result(
     entry: Dict[str, Any], tool_uses: Dict[str, str]
-) -> List[Dict[str, Any]]:
+) -> List[PermissionDenial]:
     """Build a record for each permission the human denied in this tool_result.
 
-    ``tool_uses`` maps a tool_use id to its rendered label ("Name — descriptor")
+    ``tool_uses`` maps a tool_use id to its recorded tool label ("Name — descriptor")
     so we can name the tool that was denied. Returns [] when nothing was denied.
     """
-    out: List[Dict[str, Any]] = []
+    out: List[PermissionDenial] = []
     for block in _content_blocks(entry):
         if not isinstance(block, dict) or block.get("type") != "tool_result":
             continue
@@ -638,317 +615,232 @@ def permission_denials_from_result(
     return out
 
 
-# --------------------------------------------------------------------------- #
-# Timestamp formatting
-# --------------------------------------------------------------------------- #
+def _message_identity(entry: Dict[str, Any]) -> NativeIdentity:
+    """Retain native record, parent, and API-message IDs without guessing links."""
+    identity = NativeIdentity()
+    record_id = entry.get("uuid")
+    parent_id = entry.get("parentUuid")
+    message_id = _get_message(entry).get("id")
+    if isinstance(record_id, str):
+        identity["id"] = record_id
+    if isinstance(parent_id, str):
+        identity["parent_id"] = parent_id
+    if isinstance(message_id, str):
+        identity["message_id"] = message_id
+    return identity
 
 
-def _parse_ts(ts: Optional[str]):
-    """Parse an ISO-8601 timestamp to a datetime, or None if unparseable."""
-    if not ts or not isinstance(ts, str):
-        return None
-    try:
-        # Python's fromisoformat dislikes a trailing 'Z' before 3.11.
-        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    except (ValueError, TypeError):
-        return None
+def _attach_identity(message: MessageContent, identity: NativeIdentity) -> None:
+    if "id" in identity:
+        message["id"] = identity["id"]
+    if "parent_id" in identity:
+        message["parent_id"] = identity["parent_id"]
+    if "message_id" in identity:
+        message["message_id"] = identity["message_id"]
 
 
-# --------------------------------------------------------------------------- #
-# Turn assembly
-# --------------------------------------------------------------------------- #
+def _question_options(value: object) -> List[QuestionOption]:
+    if not isinstance(value, list):
+        return []
+    return [option for option in value if is_question_option(option)]
 
 
-class Turn:
-    """One human message and the assistant activity that followed it."""
+def _questions(tool_input: Any) -> List[QuestionAnswer]:
+    if not isinstance(tool_input, dict) or not isinstance(
+        tool_input.get("questions"), list
+    ):
+        return []
+    return [
+        QuestionAnswer(
+            question=q.get("question", ""),
+            header=q.get("header", ""),
+            options=_question_options(q.get("options")),
+        )
+        for q in tool_input["questions"]
+        if isinstance(q, dict)
+    ]
 
-    def __init__(self, user_text: str, timestamp: Optional[str]):
-        self.user_text = user_text
-        self.timestamp = timestamp
-        self.images: List[Dict[str, Any]] = []  # base64 source dicts, in order
-        # Set when the user's input was a `!`-prefixed shell command.
-        self.shell_command: Optional[str] = None
-        # Set when the user's input was a `/`-prefixed slash command.
-        self.command: Optional[str] = None
-        self.command_args: Optional[str] = None
-        self.assistant_text_blocks: List[str] = []
-        self.tool_bullets: List[str] = []  # already-rendered "- Name — desc"
+
+class _ClaudeInterpreter:
+    """Interpret ordered messages and associate tool activity by native call ID."""
+
+    def __init__(self) -> None:
+        self.events: List[Message] = []
+        self.files_changed: List[str] = []
         self.skills_used: List[str] = []
-        self.result_notes: List[str] = []
-        self.option_qas: List[
-            Dict[str, Any]
-        ] = []  # AskUserQuestion: Q + options + choice
-        self.permission_denials: List[Dict[str, Any]] = []  # denied tool + message
-        self.plans: List[Dict[str, Any]] = []  # plan mode: plan text + decision
-        self.subagents: List[Dict[str, Any]] = []  # folded subagent summaries
         self.subagent_count = 0
+        self.pending_calls: Dict[str, ToolCall] = {}
+        self.unmatched_tool_results: List[ToolResult] = []
+        self.unsupported_tools: List[str] = []
 
-    def add_assistant_text(self, text: str) -> None:
-        if text and text.strip():
-            self.assistant_text_blocks.append(text.strip())
-
-    def add_tool(self, name: str, descriptor: str) -> None:
-        if descriptor:
-            self.tool_bullets.append(f"- {name} — {descriptor}")
-        else:
-            self.tool_bullets.append(f"- {name}")
-
-    def add_skill(self, name: str) -> None:
-        if name and name not in self.skills_used:
-            self.skills_used.append(name)
-
-    def add_command(self, name: str, args: str = "") -> None:
-        self.command = name
-        self.command_args = args or None
-
-    def add_result_note(self, note: str) -> None:
-        if note:
-            self.result_notes.append(note)
-
-
-# Existing native interpretation; remove in QUAL-2517.
-def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]:  # noqa: C901, PLR0912, PLR0915
-    """Walk entries in order, producing turns and the changed-files list."""
-    turns: List[Turn] = []
-    files_changed: List[str] = []
-    files_seen = set()
-    current: Optional[Turn] = None
-    pending_subagents = 0  # sidechain entries seen since the last real user msg
-    pending_questions: Dict[str, Any] = {}  # tool_use id -> AskUserQuestion questions
-    pending_plans: Dict[str, Dict[str, Any]] = {}  # tool_use id -> plan record
-    tool_uses: Dict[str, str] = {}  # tool_use id -> "Name — descriptor" label
-
-    for entry in entries:
+    def consume(self, entry: Dict[str, Any]) -> None:
         etype = entry.get("type")
-
-        # Meta and summary entries never participate in the main flow.
-        if entry.get("isMeta") is True:
-            continue
-        if etype in ("summary", "system"):
-            continue
-
-        # Sidechain (subagent) entries are kept out of the flow; we only count
-        # the user-prompt that *spawns* a subagent so we can note it.
+        if entry.get("isMeta") is True or etype in ("summary", "system"):
+            return
         if entry.get("isSidechain") is True:
             if etype == "user" and not _is_tool_result_entry(entry):
-                pending_subagents += 1
-            continue
-
+                self.subagent_count += 1
+            return
         if etype == "user":
             if _is_tool_result_entry(entry):
-                # Fold the result into the current turn, condensed.
-                if current is not None:
-                    if apply_plan_decisions(entry, pending_plans):
-                        continue
-                    denials = permission_denials_from_result(entry, tool_uses)
-                    qas = option_qa_from_result(entry, pending_questions)
-                    if denials:
-                        current.permission_denials.extend(denials)
-                    if qas:
-                        current.option_qas.extend(qas)
-                    elif not denials:
-                        note = result_note(entry)
-                        if note:
-                            current.add_result_note(note)
-                continue
-            # A real human message: start a new turn.
-            raw = _human_text(entry)
-            text = clean_user_text(raw)
-            images = _image_sources(entry)
-            cmd_match = _COMMAND_NAME.search(raw)
-            command = cmd_match.group(1).strip() if cmd_match else ""
-            if not command.startswith("/"):  # only slash commands, not stray tags
-                command = ""
-            # An entry that becomes empty after stripping harness noise is not a
-            # meaningful turn on its own; skip it -- unless it carried images or
-            # was a slash-command invocation.
-            if not text and not images and not command:
-                continue
-            current = Turn(text, entry.get("timestamp"))
-            current.images = images
-            if command:
-                args_match = _COMMAND_ARGS.search(raw)
-                current.add_command(
-                    command, args_match.group(1).strip() if args_match else ""
-                )
-            cmds = [c.strip() for c in _BASH_INPUT.findall(text) if c.strip()]
-            if cmds:
-                current.shell_command = "\n".join(cmds)
-            if pending_subagents:
-                current.subagent_count += pending_subagents
-                pending_subagents = 0
-            turns.append(current)
-
+                self.results(entry)
+            else:
+                self.user(entry)
         elif etype == "assistant":
-            if current is None:
-                # Assistant activity before any human turn (rare); make a stub.
-                current = Turn("", entry.get("timestamp"))
-                turns.append(current)
-            for block in _content_blocks(entry):
-                if not isinstance(block, dict):
-                    continue
-                btype = block.get("type")
-                if btype == "text":
-                    current.add_assistant_text(block.get("text", ""))
-                elif btype == "tool_use":
-                    name = block.get("name", "tool")
-                    tool_input = block.get("input")
-                    if name in PLAN_TOOLS:
-                        # Rendered as its own plan block, not a tool bullet.
-                        record = {
-                            "plan": (tool_input or {}).get("plan", "")
-                            if isinstance(tool_input, dict)
-                            else "",
-                            "decision": "no decision recorded",
-                            "edited_plan": "",
-                            "message": "",
-                        }
-                        current.plans.append(record)
-                        if isinstance(block.get("id"), str):
-                            pending_plans[block["id"]] = record
-                        continue
-                    descriptor = tool_descriptor(name, tool_input)
-                    current.add_tool(name, descriptor)
-                    if str(name).lower() == "skill" and isinstance(tool_input, dict):
-                        skill_name = tool_input.get("skill") or tool_input.get("name")
-                        if isinstance(skill_name, str):
-                            current.add_skill(skill_name)
-                    if isinstance(block.get("id"), str):
-                        tool_uses[block["id"]] = (
-                            f"{name} — {descriptor}" if descriptor else name
-                        )
-                    if name in INTERACTION_TOOLS and isinstance(block.get("id"), str):
-                        qs = (
-                            tool_input.get("questions")
-                            if isinstance(tool_input, dict)
-                            else None
-                        )
-                        if isinstance(qs, list):
-                            pending_questions[block["id"]] = qs
-                    if name in FILE_WRITING_TOOLS:
-                        fp = extract_file_path(tool_input)
-                        if fp and fp not in files_seen:
-                            files_seen.add(fp)
-                            files_changed.append(fp)
-        # Unknown types are ignored silently (robust to schema additions).
+            self.assistant(entry)
 
-    # If subagents were spawned at the very end with no following user turn,
-    # attribute them to the last real turn.
-    if pending_subagents and turns:
-        turns[-1].subagent_count += pending_subagents
+    def user(self, entry: Dict[str, Any]) -> None:
+        raw = _human_text(entry)
+        text = clean_user_text(raw)
+        images = [
+            image_from_base64(src["data"], src.get("media_type"))
+            for src in _image_sources(entry)
+        ]
+        match = _COMMAND_NAME.search(raw)
+        command = match.group(1).strip() if match else ""
+        command = command if command.startswith("/") else ""
+        if not text and not images and not command:
+            return
+        message = user_event(len(self.events), entry.get("timestamp"), text, images)
+        _attach_identity(message, _message_identity(entry))
+        if command:
+            args = _COMMAND_ARGS.search(raw)
+            message["command"] = command
+            message["command_args"] = (args.group(1).strip() if args else "") or None
+            if not text:
+                message["text"] = f"{command} {message['command_args'] or ''}".strip()
+        commands = [c.strip() for c in _BASH_INPUT.findall(text) if c.strip()]
+        if commands:
+            message["shell_command"] = "\n".join(commands)
+        self.events.append(message)
 
-    return turns, files_changed
+    def assistant(self, entry: Dict[str, Any]) -> None:
+        texts: List[str] = []
+        calls: List[ToolCall] = []
+        for block in _content_blocks(entry):
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "text":
+                text = block.get("text", "")
+                if isinstance(text, str) and text.strip():
+                    texts.append(text.strip())
+            elif block.get("type") == "tool_use":
+                calls.append(self.call(block))
+        if texts or calls:
+            message = assistant_event(
+                len(self.events), entry.get("timestamp"), "\n\n".join(texts), calls
+            )
+            _attach_identity(message, _message_identity(entry))
+            self.events.append(message)
+
+    def call(self, block: Dict[str, Any]) -> ToolCall:
+        name = block.get("name", "tool")
+        tool_input = block.get("input")
+        # Preserve Claude's explicit null result for unanswered calls.
+        schema = input_schema(name, tool_input)
+        call = ToolCall(name=name, input=tool_input, input_schema=schema, result=None)
+        diagnostic_name = str(name)
+        if schema == "unsupported" and diagnostic_name not in self.unsupported_tools:
+            self.unsupported_tools.append(diagnostic_name)
+        tool_id = block.get("id")
+        if isinstance(tool_id, str):
+            call["id"] = tool_id
+            if tool_id:
+                self.pending_calls[tool_id] = call
+        if name in PLAN_TOOLS:
+            call["plan_decision"] = PlanDecision(
+                plan=tool_input.get("plan", "") if isinstance(tool_input, dict) else "",
+                decision="no decision recorded",
+                edited_plan="",
+                message="",
+            )
+        elif name in INTERACTION_TOOLS:
+            call["questions"] = _questions(tool_input)
+        self.action(call)
+        return call
+
+    def action(self, call: ToolCall) -> None:
+        name, tool_input = call["name"], call["input"]
+        if not isinstance(tool_input, dict):
+            return
+        if str(name).lower() == "skill":
+            skill = tool_input.get("skill") or tool_input.get("name")
+            if isinstance(skill, str) and skill:
+                call["skill"] = skill
+                if skill not in self.skills_used:
+                    self.skills_used.append(skill)
+        if name in FILE_WRITING_TOOLS:
+            path = extract_file_path(tool_input)
+            if path and path not in self.files_changed:
+                self.files_changed.append(path)
+
+    def results(self, entry: Dict[str, Any]) -> None:
+        blocks = [
+            block
+            for block in _content_blocks(entry)
+            if isinstance(block, dict) and block.get("type") == "tool_result"
+        ]
+        if not blocks and entry.get("toolUseResult") is not None:
+            # Older records have no call ID. Retain the complete payload without
+            # assigning it to a nearby call or duplicating a recorded block.
+            self.unmatched_tool_results.append(
+                ToolResult(
+                    tool_call_id=None,
+                    ts=entry.get("timestamp"),
+                    content=entry["toolUseResult"],
+                    is_error=False,
+                    **_message_identity(entry),
+                )
+            )
+        for block in blocks:
+            tool_id = block.get("tool_use_id")
+            record = ToolResult(
+                tool_call_id=tool_id if isinstance(tool_id, str) else None,
+                ts=entry.get("timestamp"),
+                content=block.get("content"),
+                is_error=bool(block.get("is_error")),
+                **_message_identity(entry),
+            )
+            call = (
+                self.pending_calls.pop(tool_id, None)
+                if isinstance(tool_id, str)
+                else None
+            )
+            if call is None:
+                self.unmatched_tool_results.append(record)
+                continue
+            call["result_record"] = record
+            call["result"] = _result_block_text(block)
+            if block.get("is_error"):
+                call["is_error"] = True
+            self.decision(call, block)
+
+    def decision(self, call: ToolCall, block: Dict[str, Any]) -> None:
+        # Apply existing semantic parsers to this ID-matched call only. A later
+        # user message, or another result in the same entry, cannot change ownership.
+        entry = {"message": {"content": [block]}}
+        tool_id = call["id"]
+        if "plan_decision" in call:
+            apply_plan_decisions(entry, {tool_id: call["plan_decision"]})
+            return
+        if "questions" in call:
+            call["questions"] = option_qa_from_result(
+                entry, {tool_id: call["questions"]}
+            )
+        descriptor = tool_descriptor(call["name"], call["input"])
+        label = f"{call['name']} — {descriptor}" if descriptor else call["name"]
+        denials = permission_denials_from_result(entry, {tool_id: label})
+        if denials:
+            call["permission_denial"] = denials[0]
 
 
-# Existing native interpretation; remove in QUAL-2517.
-def build_events(  # noqa: C901, PLR0912, PLR0915
+def build_events(
     entries: List[Dict[str, Any]],
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
 ) -> List[Dict[str, Any]]:
-    """Walk entries in order, producing raw-envelope events.
-
-    Entry filtering matches ``build_turns`` exactly (meta, summary/system, and
-    sidechain entries are skipped) so events and turns describe the same
-    conversation. User text is the harness-stripped prose, i.e. what the human
-    actually typed: the ``<system-reminder>`` blocks the CLI injects are neither
-    the candidate's words nor useful context, and they dwarf everything else.
-    """
-    events: List[Dict[str, Any]] = []
-    pending_calls: Dict[str, Dict[str, Any]] = {}  # tool_use id -> call awaiting result
-    index = 0
-
-    for entry in entries:
-        etype = entry.get("type")
-
-        if entry.get("isMeta") is True:
-            continue
-        if etype in ("summary", "system"):
-            continue
-        if entry.get("isSidechain") is True:
-            continue
-
-        if etype == "user":
-            if _is_tool_result_entry(entry):
-                # Attach each result to the call it answers. Results arrive as
-                # their own user-role entry, well after the assistant event was
-                # emitted, so the call dict is mutated in place.
-                for block in _content_blocks(entry):
-                    if (
-                        not isinstance(block, dict)
-                        or block.get("type") != "tool_result"
-                    ):
-                        continue
-                    call = pending_calls.pop(block.get("tool_use_id"), None)
-                    if call is None:
-                        continue
-                    call.update(
-                        truncate_result(
-                            _result_block_text(block), tool_result_max_bytes
-                        )
-                    )
-                    if block.get("is_error"):
-                        call["is_error"] = True
-                continue
-
-            raw = _human_text(entry)
-            text = clean_user_text(raw)
-            images = [
-                image_from_base64(src.get("data", ""), src.get("media_type"))
-                for src in _image_sources(entry)
-            ]
-
-            # A slash command cleans to nothing (its text lives entirely in
-            # harness tags), but invoking one is a real thing the human did.
-            cmd_match = _COMMAND_NAME.search(raw)
-            command = cmd_match.group(1).strip() if cmd_match else ""
-            if command.startswith("/") and not text:
-                args_match = _COMMAND_ARGS.search(raw)
-                args = args_match.group(1).strip() if args_match else ""
-                text = f"{command} {args}".strip()
-
-            if not text and not images:
-                continue
-            events.append(user_event(index, entry.get("timestamp"), text, images))
-            index += 1
-
-        elif etype == "assistant":
-            text_parts: List[str] = []
-            calls: List[Dict[str, Any]] = []
-            ids: List[Optional[str]] = []
-
-            for block in _content_blocks(entry):
-                if not isinstance(block, dict):
-                    continue
-                btype = block.get("type")
-                if btype == "text":
-                    chunk = block.get("text", "")
-                    if isinstance(chunk, str) and chunk.strip():
-                        text_parts.append(chunk.strip())
-                elif btype == "tool_use":
-                    call = tool_call(
-                        block.get("name", "tool"),
-                        block.get("input"),
-                        None,
-                        tool_result_max_bytes,
-                    )
-                    calls.append(call)
-                    ids.append(
-                        block.get("id") if isinstance(block.get("id"), str) else None
-                    )
-
-            if not text_parts and not calls:
-                continue
-            events.append(
-                assistant_event(
-                    index, entry.get("timestamp"), "\n\n".join(text_parts), calls
-                )
-            )
-            index += 1
-            for call, tool_id in zip(calls, ids, strict=True):
-                if tool_id:
-                    pending_calls[tool_id] = call
-
-    return events
+    """Compatibility export helper; native interpretation is shared with the CLI."""
+    envelope = build_raw_envelope(Path("session.jsonl"), entries, tool_result_max_bytes)
+    return envelope["events"] if envelope is not None else []
 
 
 def first_timestamp(entries: List[Dict[str, Any]]) -> Optional[str]:
@@ -993,28 +885,47 @@ def build_raw_envelope(
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
 ) -> Optional[Dict[str, Any]]:
     """Build the JSON envelope, or None when there are no exportable events."""
-    session = interpret_source(ClaudeSource(transcript, entries), tool_result_max_bytes)
+    session = EXTRACTOR.interpret_source(ClaudeSource(transcript, entries))
     if session is None:
         return None
-    return build_envelope(session, tool_result_max_bytes=tool_result_max_bytes)
+    return session_log_envelope.export_session(session, tool_result_max_bytes)
 
 
 def interpret_source(
     source: ClaudeSource,
-    tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
 ) -> Optional[Session]:
     """Interpret supplied records, inline images and source identity without I/O."""
-    events = build_events(source.entries, tool_result_max_bytes)
-    if not events:
+    adapter = _ClaudeInterpreter()
+    for entry in source.entries:
+        adapter.consume(entry)
+    if not adapter.events:
         return None
     return Session(
         harness="claude",
         session_id=source.path.stem,
-        events=events,
+        events=adapter.events,
+        skills_used=adapter.skills_used,
+        subagent_count=adapter.subagent_count,
+        unmatched_tool_results=adapter.unmatched_tool_results,
+        unsupported_tools=adapter.unsupported_tools,
+        files_changed=adapter.files_changed,
         cwd=session_cwd(source.entries),
         started_at=first_timestamp(source.entries),
         models=session_models(source.entries),
     )
+
+
+class ClaudeExtractor:
+    """Claude implementation of the shared public extraction stages."""
+
+    def read_source(self, request: Path) -> ClaudeSource:
+        return read_source(request)
+
+    def interpret_source(self, source: ClaudeSource) -> Session | None:
+        return interpret_source(source)
+
+
+EXTRACTOR: Extractor[Path, ClaudeSource] = ClaudeExtractor()
 
 
 # --------------------------------------------------------------------------- #
@@ -1022,12 +933,12 @@ def interpret_source(
 # --------------------------------------------------------------------------- #
 
 
-def summarize_subagent(path: Path) -> Optional[Dict[str, Any]]:
+def summarize_subagent(path: Path) -> Optional[SubagentSummary]:
     """Read and summarize a sidecar; retained for existing callers."""
     return summarize_subagent_source(read_source(path, read_metadata=True))
 
 
-def summarize_subagent_source(source: ClaudeSource) -> Optional[Dict[str, Any]]:
+def summarize_subagent_source(source: ClaudeSource) -> Optional[SubagentSummary]:
     """Condense supplied sidecar records into task / tools / result without I/O.
 
     No Task tool-use id links sidecars to main records; attribution remains
@@ -1075,7 +986,7 @@ def _subagent_activity(entries: List[Dict[str, Any]]) -> Tuple[List[str], str]:
     return tools, result
 
 
-def load_subagents(transcript: Path) -> List[Dict[str, Any]]:
+def load_subagents(transcript: Path) -> List[SubagentSummary]:
     """Summarize every subagent transcript for this session, oldest first."""
     subs = [
         summary
@@ -1084,22 +995,6 @@ def load_subagents(transcript: Path) -> List[Dict[str, Any]]:
     ]
     subs.sort(key=lambda summary: summary.get("start_ts") or "")
     return subs
-
-
-def attribute_subagents(turns: List[Turn], subs: List[Dict[str, Any]]) -> None:
-    """Fold each subagent under the latest turn that started at or before it."""
-    parsed = [(_parse_ts(t.timestamp), t) for t in turns]
-    for s in subs:
-        st = _parse_ts(s.get("start_ts"))
-        target: Optional[Turn] = None
-        if st is not None:
-            for ts, t in parsed:  # turns are in order; last match wins
-                if ts is not None and ts <= st:
-                    target = t
-        if target is None and turns:
-            target = turns[0]
-        if target is not None:
-            target.subagents.append(s)
 
 
 # --------------------------------------------------------------------------- #
@@ -1200,10 +1095,20 @@ def extract_transcript(
 
     Keep the existing parse-error and no-exportable-events behavior.
     """
-    source = read_source(transcript)
+    source = EXTRACTOR.read_source(transcript)
     if not source.entries:
         raise ValueError(f"no parseable JSON entries found in {transcript}")
-    return build_raw_envelope(source.path, source.entries, tool_result_max_bytes)
+    session = EXTRACTOR.interpret_source(source)
+    if session is None:
+        return None
+    if session["unsupported_tools"]:
+        print(
+            "warning: unsupported tool input schemas: "
+            + ", ".join(session["unsupported_tools"])
+            + "; recorded payloads preserved",
+            file=sys.stderr,
+        )
+    return session_log_envelope.export_session(session, tool_result_max_bytes)
 
 
 def _extract_all(

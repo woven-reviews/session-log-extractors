@@ -61,7 +61,8 @@ from session_log_extractors.session_log_envelope import (
     warn_if_oversized,
     write_envelope,
 )
-from session_log_extractors.session_model import Session
+from session_log_extractors.session_model import Image, Message, Session
+from session_log_extractors.tool_inputs import JsonValue
 
 _NOISE_TAG_BLOCK = re.compile(
     r"<(system-reminder|system-notification|local-command-stdout|local-command-stderr|"
@@ -190,7 +191,7 @@ def clean_user_text(text: str) -> str:
     return cleaned.strip()
 
 
-def _parse_ts(ts: Optional[str]):
+def _parse_ts(ts: Optional[str]) -> Optional[datetime]:
     if not ts or not isinstance(ts, str):
         return None
     try:
@@ -252,7 +253,7 @@ class Turn:
             self.skills_used.append(name)
 
 
-def _binary_assets(events: List[Dict[str, Any]]) -> Dict[str, tuple]:
+def _binary_assets(events: List[Dict[str, Any]]) -> Dict[str, tuple[str, JsonValue]]:
     assets = {}
     for obj in events:
         asset = obj.get("data")
@@ -266,7 +267,11 @@ def _binary_assets(events: List[Dict[str, Any]]) -> Dict[str, tuple]:
     return assets
 
 
-def _state_attachment(item: Dict[str, Any], timestamp: Any, assets: Dict) -> Dict:
+def _state_attachment(
+    item: Dict[str, JsonValue],
+    timestamp: JsonValue,
+    assets: Dict[str, tuple[str, JsonValue]],
+) -> Dict[str, JsonValue]:
     rec = {"timestamp": timestamp}
     for source, target in (
         ("displayName", "display_name"),
@@ -294,7 +299,7 @@ def _state_attachment(item: Dict[str, Any], timestamp: Any, assets: Dict) -> Dic
 
 def _attachments_from_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     assets = _binary_assets(events)
-    attachments = []
+    attachments: List[Dict[str, Any]] = []
     for obj in events:
         data = obj.get("data")
         if obj.get("type") != "user.message" or not isinstance(data, dict):
@@ -324,7 +329,7 @@ def _permissions_from_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any
     no matching completion (aborted / still pending) is emitted as ``pending``.
     """
     requests: Dict[str, Dict[str, Any]] = {}
-    decided: set = set()
+    decided: set[str] = set()
     out: List[Dict[str, Any]] = []
     for obj in events:
         if not isinstance(obj, dict):
@@ -486,6 +491,11 @@ def _turn_for(turns: List[Turn], ts: Optional[str]) -> Optional[Turn]:
     """
     if not turns:
         return None
+    return _turn_for_nonempty(turns, ts)
+
+
+def _turn_for_nonempty(turns: List[Turn], ts: Optional[str]) -> Turn:
+    """Select from a caller-checked nonempty list of turns."""
     at = _parse_ts(ts)
     if at is None:
         return turns[0]
@@ -651,7 +661,7 @@ def _build_turn_objects(  # noqa: C901, PLR0912, PLR0915
             and _DATA_IMAGE_URL.match(data_url)
         ):
             continue
-        target = _turn_for(built, attachment.get("timestamp"))
+        target = _turn_for_nonempty(built, attachment.get("timestamp"))
         ref = {"name": name}
         for key in ("path", "type", "data_url", "data", "media_type"):
             if attachment.get(key):
@@ -677,14 +687,14 @@ def _image_source(ref: Dict[str, Any]) -> Optional[str]:
 
 def envelope_images(
     refs: List[Dict[str, str]], image_inputs: ImageInputs
-) -> List[Dict[str, Any]]:
+) -> List[Image]:
     """Resolve Copilot image refs to inline base64 entries.
 
     Copilot stores image payloads outside DB turns. Image tokens and timestamped
     event attachments both become refs; missing sources remain visible as
     unavailable images.
     """
-    images: List[Dict[str, Any]] = []
+    images: List[Image] = []
     for ref in refs:
         decoded = _inline_image_bytes(ref)
         if decoded is None and not _has_inline_image(ref):
@@ -704,7 +714,7 @@ def build_events(
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
     *,
     image_inputs: Optional[ImageInputs] = None,
-) -> List[Dict[str, Any]]:
+) -> List[Message]:
     """Produce raw-envelope events from already-built Copilot turns.
 
     Copilot's store hands us whole turns rather than an event stream, so this
@@ -717,7 +727,7 @@ def build_events(
     ``tool_result_max_bytes``). Older turns that only have file-edit records fall
     back to a single grouped assistant event with no per-call timestamp or result.
     """
-    events: List[Dict[str, Any]] = []
+    events: List[Message] = []
     index = 0
 
     for turn in turns:
@@ -809,6 +819,8 @@ def _path_image_ext(ref: Dict[str, str]) -> str:
 def output_identifier(session: Dict[str, Any]) -> str:
     """Generate a short identifier for output filenames."""
     session_id = session.get("id", "unknown")
+    if not isinstance(session_id, str):
+        raise TypeError("Copilot session id must be a string")
     # Use first 8 chars of session id
     short_id = session_id[:8] if len(session_id) >= 8 else session_id
 
@@ -818,7 +830,7 @@ def output_identifier(session: Dict[str, Any]) -> str:
     return short_id
 
 
-def _unique_identifier(base: str, used: set) -> str:
+def _unique_identifier(base: str, used: set[str]) -> str:
     ident = base
     suffix = 2
     while ident in used:
@@ -990,7 +1002,7 @@ def _extract_all(
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"extracting {len(sessions)} Copilot session(s)", file=sys.stderr)
     written = 0
-    used_ids = set()
+    used_ids: set[str] = set()
     for session in sessions:
         ident = _unique_identifier(output_identifier(session), used_ids)
         out_path = out_dir / raw_filename("copilot", ident)
@@ -1009,7 +1021,9 @@ def _extract_all(
     return 0 if written else 1
 
 
-def _select_session(conn: sqlite3.Connection, args: argparse.Namespace):
+def _select_session(
+    conn: sqlite3.Connection, args: argparse.Namespace
+) -> Optional[Dict[str, Any]]:
     if args.session:
         session = copilot_sources.get_session_by_id(conn, args.session)
         if session is None:

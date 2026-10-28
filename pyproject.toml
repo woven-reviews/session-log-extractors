@@ -9,20 +9,28 @@ description = "Reusable extractors for Claude, Codex, and Copilot session logs"
 requires-python = ">=3.11"
 
 [project.optional-dependencies]
-test = ["pytest", "pytest-cov", "ruff==0.14.0", "diff-cover==9.7.1"]
+test = ["pytest", "pytest-cov", "ruff==0.14.0", "diff-cover==9.7.1", "mypy==2.4.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+session_log_extractors = ["py.typed"]
+
 [tool.ruff]
 target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+enable_error_code = ["ignore-without-code"]
 
 [tool.coverage.run]
 source = ["scripts", "src"]
 omit = ["scripts/test_*.py"]
 
 [tool.ruff.lint]
-select = ["E4", "E7", "E9", "F", "B", "I", "C4", "PIE", "PGH004", "RUF100", "PT011", "PT012", "PT017", "C901", "PLR0915", "PLR0912", "PLR0913", "PLC0415"]
+select = ["E4", "E7", "E9", "F", "B", "I", "C4", "PIE", "PGH004", "RUF100", "PT011", "PT012", "PT017", "C901", "PLR0915", "PLR0912", "PLR0913", "PLC0415", "TID251", "PGH003"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 10
@@ -31,3 +39,9 @@ max-complexity = 10
 max-statements = 50
 max-branches = 12
 max-args = 5
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"typing.cast".msg = "Use typed construction or checked narrowing."
+"typing_extensions.cast".msg = "Use typed construction or checked narrowing."
+"typing.no_type_check".msg = "Keep type checking enabled."
+"typing_extensions.no_type_check".msg = "Keep type checking enabled."

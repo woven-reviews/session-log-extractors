@@ -12,6 +12,7 @@ CI checks:
 ```sh
 uv run --locked ruff format --check .
 uv run --locked ruff check .
+uv run --locked mypy src
 uv run --locked pytest --cov=scripts --cov=src --cov-report=term --cov-report=xml --cov-fail-under=95
 git fetch origin main
 uv run --locked diff-cover coverage.xml --compare-branch=origin/main --fail-under=95
@@ -19,6 +20,12 @@ uv run --locked pytest scripts/test_extract_codex_session_log.py --cov=session_l
 uv run --locked pytest scripts/test_extract_claude_session_log.py --cov=session_log_extractors.extract_claude_session_log --cov-fail-under=95
 uv run --locked pytest scripts/test_extract_copilot_session_log.py --cov=session_log_extractors.extract_copilot_session_log --cov-fail-under=95
 ```
+
+Run mypy in strict mode across the entire source package.
+Fix type errors through accurate types, typed construction, and checked narrowing.
+Casts and `no_type_check` APIs are banned by Ruff. Do not replace casts with
+broader `Any` annotations, unchecked validators, or ignored errors.
+Type-checker suppressions follow the same exception policy as Ruff below.
 
 Keep all five coverage thresholds at 95% or higher. Overall coverage excludes
 test modules; run diff-cover after the overall run produces `coverage.xml`.
@@ -33,6 +40,40 @@ The fixture generators (`scripts/generate_*_fixtures.py`) make paid CLI calls.
 Their tests replace the CLI with a fake, so their code is still covered.
 Use diff-cover to identify missing coverage; add tests rather than lowering
 the threshold.
+
+## Shared model and export boundaries
+
+Use `extractor_contract.Extractor[Request, Source]` for public reader/interpreter
+stages. Implementations must satisfy the protocol under mypy and be exercised
+by the native-fixture contract tests. Keep source access in `read_source` and
+return an uncapped shared `Session` from `interpret_source`. Extend the shared
+contract test matrix when another harness adopts it; do not claim conformance
+through a wrapper that still applies export policy during interpretation.
+
+Preserve meaningful domain information in named, typed fields on the shared
+model, with named record types for structured concepts. Do not introduce generic
+`metadata`, `extra`, or `interpretation` dictionaries for information whose
+meaning is already known. Passing regression tests alone does not establish
+that a model or abstraction is appropriate; review where each semantic concept
+belongs and whether the model duplicates another representation.
+
+Use ordered, typed messages and their tool calls as the canonical conversation.
+Associate results, questions, and decisions using recorded message/tool IDs
+where available. Do not infer ownership from the most recent human message or
+timestamp proximity. If a consumer needs chronological interaction groups,
+derive that view from canonical records. Preserve unmatched records explicitly
+rather than inventing an association.
+
+Define specific input types for known tools and use a recursive JSON value type
+for opaque payloads. Types describe the fields we understand; they must not
+filter out additional recorded fields. Preserve unsupported tool payloads and
+report the missing schema support explicitly instead of silently treating them
+as fully understood. Schema recognition is distinct from runtime validation.
+
+Treat output compatibility as a serialization constraint. Exporters should read
+the fields required by their output schema, leaving other model fields available
+to consumers; do not serialize the whole model and then delete semantic fields.
+Keep complete inputs/results until export applies the configured output policy.
 
 ## Test data policy
 
@@ -59,7 +100,11 @@ rules and initial configurable limits (complexity 10, statements 50, branches
 12, arguments 5); these are Ruff defaults, not universal quality standards.
 Agents must never add new lint exceptions or broaden existing ones. Do not add
 suppressions, disable rules, exclude files or directories, or raise thresholds
-to make a check pass. Fix the code to satisfy the rules.
+to make a check pass. Fix the code to satisfy the rules. This also applies to
+adding or broadening type-checker ignores and weakening mypy settings. PR review
+must check the diff for new or broadened lint/type exceptions. Remove existing
+ignore comments when fixing or replacing the code they cover; do not add new
+ones.
 
 The exceptions inventoried in README.md exist solely because this codebase
 predates lint enforcement. They are temporary debt for pre-existing code, not
