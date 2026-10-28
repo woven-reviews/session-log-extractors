@@ -1808,6 +1808,49 @@ def test_unmatched_result_retains_content_without_inventing_an_owner():
     assert record["id"] == result["uuid"]
 
 
+@pytest.mark.parametrize("options", [None, 7, "invalid", {"label": "section"}])
+def test_malformed_question_options_preserve_input_and_allow_extraction(options):
+    entries = _fixture_entries("questions.jsonl")
+    block = entries[1]["message"]["content"][0]
+    # Vary only the options container in the audited question fixture.
+    block["input"]["questions"][0]["options"] = options
+    session = _session(entries)
+    call = session["events"][1]["tool_calls"][0]
+    assert call["input"] == block["input"]
+    assert call["questions"][0]["options"] == []
+    assert call["questions"][0]["answer_text"] == "section, manufacturer_part_no"
+    exported = session_log_envelope.export_session(session)
+    assert exported["events"][1]["tool_calls"][0]["input"] == block["input"]
+
+
+@pytest.mark.parametrize("payload", [{"stdout": "output"}, "output", {}, "", False])
+def test_top_level_result_preserves_payload_without_inventing_an_owner(payload):
+    assistant, result = _native_tool_pair()
+    # Model the older result-only shape by moving the captured result to the
+    # top level and removing the block that carries its call ID.
+    result["message"]["content"] = []
+    result["toolUseResult"] = payload
+    session = _session([assistant, result])
+    call = session["events"][0]["tool_calls"][0]
+    assert call["result"] is None
+    assert "result_record" not in call
+    (record,) = session["unmatched_tool_results"]
+    assert record["tool_call_id"] is None
+    assert record["content"] == payload
+    assert record["id"] == result["uuid"]
+    assert record["parent_id"] == result["parentUuid"]
+    assert record["ts"] == result["timestamp"]
+    assert record["is_error"] is False
+
+
+def test_top_level_result_does_not_duplicate_a_recorded_result_block():
+    assistant, result = _native_tool_pair()
+    result["toolUseResult"] = {"stdout": "duplicate output"}
+    session = _session([assistant, result])
+    assert session["unmatched_tool_results"] == []
+    assert "RED-FOX-23" in session["events"][0]["tool_calls"][0]["result"]
+
+
 def test_unknown_tool_payload_is_preserved_and_reported(tmp_path, capsys):
     assistant, result = _native_tool_pair()
     # Change only the captured tool name and extend its input to model a plugin.

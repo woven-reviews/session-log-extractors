@@ -638,7 +638,7 @@ def _questions(tool_input: Any) -> List[QuestionAnswer]:
             header=q.get("header", ""),
             options=[
                 cast(QuestionOption, o)
-                for o in q.get("options", [])
+                for o in (q["options"] if isinstance(q.get("options"), list) else [])
                 if isinstance(o, dict)
             ],
         )
@@ -771,9 +771,24 @@ class _ClaudeInterpreter:
                 self.files_changed.append(path)
 
     def results(self, entry: Dict[str, Any]) -> None:
-        for block in _content_blocks(entry):
-            if not isinstance(block, dict) or block.get("type") != "tool_result":
-                continue
+        blocks = [
+            block
+            for block in _content_blocks(entry)
+            if isinstance(block, dict) and block.get("type") == "tool_result"
+        ]
+        if not blocks and entry.get("toolUseResult") is not None:
+            # Older records have no call ID. Retain the complete payload without
+            # assigning it to a nearby call or duplicating a recorded block.
+            self.unmatched_tool_results.append(
+                ToolResult(
+                    tool_call_id=None,
+                    ts=entry.get("timestamp"),
+                    content=entry["toolUseResult"],
+                    is_error=False,
+                    **_message_identity(entry),
+                )
+            )
+        for block in blocks:
             tool_id = block.get("tool_use_id")
             record = ToolResult(
                 tool_call_id=tool_id if isinstance(tool_id, str) else None,
