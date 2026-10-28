@@ -160,13 +160,35 @@ def test_export_preserves_recorded_result_provenance(limit):
     assert call["result"] == "retained"
 
 
-def test_export_omits_internal_interpretation_without_mutating_it():
+def test_export_reads_json_fields_without_mutating_session_semantics():
     session = Session(
         harness="claude",
         session_id="s",
         events=[],
-        interpretation={"interactions": [{"plans": [{"decision": "approved"}]}]},
+        interactions=[
+            {
+                "user_text": "Approve this plan",
+                "plans": [
+                    {
+                        "plan": "Build it",
+                        "decision": "approved",
+                        "edited_plan": "",
+                        "message": "",
+                    }
+                ],
+            }
+        ],
+        files_changed=["/workspace/app.py"],
     )
     original = deepcopy(session)
-    assert "interpretation" not in export_session(session)
+    assert export_session(session) == {
+        "schema": "raw-session-log/1",
+        "harness": "claude",
+        "session_id": "s",
+        "cwd": None,
+        "started_at": None,
+        "models": [],
+        "events": [],
+        "truncation": {"tool_result_max_bytes": 4096},
+    }
     assert session == original

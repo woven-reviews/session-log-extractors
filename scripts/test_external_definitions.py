@@ -68,7 +68,7 @@ def test_local_definitions_are_not_read_or_added_to_the_envelope(tmp_path, monke
     monkeypatch.setattr(Path, "open", guarded_open)
     transcript = FIXTURES / "skill_command.jsonl"
     session = claude.interpret_source(claude.read_source(transcript))
-    interactions = session["interpretation"]["interactions"]
+    interactions = session["interactions"]
     assert interactions[0]["skills_used"] == ["fixture-skill"]
     assert interactions[1]["command"] == "/fixture-command"
     envelope = claude.extract_transcript(transcript)

@@ -85,8 +85,7 @@ def _fixture_entries(name):
 
 def _activity(entries):
     session = eclog.interpret_source(ClaudeSource(Path("session.jsonl"), entries))
-    semantics = session["interpretation"]
-    return semantics["interactions"], semantics["files_changed"]
+    return session["interactions"], session["files_changed"]
 
 
 def test_skill_tool_use_is_recorded():
@@ -1724,7 +1723,12 @@ def test_images_remain_owned_by_their_recorded_user_event():
     assistant["message"]["content"].extend(deepcopy(images))
     result["message"]["content"].extend(deepcopy(images))
     entries = [image_entries[0], assistant, result, deepcopy(image_entries[0])]
-    events = build_events(entries)
+    session = eclog.interpret_source(ClaudeSource(Path("s.jsonl"), entries))
+    events = session["events"]
+    assert [interaction["images"] for interaction in session["interactions"]] == [
+        events[0]["images"],
+        events[2]["images"],
+    ]
     assert [e["role"] for e in events] == ["user", "assistant", "user"]
     assert [len(e.get("images", [])) for e in events] == [4, 0, 4]
     assert events[0]["images"] == events[2]["images"]

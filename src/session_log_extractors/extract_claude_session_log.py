@@ -46,7 +46,16 @@ from session_log_extractors.session_log_envelope import (
     warn_if_oversized,
     write_envelope,
 )
-from session_log_extractors.session_model import Session
+from session_log_extractors.session_model import (
+    Event,
+    Interaction,
+    PermissionDenial,
+    PlanDecision,
+    QuestionAnswer,
+    Session,
+    SubagentSummary,
+    ToolCall,
+)
 
 # --------------------------------------------------------------------------- #
 # Constants
@@ -506,12 +515,12 @@ def _parse_chosen(
 
 def option_qa_from_result(
     entry: Dict[str, Any], pending_questions: Dict[str, Any]
-) -> List[Dict[str, Any]]:
+) -> List[QuestionAnswer]:
     """Build structured Q/options/choice records for an AskUserQuestion result.
 
     Returns [] for any tool_result that isn't a tracked pop-up question.
     """
-    out: List[Dict[str, Any]] = []
+    out: List[QuestionAnswer] = []
     for block in _content_blocks(entry):
         if not isinstance(block, dict) or block.get("type") != "tool_result":
             continue
@@ -538,7 +547,7 @@ def option_qa_from_result(
 
 
 def apply_plan_decisions(
-    entry: Dict[str, Any], pending_plans: Dict[str, Dict[str, Any]]
+    entry: Dict[str, Any], pending_plans: Dict[str, PlanDecision]
 ) -> bool:
     """Record the human's approve/reject decision on any plan in this result.
 
@@ -571,13 +580,13 @@ def apply_plan_decisions(
 
 def permission_denials_from_result(
     entry: Dict[str, Any], tool_uses: Dict[str, str]
-) -> List[Dict[str, Any]]:
+) -> List[PermissionDenial]:
     """Build a record for each permission the human denied in this tool_result.
 
     ``tool_uses`` maps a tool_use id to its recorded tool label ("Name — descriptor")
     so we can name the tool that was denied. Returns [] when nothing was denied.
     """
-    out: List[Dict[str, Any]] = []
+    out: List[PermissionDenial] = []
     for block in _content_blocks(entry):
         if not isinstance(block, dict) or block.get("type") != "tool_result":
             continue
@@ -615,7 +624,7 @@ def _parse_ts(ts: Optional[str]):
         return None
 
 
-def _interaction(text: str, timestamp: Optional[str]) -> Dict[str, Any]:
+def _interaction(text: str, timestamp: Optional[str]) -> Interaction:
     """Semantic activity following a human input, without display summaries."""
     return {
         "user_text": text,
@@ -639,13 +648,13 @@ class _ClaudeInterpreter:
     """One native-record traversal for export payloads and semantic activity."""
 
     def __init__(self):
-        self.events: List[Dict[str, Any]] = []
-        self.interactions: List[Dict[str, Any]] = []
+        self.events: List[Event] = []
+        self.interactions: List[Interaction] = []
         self.files_changed: List[str] = []
-        self.current: Optional[Dict[str, Any]] = None
-        self.pending_calls: Dict[str, Dict[str, Any]] = {}
+        self.current: Optional[Interaction] = None
+        self.pending_calls: Dict[str, ToolCall] = {}
         self.pending_questions: Dict[str, Any] = {}
-        self.pending_plans: Dict[str, Dict[str, Any]] = {}
+        self.pending_plans: Dict[str, PlanDecision] = {}
         self.tool_uses: Dict[str, str] = {}
         self.pending_subagents = 0
 
@@ -675,7 +684,9 @@ class _ClaudeInterpreter:
         if not text and not images and not command:
             return
         current = _interaction(text, entry.get("timestamp"))
-        current["images"] = images
+        current["images"] = [
+            image_from_base64(src["data"], src.get("media_type")) for src in images
+        ]
         if command:
             args = _COMMAND_ARGS.search(raw)
             current["command"] = command
@@ -692,10 +703,7 @@ class _ClaudeInterpreter:
                 len(self.events),
                 entry.get("timestamp"),
                 export_text,
-                [
-                    image_from_base64(src["data"], src.get("media_type"))
-                    for src in images
-                ],
+                current["images"],
             )
         )
 
@@ -704,7 +712,7 @@ class _ClaudeInterpreter:
             self.current = _interaction("", entry.get("timestamp"))
             self.interactions.append(self.current)
         texts: List[str] = []
-        calls: List[Dict[str, Any]] = []
+        calls: List[ToolCall] = []
         for block in _content_blocks(entry):
             if not isinstance(block, dict):
                 continue
@@ -722,17 +730,17 @@ class _ClaudeInterpreter:
                 )
             )
 
-    def call(self, block: Dict[str, Any]) -> Dict[str, Any]:
+    def call(self, block: Dict[str, Any]) -> ToolCall:
         name = block.get("name", "tool")
         tool_input = block.get("input")
         # Claude historically exports unanswered calls with an explicit null result.
-        call = {"name": name, "input": tool_input, "result": None}
+        call = ToolCall(name=name, input=tool_input, result=None)
         tool_id = block.get("id")
         if isinstance(tool_id, str) and tool_id:
             self.pending_calls[tool_id] = call
         self.current["tool_calls"].append(call)
         if name in PLAN_TOOLS:
-            record = {
+            record: PlanDecision = {
                 "plan": tool_input.get("plan", "")
                 if isinstance(tool_input, dict)
                 else "",
@@ -791,10 +799,9 @@ class _ClaudeInterpreter:
             option_qa_from_result(entry, self.pending_questions)
         )
 
-    def finish(self) -> Dict[str, Any]:
+    def finish(self) -> None:
         if self.interactions:
             self.interactions[-1]["subagent_count"] += self.pending_subagents
-        return {"interactions": self.interactions, "files_changed": self.files_changed}
 
 
 def build_events(
@@ -861,14 +868,15 @@ def interpret_source(
     adapter = _ClaudeInterpreter()
     for entry in source.entries:
         adapter.consume(entry)
-    interpretation = adapter.finish()
+    adapter.finish()
     if not adapter.events:
         return None
     return Session(
         harness="claude",
         session_id=source.path.stem,
         events=adapter.events,
-        interpretation=interpretation,
+        interactions=adapter.interactions,
+        files_changed=adapter.files_changed,
         cwd=session_cwd(source.entries),
         started_at=first_timestamp(source.entries),
         models=session_models(source.entries),
@@ -880,12 +888,12 @@ def interpret_source(
 # --------------------------------------------------------------------------- #
 
 
-def summarize_subagent(path: Path) -> Optional[Dict[str, Any]]:
+def summarize_subagent(path: Path) -> Optional[SubagentSummary]:
     """Read and summarize a sidecar; retained for existing callers."""
     return summarize_subagent_source(read_source(path, read_metadata=True))
 
 
-def summarize_subagent_source(source: ClaudeSource) -> Optional[Dict[str, Any]]:
+def summarize_subagent_source(source: ClaudeSource) -> Optional[SubagentSummary]:
     """Condense supplied sidecar records into task / tools / result without I/O.
 
     No Task tool-use id links sidecars to main records; attribution remains
@@ -933,7 +941,7 @@ def _subagent_activity(entries: List[Dict[str, Any]]) -> Tuple[List[str], str]:
     return tools, result
 
 
-def load_subagents(transcript: Path) -> List[Dict[str, Any]]:
+def load_subagents(transcript: Path) -> List[SubagentSummary]:
     """Summarize every subagent transcript for this session, oldest first."""
     subs = [
         summary
@@ -945,13 +953,13 @@ def load_subagents(transcript: Path) -> List[Dict[str, Any]]:
 
 
 def attribute_subagents(
-    interactions: List[Dict[str, Any]], subs: List[Dict[str, Any]]
+    interactions: List[Interaction], subs: List[SubagentSummary]
 ) -> None:
     """Associate sidecars with the latest human interaction before their start."""
     parsed = [(_parse_ts(t["timestamp"]), t) for t in interactions]
     for s in subs:
         st = _parse_ts(s.get("start_ts"))
-        target: Optional[Dict[str, Any]] = None
+        target: Optional[Interaction] = None
         if st is not None:
             for ts, t in parsed:  # turns are in order; last match wins
                 if ts is not None and ts <= st:

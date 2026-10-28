@@ -83,10 +83,12 @@ access, construct `ClaudeSource(path, entries, metadata)` directly and call
 `summarize_subagent_source(source)`. Images remain inline in the recorded entries.
 Claude interprets main records once into the shared session and exports with
 `export_session`; byte limits apply only at export. `interpret_source` accepts
-no result cap. Its internal `interpretation` metadata retains questions, plans,
-denials, skill/command invocations, shell actions, changed files, and subagent
-counts without rendered summaries. The shared exporter omits this metadata from
-the existing JSON schema. `build_events` remains an export convenience wrapper;
+no result cap. Typed `Session.interactions` records retain questions, plans,
+denials, skill/command invocations, shell actions, and subagent counts without
+rendered summaries; `Session.files_changed` retains targeted file paths. The
+shared exporter reads the fields in the current JSON schema, leaving these
+additional session fields available to other consumers. `build_events` remains
+an export convenience wrapper;
 `Turn` and `build_turns` have been removed. Main JSON extraction omits sidecars;
 `load_subagents(path)` retains its timestamp-ordered summaries for existing callers.
 
