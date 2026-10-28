@@ -7,7 +7,7 @@ fields in the current JSON schema and preserves nested event payloads. Additiona
 session semantics remain available on the model for other consumers.
 """
 
-from typing import Literal, NotRequired, Required, TypeAlias, TypedDict
+from typing import Literal, Never, NotRequired, Required, TypeAlias, TypedDict
 
 from session_log_extractors.tool_inputs import (
     JsonValue,
@@ -114,6 +114,7 @@ class UserMessage(MessageContent):
     """A recorded user input, with command actions recognized explicitly."""
 
     role: Literal["user"]
+    tool_calls: NotRequired[Never]
     command: NotRequired[str]
     command_args: NotRequired[str | None]
     shell_command: NotRequired[str]

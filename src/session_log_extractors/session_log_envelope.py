@@ -26,9 +26,18 @@ import json
 import sys
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, cast
+from typing import Any, Dict, List, Optional, TypedDict
 
-from session_log_extractors.session_model import Event, Session
+from session_log_extractors.session_model import (
+    AssistantMessage,
+    Event,
+    Image,
+    Message,
+    Session,
+    ToolCall,
+    UserMessage,
+)
+from session_log_extractors.tool_inputs import JsonValue
 
 SCHEMA = "raw-session-log/1"
 
@@ -70,7 +79,7 @@ def media_type_for_ext(ext: Optional[str]) -> Optional[str]:
     return _MEDIA_TYPE_BY_EXT.get(ext.lower().lstrip("."))
 
 
-def image_from_bytes(raw: bytes, media_type: Optional[str]) -> Dict[str, Any]:
+def image_from_bytes(raw: bytes, media_type: Optional[str]) -> Image:
     """An inline image entry from decoded bytes (Codex / Copilot path)."""
     return {
         "media_type": media_type or "application/octet-stream",
@@ -79,7 +88,7 @@ def image_from_bytes(raw: bytes, media_type: Optional[str]) -> Dict[str, Any]:
     }
 
 
-def image_from_base64(data: str, media_type: Optional[str]) -> Dict[str, Any]:
+def image_from_base64(data: str, media_type: Optional[str]) -> Image:
     """An inline image entry from an already-base64 payload (Claude path).
 
     Claude Code stores pasted images as base64 in the transcript, so re-encoding
@@ -99,7 +108,7 @@ def image_from_base64(data: str, media_type: Optional[str]) -> Dict[str, Any]:
     }
 
 
-def unavailable_image(ref: Any) -> Dict[str, Any]:
+def unavailable_image(ref: Any) -> Image:
     """An image the extractor knew about but could not resolve to bytes.
 
     Recorded rather than skipped: a session where the candidate pasted a
@@ -109,9 +118,17 @@ def unavailable_image(ref: Any) -> Dict[str, Any]:
     return {"unavailable": True, "ref": ref if isinstance(ref, str) else repr(ref)}
 
 
+class TruncatedResult(TypedDict):
+    """The export policy's textual result and byte-count metadata."""
+
+    result: str | None
+    result_bytes: int
+    result_truncated: bool
+
+
 def truncate_result(
     text: Any, max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES
-) -> Dict[str, Any]:
+) -> TruncatedResult:
     """Cap a tool result, recording its original size.
 
     Truncation is done on UTF-8 bytes (the budget that matters for file size) but
@@ -135,9 +152,9 @@ def user_event(
     index: int,
     timestamp: Optional[str],
     text: str,
-    images: Optional[List[Dict[str, Any]]] = None,
-) -> Dict[str, Any]:
-    event: Dict[str, Any] = {
+    images: Optional[List[Image]] = None,
+) -> UserMessage:
+    event: UserMessage = {
         "i": index,
         "ts": timestamp,
         "role": "user",
@@ -152,9 +169,9 @@ def assistant_event(
     index: int,
     timestamp: Optional[str],
     text: str,
-    tool_calls: Optional[List[Dict[str, Any]]] = None,
-) -> Dict[str, Any]:
-    event: Dict[str, Any] = {
+    tool_calls: Optional[List[ToolCall]] = None,
+) -> AssistantMessage:
+    event: AssistantMessage = {
         "i": index,
         "ts": timestamp,
         "role": "assistant",
@@ -170,15 +187,22 @@ def tool_call(
     tool_input: Any,
     result: Any = None,
     max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
-) -> Dict[str, Any]:
+) -> ToolCall:
     """One tool call with its input verbatim and its result capped.
 
     The input is kept in full: it is usually small, and it is the part that shows
     what the agent was actually asked to do.
     """
-    call: Dict[str, Any] = {"name": name, "input": _jsonable(tool_input)}
-    call.update(truncate_result(result, max_bytes))
+    call = ToolCall(name=name, input=_jsonable(tool_input))
+    attach_result(call, truncate_result(result, max_bytes))
     return call
+
+
+def attach_result(call: ToolCall, result: TruncatedResult) -> None:
+    """Attach the export policy's result fields without an unchecked dict update."""
+    call["result"] = result["result"]
+    call["result_bytes"] = result["result_bytes"]
+    call["result_truncated"] = result["result_truncated"]
 
 
 def build_envelope(
@@ -233,40 +257,43 @@ def export_session(
     return envelope
 
 
-def _export_event(event: Mapping[str, Any], limit: int) -> Event:
-    """Select current message fields without serializing semantic model fields."""
-    exported: Dict[str, Any] = {
-        key: event[key]
-        for key in ("i", "role", "ts", "text", "images", "tool_calls")
-        if key in event
-    }
-    if event.get("tool_calls"):
-        exported["tool_calls"] = [
-            _export_call(call, limit) for call in event["tool_calls"]
-        ]
-    # The projection keeps the required event keys and only schema-owned fields.
-    return cast(Event, exported)
-
-
-def _export_call(call: Mapping[str, Any], limit: int) -> Dict[str, Any]:
-    exported: Dict[str, Any] = {
-        key: call[key]
-        for key in (
-            "name",
-            "input",
-            "result",
-            "result_bytes",
-            "result_truncated",
-            "is_error",
-            "error",
+def _export_event(event: Message, limit: int) -> Event:
+    """Build a typed export record from exactly the current schema fields."""
+    exported = Event(i=event["i"], role=event["role"])
+    if "ts" in event:
+        exported["ts"] = event["ts"]
+    if "text" in event:
+        exported["text"] = event["text"]
+    if "images" in event:
+        exported["images"] = event["images"]
+    if "tool_calls" in event:
+        calls = event["tool_calls"]
+        exported["tool_calls"] = (
+            None if calls is None else [_export_call(call, limit) for call in calls]
         )
-        if key in call
-    }
-    if "result" in call and (call["result"] is None or isinstance(call["result"], str)):
-        capped = truncate_result(call["result"], limit)
+    return exported
+
+
+def _export_call(call: ToolCall, limit: int) -> ToolCall:
+    exported = ToolCall(name=call["name"])
+    if "input" in call:
+        exported["input"] = call["input"]
+    if "result" in call:
+        exported["result"] = call["result"]
+    if "result_bytes" in call:
+        exported["result_bytes"] = call["result_bytes"]
+    if "result_truncated" in call:
+        exported["result_truncated"] = call["result_truncated"]
+    if "is_error" in call:
+        exported["is_error"] = call["is_error"]
+    if "error" in call:
+        exported["error"] = call["error"]
+    result = call.get("result")
+    if "result" in call and (result is None or isinstance(result, str)):
+        capped = truncate_result(result, limit)
         capped["result_bytes"] = call.get("result_bytes", capped["result_bytes"])
         capped["result_truncated"] |= call.get("result_truncated", False)
-        exported.update(capped)
+        attach_result(exported, capped)
     return exported
 
 
@@ -309,7 +336,7 @@ def _human_size(size: int) -> str:
     return f"{size} B"
 
 
-def _jsonable(value: Any) -> Any:
+def _jsonable(value: Any) -> JsonValue:
     """Coerce a tool input to something json.dumps can handle.
 
     Tool inputs come straight from a transcript, so they are normally plain JSON

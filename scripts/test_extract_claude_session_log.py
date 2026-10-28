@@ -1875,3 +1875,21 @@ def test_unknown_tool_payload_is_preserved_and_reported(tmp_path, capsys):
     diagnostic = capsys.readouterr().err
     assert "unsupported tool input schemas" in diagnostic
     assert diagnostic.count("plugin__DeployService") == 1
+
+
+def test_question_options_are_checked_without_losing_recorded_payload():
+    entries = _fixture_entries("questions.jsonl")
+    block = entries[1]["message"]["content"][0]
+    options = block["input"]["questions"][0]["options"]
+    # Extend a recorded option and introduce malformed known fields. Semantic
+    # parsing uses checked options while the complete native input survives.
+    options[0]["preview"] = {"markdown": "**keep this**"}
+    options.extend([{"label": 1}, {"label": "bad", "description": None}])
+    session = _session(entries)
+    call = session["events"][1]["tool_calls"][0]
+    assert call["input"] == block["input"]
+    assert call["questions"][0]["options"] == options[:-2]
+    assert call["questions"][0]["options"][0]["preview"] == {
+        "markdown": "**keep this**"
+    }
+    assert call["questions"][0]["chosen_labels"] == ["section", "manufacturer_part_no"]

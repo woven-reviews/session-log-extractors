@@ -44,7 +44,7 @@ import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, List, Optional
 
 from session_log_extractors import copilot_sources
 from session_log_extractors.copilot_sources import CopilotSource, ImageInputs
@@ -61,7 +61,7 @@ from session_log_extractors.session_log_envelope import (
     warn_if_oversized,
     write_envelope,
 )
-from session_log_extractors.session_model import Message, Session
+from session_log_extractors.session_model import Image, Message, Session
 
 _NOISE_TAG_BLOCK = re.compile(
     r"<(system-reminder|system-notification|local-command-stdout|local-command-stderr|"
@@ -486,6 +486,11 @@ def _turn_for(turns: List[Turn], ts: Optional[str]) -> Optional[Turn]:
     """
     if not turns:
         return None
+    return _turn_for_nonempty(turns, ts)
+
+
+def _turn_for_nonempty(turns: List[Turn], ts: Optional[str]) -> Turn:
+    """Select from a caller-checked nonempty list of turns."""
     at = _parse_ts(ts)
     if at is None:
         return turns[0]
@@ -651,9 +656,7 @@ def _build_turn_objects(  # noqa: C901, PLR0912, PLR0915
             and _DATA_IMAGE_URL.match(data_url)
         ):
             continue
-        target = cast(
-            Turn, _turn_for(built, attachment.get("timestamp"))
-        )  # built is nonempty
+        target = _turn_for_nonempty(built, attachment.get("timestamp"))
         ref = {"name": name}
         for key in ("path", "type", "data_url", "data", "media_type"):
             if attachment.get(key):
@@ -679,14 +682,14 @@ def _image_source(ref: Dict[str, Any]) -> Optional[str]:
 
 def envelope_images(
     refs: List[Dict[str, str]], image_inputs: ImageInputs
-) -> List[Dict[str, Any]]:
+) -> List[Image]:
     """Resolve Copilot image refs to inline base64 entries.
 
     Copilot stores image payloads outside DB turns. Image tokens and timestamped
     event attachments both become refs; missing sources remain visible as
     unavailable images.
     """
-    images: List[Dict[str, Any]] = []
+    images: List[Image] = []
     for ref in refs:
         decoded = _inline_image_bytes(ref)
         if decoded is None and not _has_inline_image(ref):
@@ -706,7 +709,7 @@ def build_events(
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
     *,
     image_inputs: Optional[ImageInputs] = None,
-) -> List[Dict[str, Any]]:
+) -> List[Message]:
     """Produce raw-envelope events from already-built Copilot turns.
 
     Copilot's store hands us whole turns rather than an event stream, so this
@@ -719,7 +722,7 @@ def build_events(
     ``tool_result_max_bytes``). Older turns that only have file-edit records fall
     back to a single grouped assistant event with no per-call timestamp or result.
     """
-    events: List[Dict[str, Any]] = []
+    events: List[Message] = []
     index = 0
 
     for turn in turns:
@@ -880,7 +883,7 @@ def interpret_source(
     return Session(
         harness="copilot",
         session_id=output_identifier(session),
-        events=cast(List[Message], events),
+        events=events,
         cwd=session.get("cwd"),
         started_at=session.get("created_at"),
         models=source.models,

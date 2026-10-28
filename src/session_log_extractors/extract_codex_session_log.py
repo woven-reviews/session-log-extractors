@@ -56,13 +56,14 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, cast
+from typing import Any, Dict, List, Optional, Tuple
 
 from session_log_extractors import codex_sources
 from session_log_extractors.codex_sources import CodexSource, ImageInputs
 from session_log_extractors.session_log_envelope import (
     DEFAULT_TOOL_RESULT_MAX_BYTES,
     assistant_event,
+    attach_result,
     build_envelope,
     image_from_bytes,
     media_type_for_ext,
@@ -74,7 +75,7 @@ from session_log_extractors.session_log_envelope import (
     warn_if_oversized,
     write_envelope,
 )
-from session_log_extractors.session_model import Message, Session
+from session_log_extractors.session_model import Image, Message, Session, ToolCall
 
 _IMAGE_EXT = {
     "image/png": "png",
@@ -373,6 +374,19 @@ def skill_refs_from_call(name: str, arguments: Any) -> List[Dict[str, Optional[s
 def skill_names_from_call(name: str, arguments: Any) -> List[str]:
     """Return skill names evidenced by a call (backwards-compatible helper)."""
     return [str(ref["name"]) for ref in skill_refs_from_call(name, arguments)]
+
+
+def _tool_name(payload: Dict[str, Any]) -> str:
+    name = payload.get("name")
+    return name if isinstance(name, str) else "tool"
+
+
+def _is_process_rejection(result: object) -> bool:
+    return (
+        isinstance(result, str)
+        and "exec_command failed: CreateProcess" in result
+        and "rejected by user" in result.lower()
+    )
 
 
 def result_note(output: Any) -> str:
@@ -837,11 +851,7 @@ def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]: 
             if current is None:
                 current = Turn("", entry.get("timestamp"), pending_mode)
                 turns.append(current)
-            name = (
-                cast(str, payload.get("name"))
-                if isinstance(payload.get("name"), str)
-                else "tool"
-            )
+            name = _tool_name(payload)
             last_tool = name
             call_id = payload.get("call_id")
             if isinstance(call_id, str):
@@ -894,11 +904,7 @@ def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]: 
                 if ptype == "custom_tool_call_output"
                 else output
             )
-            if (
-                ptype == "custom_tool_call_output"
-                and "exec_command failed: CreateProcess" in cast(str, result)
-                and "rejected by user" in cast(str, result).lower()
-            ):
+            if ptype == "custom_tool_call_output" and _is_process_rejection(result):
                 current.permission_denials.append(
                     {"tool": call_names.get(call_id, "(tool call)"), "message": ""}
                 )
@@ -914,7 +920,7 @@ def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]: 
 
 def envelope_images(
     refs: List[Dict[str, Any]], image_inputs: Optional[ImageInputs] = None
-) -> List[Dict[str, Any]]:
+) -> List[Image]:
     """Interpret Codex image refs using supplied bytes as inline base64 entries.
 
     Codex records images out of band — as a filesystem path, a data URL, or raw
@@ -924,7 +930,7 @@ def envelope_images(
     screenshot we can no longer read" and "pasted nothing" are different facts,
     and only one of them is about the candidate.
     """
-    images: List[Dict[str, Any]] = []
+    images: List[Image] = []
     for ref in refs:
         decoded = _image_bytes_and_ext(ref, image_inputs)
         if decoded is None:
@@ -941,13 +947,13 @@ def build_events(  # noqa: C901, PLR0912, PLR0915
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
     *,
     image_inputs: Optional[ImageInputs] = None,
-) -> List[Dict[str, Any]]:
+) -> List[Message]:
     """Walk Codex entries in order, producing raw-envelope events.
 
     Retain native message, tool-result, and image interpretation.
     """
-    events: List[Dict[str, Any]] = []
-    pending_calls: Dict[object, Dict[str, Any]] = {}
+    events: List[Message] = []
+    pending_calls: Dict[object, ToolCall] = {}
     pending_user_images: List[Dict[str, Any]] = []
     pending_response_user: Optional[Tuple[str, Optional[str], List[Dict[str, Any]]]] = (
         None
@@ -1012,11 +1018,7 @@ def build_events(  # noqa: C901, PLR0912, PLR0915
 
         if ptype in ("function_call", "custom_tool_call"):
             flush_pending_response_user()
-            name = (
-                cast(str, payload.get("name"))
-                if isinstance(payload.get("name"), str)
-                else "tool"
-            )
+            name = _tool_name(payload)
             arguments = payload.get("arguments")
             if arguments is None:
                 arguments = payload.get("input")
@@ -1034,10 +1036,11 @@ def build_events(  # noqa: C901, PLR0912, PLR0915
             pending_call = pending_calls.pop(payload.get("call_id"), None)
             if pending_call is None:
                 continue
-            pending_call.update(
+            attach_result(
+                pending_call,
                 truncate_result(
                     _flatten_result_text(payload.get("output")), tool_result_max_bytes
-                )
+                ),
             )
             continue
 
@@ -1060,7 +1063,7 @@ def build_raw_envelope(
         Session(
             harness="codex",
             session_id=source.identifier,
-            events=cast(List[Message], events),
+            events=events,
             cwd=source.cwd,
             started_at=first_timestamp(entries),
             models=session_models(entries),

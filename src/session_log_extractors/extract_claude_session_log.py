@@ -25,7 +25,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple, cast
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from session_log_extractors import session_log_envelope
 from session_log_extractors.claude_sources import (
@@ -47,7 +47,6 @@ from session_log_extractors.session_log_envelope import (
     write_envelope,
 )
 from session_log_extractors.session_model import (
-    AssistantMessage,
     Message,
     NativeIdentity,
     PermissionDenial,
@@ -57,9 +56,12 @@ from session_log_extractors.session_model import (
     SubagentSummary,
     ToolCall,
     ToolResult,
-    UserMessage,
 )
-from session_log_extractors.tool_inputs import QuestionOption, input_schema
+from session_log_extractors.tool_inputs import (
+    QuestionOption,
+    input_schema,
+    is_question_option,
+)
 
 # --------------------------------------------------------------------------- #
 # Constants
@@ -488,8 +490,8 @@ def _result_block_text(block: Dict[str, Any]) -> str:
 
 
 def _parse_chosen(
-    question_text: str, options: List[Dict[str, Any]], result_text: str
-) -> Tuple[str, List[Dict[str, Any]]]:
+    question_text: str, options: Sequence[QuestionOption], result_text: str
+) -> Tuple[str, List[QuestionOption]]:
     """Pull the chosen answer for one question out of the result string.
 
     The AskUserQuestion result is self-describing, e.g.
@@ -513,7 +515,7 @@ def _parse_chosen(
             tail = parts[1]
             end = tail.find('"')
             val = tail[:end] if end != -1 else tail
-    chosen = [o for o in options if o.get("label") and o["label"] in val]
+    chosen = [o for o in options if (label := o.get("label")) and label in val]
     return val, chosen
 
 
@@ -536,13 +538,13 @@ def option_qa_from_result(
         for q in questions:
             if not isinstance(q, dict):
                 continue
-            options = [o for o in q.get("options", []) if isinstance(o, dict)]
+            options = _question_options(q.get("options"))
             val, chosen = _parse_chosen(q.get("question", ""), options, result_text)
             out.append(
                 {
                     "question": q.get("question", ""),
                     "header": q.get("header", ""),
-                    "options": cast(List[QuestionOption], options),
+                    "options": options,
                     "chosen_labels": [o["label"] for o in chosen],
                     "answer_text": val,
                 }
@@ -627,6 +629,12 @@ def _message_identity(entry: Dict[str, Any]) -> NativeIdentity:
     return identity
 
 
+def _question_options(value: object) -> List[QuestionOption]:
+    if not isinstance(value, list):
+        return []
+    return [option for option in value if is_question_option(option)]
+
+
 def _questions(tool_input: Any) -> List[QuestionAnswer]:
     if not isinstance(tool_input, dict) or not isinstance(
         tool_input.get("questions"), list
@@ -636,11 +644,7 @@ def _questions(tool_input: Any) -> List[QuestionAnswer]:
         QuestionAnswer(
             question=q.get("question", ""),
             header=q.get("header", ""),
-            options=[
-                cast(QuestionOption, o)
-                for o in (q["options"] if isinstance(q.get("options"), list) else [])
-                if isinstance(o, dict)
-            ],
+            options=_question_options(q.get("options")),
         )
         for q in tool_input["questions"]
         if isinstance(q, dict)
@@ -687,11 +691,7 @@ class _ClaudeInterpreter:
         command = command if command.startswith("/") else ""
         if not text and not images and not command:
             return
-        # The legacy builder constructs exactly this role/content schema.
-        message = cast(
-            UserMessage,
-            user_event(len(self.events), entry.get("timestamp"), text, images),
-        )
+        message = user_event(len(self.events), entry.get("timestamp"), text, images)
         message.update(_message_identity(entry))
         if command:
             args = _COMMAND_ARGS.search(raw)
@@ -717,14 +717,8 @@ class _ClaudeInterpreter:
             elif block.get("type") == "tool_use":
                 calls.append(self.call(block))
         if texts or calls:
-            message = cast(
-                AssistantMessage,
-                assistant_event(
-                    len(self.events),
-                    entry.get("timestamp"),
-                    "\n\n".join(texts),
-                    cast(List[Dict[str, Any]], calls),
-                ),
+            message = assistant_event(
+                len(self.events), entry.get("timestamp"), "\n\n".join(texts), calls
             )
             message.update(_message_identity(entry))
             self.events.append(message)

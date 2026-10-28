@@ -6,7 +6,7 @@ A schema name identifies recognized object inputs; unsupported names/shapes
 remain complete JSON values for retention and diagnostics.
 """
 
-from typing import Literal, TypeAlias, TypedDict, cast
+from typing import Literal, TypeAlias, TypedDict, TypeGuard
 
 JsonValue: TypeAlias = (
     str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
@@ -120,24 +120,33 @@ ToolInputSchema: TypeAlias = Literal[
     "unsupported",
 ]
 
-_INPUT_TYPES = {
-    "Bash": BashInput,
-    "Read": ReadInput,
-    "AskUserQuestion": AskUserQuestionInput,
-    "ExitPlanMode": ExitPlanModeInput,
-    "Skill": SkillInput,
-    "Agent": AgentInput,
-    "Write": WriteInput,
-    "Edit": EditInput,
-    "MultiEdit": MultiEditInput,
-    "NotebookEdit": NotebookEditInput,
-    "Create": WriteInput,
+_INPUT_SCHEMAS: dict[str, ToolInputSchema] = {
+    "Bash": "Bash",
+    "Read": "Read",
+    "AskUserQuestion": "AskUserQuestion",
+    "ExitPlanMode": "ExitPlanMode",
+    "Skill": "Skill",
+    "Agent": "Agent",
+    "Write": "Write",
+    "Edit": "Edit",
+    "MultiEdit": "MultiEdit",
+    "NotebookEdit": "NotebookEdit",
+    "Create": "Create",
 }
+
+
+def is_question_option(value: object) -> TypeGuard[QuestionOption]:
+    """Validate known option fields while retaining all additional recorded keys."""
+    return isinstance(value, dict) and all(
+        key not in value or isinstance(value[key], str)
+        for key in ("label", "description")
+    )
 
 
 def input_schema(name: str, payload: ToolInput) -> ToolInputSchema:
     """Name recognized object schemas without filtering or validating payloads."""
     canonical = "ExitPlanMode" if name == "exit_plan_mode" else name
-    if canonical in _INPUT_TYPES and isinstance(payload, dict):
-        return cast(ToolInputSchema, canonical)
+    schema = _INPUT_SCHEMAS.get(canonical)
+    if schema is not None and isinstance(payload, dict):
+        return schema
     return "unsupported"

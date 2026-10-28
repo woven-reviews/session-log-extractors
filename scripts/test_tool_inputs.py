@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from session_log_extractors.claude_sources import read_source
-from session_log_extractors.tool_inputs import input_schema
+from session_log_extractors.tool_inputs import input_schema, is_question_option
 
 FIXTURES = Path(__file__).parent / "fixtures" / "claude"
 
@@ -52,3 +52,34 @@ def test_unknown_tool_uses_explicit_fallback():
 
 def test_legacy_plan_name_has_the_same_input_schema():
     assert input_schema("exit_plan_mode", {"plan": "Build it"}) == "ExitPlanMode"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        1,
+        "option",
+        [],
+        {"label": 1},
+        {"description": None},
+        {"label": "x", "description": False},
+    ],
+)
+def test_option_guard_rejects_invalid_known_fields(value):
+    assert not is_question_option(value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {},
+        {"label": "x"},
+        {"description": "desc"},
+        {"label": "x", "description": "desc", "preview": {"nested": [None, True]}},
+    ],
+)
+def test_option_guard_preserves_additional_fields(value):
+    original = deepcopy(value)
+    assert is_question_option(value)
+    assert value == original
