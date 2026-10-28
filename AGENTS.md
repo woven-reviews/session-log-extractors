@@ -34,6 +34,33 @@ Their tests replace the CLI with a fake, so their code is still covered.
 Use diff-cover to identify missing coverage; add tests rather than lowering
 the threshold.
 
+## Shared model and export boundaries
+
+Preserve meaningful domain information in named, typed fields on the shared
+model, with named record types for structured concepts. Do not introduce generic
+`metadata`, `extra`, or `interpretation` dictionaries for information whose
+meaning is already known. Passing regression tests alone does not establish
+that a model or abstraction is appropriate; review where each semantic concept
+belongs and whether the model duplicates another representation.
+
+Use ordered, typed messages and their tool calls as the canonical conversation.
+Associate results, questions, and decisions using recorded message/tool IDs
+where available. Do not infer ownership from the most recent human message or
+timestamp proximity. If a consumer needs chronological interaction groups,
+derive that view from canonical records. Preserve unmatched records explicitly
+rather than inventing an association.
+
+Define specific input types for known tools and use a recursive JSON value type
+for opaque payloads. Types describe the fields we understand; they must not
+filter out additional recorded fields. Preserve unsupported tool payloads and
+report the missing schema support explicitly instead of silently treating them
+as fully understood. Schema recognition is distinct from runtime validation.
+
+Treat output compatibility as a serialization constraint. Exporters should read
+the fields required by their output schema, leaving other model fields available
+to consumers; do not serialize the whole model and then delete semantic fields.
+Keep complete inputs/results until export applies the configured output policy.
+
 ## Test data policy
 
 Prefer existing committed fixtures for new or substantially changed extractor
