@@ -84,6 +84,17 @@ access, construct `ClaudeSource(path, entries, metadata)` directly and call
 Main JSON extraction continues to omit sidecars; `load_subagents(path)` retains
 its timestamp-ordered summaries for existing callers.
 
+Copilot readers and discovery live in `session_log_extractors.copilot_sources`.
+`read_source(connection, session)` loads metadata, required database rows, models,
+and ordered state records into `CopilotSource`. The extractor's `read_source`
+also snapshots referenced external image bytes, following the Codex reader pattern.
+`interpret_source(source)` returns a shared `Session` without database or filesystem
+access; `build_raw_envelope(source)` exports it. For replay, construct `CopilotSource`
+directly from supplied rows, state records, and optional `image_inputs`.
+State JSONL is read and decoded once per extraction. Image bytes are keyed by
+recorded path, with media type inferred per reference; inline images remain in
+the records. CLI selection and read-only connection ownership stay in orchestration.
+
 ## Shared session/export boundary
 
 Adapters can supply `Session`, `Event`, `ToolCall`, and `Image` dictionaries from
@@ -183,8 +194,6 @@ Algorithms and interfaces are preserved in this tooling change.
 | `src/session_log_extractors/extract_codex_session_log.py` | `image_refs_from_event` | C901, PLR0912 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |
 | `src/session_log_extractors/extract_codex_session_log.py` | `skill_refs_from_call` | C901 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |
 | `src/session_log_extractors/extract_copilot_session_log.py` | `_build_turn_objects` | C901, PLR0912, PLR0915 | [QUAL-2519](https://linear.app/andela/issue/QUAL-2519) |
-| `src/session_log_extractors/extract_copilot_session_log.py` | `_permissions_from_events` | C901 | [QUAL-2519](https://linear.app/andela/issue/QUAL-2519) |
-| `src/session_log_extractors/extract_copilot_session_log.py` | `get_state_attachments` | C901, PLR0912 | [QUAL-2516](https://linear.app/andela/issue/QUAL-2516) |
 | `generate_claude_fixtures.py` | `run_case` | C901, PLR0912, PLR0915 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
 | `generate_codex_fixtures.py` | `capture_interactive` | C901, PLR0915 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
 | `generate_codex_fixtures.py` | `clean` | C901, PLR0912 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |

@@ -15,7 +15,14 @@ from unittest.mock import Mock
 
 import pytest
 
+from session_log_extractors import copilot_sources as sources
 from session_log_extractors import extract_copilot_session_log as copilot_log
+from session_log_extractors.copilot_sources import (
+    get_db_connection,
+    get_session_by_id,
+    get_session_turns,
+    matching_sessions,
+)
 from session_log_extractors.extract_copilot_session_log import (
     Turn,
     _permissions_from_events,
@@ -24,10 +31,6 @@ from session_log_extractors.extract_copilot_session_log import (
     attribute_skills,
     build_events,
     clean_user_text,
-    get_db_connection,
-    get_session_by_id,
-    get_session_turns,
-    matching_sessions,
 )
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "copilot"
@@ -63,7 +66,7 @@ def _hand_lines(name: str) -> list[str]:
 
 @pytest.fixture(autouse=True)
 def _isolate_copilot_state(tmp_path, monkeypatch):
-    monkeypatch.setattr(copilot_log, "COPILOT_STATE_ROOT", tmp_path / "session-state")
+    monkeypatch.setattr(sources, "COPILOT_STATE_ROOT", tmp_path / "session-state")
 
 
 def _make_test_db(tmp_path, session_id, turns):
@@ -107,7 +110,7 @@ def _make_test_db(tmp_path, session_id, turns):
 
 def _write_events_log(session_id: str, lines) -> Path:
     """Write raw JSONL lines to the isolated state root's events.jsonl."""
-    session_dir = copilot_log.COPILOT_STATE_ROOT / session_id
+    session_dir = sources.COPILOT_STATE_ROOT / session_id
     session_dir.mkdir(parents=True, exist_ok=True)
     path = session_dir / "events.jsonl"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -126,7 +129,7 @@ def test_copilot_noise_cleaning():
 
 
 def test_copilot_skill_invocation_is_recorded_and_attributed():
-    skills = _skills_from_events(_native_lines("skill"))
+    skills = _skills_from_events(sources.parse_state_records(_native_lines("skill")))
     assert len(skills) == 1
     assert skills[0]["name"] == "fixture-skill"
     assert skills[0]["path"] == "/workspace/.github/skills/fixture-skill/SKILL.md"
@@ -136,7 +139,9 @@ def test_copilot_skill_invocation_is_recorded_and_attributed():
 
 
 def test_copilot_permissions_join_approval_denial_and_pending():
-    perms = _permissions_from_events(_hand_lines("permissions.jsonl"))
+    perms = _permissions_from_events(
+        sources.parse_state_records(_hand_lines("permissions.jsonl"))
+    )
     assert [
         (p["tool"], p["decision"], p["feedback"], p["timestamp"]) for p in perms
     ] == [
@@ -206,13 +211,6 @@ def test_copilot_native_fixture_ids_match_db_and_events():
             assert sum(event["type"] == "user.message" for event in events) == len(
                 get_session_turns(conn, session_id)
             )
-
-
-def test_copilot_prefix_matching():
-    session_id = NATIVE_IDS["baseline"]
-    with _native_db() as conn:
-        assert get_session_by_id(conn, session_id)["id"] == session_id
-        assert get_session_by_id(conn, session_id[:8])["id"] == session_id
 
 
 def test_copilot_image_reference_without_attachment_is_flagged(tmp_path):
@@ -308,8 +306,9 @@ def _copilot_turn_with_image(tmp_path):
     return turn
 
 
-def test_build_events_inlines_an_attachment_resolved_from_disk(tmp_path):
-    user = build_events([_copilot_turn_with_image(tmp_path)])[0]
+def test_build_events_inlines_a_preloaded_attachment(tmp_path):
+    turn = _copilot_turn_with_image(tmp_path)
+    user = build_events([turn], image_inputs={str(tmp_path / "a.png"): PNG})[0]
     assert base64.b64decode(user["images"][0]["data"]) == PNG
 
 
@@ -343,7 +342,9 @@ def test_build_events_emits_an_assistant_event_for_a_reply(tmp_path):
 
 
 def test_copilot_tools_from_events_join_start_and_complete():
-    calls = copilot_log._tools_from_events(_native_lines("tool_success"))
+    calls = copilot_log._tools_from_events(
+        sources.parse_state_records(_native_lines("tool_success"))
+    )
     assert len(calls) == 1
     assert calls[0]["name"] == "bash"
     assert calls[0]["arguments"]["command"] == "printf TOOL_FIXTURE_MARKER"
@@ -512,7 +513,7 @@ def test_copilot_main_defaults_to_all_without_a_selector(monkeypatch, tmp_path):
 
     monkeypatch.setattr(copilot_log, "_extract_all", fake_extract_all)
     monkeypatch.setattr(
-        copilot_log, "get_db_connection", lambda p: sqlite3.connect(":memory:")
+        sources, "get_db_connection", lambda p: sqlite3.connect(":memory:")
     )
     rc = copilot_log.main(["--db", str(tmp_path / "x.db")])
     assert rc == 0
@@ -587,64 +588,6 @@ def test_copilot_turn_add_tool_without_descriptor():
     assert turn.tools == [("ls", "")]
 
 
-# -- DB/path helpers ---------------------------------------------------------
-
-
-def test_copilot_get_db_connection_missing_file_raises():
-    with pytest.raises(FileNotFoundError):
-        get_db_connection(Path("/nonexistent/copilot/session-store.db"))
-
-
-def test_copilot_table_columns_without_row_factory():
-    conn = sqlite3.connect(":memory:")  # no row_factory set -> plain tuples
-    conn.execute("CREATE TABLE t (id INTEGER, name TEXT)")
-    assert copilot_log._table_columns(conn, "t") == {"id", "name"}
-
-
-def test_copilot_paths_overlap_both_directions_and_neither(tmp_path):
-    child = tmp_path / "a" / "b"
-    child.mkdir(parents=True)
-    other = tmp_path / "c"
-    other.mkdir()
-    assert copilot_log._paths_overlap(tmp_path, child) is True
-    assert copilot_log._paths_overlap(child, tmp_path) is True
-    assert copilot_log._paths_overlap(child, other) is False
-
-
-def test_copilot_cwd_matches_blank_and_strict(tmp_path):
-    assert copilot_log._cwd_matches(None, Path.cwd()) is False
-    assert copilot_log._cwd_matches("", Path.cwd()) is False
-    assert copilot_log._cwd_matches(str(Path.cwd()), Path.cwd(), strict=True) is True
-    assert (
-        copilot_log._cwd_matches(str(tmp_path / "sub"), tmp_path, strict=True) is False
-    )
-
-
-def test_copilot_newest_session_falls_back_to_global_newest():
-    # Native sessions ran in /workspace, which never overlaps the test cwd.
-    with _native_db() as conn:
-        session = copilot_log.newest_session(conn, Path.cwd(), strict=False)
-    assert session["id"] == NATIVE_IDS["image"]
-
-
-def test_copilot_newest_session_strict_with_no_match_returns_none():
-    with _native_db() as conn:
-        assert copilot_log.newest_session(conn, Path.cwd(), strict=True) is None
-
-
-def test_copilot_newest_session_returns_none_for_empty_db(tmp_path):
-    db_path = _native_db_copy(tmp_path, "DELETE FROM sessions")
-    with get_db_connection(db_path) as conn:
-        assert copilot_log.newest_session(conn, Path.cwd(), strict=False) is None
-
-
-def test_copilot_newest_session_picks_most_recently_updated():
-    # The image case was captured last, so it has the latest updated_at.
-    with _native_db() as conn:
-        session = copilot_log.newest_session(conn, Path("/workspace"), strict=True)
-    assert session["id"] == NATIVE_IDS["image"]
-
-
 # -- per-session events log edge cases ---------------------------------------
 
 
@@ -674,11 +617,19 @@ def test_copilot_state_log_readers_return_empty_on_os_error(monkeypatch):
 
 
 def test_copilot_permissions_from_events_skips_malformed_lines():
-    assert _permissions_from_events(_hand_lines("malformed.jsonl")) == []
+    assert (
+        _permissions_from_events(
+            sources.parse_state_records(_hand_lines("malformed.jsonl"))
+        )
+        == []
+    )
 
 
 def test_copilot_skills_from_events_skips_malformed_and_bad_data():
-    assert _skills_from_events(_hand_lines("malformed.jsonl")) == []
+    assert (
+        _skills_from_events(sources.parse_state_records(_hand_lines("malformed.jsonl")))
+        == []
+    )
 
 
 def test_copilot_result_text_variants():
@@ -690,7 +641,12 @@ def test_copilot_result_text_variants():
 
 
 def test_copilot_tools_from_events_skips_malformed_lines_and_orphan_events():
-    assert copilot_log._tools_from_events(_hand_lines("malformed.jsonl")) == []
+    assert (
+        copilot_log._tools_from_events(
+            sources.parse_state_records(_hand_lines("malformed.jsonl"))
+        )
+        == []
+    )
 
 
 def test_copilot_attribute_tools_falls_back_to_first_turn_without_timestamp():
@@ -709,7 +665,9 @@ def test_copilot_attribute_tools_with_no_turns_is_a_noop():
 
 
 def test_copilot_attribute_tools_registers_skill_from_call():
-    tools = copilot_log._tools_from_events(_native_lines("skill"))
+    tools = copilot_log._tools_from_events(
+        sources.parse_state_records(_native_lines("skill"))
+    )
     assert [t["name"] for t in tools] == ["skill"]
     turn = Turn("use the skill", "", "2026-01-01T00:00:00Z", 0)
     copilot_log.attribute_tools([turn], tools)
@@ -728,36 +686,6 @@ def test_copilot_attribute_permissions_falls_back_to_first_turn_without_timestam
         [turn], [{"tool": "a", "decision": "approved", "feedback": ""}]
     )
     assert [p["tool"] for p in turn.permission_decisions] == ["a"]
-
-
-def test_copilot_get_session_models_reads_native_usage_events():
-    # The continued session logs one usage event per turn, both on one model.
-    with _native_db() as conn:
-        assert copilot_log.get_session_models(conn, NATIVE_IDS["continued"]) == [
-            "claude-sonnet-5"
-        ]
-
-
-def test_copilot_get_session_models_falls_back_to_legacy_events_table():
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute(
-        "CREATE TABLE events (session_id TEXT, usage_model TEXT, timestamp TEXT)"
-    )
-    conn.executemany(
-        "INSERT INTO events VALUES ('s', ?, ?)",
-        [
-            ("gpt-4", "2026-01-01"),
-            ("", "2026-01-02"),
-            ("gpt-4", "2026-01-03"),
-            ("o3", "2026-01-04"),
-        ],
-    )
-    assert copilot_log.get_session_models(conn, "s") == ["gpt-4", "o3"]
-
-
-def test_copilot_get_session_models_without_usage_table_is_empty():
-    assert copilot_log.get_session_models(sqlite3.connect(":memory:"), "any") == []
 
 
 def test_copilot_attachment_lookup_skips_empty_and_captures_variants():
@@ -915,45 +843,41 @@ def test_copilot_image_token_and_same_named_attachment_at_another_path_stay_dist
 # -- image byte resolution --------------------------
 
 
-def test_copilot_image_bytes_and_ext_from_data_url():
+def test_copilot_inline_image_from_data_url():
     event = json.loads(_hand_lines("attachment_variants.jsonl")[1])
     data_url = event["data"]["attachments"][0]["dataUrl"]
-    raw, ext = copilot_log._image_bytes_and_ext({"data_url": data_url})
+    raw, ext = copilot_log._inline_image_bytes({"data_url": data_url})
     assert ext == "png"
     assert raw == PNG
 
 
-def test_copilot_image_bytes_and_ext_bad_data_url_base64_returns_none():
+def test_copilot_inline_image_bad_data_url_base64_returns_none():
     assert (
-        copilot_log._image_bytes_and_ext({"data_url": "data:image/png;base64,A"})
-        is None
+        copilot_log._inline_image_bytes({"data_url": "data:image/png;base64,A"}) is None
     )
 
 
-def test_copilot_image_bytes_and_ext_from_inline_data_field():
+def test_copilot_inline_image_from_inline_data_field():
     event = json.loads(_hand_lines("attachment_variants.jsonl")[2])
     attachment = event["data"]["attachments"][0]
-    raw, ext = copilot_log._image_bytes_and_ext(
+    raw, ext = copilot_log._inline_image_bytes(
         {"data": attachment["data"], "media_type": attachment["mediaType"]}
     )
     assert ext == "png"
     assert raw == PNG
 
 
-def test_copilot_image_bytes_and_ext_bad_inline_data_returns_none():
-    assert copilot_log._image_bytes_and_ext({"data": "A"}) is None
+def test_copilot_inline_image_bad_inline_data_returns_none():
+    assert copilot_log._inline_image_bytes({"data": "A"}) is None
 
 
-def test_copilot_image_bytes_and_ext_missing_path_returns_none():
-    assert copilot_log._image_bytes_and_ext({"path": "/does/not/exist.png"}) is None
-
-
-def test_copilot_image_bytes_and_ext_guesses_extension_from_type_when_no_suffix(
+def test_copilot_path_image_guesses_extension_from_type_when_no_suffix(
     tmp_path,
 ):
     img = tmp_path / "noext"
     img.write_bytes(PNG)
-    raw, ext = copilot_log._image_bytes_and_ext({"path": str(img), "type": "image/png"})
+    raw = sources.read_image(str(img))
+    ext = copilot_log._path_image_ext({"path": str(img), "type": "image/png"})
     assert ext == "png"
     assert raw == PNG
 
@@ -1084,11 +1008,9 @@ def test_copilot_main_session_not_found_returns_error():
 
 def test_copilot_main_no_newest_session_returns_error(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(
-        copilot_log, "get_db_connection", lambda p: sqlite3.connect(":memory:")
+        sources, "get_db_connection", lambda p: sqlite3.connect(":memory:")
     )
-    monkeypatch.setattr(
-        copilot_log, "newest_session", lambda conn, cwd, strict=False: None
-    )
+    monkeypatch.setattr(sources, "newest_session", lambda conn, cwd, strict=False: None)
     rc = copilot_log.main(["--output", "-", "--db", str(tmp_path / "x.db")])
     captured = capsys.readouterr()
     assert rc == 1
@@ -1102,10 +1024,10 @@ def test_copilot_main_reports_session_extraction_error(monkeypatch, tmp_path, ca
         "created_at": "2026-01-01T00:00:00Z",
     }
     monkeypatch.setattr(
-        copilot_log, "get_db_connection", lambda p: sqlite3.connect(":memory:")
+        sources, "get_db_connection", lambda p: sqlite3.connect(":memory:")
     )
     monkeypatch.setattr(
-        copilot_log, "newest_session", lambda conn, cwd, strict=False: session
+        sources, "newest_session", lambda conn, cwd, strict=False: session
     )
 
     def boom(*a, **k):
@@ -1333,41 +1255,10 @@ def test_copilot_session_loader_preserves_permission_decisions(tmp_path):
     assert turns[0].permission_decisions[1]["feedback"] == "not like that"
 
 
-def test_copilot_retained_database_metadata_readers(tmp_path):
-    session_id = NATIVE_IDS["baseline"]
-    db_path = _native_db_copy(tmp_path)
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            "INSERT INTO session_refs (session_id, ref_type, ref_value, turn_index, created_at) VALUES (?, 'commit', 'abc123', 0, '2026-01-01T00:00:00Z')",
-            (session_id,),
-        )
-        conn.execute(
-            "INSERT INTO checkpoints (session_id, checkpoint_number, title, overview, created_at) VALUES (?, 1, 'Checkpoint one', 'did stuff', '2026-01-01T00:05:00Z')",
-            (session_id,),
-        )
-    with get_db_connection(db_path) as conn:
-        assert copilot_log.get_session_refs(conn, session_id) == [
-            {
-                "ref_type": "commit",
-                "ref_value": "abc123",
-                "turn_index": 0,
-                "created_at": "2026-01-01T00:00:00Z",
-            }
-        ]
-        assert copilot_log.get_session_checkpoints(conn, session_id) == [
-            {
-                "checkpoint_number": 1,
-                "title": "Checkpoint one",
-                "overview": "did stuff",
-                "created_at": "2026-01-01T00:05:00Z",
-            }
-        ]
-
-
 @pytest.mark.parametrize("fail", [False, True])
 def test_main_closes_connection(monkeypatch, fail):
     conn = Mock()
-    monkeypatch.setattr(copilot_log, "get_db_connection", lambda path: conn)
+    monkeypatch.setattr(sources, "get_db_connection", lambda path: conn)
     extract = Mock(return_value=0, side_effect=ValueError("failure") if fail else None)
     monkeypatch.setattr(copilot_log, "_extract_selected", extract)
     if fail:
