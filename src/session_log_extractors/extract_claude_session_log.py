@@ -24,7 +24,6 @@ import argparse
 import json
 import re
 import sys
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -47,14 +46,15 @@ from session_log_extractors.session_log_envelope import (
     write_envelope,
 )
 from session_log_extractors.session_model import (
-    Event,
-    Interaction,
+    AssistantMessage,
     PermissionDenial,
     PlanDecision,
     QuestionAnswer,
     Session,
     SubagentSummary,
     ToolCall,
+    ToolResult,
+    UserMessage,
 )
 
 # --------------------------------------------------------------------------- #
@@ -608,55 +608,45 @@ def permission_denials_from_result(
     return out
 
 
-# --------------------------------------------------------------------------- #
-# Timestamp formatting
-# --------------------------------------------------------------------------- #
+def _message_identity(entry: Dict[str, Any]) -> Dict[str, str]:
+    """Retain native record, parent, and API-message IDs without guessing links."""
+    identity = {}
+    for target, value in (
+        ("id", entry.get("uuid")),
+        ("parent_id", entry.get("parentUuid")),
+        ("message_id", _get_message(entry).get("id")),
+    ):
+        if isinstance(value, str):
+            identity[target] = value
+    return identity
 
 
-def _parse_ts(ts: Optional[str]):
-    """Parse an ISO-8601 timestamp to a datetime, or None if unparseable."""
-    if not ts or not isinstance(ts, str):
-        return None
-    try:
-        # Python's fromisoformat dislikes a trailing 'Z' before 3.11.
-        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    except (ValueError, TypeError):
-        return None
-
-
-def _interaction(text: str, timestamp: Optional[str]) -> Interaction:
-    """Semantic activity following a human input, without display summaries."""
-    return {
-        "user_text": text,
-        "timestamp": timestamp,
-        "images": [],
-        "shell_command": None,
-        "command": None,
-        "command_args": None,
-        "assistant_text_blocks": [],
-        "tool_calls": [],
-        "skills_used": [],
-        "option_qas": [],
-        "permission_denials": [],
-        "plans": [],
-        "subagents": [],
-        "subagent_count": 0,
-    }
+def _questions(tool_input: Any) -> List[QuestionAnswer]:
+    if not isinstance(tool_input, dict) or not isinstance(
+        tool_input.get("questions"), list
+    ):
+        return []
+    return [
+        QuestionAnswer(
+            question=q.get("question", ""),
+            header=q.get("header", ""),
+            options=[o for o in q.get("options", []) if isinstance(o, dict)],
+        )
+        for q in tool_input["questions"]
+        if isinstance(q, dict)
+    ]
 
 
 class _ClaudeInterpreter:
-    """One native-record traversal for export payloads and semantic activity."""
+    """Interpret ordered messages and associate tool activity by native call ID."""
 
     def __init__(self):
-        self.events: List[Event] = []
-        self.interactions: List[Interaction] = []
+        self.events: List[UserMessage | AssistantMessage] = []
         self.files_changed: List[str] = []
-        self.current: Optional[Interaction] = None
+        self.skills_used: List[str] = []
+        self.subagent_count = 0
         self.pending_calls: Dict[str, ToolCall] = {}
-        self.pending_questions: Dict[str, Any] = {}
-        self.pending_plans: Dict[str, PlanDecision] = {}
-        self.tool_uses: Dict[str, str] = {}
-        self.pending_subagents = 0
+        self.unmatched_tool_results: List[ToolResult] = []
 
     def consume(self, entry: Dict[str, Any]) -> None:
         etype = entry.get("type")
@@ -664,7 +654,7 @@ class _ClaudeInterpreter:
             return
         if entry.get("isSidechain") is True:
             if etype == "user" and not _is_tool_result_entry(entry):
-                self.pending_subagents += 1
+                self.subagent_count += 1
             return
         if etype == "user":
             if _is_tool_result_entry(entry):
@@ -677,40 +667,31 @@ class _ClaudeInterpreter:
     def user(self, entry: Dict[str, Any]) -> None:
         raw = _human_text(entry)
         text = clean_user_text(raw)
-        images = _image_sources(entry)
+        images = [
+            image_from_base64(src["data"], src.get("media_type"))
+            for src in _image_sources(entry)
+        ]
         match = _COMMAND_NAME.search(raw)
         command = match.group(1).strip() if match else ""
         command = command if command.startswith("/") else ""
         if not text and not images and not command:
             return
-        current = _interaction(text, entry.get("timestamp"))
-        current["images"] = [
-            image_from_base64(src["data"], src.get("media_type")) for src in images
-        ]
+        message = UserMessage(
+            **user_event(len(self.events), entry.get("timestamp"), text, images),
+            **_message_identity(entry),
+        )
         if command:
             args = _COMMAND_ARGS.search(raw)
-            current["command"] = command
-            current["command_args"] = (args.group(1).strip() if args else "") or None
+            message["command"] = command
+            message["command_args"] = (args.group(1).strip() if args else "") or None
+            if not text:
+                message["text"] = f"{command} {message['command_args'] or ''}".strip()
         commands = [c.strip() for c in _BASH_INPUT.findall(text) if c.strip()]
-        current["shell_command"] = "\n".join(commands) or None
-        current["subagent_count"] = self.pending_subagents
-        self.pending_subagents = 0
-        self.current = current
-        self.interactions.append(current)
-        export_text = text or f"{command} {current['command_args'] or ''}".strip()
-        self.events.append(
-            user_event(
-                len(self.events),
-                entry.get("timestamp"),
-                export_text,
-                current["images"],
-            )
-        )
+        if commands:
+            message["shell_command"] = "\n".join(commands)
+        self.events.append(message)
 
     def assistant(self, entry: Dict[str, Any]) -> None:
-        if self.current is None:
-            self.current = _interaction("", entry.get("timestamp"))
-            self.interactions.append(self.current)
         texts: List[str] = []
         calls: List[ToolCall] = []
         for block in _content_blocks(entry):
@@ -722,60 +703,51 @@ class _ClaudeInterpreter:
                     texts.append(text.strip())
             elif block.get("type") == "tool_use":
                 calls.append(self.call(block))
-        self.current["assistant_text_blocks"].extend(texts)
         if texts or calls:
             self.events.append(
-                assistant_event(
-                    len(self.events), entry.get("timestamp"), "\n\n".join(texts), calls
+                AssistantMessage(
+                    **assistant_event(
+                        len(self.events),
+                        entry.get("timestamp"),
+                        "\n\n".join(texts),
+                        calls,
+                    ),
+                    **_message_identity(entry),
                 )
             )
 
     def call(self, block: Dict[str, Any]) -> ToolCall:
         name = block.get("name", "tool")
         tool_input = block.get("input")
-        # Claude historically exports unanswered calls with an explicit null result.
+        # Preserve Claude's explicit null result for unanswered calls.
         call = ToolCall(name=name, input=tool_input, result=None)
         tool_id = block.get("id")
-        if isinstance(tool_id, str) and tool_id:
-            self.pending_calls[tool_id] = call
-        self.current["tool_calls"].append(call)
+        if isinstance(tool_id, str):
+            call["id"] = tool_id
+            if tool_id:
+                self.pending_calls[tool_id] = call
         if name in PLAN_TOOLS:
-            record: PlanDecision = {
-                "plan": tool_input.get("plan", "")
-                if isinstance(tool_input, dict)
-                else "",
-                "decision": "no decision recorded",
-                "edited_plan": "",
-                "message": "",
-            }
-            self.current["plans"].append(record)
-            if isinstance(tool_id, str):
-                self.pending_plans[tool_id] = record
-        else:
-            self.action(block)
+            call["plan_decision"] = PlanDecision(
+                plan=tool_input.get("plan", "") if isinstance(tool_input, dict) else "",
+                decision="no decision recorded",
+                edited_plan="",
+                message="",
+            )
+        elif name in INTERACTION_TOOLS:
+            call["questions"] = _questions(tool_input)
+        self.action(call)
         return call
 
-    def action(self, block: Dict[str, Any]) -> None:
-        name = block.get("name", "tool")
-        tool_input = block.get("input")
-        tool_id = block.get("id")
-        descriptor = tool_descriptor(name, tool_input)
-        if isinstance(tool_id, str):
-            self.tool_uses[tool_id] = f"{name} — {descriptor}" if descriptor else name
+    def action(self, call: ToolCall) -> None:
+        name, tool_input = call["name"], call["input"]
         if not isinstance(tool_input, dict):
             return
         if str(name).lower() == "skill":
             skill = tool_input.get("skill") or tool_input.get("name")
-            if (
-                isinstance(skill, str)
-                and skill
-                and skill not in self.current["skills_used"]
-            ):
-                self.current["skills_used"].append(skill)
-        if name in INTERACTION_TOOLS and isinstance(tool_id, str):
-            questions = tool_input.get("questions")
-            if isinstance(questions, list):
-                self.pending_questions[tool_id] = questions
+            if isinstance(skill, str) and skill:
+                call["skill"] = skill
+                if skill not in self.skills_used:
+                    self.skills_used.append(skill)
         if name in FILE_WRITING_TOOLS:
             path = extract_file_path(tool_input)
             if path and path not in self.files_changed:
@@ -785,23 +757,41 @@ class _ClaudeInterpreter:
         for block in _content_blocks(entry):
             if not isinstance(block, dict) or block.get("type") != "tool_result":
                 continue
-            call = self.pending_calls.pop(block.get("tool_use_id"), None)
-            if call is not None:
-                call["result"] = _result_block_text(block)
-                if block.get("is_error"):
-                    call["is_error"] = True
-        if self.current is None or apply_plan_decisions(entry, self.pending_plans):
-            return
-        self.current["permission_denials"].extend(
-            permission_denials_from_result(entry, self.tool_uses)
-        )
-        self.current["option_qas"].extend(
-            option_qa_from_result(entry, self.pending_questions)
-        )
+            tool_id = block.get("tool_use_id")
+            record = ToolResult(
+                tool_call_id=tool_id if isinstance(tool_id, str) else None,
+                ts=entry.get("timestamp"),
+                content=block.get("content"),
+                is_error=bool(block.get("is_error")),
+                **_message_identity(entry),
+            )
+            call = self.pending_calls.pop(tool_id, None)
+            if call is None:
+                self.unmatched_tool_results.append(record)
+                continue
+            call["result_record"] = record
+            call["result"] = _result_block_text(block)
+            if block.get("is_error"):
+                call["is_error"] = True
+            self.decision(call, block)
 
-    def finish(self) -> None:
-        if self.interactions:
-            self.interactions[-1]["subagent_count"] += self.pending_subagents
+    def decision(self, call: ToolCall, block: Dict[str, Any]) -> None:
+        # Apply existing semantic parsers to this ID-matched call only. A later
+        # user message, or another result in the same entry, cannot change ownership.
+        entry = {"message": {"content": [block]}}
+        tool_id = block.get("tool_use_id")
+        if "plan_decision" in call:
+            apply_plan_decisions(entry, {tool_id: call["plan_decision"]})
+            return
+        if "questions" in call:
+            call["questions"] = option_qa_from_result(
+                entry, {tool_id: call["questions"]}
+            )
+        descriptor = tool_descriptor(call["name"], call["input"])
+        label = f"{call['name']} — {descriptor}" if descriptor else call["name"]
+        denials = permission_denials_from_result(entry, {tool_id: label})
+        if denials:
+            call["permission_denial"] = denials[0]
 
 
 def build_events(
@@ -868,14 +858,15 @@ def interpret_source(
     adapter = _ClaudeInterpreter()
     for entry in source.entries:
         adapter.consume(entry)
-    adapter.finish()
     if not adapter.events:
         return None
     return Session(
         harness="claude",
         session_id=source.path.stem,
         events=adapter.events,
-        interactions=adapter.interactions,
+        skills_used=adapter.skills_used,
+        subagent_count=adapter.subagent_count,
+        unmatched_tool_results=adapter.unmatched_tool_results,
         files_changed=adapter.files_changed,
         cwd=session_cwd(source.entries),
         started_at=first_timestamp(source.entries),
@@ -950,24 +941,6 @@ def load_subagents(transcript: Path) -> List[SubagentSummary]:
     ]
     subs.sort(key=lambda summary: summary.get("start_ts") or "")
     return subs
-
-
-def attribute_subagents(
-    interactions: List[Interaction], subs: List[SubagentSummary]
-) -> None:
-    """Associate sidecars with the latest human interaction before their start."""
-    parsed = [(_parse_ts(t["timestamp"]), t) for t in interactions]
-    for s in subs:
-        st = _parse_ts(s.get("start_ts"))
-        target: Optional[Interaction] = None
-        if st is not None:
-            for ts, t in parsed:  # turns are in order; last match wins
-                if ts is not None and ts <= st:
-                    target = t
-        if target is None and interactions:
-            target = interactions[0]
-        if target is not None:
-            target["subagents"].append(s)
 
 
 # --------------------------------------------------------------------------- #

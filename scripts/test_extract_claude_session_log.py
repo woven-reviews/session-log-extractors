@@ -34,7 +34,6 @@ from session_log_extractors.extract_claude_session_log import (
     _parse_chosen,
     _result_block_text,
     apply_plan_decisions,
-    attribute_subagents,
     build_events,
     build_raw_envelope,
     clean_user_text,
@@ -83,9 +82,30 @@ def _fixture_entries(name):
     return load_entries(FIXTURES / name)
 
 
-def _activity(entries):
-    session = eclog.interpret_source(ClaudeSource(Path("session.jsonl"), entries))
-    return session["interactions"], session["files_changed"]
+def _session(entries):
+    return eclog.interpret_source(ClaudeSource(Path("session.jsonl"), entries))
+
+
+def _calls(entries):
+    return [
+        call
+        for event in _session(entries)["events"]
+        for call in event.get("tool_calls", [])
+    ]
+
+
+def _plans(entries):
+    return [
+        call["plan_decision"] for call in _calls(entries) if "plan_decision" in call
+    ]
+
+
+def _question_calls():
+    return [
+        call
+        for call in _calls(_fixture_entries("questions.jsonl"))
+        if "questions" in call
+    ]
 
 
 def test_skill_tool_use_is_recorded():
@@ -110,15 +130,18 @@ def test_skill_tool_use_is_recorded():
             },
         },
     ]
-    turns, _ = _activity(entries)
-    assert turns[0]["skills_used"] == ["documents"]
+    session = _session(entries)
+    assert session["skills_used"] == ["documents"]
+    assert session["events"][1]["tool_calls"][0]["skill"] == "documents"
 
 
 def test_native_skill_and_command_invocations_are_retained():
     entries = _fixture_entries("skill_command.jsonl")
-    turns, _ = _activity(entries)
-    assert turns[0]["skills_used"] == ["fixture-skill"]
-    assert turns[1]["command"] == "/fixture-command"
+    session = _session(entries)
+    assert session["skills_used"] == ["fixture-skill"]
+    assert any(
+        message.get("command") == "/fixture-command" for message in session["events"]
+    )
     events = build_events(entries)
     calls = [call for event in events for call in event.get("tool_calls", [])]
     assert any(call["input"].get("skill") == "fixture-skill" for call in calls)
@@ -133,8 +156,7 @@ def test_single_choice():
 
 
 def test_multiselect_comma():
-    turns, _ = _activity(_fixture_entries("questions.jsonl"))
-    qa = turns[0]["option_qas"][0]
+    qa = _question_calls()[0]["questions"][0]
     assert qa["answer_text"] == "section, manufacturer_part_no"
     assert qa["chosen_labels"] == ["section", "manufacturer_part_no"]
 
@@ -173,11 +195,11 @@ def test_native_dont_ask_denial_is_recorded():
     )
     assert "Permission to use Bash has been denied" in result
     assert parse_permission_denial(result) == ""
-    turns, _ = _activity(entries)
-    assert [d["tool"].split(" — ")[0] for d in turns[0]["permission_denials"]] == [
-        "Bash"
+    denials = [
+        c["permission_denial"] for c in _calls(entries) if "permission_denial" in c
     ]
-    assert turns[0]["permission_denials"][0]["by"] == "settings"
+    assert [d["tool"].split(" — ")[0] for d in denials] == ["Bash"]
+    assert denials[0]["by"] == "settings"
 
 
 def test_permission_denial_ignores_isc_license_text():
@@ -208,19 +230,18 @@ def test_permission_denials_from_result_names_tool():
 
 
 def test_custom_answer_matches_no_option():
-    turns, _ = _activity(_fixture_entries("questions.jsonl"))
-    qa = turns[1]["option_qas"][0]
+    qa = _question_calls()[1]["questions"][0]
     assert qa["answer_text"] == "custom_value"
     assert qa["chosen_labels"] == []
 
 
 def test_multi_question_anchors_on_its_own_text():
-    turns, _ = _activity(_fixture_entries("questions.jsonl"))
-    assert [qa["answer_text"] for qa in turns[1]["option_qas"]] == [
+    questions = _question_calls()[1]["questions"]
+    assert [qa["answer_text"] for qa in questions] == [
         "custom_value",
         "JSON",
     ]
-    assert turns[1]["option_qas"][1]["chosen_labels"] == ["JSON"]
+    assert questions[1]["chosen_labels"] == ["JSON"]
 
 
 def test_task_notification_is_stripped_to_empty():
@@ -423,7 +444,7 @@ def test_build_events_keeps_full_tool_input():
     assert build_events(entries)[0]["tool_calls"][0]["input"]["file_path"] == long_path
 
 
-def test_events_and_activity_skip_sidechain_and_meta():
+def test_messages_skip_sidechain_and_meta():
     # Exported events and semantic activity describe the same filtered records.
     entries = _conversation_entries() + [
         {
@@ -438,10 +459,10 @@ def test_events_and_activity_skip_sidechain_and_meta():
         },
     ]
     events = build_events(entries)
-    turns, _ = _activity(entries)
-    assert [e["text"] for e in events if e["role"] == "user"] == [
-        t["user_text"] for t in turns
-    ]
+    session = _session(entries)
+    assert [e["text"] for e in events if e["role"] == "user"] == ["here is the mock"]
+    assert session["subagent_count"] == 1
+    assert "interactions" not in session
 
 
 def test_build_events_surfaces_slash_command_invocations():
@@ -469,8 +490,7 @@ def test_build_events_surfaces_slash_command_invocations():
 
 
 def test_plan_approved_is_captured():
-    turns, _ = _activity(_fixture_entries("plan_modes.jsonl"))
-    (plan,) = turns[0]["plans"]
+    plan = _plans(_fixture_entries("plan_modes.jsonl"))[0]
     assert plan["plan"] == "# Plan\n\nStep one."
     assert plan["decision"] == "approved"
     # Unchanged plan echoed back under the "edited" heading is not an edit.
@@ -478,24 +498,23 @@ def test_plan_approved_is_captured():
 
 
 def test_plan_approved_with_edit_keeps_final_version():
-    turns, _ = _activity(_fixture_entries("plan_modes.jsonl"))
-    (plan,) = turns[1]["plans"]
+    plan = _plans(_fixture_entries("plan_modes.jsonl"))[1]
     assert plan["decision"] == "approved"
     assert plan["edited_plan"] == "# Plan\n\nStep one, but smaller."
 
 
 def test_plan_rejected_keeps_steering_message():
-    turns, _ = _activity(_fixture_entries("plan_modes.jsonl"))
-    (plan,) = turns[2]["plans"]
+    calls = _calls(_fixture_entries("plan_modes.jsonl"))
+    plan = calls[2]["plan_decision"]
     assert plan["decision"] == "rejected"
     assert plan["message"] == "Too big, split it up"
     # Routed to the plan record, not the generic permission-denial list.
-    assert turns[2]["permission_denials"] == []
+    assert "permission_denial" not in calls[2]
 
 
 def test_plan_rejection_reason_is_captured():
     # The wording the harness actually uses when a plan is sent back in plan mode.
-    turns, _ = _activity(
+    plans = _plans(
         _plan_entries(
             "The user doesn't want to proceed with this tool use. The tool use "
             "was rejected (eg. if it was a file edit, the new_string was NOT "
@@ -505,7 +524,7 @@ def test_plan_rejection_reason_is_captured():
             "migration\n\nNote: The user's next message may contain a correction."
         )
     )
-    (plan,) = turns[0]["plans"]
+    (plan,) = plans
     assert plan["decision"] == "rejected"
     assert (
         plan["message"] == "wrong table, use line_items\nand keep it in one migration"
@@ -514,7 +533,7 @@ def test_plan_rejection_reason_is_captured():
 
 def test_plan_without_result_is_marked_undecided():
     entries = _plan_entries("")[:2]
-    (plan,) = _activity(entries)[0][0]["plans"]
+    (plan,) = _plans(entries)
     assert plan["decision"] == "no decision recorded"
 
 
@@ -868,17 +887,21 @@ def test_activity_keeps_commands_shell_subagents_questions_and_files():
             },
         },
     ]
-    turns, files_changed = _activity(entries)
-    assert len(turns) == 1
-    assert turns[0]["command"] == "/do-thing"
-    assert turns[0]["command_args"] == "--flag"
-    assert turns[0]["shell_command"] == "ls -la"
-    assert turns[0]["subagent_count"] == 1
-    assert files_changed == ["/new/file.py"]
-    assert turns[0]["option_qas"][0]["chosen_labels"] == ["section"]
-    assert turns[0]["permission_denials"] == [
-        {"tool": "Bash — rm -rf build", "message": "no", "by": "user"}
-    ]
+    session = _session(entries)
+    user, assistant = session["events"]
+    assert user["command"] == "/do-thing"
+    assert user["command_args"] == "--flag"
+    assert user["shell_command"] == "ls -la"
+    assert session["subagent_count"] == 1
+    assert session["files_changed"] == ["/new/file.py"]
+    question, write, bash = assistant["tool_calls"]
+    assert question["questions"][0]["chosen_labels"] == ["section"]
+    assert write["id"] == "w1"
+    assert bash["permission_denial"] == {
+        "tool": "Bash — rm -rf build",
+        "message": "no",
+        "by": "user",
+    }
 
 
 def test_build_events_skips_non_dict_assistant_blocks_and_unmatched_calls():
@@ -934,23 +957,20 @@ def test_first_timestamp_session_models_and_cwd():
 def test_native_resumed_session_lists_both_models():
     entries = _fixture_entries("model.jsonl")
     assert session_models(entries) == ["claude-haiku-4-5-20251001", "claude-sonnet-5-5"]
-    turns, _ = _activity(entries)
     assert any(
-        turn["command"] == "/model" and turn["command_args"] == "sonnet"
-        for turn in turns
+        event.get("command") == "/model" and event.get("command_args") == "sonnet"
+        for event in _session(entries)["events"]
     )
 
 
 def test_native_continued_conversation_keeps_follow_up_in_one_session():
     entries = _fixture_entries("continued.jsonl")
     assert len({entry["sessionId"] for entry in entries}) == 1
-    turns, _ = _activity(entries)
-    assert len(turns) == 2
-    assert turns[0]["tool_calls"][0]["name"] == "Read"
-    assert "RED-FOX-23" in " ".join(turns[0]["assistant_text_blocks"])
-    assert "previous answer" in turns[1]["user_text"]
-    assert "RED-FOX-23" in " ".join(turns[1]["assistant_text_blocks"])
-    events = build_events(entries)
+    events = _session(entries)["events"]
+    assert events[1]["tool_calls"][0]["name"] == "Read"
+    assert "RED-FOX-23" in events[2]["text"]
+    assert "previous answer" in events[3]["text"]
+    assert "RED-FOX-23" in events[4]["text"]
     assert [event["role"] for event in events] == [
         "user",
         "assistant",
@@ -1051,54 +1071,20 @@ def test_load_subagents_reads_sidecar_dir():
     assert subs[0]["task"] == "task"
 
 
-def test_native_subagent_sidecar_is_attributed_to_turn():
+def test_native_subagent_summary_retains_evidence_without_guessing_ownership():
     transcript = FIXTURES / "subagent.jsonl"
     subs = load_subagents(transcript)
     assert len(subs) == 1
     assert "2 + 2" in subs[0]["task"]
     assert "4" in subs[0]["result"]
-
-    # Surround the native turn with earlier and later turns so attribution must
-    # use the sidecar's real start time rather than the first-turn fallback.
-    def turn(text, ts):
-        return {"type": "user", "timestamp": ts, "message": {"content": text}}
-
-    entries = [
-        turn("earlier", "2000-01-01T00:00:00Z"),
-        *load_entries(transcript),
-        turn("later", "2999-01-01T00:00:00Z"),
-    ]
-    turns, _ = _activity(entries)
-    assert [t["subagents"] for t in turns] == [[], [], []]
-    attribute_subagents(turns, subs)
-    assert [t["subagents"] for t in turns] == [[], subs, []]
     meta = json.loads(
         (FIXTURES / "subagent/subagents/agent-fixture.meta.json").read_text()
     )
     assert subs[0]["agent_type"] == meta["agentType"]
-
-
-def test_attribute_subagents_assigns_by_start_time_and_falls_back():
-    t1, t2 = _activity(
-        [
-            {"type": "user", "timestamp": ts, "message": {"content": text}}
-            for text, ts in [
-                ("first", "2026-01-01T00:00:00Z"),
-                ("second", "2026-01-01T00:10:00Z"),
-            ]
-        ]
-    )[0]
-    subs = [
-        {"start_ts": "2026-01-01T00:05:00Z", "agent_type": "a"},
-        {"start_ts": None, "agent_type": "b"},
-    ]
-    attribute_subagents([t1, t2], subs)
-    assert t1["subagents"] == [subs[0], subs[1]]
-    assert t2["subagents"] == []
-
-
-def test_attribute_subagents_noop_when_no_turns():
-    attribute_subagents([], [{"start_ts": "2026-01-01T00:00:00Z"}])  # must not raise
+    assert subs[0]["start_ts"]
+    session = _session(load_entries(transcript))
+    assert "interactions" not in session
+    assert not any("subagents" in event for event in session["events"])
 
 
 # --------------------------------------------------------------------------- #
@@ -1725,10 +1711,6 @@ def test_images_remain_owned_by_their_recorded_user_event():
     entries = [image_entries[0], assistant, result, deepcopy(image_entries[0])]
     session = eclog.interpret_source(ClaudeSource(Path("s.jsonl"), entries))
     events = session["events"]
-    assert [interaction["images"] for interaction in session["interactions"]] == [
-        events[0]["images"],
-        events[2]["images"],
-    ]
     assert [e["role"] for e in events] == ["user", "assistant", "user"]
     assert [len(e.get("images", [])) for e in events] == [4, 0, 4]
     assert events[0]["images"] == events[2]["images"]
@@ -1750,6 +1732,77 @@ def test_recorded_skills_deduplicate_and_ignore_empty_names():
     empty = deepcopy(skill)
     empty["input"] = {"skill": ""}
     content.append(empty)
-    interactions, _ = _activity(entries)
-    assert interactions[0]["skills_used"] == ["fixture-skill"]
-    assert len([c for c in interactions[0]["tool_calls"] if c["name"] == "Skill"]) == 3
+    assert _session(entries)["skills_used"] == ["fixture-skill"]
+    calls = [c for c in _calls(entries) if c["name"] == "Skill"]
+    assert len(calls) == 3
+    assert [c.get("skill") for c in calls] == ["fixture-skill", "fixture-skill", None]
+
+
+@pytest.mark.parametrize(
+    "fixture", ["questions.jsonl", "plan_modes.jsonl", "permission_denial.jsonl"]
+)
+def test_decisions_follow_native_calls_across_later_user_messages(fixture):
+    entries = _fixture_entries(fixture)
+    # Interrupt the captured call/result pair with a later human message.
+    assistant = next(
+        e
+        for e in entries
+        if any(
+            isinstance(b, dict) and b.get("type") == "tool_use"
+            for b in _content_blocks(e)
+        )
+    )
+    result = next(e for e in entries if _is_tool_result_entry(e))
+    later = deepcopy(
+        next(
+            e
+            for e in entries
+            if e.get("type") == "user" and not _is_tool_result_entry(e)
+        )
+    )
+    later["message"]["content"] = "A later instruction"
+    session = eclog.interpret_source(
+        ClaudeSource(Path("s.jsonl"), [assistant, later, result])
+    )
+    call = session["events"][0]["tool_calls"][0]
+    assert call["id"] == assistant["message"]["content"][0]["id"]
+    assert call["result_record"]["tool_call_id"] == call["id"]
+    if fixture == "questions.jsonl":
+        assert call["questions"][0]["chosen_labels"] == [
+            "section",
+            "manufacturer_part_no",
+        ]
+    elif fixture == "plan_modes.jsonl":
+        assert call["plan_decision"]["decision"] == "approved"
+    else:
+        assert call["permission_denial"]["by"] == "settings"
+    assert session["events"][1]["text"] == "A later instruction"
+    assert "interactions" not in session
+    assert "interpretation" not in session
+
+
+def test_native_message_and_result_identities_survive_interpretation():
+    assistant, result = _native_tool_pair()
+    session = _session([assistant, result])
+    message = session["events"][0]
+    assert message["id"] == assistant["uuid"]
+    assert message["parent_id"] == assistant["parentUuid"]
+    assert message["message_id"] == assistant["message"]["id"]
+    record = message["tool_calls"][0]["result_record"]
+    assert record["id"] == result["uuid"]
+    assert record["ts"] == result["timestamp"]
+    assert record["content"] == result["message"]["content"][0]["content"]
+
+
+def test_unmatched_result_retains_content_without_inventing_an_owner():
+    assistant, result = _native_tool_pair()
+    # Change only the result ID so the captured result has no matching call.
+    block = result["message"]["content"][0]
+    block["tool_use_id"] = "unknown-call"
+    session = _session([assistant, result])
+    assert session["events"][0]["tool_calls"][0]["result"] is None
+    assert "result_record" not in session["events"][0]["tool_calls"][0]
+    (record,) = session["unmatched_tool_results"]
+    assert record["tool_call_id"] == "unknown-call"
+    assert record["content"] == block["content"]
+    assert record["id"] == result["uuid"]

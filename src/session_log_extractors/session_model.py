@@ -7,7 +7,7 @@ fields in the current JSON schema and preserves nested event payloads. Additiona
 session semantics remain available on the model for other consumers.
 """
 
-from typing import Any, NotRequired, Required, TypedDict
+from typing import Any, Literal, NotRequired, Required, TypedDict
 
 
 class Image(TypedDict, total=False):
@@ -18,29 +18,6 @@ class Image(TypedDict, total=False):
     bytes: int
     unavailable: bool
     ref: str
-
-
-class ToolCall(TypedDict, total=False):
-    """Complete interpreted tool data, before any textual result cap."""
-
-    name: Required[str]
-    input: Any
-    result: Any
-    result_bytes: int
-    result_truncated: bool
-    is_error: bool
-    error: Any
-
-
-class Event(TypedDict, total=False):
-    """One ordered event, retaining its recorded payload and metadata."""
-
-    i: Required[int]
-    role: Required[str]
-    ts: str | None
-    text: str | None
-    images: list[Image] | None
-    tool_calls: list[ToolCall] | None
 
 
 class QuestionOption(TypedDict, total=False):
@@ -56,8 +33,8 @@ class QuestionAnswer(TypedDict):
     question: str
     header: str
     options: list[QuestionOption]
-    chosen_labels: list[str]
-    answer_text: str
+    chosen_labels: NotRequired[list[str]]
+    answer_text: NotRequired[str]
 
 
 class PlanDecision(TypedDict):
@@ -88,23 +65,69 @@ class SubagentSummary(TypedDict, total=False):
     result: str
 
 
-class Interaction(TypedDict, total=False):
-    """A human input and the assistant activity associated with it."""
+class ToolResult(TypedDict):
+    """A recorded result, associated by native call ID when available."""
 
-    user_text: Required[str]
-    timestamp: str | None
-    images: list[Image]
-    shell_command: str | None
-    command: str | None
-    command_args: str | None
-    assistant_text_blocks: list[str]
-    tool_calls: list[ToolCall]
-    skills_used: list[str]
-    option_qas: list[QuestionAnswer]
-    permission_denials: list[PermissionDenial]
-    plans: list[PlanDecision]
-    subagents: list[SubagentSummary]
-    subagent_count: int
+    id: NotRequired[str]
+    parent_id: NotRequired[str]
+    message_id: NotRequired[str]
+    tool_call_id: str | None
+    ts: str | None
+    content: Any
+    is_error: bool
+
+
+class ToolCall(TypedDict, total=False):
+    """A complete call and the decisions/results belonging to that call."""
+
+    name: Required[str]
+    id: str
+    input: Any
+    result: Any
+    result_bytes: int
+    result_truncated: bool
+    is_error: bool
+    error: Any
+    result_record: ToolResult
+    questions: list[QuestionAnswer]
+    plan_decision: PlanDecision
+    permission_denial: PermissionDenial
+    skill: str
+
+
+class MessageContent(TypedDict, total=False):
+    """Content and native identity shared by ordered conversation messages."""
+
+    i: Required[int]
+    ts: str | None
+    text: str | None
+    images: list[Image] | None
+    id: str
+    parent_id: str
+    message_id: str
+
+
+class UserMessage(MessageContent):
+    """A recorded user input, with command actions recognized explicitly."""
+
+    role: Literal["user"]
+    command: NotRequired[str]
+    command_args: NotRequired[str | None]
+    shell_command: NotRequired[str]
+
+
+class AssistantMessage(MessageContent):
+    """An assistant message with its own ordered tool calls."""
+
+    role: Literal["assistant"]
+    tool_calls: NotRequired[list[ToolCall]]
+
+
+class Event(MessageContent, total=False):
+    """Compatibility record for adapters still migrating to typed messages."""
+
+    role: Required[str]
+    tool_calls: list[ToolCall] | None
 
 
 class Session(TypedDict):
@@ -112,9 +135,11 @@ class Session(TypedDict):
 
     harness: str
     session_id: str
-    events: list[Event]
+    events: list[UserMessage | AssistantMessage | Event]
     cwd: NotRequired[str | None]
     started_at: NotRequired[str | None]
     models: NotRequired[list[str] | None]
-    interactions: NotRequired[list[Interaction]]
+    skills_used: NotRequired[list[str]]
+    subagent_count: NotRequired[int]
+    unmatched_tool_results: NotRequired[list[ToolResult]]
     files_changed: NotRequired[list[str]]

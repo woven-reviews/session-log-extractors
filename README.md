@@ -83,13 +83,18 @@ access, construct `ClaudeSource(path, entries, metadata)` directly and call
 `summarize_subagent_source(source)`. Images remain inline in the recorded entries.
 Claude interprets main records once into the shared session and exports with
 `export_session`; byte limits apply only at export. `interpret_source` accepts
-no result cap. Typed `Session.interactions` records retain questions, plans,
-denials, skill/command invocations, shell actions, and subagent counts without
-rendered summaries; `Session.files_changed` retains targeted file paths. The
-shared exporter reads the fields in the current JSON schema, leaving these
-additional session fields available to other consumers. `build_events` remains
-an export convenience wrapper;
-`Turn` and `build_turns` have been removed. Main JSON extraction omits sidecars;
+no result cap. `Session.events` holds ordered `UserMessage` and
+`AssistantMessage` records. User messages retain recognized commands and shell
+actions; tool calls retain native IDs, results, questions, plan decisions,
+permission denials, and skill invocations. Results and decisions attach to their
+call by native ID even across later human messages. Native message/parent IDs
+and complete result records remain available on the model; unmatched results
+are retained explicitly instead of assigned by proximity. `Session.files_changed`,
+`skills_used`, and `subagent_count` hold session facts without turn grouping.
+The shared exporter selects current JSON fields from messages and calls while
+preserving complete nested input/result payloads. `build_events` remains an
+export convenience wrapper. `Turn`, `Interaction`, and chronological sidecar
+attribution have been removed. Main JSON extraction omits sidecars;
 `load_subagents(path)` retains its timestamp-ordered summaries for existing callers.
 
 Copilot readers and discovery live in `session_log_extractors.copilot_sources`.

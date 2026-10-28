@@ -219,7 +219,10 @@ def export_session(
             Session(
                 harness=session["harness"],
                 session_id=session["session_id"],
-                events=session["events"],
+                events=[
+                    _export_event(event, tool_result_max_bytes)
+                    for event in session["events"]
+                ],
                 cwd=session.get("cwd"),
                 started_at=session.get("started_at"),
                 models=session.get("models", []),
@@ -227,18 +230,43 @@ def export_session(
         ),
         tool_result_max_bytes,
     )
-    for event in envelope["events"]:
-        for call in event.get("tool_calls") or []:
-            if "result" in call and (
-                call["result"] is None or isinstance(call["result"], str)
-            ):
-                capped = truncate_result(call["result"], tool_result_max_bytes)
-                capped["result_bytes"] = call.get(
-                    "result_bytes", capped["result_bytes"]
-                )
-                capped["result_truncated"] |= call.get("result_truncated", False)
-                call.update(capped)
     return envelope
+
+
+def _export_event(event: Dict[str, Any], limit: int) -> Dict[str, Any]:
+    """Select current message fields without serializing semantic model fields."""
+    exported = {
+        key: event[key]
+        for key in ("i", "role", "ts", "text", "images", "tool_calls")
+        if key in event
+    }
+    if event.get("tool_calls"):
+        exported["tool_calls"] = [
+            _export_call(call, limit) for call in event["tool_calls"]
+        ]
+    return exported
+
+
+def _export_call(call: Dict[str, Any], limit: int) -> Dict[str, Any]:
+    exported = {
+        key: call[key]
+        for key in (
+            "name",
+            "input",
+            "result",
+            "result_bytes",
+            "result_truncated",
+            "is_error",
+            "error",
+        )
+        if key in call
+    }
+    if "result" in call and (call["result"] is None or isinstance(call["result"], str)):
+        capped = truncate_result(call["result"], limit)
+        capped["result_bytes"] = call.get("result_bytes", capped["result_bytes"])
+        capped["result_truncated"] |= call.get("result_truncated", False)
+        exported.update(capped)
+    return exported
 
 
 def write_envelope(

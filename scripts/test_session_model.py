@@ -165,19 +165,9 @@ def test_export_reads_json_fields_without_mutating_session_semantics():
         harness="claude",
         session_id="s",
         events=[],
-        interactions=[
-            {
-                "user_text": "Approve this plan",
-                "plans": [
-                    {
-                        "plan": "Build it",
-                        "decision": "approved",
-                        "edited_plan": "",
-                        "message": "",
-                    }
-                ],
-            }
-        ],
+        skills_used=["fixture-skill"],
+        subagent_count=1,
+        unmatched_tool_results=[],
         files_changed=["/workspace/app.py"],
     )
     original = deepcopy(session)
@@ -191,4 +181,46 @@ def test_export_reads_json_fields_without_mutating_session_semantics():
         "events": [],
         "truncation": {"tool_result_max_bytes": 4096},
     }
+    assert session == original
+
+
+def test_export_preserves_payloads_but_leaves_model_semantics_unused():
+    call = ToolCall(
+        name="Read",
+        id="call-1",
+        input={"file_path": "/app.py", "extension": {"unknown": [1, None]}},
+        result="full",
+        result_record={
+            "tool_call_id": "call-1",
+            "ts": "later",
+            "content": "full",
+            "is_error": False,
+        },
+        permission_denial={"tool": "Read", "message": "no", "by": "user"},
+    )
+    event = Event(
+        i=0,
+        role="assistant",
+        id="native-message",
+        parent_id="parent",
+        tool_calls=[call],
+    )
+    session = Session(harness="claude", session_id="s", events=[event])
+    original = deepcopy(session)
+    exported = export_session(session)
+    assert exported["events"] == [
+        {
+            "i": 0,
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "name": "Read",
+                    "input": call["input"],
+                    "result": "full",
+                    "result_bytes": 4,
+                    "result_truncated": False,
+                }
+            ],
+        }
+    ]
     assert session == original
