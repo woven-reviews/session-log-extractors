@@ -24,12 +24,8 @@ from session_log_extractors.copilot_sources import (
     matching_sessions,
 )
 from session_log_extractors.extract_copilot_session_log import (
-    Turn,
     _permissions_from_events,
     _skills_from_events,
-    attribute_permissions,
-    attribute_skills,
-    build_events,
     clean_user_text,
 )
 
@@ -128,16 +124,6 @@ def test_copilot_noise_cleaning():
     )
 
 
-def test_copilot_skill_invocation_is_recorded_and_attributed():
-    skills = _skills_from_events(sources.parse_state_records(_native_lines("skill")))
-    assert len(skills) == 1
-    assert skills[0]["name"] == "fixture-skill"
-    assert skills[0]["path"] == "/workspace/.github/skills/fixture-skill/SKILL.md"
-    turn = Turn("use skill", "", "2026-01-01T00:00:00Z", 0)
-    attribute_skills([turn], skills)
-    assert turn.skills_used == ["fixture-skill"]
-
-
 def test_copilot_permissions_join_approval_denial_and_pending():
     perms = _permissions_from_events(
         sources.parse_state_records(_hand_lines("permissions.jsonl"))
@@ -154,28 +140,6 @@ def test_copilot_permissions_join_approval_denial_and_pending():
         ),
         ("rm x", "pending", "", "2026-07-01T22:06:00Z"),
     ]
-
-
-def test_copilot_attribute_permissions_by_timestamp():
-    t0 = Turn("first", "", "2026-07-01T22:00:00Z", 0)
-    t1 = Turn("second", "", "2026-07-01T22:10:00Z", 1)
-    perms = [
-        {
-            "tool": "a",
-            "decision": "approved",
-            "feedback": "",
-            "timestamp": "2026-07-01T21:55:00Z",
-        },
-        {
-            "tool": "b",
-            "decision": "denied",
-            "feedback": "no",
-            "timestamp": "2026-07-01T22:05:00Z",
-        },
-    ]
-    attribute_permissions([t0, t1], perms)
-    assert [p["tool"] for p in t0.permission_decisions] == ["a"]
-    assert [p["tool"] for p in t1.permission_decisions] == ["b"]
 
 
 def test_copilot_db_operations():
@@ -289,69 +253,6 @@ def test_copilot_attachment_without_its_binary_asset_keeps_the_path():
     assert "data" not in record
 
 
-def _copilot_turn_with_image(tmp_path):
-    img = tmp_path / "a.png"
-    img.write_bytes(PNG)
-    turn = Turn(
-        "look at [image: a.png] and fix it",
-        "Sure, fixing.",
-        "2026-08-01T10:00:00Z",
-        0,
-    )
-    turn.image_refs = [
-        {"name": "a.png", "path": str(img), "type": "image/png"},
-        {"name": "ghost.png"},
-    ]
-    turn.add_tool("view", "backend/app/models.py")
-    return turn
-
-
-def test_build_events_inlines_a_preloaded_attachment(tmp_path):
-    turn = _copilot_turn_with_image(tmp_path)
-    user = build_events([turn], image_inputs={str(tmp_path / "a.png"): PNG})[0]
-    assert base64.b64decode(user["images"][0]["data"]) == PNG
-
-
-def test_build_events_records_an_inline_token_with_no_attachment(tmp_path):
-    # A [image: name] token with no matching attachment record is common in
-    # Copilot logs; it has to stay visible.
-    user = build_events([_copilot_turn_with_image(tmp_path)])[0]
-    assert user["images"][1] == {"unavailable": True, "ref": "ghost.png"}
-
-
-def test_build_events_recovers_tool_name_and_target(tmp_path):
-    events = build_events([_copilot_turn_with_image(tmp_path)])
-    call = next(c for e in events for c in e.get("tool_calls", []))
-    assert call["name"] == "view"
-    assert call["input"] == {"target": "backend/app/models.py"}
-
-
-def test_build_events_preserves_user_text_and_image_references(tmp_path):
-    turn = _copilot_turn_with_image(tmp_path)
-    original_text = turn.user_text
-    original_refs = [dict(ref) for ref in turn.image_refs]
-    assert build_events([turn]) == build_events([turn])
-    assert turn.user_text == original_text
-    assert turn.image_refs == original_refs
-
-
-def test_build_events_emits_an_assistant_event_for_a_reply(tmp_path):
-    events = build_events([_copilot_turn_with_image(tmp_path)])
-    assistant = [e for e in events if e["role"] == "assistant"]
-    assert assistant and assistant[0]["text"] == "Sure, fixing."
-
-
-def test_copilot_tools_from_events_join_start_and_complete():
-    calls = copilot_log._tools_from_events(
-        sources.parse_state_records(_native_lines("tool_success"))
-    )
-    assert len(calls) == 1
-    assert calls[0]["name"] == "bash"
-    assert calls[0]["arguments"]["command"] == "printf TOOL_FIXTURE_MARKER"
-    assert calls[0]["success"] is True
-    assert "TOOL_FIXTURE_MARKER" in calls[0]["result"]
-
-
 def test_copilot_native_tool_success_keeps_full_call():
     _install_native_events("tool_success")
     with _native_db() as conn:
@@ -371,135 +272,10 @@ def test_copilot_native_tool_failure_keeps_shell_exit_code():
         envelope = copilot_log.extract_session(
             conn, get_session_by_id(conn, NATIVE_IDS["tool_failure"])
         )
-    assert copilot_log.get_state_tools(NATIVE_IDS["tool_failure"])[0]["success"] is True
     calls = [c for e in envelope["events"] for c in e.get("tool_calls", [])]
     assert len(calls) == 1
     assert calls[0]["input"]["command"] == "false"
     assert "exit code 1" in calls[0]["result"]
-
-
-def test_copilot_native_skill_is_retained_on_its_turn():
-    _install_native_events("skill")
-    with _native_db() as conn:
-        turns = copilot_log.load_session_turns(
-            conn, get_session_by_id(conn, NATIVE_IDS["skill"])
-        )
-    assert turns[0].skills_used == ["fixture-skill"]
-    assert "SKILL_FIXTURE_MARKER" in turns[0].assistant_text
-
-
-def test_copilot_attribute_tools_populates_target_note_and_envelope():
-    turn = Turn("find audits", "", "2026-07-01T22:00:00Z", 0)
-    tools = [
-        {
-            "name": "grep",
-            "arguments": {"pattern": "audit"},
-            "success": True,
-            "result": "backend/app/models.py",
-            "timestamp": "2026-07-01T22:00:01Z",
-        }
-    ]
-    copilot_log.attribute_tools([turn], tools)
-    assert turn.tools == [("grep", "audit")]
-    assert turn.result_notes == ["grep: backend/app/models.py"]
-    # Structured call is carried into the raw envelope with its result.
-    call = next(c for e in build_events([turn]) for c in e.get("tool_calls", []))
-    assert call["name"] == "grep"
-    assert call["input"] == {"pattern": "audit"}
-    assert call["result"] == "backend/app/models.py"
-
-
-def test_copilot_attribute_tools_flags_failure():
-    turn = Turn("run it", "", "2026-07-01T22:00:00Z", 0)
-    copilot_log.attribute_tools(
-        [turn],
-        [
-            {
-                "name": "bash",
-                "arguments": {"command": "false"},
-                "success": False,
-                "result": "boom",
-                "timestamp": "2026-07-01T22:00:01Z",
-            }
-        ],
-    )
-    assert turn.result_notes == ["bash: error: boom"]
-
-
-def test_copilot_attribute_tools_by_timestamp():
-    t0 = Turn("first", "", "2026-07-01T22:00:00Z", 0)
-    t1 = Turn("second", "", "2026-07-01T22:10:00Z", 1)
-    tools = [
-        {
-            "name": "view",
-            "arguments": {"path": "a.py"},
-            "success": True,
-            "result": "ok",
-            "timestamp": "2026-07-01T22:12:00Z",
-        }
-    ]
-    copilot_log.attribute_tools([t0, t1], tools)
-    assert t0.tools == []
-    assert t1.tools == [("view", "a.py")]
-
-
-def test_copilot_attribute_tools_uses_turn_completion_time():
-    # DB turn timestamps mark completion (see the continued fixture), so a call
-    # between two completions belongs to the later turn.
-    t0 = Turn("first", "", "2026-01-01T00:00:05Z", 0)
-    t1 = Turn("second", "", "2026-01-01T00:00:15Z", 1)
-    copilot_log.attribute_tools(
-        [t0, t1],
-        [
-            {
-                "name": "bash",
-                "arguments": {"command": "ls"},
-                "timestamp": "2026-01-01T00:00:10Z",
-            }
-        ],
-    )
-    assert [c["name"] for c in t0.tool_calls] == []
-    assert [c["name"] for c in t1.tool_calls] == ["bash"]
-
-
-def test_copilot_build_events_emits_one_timestamped_event_per_tool_call():
-    turn = Turn("do two things", "On it.", "2026-07-01T22:00:00Z", 0)
-    copilot_log.attribute_tools(
-        [turn],
-        [
-            {
-                "name": "grep",
-                "arguments": {"pattern": "a"},
-                "success": True,
-                "result": "r1",
-                "timestamp": "2026-07-01T22:00:01Z",
-            },
-            {
-                "name": "view",
-                "arguments": {"path": "b.py"},
-                "success": True,
-                "result": "r2",
-                "timestamp": "2026-07-01T22:00:02Z",
-            },
-        ],
-    )
-    events = build_events([turn])
-    # user + assistant prose + one event per tool call.
-    assert [e["role"] for e in events] == [
-        "user",
-        "assistant",
-        "assistant",
-        "assistant",
-    ]
-    tool_events = [e for e in events if e.get("tool_calls")]
-    assert len(tool_events) == 2
-    # Each tool event carries exactly one call stamped with that call's own time.
-    assert tool_events[0]["ts"] == "2026-07-01T22:00:01Z"
-    assert tool_events[0]["tool_calls"][0]["name"] == "grep"
-    assert tool_events[1]["ts"] == "2026-07-01T22:00:02Z"
-    assert tool_events[1]["tool_calls"][0]["name"] == "view"
-    # Indices stay contiguous across the split-out events.
-    assert [e["i"] for e in events] == [0, 1, 2, 3]
 
 
 def test_copilot_main_defaults_to_all_without_a_selector(monkeypatch, tmp_path):
@@ -527,24 +303,6 @@ def test_decode_arguments_parses_json_string_and_falls_back_on_invalid():
     assert copilot_log._decode_arguments('{"a": 1}') == {"a": 1}
     assert copilot_log._decode_arguments("not json") == "not json"
     assert copilot_log._decode_arguments({"a": 1}) == {"a": 1}
-
-
-def test_tool_descriptor_non_dict_and_json_fallback():
-    assert copilot_log.tool_descriptor("echo", "just a string") == "just a string"
-    assert copilot_log.tool_descriptor("echo", None) == ""
-    # No known key present -> falls back to the full JSON blob.
-    assert (
-        copilot_log.tool_descriptor("mystery", {"other": "value"})
-        == '{"other": "value"}'
-    )
-    # A value json.dumps cannot serialize falls back to "".
-    assert copilot_log.tool_descriptor("mystery", {"bad": {1, 2}}) == ""
-
-
-def test_result_note_handles_none_dict_and_unserializable():
-    assert copilot_log.result_note(None) == ""
-    assert copilot_log.result_note({"a": 1}) == '{"a": 1}'
-    assert copilot_log.result_note({"bad": {1, 2}}) == ""
 
 
 def test_skill_refs_from_call_finds_named_skill_and_fills_in_its_path():
@@ -582,12 +340,6 @@ def test_copilot_date_only_with_no_timestamp():
     assert copilot_log.date_only(None) == "unknown"
 
 
-def test_copilot_turn_add_tool_without_descriptor():
-    turn = Turn("x", "", "2026-01-01T00:00:00Z", 0)
-    turn.add_tool("ls", "")
-    assert turn.tools == [("ls", "")]
-
-
 # -- per-session events log edge cases ---------------------------------------
 
 
@@ -613,7 +365,6 @@ def test_copilot_state_log_readers_return_empty_on_os_error(monkeypatch):
     assert copilot_log.get_state_attachments("sess-oserr") == []
     assert copilot_log.get_state_permissions("sess-oserr") == []
     assert copilot_log.get_state_skills("sess-oserr") == []
-    assert copilot_log.get_state_tools("sess-oserr") == []
 
 
 def test_copilot_permissions_from_events_skips_malformed_lines():
@@ -640,54 +391,6 @@ def test_copilot_result_text_variants():
     assert copilot_log._result_text({1, 2}) == ""
 
 
-def test_copilot_tools_from_events_skips_malformed_lines_and_orphan_events():
-    assert (
-        copilot_log._tools_from_events(
-            sources.parse_state_records(_hand_lines("malformed.jsonl"))
-        )
-        == []
-    )
-
-
-def test_copilot_attribute_tools_falls_back_to_first_turn_without_timestamp():
-    turn = Turn("do it", "", "2026-01-01T00:00:00Z", 0)
-    copilot_log.attribute_tools(
-        [turn], [{"name": "grep", "arguments": None, "success": True, "result": "ok"}]
-    )
-    assert turn.tools == [("grep", "")]
-
-
-def test_copilot_attribute_tools_with_no_turns_is_a_noop():
-    copilot_log.attribute_tools(
-        [],
-        [{"name": "grep", "arguments": {}, "timestamp": "2026-01-01T00:00:00Z"}],
-    )
-
-
-def test_copilot_attribute_tools_registers_skill_from_call():
-    tools = copilot_log._tools_from_events(
-        sources.parse_state_records(_native_lines("skill"))
-    )
-    assert [t["name"] for t in tools] == ["skill"]
-    turn = Turn("use the skill", "", "2026-01-01T00:00:00Z", 0)
-    copilot_log.attribute_tools([turn], tools)
-    assert turn.skills_used == ["fixture-skill"]
-
-
-def test_copilot_attribute_skills_falls_back_to_first_turn_without_timestamp():
-    turn = Turn("hi", "", "2026-01-01T00:00:00Z", 0)
-    copilot_log.attribute_skills([turn], [{"name": "demo"}])
-    assert turn.skills_used == ["demo"]
-
-
-def test_copilot_attribute_permissions_falls_back_to_first_turn_without_timestamp():
-    turn = Turn("hi", "", "2026-01-01T00:00:00Z", 0)
-    copilot_log.attribute_permissions(
-        [turn], [{"tool": "a", "decision": "approved", "feedback": ""}]
-    )
-    assert [p["tool"] for p in turn.permission_decisions] == ["a"]
-
-
 def test_copilot_attachment_lookup_skips_empty_and_captures_variants():
     _write_events_log("attachments", _hand_lines("attachment_variants.jsonl"))
     records = copilot_log.get_state_attachments("attachments")
@@ -698,146 +401,6 @@ def test_copilot_attachment_lookup_skips_empty_and_captures_variants():
     assert lookup["url.png"]["data_url"].startswith("data:image/png;base64,")
     assert base64.b64decode(lookup["inline.png"]["data"]) == PNG
     assert lookup["inline.png"]["media_type"] == "image/png"
-
-
-def test_copilot_build_turn_objects_defaults_turn_index_and_parses_shell_command():
-    raw_turns = [
-        {
-            "user_message": "<bash-input>pytest -q</bash-input>",
-            "assistant_response": "ran it",
-            "timestamp": "2026-01-01T00:00:00Z",
-            # no turn_index key -> falls back to enumerate position
-        }
-    ]
-    turns = copilot_log._build_turn_objects(raw_turns, [], [])
-    assert turns[0].turn_index == 0
-    assert turns[0].shell_command == "pytest -q"
-
-
-def test_copilot_build_turn_objects_ignores_blank_image_token():
-    raw_turns = [
-        {
-            "turn_index": 0,
-            "user_message": "[image:   ] look",
-            "assistant_response": "",
-            "timestamp": "2026-01-01T00:00:00Z",
-        }
-    ]
-    turns = copilot_log._build_turn_objects(raw_turns, [], [])
-    assert turns[0].image_refs == []
-
-
-def test_copilot_timestamped_attachment_belongs_to_second_turn():
-    turns = copilot_log._build_turn_objects(
-        [
-            {"user_message": "first", "timestamp": "2026-01-01T00:00:05Z"},
-            {"user_message": "second", "timestamp": "2026-01-01T00:00:15Z"},
-        ],
-        [],
-        [
-            {
-                "display_name": "later.png",
-                "path": "/tmp/later.png",
-                "timestamp": "2026-01-01T00:00:10Z",
-            },
-            {
-                "display_name": "notes.png",
-                "path": "/tmp/notes.png",
-                "type": "text/plain",
-                "timestamp": "2026-01-01T00:00:10Z",
-            },
-        ],
-    )
-    assert turns[0].image_refs == []
-    assert turns[1].image_refs == [{"name": "later.png", "path": "/tmp/later.png"}]
-
-
-def test_copilot_attachment_with_zulu_timestamp_matches_naive_db_turns():
-    turns = copilot_log._build_turn_objects(
-        [{"user_message": "first", "timestamp": "2026-01-01 00:00:05"}],
-        [],
-        [
-            {
-                "display_name": "p.png",
-                "path": "/tmp/p.png",
-                "timestamp": "2026-01-01T00:00:01Z",
-            }
-        ],
-    )
-    assert turns[0].image_refs == [{"name": "p.png", "path": "/tmp/p.png"}]
-
-
-def test_copilot_attachment_names_from_path_and_skips_non_images():
-    turns = copilot_log._build_turn_objects(
-        [{"user_message": "look", "timestamp": "2026-01-01T00:00:05Z"}],
-        [],
-        [
-            {"path": "/tmp/shot.png", "timestamp": "2026-01-01T00:00:01Z"},
-            {
-                "display_name": "notes",
-                "path": "/tmp/notes.txt",
-                "timestamp": "2026-01-01T00:00:02Z",
-            },
-        ],
-    )
-    assert turns[0].image_refs == [{"name": "shot.png", "path": "/tmp/shot.png"}]
-
-
-def test_copilot_attachments_sharing_a_display_name_are_both_kept():
-    turns = copilot_log._build_turn_objects(
-        # Native turn text carries no image token (see the image fixture).
-        [{"user_message": "compare these", "timestamp": "2026-01-01T00:00:05Z"}],
-        [],
-        [
-            {
-                "display_name": "image.png",
-                "path": "/tmp/a/image.png",
-                "timestamp": "2026-01-01T00:00:01Z",
-            },
-            {
-                "display_name": "image.png",
-                "path": "/tmp/b/image.png",
-                "timestamp": "2026-01-01T00:00:02Z",
-            },
-        ],
-    )
-    assert [r["path"] for r in turns[0].image_refs] == [
-        "/tmp/a/image.png",
-        "/tmp/b/image.png",
-    ]
-
-
-def test_copilot_timestamped_attachment_does_not_duplicate_image_token():
-    turns = copilot_log._build_turn_objects(
-        [{"user_message": "[image: pixel.png]", "timestamp": "2026-01-01T00:00:05Z"}],
-        [],
-        [
-            {
-                "display_name": "pixel.png",
-                "path": "/tmp/pixel.png",
-                "timestamp": "2026-01-01T00:00:01Z",
-            }
-        ],
-    )
-    assert turns[0].image_refs == [
-        {"name": "pixel.png", "path": "/tmp/pixel.png", "type": ""}
-    ]
-
-
-def test_copilot_image_token_and_same_named_attachment_at_another_path_stay_distinct():
-    turns = copilot_log._build_turn_objects(
-        [{"user_message": "[image: p.png]", "timestamp": "2026-01-01T00:00:05Z"}],
-        [],
-        [
-            {"display_name": "p.png", "path": "/a/p.png"},
-            {
-                "display_name": "p.png",
-                "path": "/b/p.png",
-                "timestamp": "2026-01-01T00:00:01Z",
-            },
-        ],
-    )
-    assert [r["path"] for r in turns[0].image_refs] == ["/a/p.png", "/b/p.png"]
 
 
 # -- image byte resolution --------------------------
@@ -1241,20 +804,6 @@ def test_copilot_all_default_destination_and_colliding_names(
     assert all(json.loads(p.read_text())["events"] for p in paths)
 
 
-def test_copilot_session_loader_preserves_permission_decisions(tmp_path):
-    _write_events_log(NATIVE_IDS["baseline"], _hand_lines("permissions.jsonl"))
-    with _native_db() as conn:
-        turns = copilot_log.load_session_turns(
-            conn, get_session_by_id(conn, NATIVE_IDS["baseline"])
-        )
-    assert [p["decision"] for p in turns[0].permission_decisions] == [
-        "approved",
-        "denied-interactively-by-user",
-        "pending",
-    ]
-    assert turns[0].permission_decisions[1]["feedback"] == "not like that"
-
-
 @pytest.mark.parametrize("fail", [False, True])
 def test_main_closes_connection(monkeypatch, fail):
     conn = Mock()
@@ -1273,3 +822,261 @@ def test_main_closes_connection(monkeypatch, fail):
 def test_output_identifier_rejects_non_string_ids(session_id):
     with pytest.raises(TypeError, match="session id must be a string"):
         copilot_log.output_identifier({"id": session_id})
+
+
+def _supplied_native_source(case):
+    with _native_db() as conn:
+        metadata = get_session_by_id(conn, NATIVE_IDS[case])
+        source = sources.read_source(conn, metadata)
+    source.state_records = sources.parse_state_records(_native_lines(case))
+    return source
+
+
+def test_native_messages_keep_order_identity_and_complete_results():
+    source = _supplied_native_source("tool_success")
+    # Enlarge the captured result, retaining the native call/message links.
+    complete = next(
+        r for r in source.state_records if r["type"] == "tool.execution_complete"
+    )
+    complete["data"]["result"]["content"] = "é" * 20000
+    complete["data"]["result"]["additional"] = {"recorded": True}
+    session = copilot_log.interpret_source(source)
+    events = session["events"]
+    assert [e["role"] for e in events] == ["user", "assistant", "assistant"]
+    native = [
+        r
+        for r in source.state_records
+        if r["type"] in ("user.message", "assistant.message")
+    ]
+    assert [e["id"] for e in events] == [r["id"] for r in native]
+    [call] = [c for e in events for c in e.get("tool_calls", [])]
+    assert call["id"] == complete["data"]["toolCallId"]
+    assert call["result"] == "é" * 20000
+    assert call["result_record"]["content"] == complete["data"]["result"]
+    assert "result_truncated" not in call
+
+
+def test_native_repeated_or_missing_results_are_not_lost():
+    source = _supplied_native_source("tool_success")
+    complete = next(
+        r for r in source.state_records if r["type"] == "tool.execution_complete"
+    )
+    # Duplicate completion is retained as unmatched; it must not overwrite the first.
+    repeated = json.loads(json.dumps(complete))
+    repeated["id"] = "repeat"
+    repeated["data"]["result"] = {"content": "second result"}
+    source.state_records.append(repeated)
+    session = copilot_log.interpret_source(source)
+    [call] = [c for e in session["events"] for c in e.get("tool_calls", [])]
+    assert "TOOL_FIXTURE_MARKER" in call["result"]
+    assert session["unmatched_tool_results"][0]["id"] == "repeat"
+    source.state_records = [
+        r for r in source.state_records if r["type"] != "tool.execution_complete"
+    ]
+    session = copilot_log.interpret_source(source)
+    [call] = [c for e in session["events"] for c in e.get("tool_calls", [])]
+    assert call["result"] is None
+    assert "result_record" not in call
+
+
+def test_native_image_ownership_uses_its_record_despite_timestamp():
+    source = _supplied_native_source("image")
+    # Misleading timestamps must not transfer the image to a later human message.
+    user = next(r for r in source.state_records if r["type"] == "user.message")
+    user["timestamp"] = "2099-01-01T00:00:00Z"
+    later = json.loads(json.dumps(user))
+    later["id"] = "later-user"
+    later["data"]["messageId"] = "later-message"
+    later["data"].pop("attachments")
+    source.state_records.append(later)
+    session = copilot_log.interpret_source(source)
+    users = [e for e in session["events"] if e["role"] == "user"]
+    assert len(users) == 2
+    assert base64.b64decode(users[0]["images"][0]["data"]) == PNG
+    assert not users[1].get("images")
+
+
+@pytest.mark.parametrize(
+    "result", [None, "", {}, {"content": "", "additional": [1, False]}, [1, 2]]
+)
+def test_native_empty_and_structured_results_survive(result):
+    source = _supplied_native_source("tool_success")
+    complete = next(
+        r for r in source.state_records if r["type"] == "tool.execution_complete"
+    )
+    complete["data"]["result"] = result
+    complete["data"]["success"] = False
+    session = copilot_log.interpret_source(source)
+    [call] = [c for e in session["events"] for c in e.get("tool_calls", [])]
+    assert call["result_record"]["content"] == result
+    assert call["is_error"] is True
+    assert call["result"] == copilot_log._result_text(result)
+    assert call["result_record"]["is_error"] is True
+
+
+def test_native_tool_results_match_ids_instead_of_completion_order():
+    source = _supplied_native_source("tool_success")
+    request = next(r for r in source.state_records if r["type"] == "assistant.message")
+    start = next(r for r in source.state_records if r["type"] == "tool.execution_start")
+    complete = next(
+        r for r in source.state_records if r["type"] == "tool.execution_complete"
+    )
+    # Add a concurrent opaque request and finish it before the captured call.
+    request["data"]["toolRequests"].append(
+        {
+            "toolCallId": "other",
+            "name": "unknown",
+            "arguments": {"nested": [1, {"keep": True}]},
+        }
+    )
+    other = json.loads(json.dumps(complete))
+    other["data"]["toolCallId"] = "other"
+    other["data"]["result"] = {"content": "other output"}
+    source.state_records.insert(source.state_records.index(complete), other)
+    start["data"]["arguments"]["extra"] = ["execution-only"]
+    session = copilot_log.interpret_source(source)
+    calls = [c for e in session["events"] for c in e.get("tool_calls", [])]
+    assert [c["id"] for c in calls] == [complete["data"]["toolCallId"], "other"]
+    assert "TOOL_FIXTURE_MARKER" in calls[0]["result"]
+    assert calls[0]["execution"]["input"]["extra"] == ["execution-only"]
+    assert calls[0]["execution"]["id"] == start["id"]
+    assert calls[1]["result"] == "other output"
+    assert calls[1]["input"] == {"nested": [1, {"keep": True}]}
+    assert session["unsupported_tools"] == ["unknown"]
+
+
+@pytest.mark.parametrize("parent", [True, False])
+def test_native_start_without_request_uses_only_recorded_parent(parent):
+    source = _supplied_native_source("tool_success")
+    request = next(r for r in source.state_records if r["type"] == "assistant.message")
+    request["data"]["toolRequests"] = []
+    if not parent:
+        start = next(
+            r for r in source.state_records if r["type"] == "tool.execution_start"
+        )
+        start["parentId"] = "unrecorded-message"
+    session = copilot_log.interpret_source(source)
+    tool_message = next(e for e in session["events"] if e.get("tool_calls"))
+    assert (tool_message["id"] == request["id"]) is parent
+    assert "TOOL_FIXTURE_MARKER" in tool_message["tool_calls"][0]["result"]
+
+
+def test_partial_state_keeps_database_prose_and_unowned_activity():
+    source = _supplied_native_source("tool_success")
+    source.state_records = [
+        r for r in source.state_records if r["type"].startswith("tool.")
+    ]
+    source.files = [{"file_path": "/db.py", "tool_name": "edit", "turn_index": 0}]
+    session = copilot_log.interpret_source(source)
+    assert any("Report its output" in e.get("text", "") for e in session["events"])
+    calls = [c for e in session["events"] for c in e.get("tool_calls", [])]
+    assert [c["name"] for c in calls] == ["bash"]
+    source.state_records = [
+        r for r in source.state_records if r["type"] == "tool.execution_complete"
+    ]
+    session = copilot_log.interpret_source(source)
+    assert session["unmatched_tool_results"][0]["tool_call_id"]
+    assert [c["name"] for e in session["events"] for c in e.get("tool_calls", [])] == [
+        "edit"
+    ]
+
+
+def test_native_messages_keep_database_file_fallback_without_tool_activity():
+    source = _supplied_native_source("baseline")
+    source.files = [{"file_path": " a -> b.py ", "tool_name": "edit", "turn_index": 0}]
+    session = copilot_log.interpret_source(source)
+    [call] = [c for e in session["events"] for c in e.get("tool_calls", [])]
+    assert call["input"] == {"target": " a -> b.py "}
+
+
+def test_session_retains_skills_and_unassociated_permission_lifecycle():
+    source = _supplied_native_source("skill")
+    source.state_records.extend(
+        sources.parse_state_records(_hand_lines("permissions.jsonl"))
+    )
+    session = copilot_log.interpret_source(source)
+    assert session["skills_used"] == ["fixture-skill"]
+    assert any("SKILL_FIXTURE_MARKER" in e.get("text", "") for e in session["events"])
+    assert [p["decision"] for p in session["permission_decisions"]] == [
+        "approved",
+        "denied-interactively-by-user",
+        "pending",
+    ]
+    assert session["permission_decisions"][1]["feedback"] == "not like that"
+
+
+def test_owned_images_keep_distinct_paths_and_deduplicate_tokens():
+    source = _supplied_native_source("image")
+    user = next(r for r in source.state_records if r["type"] == "user.message")
+    user["data"]["content"] = "[image: pixel.png] [image:   ] compare"
+    first = user["data"]["attachments"][0]
+    other = {**first, "path": "/different/pixel.png"}
+    # Same display name, distinct recorded source, plus a non-image attachment.
+    user["data"]["attachments"].extend(
+        [
+            other,
+            {"path": "/notes.txt", "mimeType": "text/plain", "displayName": "notes"},
+        ]
+    )
+    session = copilot_log.interpret_source(source)
+    [message] = [e for e in session["events"] if e["role"] == "user"]
+    assert len(message["images"]) == 2
+    assert all(base64.b64decode(image["data"]) == PNG for image in message["images"])
+    assert user["data"]["content"] == message["text"]
+
+
+def test_attachment_shape_boundaries_and_shell_input():
+    assert copilot_log._attachment_ref({"path": "/tmp/shot.png"}) == {
+        "name": "shot.png",
+        "path": "/tmp/shot.png",
+    }
+    assert copilot_log._attachment_ref({"path": "/tmp/file.txt"}) is None
+    assert (
+        copilot_log._attachment_ref({"data_url": "data:image/png;base64,AAAA"}) is None
+    )
+    assert copilot_log._same_image(
+        {"name": "p.png"}, {"name": "p.png", "path": "/p.png"}
+    )
+    source = sources.CopilotSource(
+        {"id": "s"},
+        [
+            {
+                "user_message": "<bash-input>pytest -q</bash-input>",
+                "assistant_response": "ran it",
+            }
+        ],
+    )
+    session = copilot_log.interpret_source(source)
+    assert session["events"][0]["shell_command"] == "pytest -q"
+    assert copilot_log._json_value({"key": [True, None]}) == {"key": [True, None]}
+    with pytest.raises(TypeError, match="JSON values"):
+        copilot_log._json_value({1, 2})
+
+
+def test_malformed_native_tools_do_not_invent_calls():
+    source = _supplied_native_source("baseline")
+    source.state_records.extend(
+        [
+            {"type": "tool.execution_start", "data": {}},
+            {"type": "assistant.message", "data": {"toolRequests": [False]}},
+        ]
+    )
+    session = copilot_log.interpret_source(source)
+    assert not any(e.get("tool_calls") for e in session["events"])
+
+
+def test_native_tools_preserve_recorded_database_file_activity():
+    source = _supplied_native_source("tool_success")
+    source.files = [
+        {
+            "file_path": "/tmp/file.py",
+            "tool_name": "view",
+            "turn_index": 0,
+            "first_seen_at": "recorded time",
+        }
+    ]
+    session = copilot_log.interpret_source(source)
+    assert session["file_activity"] == source.files
+    assert [c["name"] for e in session["events"] for c in e.get("tool_calls", [])] == [
+        "bash"
+    ]
