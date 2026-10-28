@@ -62,6 +62,7 @@ from session_log_extractors.session_log_envelope import (
     write_envelope,
 )
 from session_log_extractors.session_model import Image, Message, Session
+from session_log_extractors.tool_inputs import JsonValue
 
 _NOISE_TAG_BLOCK = re.compile(
     r"<(system-reminder|system-notification|local-command-stdout|local-command-stderr|"
@@ -190,7 +191,7 @@ def clean_user_text(text: str) -> str:
     return cleaned.strip()
 
 
-def _parse_ts(ts: Optional[str]):
+def _parse_ts(ts: Optional[str]) -> Optional[datetime]:
     if not ts or not isinstance(ts, str):
         return None
     try:
@@ -252,7 +253,7 @@ class Turn:
             self.skills_used.append(name)
 
 
-def _binary_assets(events: List[Dict[str, Any]]) -> Dict[str, tuple]:
+def _binary_assets(events: List[Dict[str, Any]]) -> Dict[str, tuple[str, JsonValue]]:
     assets = {}
     for obj in events:
         asset = obj.get("data")
@@ -266,7 +267,11 @@ def _binary_assets(events: List[Dict[str, Any]]) -> Dict[str, tuple]:
     return assets
 
 
-def _state_attachment(item: Dict[str, Any], timestamp: Any, assets: Dict) -> Dict:
+def _state_attachment(
+    item: Dict[str, JsonValue],
+    timestamp: JsonValue,
+    assets: Dict[str, tuple[str, JsonValue]],
+) -> Dict[str, JsonValue]:
     rec = {"timestamp": timestamp}
     for source, target in (
         ("displayName", "display_name"),
@@ -324,7 +329,7 @@ def _permissions_from_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any
     no matching completion (aborted / still pending) is emitted as ``pending``.
     """
     requests: Dict[str, Dict[str, Any]] = {}
-    decided: set = set()
+    decided: set[str] = set()
     out: List[Dict[str, Any]] = []
     for obj in events:
         if not isinstance(obj, dict):
@@ -814,6 +819,8 @@ def _path_image_ext(ref: Dict[str, str]) -> str:
 def output_identifier(session: Dict[str, Any]) -> str:
     """Generate a short identifier for output filenames."""
     session_id = session.get("id", "unknown")
+    if not isinstance(session_id, str):
+        raise TypeError("Copilot session id must be a string")
     # Use first 8 chars of session id
     short_id = session_id[:8] if len(session_id) >= 8 else session_id
 
@@ -823,7 +830,7 @@ def output_identifier(session: Dict[str, Any]) -> str:
     return short_id
 
 
-def _unique_identifier(base: str, used: set) -> str:
+def _unique_identifier(base: str, used: set[str]) -> str:
     ident = base
     suffix = 2
     while ident in used:
@@ -1014,7 +1021,9 @@ def _extract_all(
     return 0 if written else 1
 
 
-def _select_session(conn: sqlite3.Connection, args: argparse.Namespace):
+def _select_session(
+    conn: sqlite3.Connection, args: argparse.Namespace
+) -> Optional[Dict[str, Any]]:
     if args.session:
         session = copilot_sources.get_session_by_id(conn, args.session)
         if session is None:

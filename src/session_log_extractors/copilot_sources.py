@@ -48,7 +48,7 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     return row is not None
 
 
-def _table_columns(conn: sqlite3.Connection, name: str) -> set:
+def _table_columns(conn: sqlite3.Connection, name: str) -> set[str]:
     if not _table_exists(conn, name):
         return set()
     rows = conn.execute(f"PRAGMA table_info({name})").fetchall()

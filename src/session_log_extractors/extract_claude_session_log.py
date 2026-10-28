@@ -48,6 +48,7 @@ from session_log_extractors.session_log_envelope import (
 )
 from session_log_extractors.session_model import (
     Message,
+    MessageContent,
     NativeIdentity,
     PermissionDenial,
     PlanDecision,
@@ -629,6 +630,15 @@ def _message_identity(entry: Dict[str, Any]) -> NativeIdentity:
     return identity
 
 
+def _attach_identity(message: MessageContent, identity: NativeIdentity) -> None:
+    if "id" in identity:
+        message["id"] = identity["id"]
+    if "parent_id" in identity:
+        message["parent_id"] = identity["parent_id"]
+    if "message_id" in identity:
+        message["message_id"] = identity["message_id"]
+
+
 def _question_options(value: object) -> List[QuestionOption]:
     if not isinstance(value, list):
         return []
@@ -692,7 +702,7 @@ class _ClaudeInterpreter:
         if not text and not images and not command:
             return
         message = user_event(len(self.events), entry.get("timestamp"), text, images)
-        message.update(_message_identity(entry))
+        _attach_identity(message, _message_identity(entry))
         if command:
             args = _COMMAND_ARGS.search(raw)
             message["command"] = command
@@ -720,7 +730,7 @@ class _ClaudeInterpreter:
             message = assistant_event(
                 len(self.events), entry.get("timestamp"), "\n\n".join(texts), calls
             )
-            message.update(_message_identity(entry))
+            _attach_identity(message, _message_identity(entry))
             self.events.append(message)
 
     def call(self, block: Dict[str, Any]) -> ToolCall:

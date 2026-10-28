@@ -1267,3 +1267,9 @@ def test_main_closes_connection(monkeypatch, fail):
     else:
         assert copilot_log.main(["selected"]) == 0
     conn.close.assert_called_once_with()
+
+
+@pytest.mark.parametrize("session_id", [None, 123])
+def test_output_identifier_rejects_non_string_ids(session_id):
+    with pytest.raises(TypeError, match="session id must be a string"):
+        copilot_log.output_identifier({"id": session_id})

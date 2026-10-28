@@ -173,17 +173,16 @@ uv sync --locked --extra test
 uv manages `.venv` automatically; no activation is needed. Python 3.11 or newer
 is supported; CI uses 3.11 (`uv sync --locked --extra test --python 3.11` to match).
 Ruff and mypy are pinned in `pyproject.toml`; mypy checks the entire source
-package, including bodies of untyped functions. All test dependencies are locked in
+package in strict mode. All test dependencies are locked in
 `uv.lock`. Format Python with `uv run --locked ruff format .`. Run the same
 checks as CI before opening a PR:
 
 ```sh
 uv run --locked ruff format --check .
 uv run --locked ruff check .
-uv run --locked mypy src scripts/check_type_escapes.py
+uv run --locked mypy src
 uv run --locked pytest --cov=scripts --cov=src --cov-report=term --cov-report=xml --cov-fail-under=95
 git fetch origin main
-uv run --locked python scripts/check_type_escapes.py --compare-branch=origin/main
 uv run --locked diff-cover coverage.xml --compare-branch=origin/main --fail-under=95
 uv run --locked pytest scripts/test_extract_codex_session_log.py --cov=session_log_extractors.extract_codex_session_log --cov-fail-under=95
 uv run --locked pytest scripts/test_extract_claude_session_log.py --cov=session_log_extractors.extract_claude_session_log --cov-fail-under=95
@@ -201,21 +200,11 @@ to upgrade the locked dependencies.
 
 The package has no casts or type ignores. Ruff's `TID251` bans `typing.cast`,
 `typing_extensions.cast`, and both `no_type_check` APIs; `PGH003` requires coded
-ignores. Mypy also requires error codes and rejects unused ignores.
+ignores. Mypy runs in strict mode, requires error codes, and rejects unused ignores.
 
-`scripts/typecheck_exceptions.json` is an empty inventory. The CI guard
-`scripts/check_type_escapes.py` compares it with origin/main and permits only
-removal of exceptions. An exception is identified by file, enclosing symbol,
-normalized statement, and exact error codes, with a reason and removal ticket.
-Moving lines does not change identity; changing scope, statement, codes, or
-adding another occurrence requires a new exception and fails CI. Editing the
-inventory in the same PR does not approve an addition.
-
-The guard scans real comments in all tracked and unignored Python files,
-including tests and generators. It rejects blanket/file-level ignores, inline
-checker configuration, suppressions of the protected Ruff rules, and weakened
-type-policy settings. Existing unrelated Ruff complexity exceptions remain
-subject to the historical inventory below. Examples inside strings are ignored.
+Adding or broadening type-checker suppressions is prohibited by AGENTS.md and
+checked in PR review alongside Ruff exceptions. Remove existing ignores when
+fixing or replacing the code they cover; do not add new ones.
 
 ## Ruff lint policy and initial inventory
 

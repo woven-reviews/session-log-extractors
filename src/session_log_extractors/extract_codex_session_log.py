@@ -161,7 +161,7 @@ def clean_user_text(text: str) -> str:
     return cleaned.strip()
 
 
-def _parse_ts(ts: Optional[str]):
+def _parse_ts(ts: Optional[str]) -> Optional[datetime]:
     if not ts or not isinstance(ts, str):
         return None
     try:
@@ -633,7 +633,7 @@ def patch_paths(arguments: Any) -> List[str]:
     return paths
 
 
-def append_unique_path(paths: List[str], seen: set, path: str) -> None:
+def append_unique_path(paths: List[str], seen: set[str], path: str) -> None:
     """Append a changed path, avoiding relative/absolute duplicates."""
     if not path:
         return
@@ -1232,7 +1232,7 @@ def _extract_source(
     return build_raw_envelope(source, tool_result_max_bytes)
 
 
-def _unique_identifier(base: str, used: set) -> str:
+def _unique_identifier(base: str, used: set[str]) -> str:
     ident = base
     suffix = 2
     while ident in used:
