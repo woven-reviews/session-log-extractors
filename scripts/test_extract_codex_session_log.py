@@ -1998,3 +1998,63 @@ def test_main_output_root_is_resolved_at_call_time(
         assert json.loads(output.read_text())["events"][0]["text"] == "hello"
         if explicit_root:
             assert not (cwd / output.name).exists()
+
+
+@pytest.mark.parametrize("batch", [False, True])
+def test_codex_cli_uses_public_stages(batch, tmp_path, monkeypatch, capsys):
+    stages = []
+
+    class RecordingExtractor:
+        def read_source(self, request):
+            stages.append("read")
+            return mod.read_source(request)
+
+        def interpret_source(self, source):
+            stages.append("interpret")
+            return mod.interpret_source(source)
+
+    monkeypatch.setattr(mod, "EXTRACTOR", RecordingExtractor(), raising=False)
+    entries = load_entries(FIXTURES / "question.jsonl")
+    entries[0]["payload"]["cwd"] = str(tmp_path)
+    _write_jsonl(tmp_path / "s.jsonl", entries)
+    monkeypatch.chdir(tmp_path)
+    args = (
+        ["--sessions-root", str(tmp_path)]
+        if batch
+        else ["--transcript", str(tmp_path / "s.jsonl"), "--output", "-"]
+    )
+    assert main(args) == 0
+    assert stages == ["read", "interpret"]
+
+
+def test_codex_preserves_native_results_and_identity():
+    # Retain the native tool shapes, changing only IDs/results to exercise
+    # repeated names, unmatched results, and missing/null/empty boundaries.
+    entries = load_entries(FIXTURES / "tool_patch_large.jsonl")
+    calls = [e for e in entries if e["payload"].get("type") == "custom_tool_call"]
+    outputs = [
+        e for e in entries if e["payload"].get("type") == "custom_tool_call_output"
+    ]
+    calls[0]["payload"]["id"] = "native-call"
+    outputs[0]["payload"]["output"] = {"nested": [None, "", {"unknown": True}]}
+    outputs[0]["payload"]["id"] = "native-result"
+    outputs[1]["payload"]["output"] = None
+    missing = json.loads(json.dumps(calls[0]))
+    missing["payload"]["call_id"] = "no-result"
+    empty = json.loads(json.dumps(outputs[1]))
+    empty["payload"]["call_id"] = "unmatched"
+    empty["payload"]["output"] = ""
+    entries.extend([missing, empty])
+    source = mod.CodexSource(Path("unused.jsonl"), entries)
+    session = mod.interpret_source(source)
+    assert session is not None
+    interpreted = [c for e in session["events"] for c in e.get("tool_calls", [])]
+    assert [c["name"] for c in interpreted] == ["exec"] * 3
+    assert interpreted[0]["id"] == calls[0]["payload"]["call_id"]
+    assert interpreted[0]["result_record"]["content"] == outputs[0]["payload"]["output"]
+    assert interpreted[0]["result_record"]["id"] == "native-result"
+    assert interpreted[1]["result"] is None
+    assert "result" not in interpreted[2]
+    assert session["unmatched_tool_results"][0]["content"] == ""
+    assert session["unsupported_tools"] == ["exec"]
+    assert all("result_truncated" not in c for c in interpreted)
