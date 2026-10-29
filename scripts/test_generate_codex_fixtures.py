@@ -8,12 +8,12 @@ from types import SimpleNamespace
 import generate_codex_fixtures as generator
 import pytest
 
-from session_log_extractors.codex_sources import load_entries
+from session_log_extractors.codex_sources import CodexSource, load_entries
 from session_log_extractors.extract_codex_session_log import (
-    build_events,
-    build_turns,
+    interpret_source,
     session_models,
 )
+from session_log_extractors.session_log_envelope import export_session
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "codex"
 
@@ -24,18 +24,15 @@ def test_native_fixtures_record_headless_codex_shapes():
     assert any(
         row["payload"].get("item", {}).get("type") == "FileChange" for row in tool
     )
-    turns, files_changed = build_turns(tool)
-    assert files_changed == ["/workspace/fixture.txt"]
-    assert len(turns[0].tool_bullets) == 2
-    assert turns[0].result_notes[0] == "exec: TOOL_FIXTURE_MARKER"
-    assert any(
-        note.startswith("apply_patch: Success. Updated the following files:")
-        and "/workspace/fixture.txt" in note
-        for note in turns[0].result_notes
-    )
+    session = interpret_source(CodexSource(Path("native.jsonl"), tool))
+    assert session is not None
+    assert session["files_changed"] == ["/workspace/fixture.txt"]
+    patch = session["patch_results"][0]
+    assert patch["stdout"].startswith("Success. Updated the following files:")
+    assert "/workspace/fixture.txt" in patch["stdout"]
     calls = [
         call
-        for event in build_events(tool, tool_result_max_bytes=64)
+        for event in export_session(session, 64)["events"]
         for call in event.get("tool_calls", [])
     ]
     assert len(calls) == 2
@@ -44,11 +41,18 @@ def test_native_fixtures_record_headless_codex_shapes():
     assert calls[1]["result_bytes"] > 64
 
     slash = load_entries(FIXTURES / "slash.jsonl")
-    assert build_turns(slash)[0][0].command == "/review"
+    assert (
+        interpret_source(CodexSource(Path("slash.jsonl"), slash))["events"][0][
+            "command"
+        ]
+        == "/review"
+    )
 
     image = load_entries(FIXTURES / "image.jsonl")
     assert (
-        build_events(image)[0]["images"][0]["bytes"]
+        interpret_source(CodexSource(Path("image.jsonl"), image))["events"][0][
+            "images"
+        ][0]["bytes"]
         == (FIXTURES / "pixel.png").stat().st_size
     )
 

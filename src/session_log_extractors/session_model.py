@@ -83,7 +83,7 @@ class ToolResult(NativeIdentity):
 
     tool_call_id: str | None
     ts: str | None
-    content: JsonValue
+    content: NotRequired[JsonValue]
     is_error: bool
 
 
@@ -119,10 +119,35 @@ class PermissionDecision(TypedDict):
     ts: str | None
 
 
+class PlanStep(TypedDict):
+    """One recorded plan step and its native status."""
+
+    step: str
+    status: JsonValue
+
+
+class PlanUpdate(TypedDict):
+    """A structured update_plan call interpreted in Plan mode."""
+
+    explanation: str
+    steps: list[PlanStep]
+
+
+class PatchResult(NativeIdentity):
+    """A native patch completion, without guessed tool ownership."""
+
+    ts: str | None
+    paths: list[str]
+    stdout: JsonValue
+    stderr: JsonValue
+
+
 class ToolCall(TypedDict, total=False):
     """A complete call and the decisions/results belonging to that call."""
 
     name: Required[str]
+    native_id: str
+    plan_update: PlanUpdate
     id: str
     input: ToolInput
     input_schema: ToolInputSchema
@@ -174,6 +199,8 @@ class MessageContent(NativeIdentity, total=False):
     text: str | None
     images: list[Image] | None
     authorship: list[AuthorshipRange]
+    collaboration_mode: str
+    permission_denial: PermissionDenial
 
 
 class UserMessage(MessageContent):
@@ -245,3 +272,4 @@ class Session(TypedDict):
     permission_decisions: NotRequired[list[PermissionDecision]]
     files_changed: NotRequired[list[str]]
     file_activity: NotRequired[list[FileActivity]]
+    patch_results: NotRequired[list[PatchResult]]

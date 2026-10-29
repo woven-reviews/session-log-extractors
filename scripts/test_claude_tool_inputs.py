@@ -54,6 +54,20 @@ def test_legacy_plan_name_has_the_same_input_schema():
     assert input_schema("exit_plan_mode", {"plan": "Build it"}) == "ExitPlanMode"
 
 
-@pytest.mark.parametrize("name", ["bash", "view", "edit", "create", "skill"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "bash",
+        "view",
+        "edit",
+        "create",
+        "skill",
+        "exec_command",
+        "request_user_input",
+        "update_plan",
+        "apply_patch",
+        "skills.read",
+    ],
+)
 def test_claude_does_not_recognize_copilot_tool_names(name):
     assert input_schema(name, {"recorded": True}) == "unsupported"

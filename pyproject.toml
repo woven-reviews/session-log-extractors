@@ -109,3 +109,14 @@ allowed_importers = [
     "session_log_extractors.tool_inputs",
 ]
 as_packages = false
+
+[[tool.importlinter.contracts]]
+id = "codex-schemas"
+name = "Codex schemas belong to Codex and the shared union"
+type = "protected"
+protected_modules = ["session_log_extractors.tool_inputs.codex"]
+allowed_importers = [
+    "session_log_extractors.extract_codex_session_log",
+    "session_log_extractors.tool_inputs",
+]
+as_packages = false

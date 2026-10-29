@@ -54,30 +54,47 @@ import base64
 import json
 import re
 import sys
-from datetime import datetime
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, TypedDict
 
 from session_log_extractors import codex_sources
 from session_log_extractors.codex_sources import CodexSource, ImageInputs
-from session_log_extractors.json_types import JsonValue, parse_json, string_value
+from session_log_extractors.extractor_contract import Extractor
+from session_log_extractors.json_types import (
+    JsonValue,
+    json_value,
+    parse_json,
+    string_value,
+)
+from session_log_extractors.question_types import is_question_option
 from session_log_extractors.session_log_envelope import (
     DEFAULT_TOOL_RESULT_MAX_BYTES,
     Envelope,
     assistant_event,
-    attach_result,
-    build_envelope,
+    export_session,
     image_from_bytes,
     media_type_for_ext,
     raw_filename,
-    tool_call,
-    truncate_result,
     unavailable_image,
     user_event,
     warn_if_oversized,
     write_envelope,
 )
-from session_log_extractors.session_model import Image, Message, Session, ToolCall
+from session_log_extractors.session_model import (
+    Image,
+    Message,
+    PatchResult,
+    PermissionDenial,
+    PlanStep,
+    PlanUpdate,
+    QuestionAnswer,
+    Session,
+    ToolCall,
+    ToolResult,
+    UserMessage,
+)
+from session_log_extractors.tool_inputs.codex import input_schema as codex_input_schema
 
 _IMAGE_EXT = {
     "image/png": "png",
@@ -86,11 +103,9 @@ _IMAGE_EXT = {
     "image/webp": "webp",
 }
 
-TOOL_DESC_MAX = 120
-RESULT_NOTE_MAX = 160
 
 # Tools that ask the human for a direct answer. Codex has used both bare and
-# namespaced tool names in logs, so matching is suffix-based in build_turns.
+# namespaced tool names in logs, so matching is suffix-based during interpretation.
 INTERACTION_TOOLS = {"request_user_input"}
 
 # Retain parsing for update_plan-shaped calls; no current native capture shows
@@ -146,13 +161,6 @@ def parse_permission_denial(text: JsonValue) -> Optional[str]:
     return m.group(1).strip() if m else ""
 
 
-def _truncate(text: str, limit: int) -> str:
-    text = " ".join(str(text).split())
-    if len(text) <= limit:
-        return text
-    return text[: limit - 3].rstrip() + "..."
-
-
 def clean_user_text(text: str) -> str:
     """Strip harness-injected wrappers while keeping the human's prose."""
     if not text:
@@ -161,15 +169,6 @@ def clean_user_text(text: str) -> str:
     cleaned = _NOISE_TAG_LOOSE.sub("", cleaned)
     cleaned = re.sub(r"\n[ \t]*\n[ \t]*\n+", "\n\n", cleaned)
     return cleaned.strip()
-
-
-def _parse_ts(ts: Optional[str]) -> Optional[datetime]:
-    if not ts or not isinstance(ts, str):
-        return None
-    try:
-        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    except (TypeError, ValueError):
-        return None
 
 
 def _payload(entry: Dict[str, JsonValue]) -> Dict[str, JsonValue]:
@@ -227,52 +226,40 @@ def _image_ref_from_string(value: str) -> Optional[Dict[str, JsonValue]]:
     return None
 
 
-# Existing native interpretation; remove in QUAL-2518.
-def image_refs_from_event(payload: Dict[str, JsonValue]) -> List[Dict[str, JsonValue]]:  # noqa: C901, PLR0912
-    """Image refs from Codex ``event_msg:user_message`` payloads."""
-    refs: List[Dict[str, JsonValue]] = []
+def _image_ref(item: JsonValue) -> dict[str, JsonValue] | None:
+    if isinstance(item, str):
+        return _image_ref_from_string(item)
+    if not isinstance(item, dict):
+        return None
+    for key in ("image_url", "url", "path", "file_path"):
+        value = item.get(key)
+        if isinstance(value, str):
+            ref = _image_ref_from_string(value)
+            if ref:
+                return ref
+    if isinstance(item.get("data"), str):
+        return {
+            "type": "base64",
+            "data": item["data"],
+            "media_type": item.get("media_type") or item.get("mime_type"),
+        }
+    return None
 
-    local_images = payload.get("local_images")
-    if isinstance(local_images, list):
-        for item in local_images:
-            if isinstance(item, str):
-                ref = _image_ref_from_string(item)
+
+def image_refs_from_event(payload: Dict[str, JsonValue]) -> List[Dict[str, JsonValue]]:
+    """Image refs from Codex event_msg:user_message payloads."""
+    refs = []
+    for key in ("local_images", "images"):
+        items = payload.get(key)
+        if isinstance(items, list):
+            for item in items:
+                ref = (
+                    _image_ref(item)
+                    if key == "images" or isinstance(item, str)
+                    else None
+                )
                 if ref:
                     refs.append(ref)
-
-    images = payload.get("images")
-    if isinstance(images, list):
-        for item in images:
-            if isinstance(item, str):
-                ref = _image_ref_from_string(item)
-                if ref:
-                    refs.append(ref)
-            elif isinstance(item, dict):
-                url = item.get("image_url") or item.get("url")
-                if isinstance(url, str):
-                    ref = _image_ref_from_string(url)
-                    if ref:
-                        refs.append(ref)
-                        continue
-
-                path = item.get("path") or item.get("file_path")
-                if isinstance(path, str):
-                    ref = _image_ref_from_string(path)
-                    if ref:
-                        refs.append(ref)
-                        continue
-
-                data = item.get("data")
-                if isinstance(data, str):
-                    refs.append(
-                        {
-                            "type": "base64",
-                            "data": data,
-                            "media_type": item.get("media_type")
-                            or item.get("mime_type"),
-                        }
-                    )
-
     return refs
 
 
@@ -305,34 +292,19 @@ def _decode_arguments(arguments: JsonValue) -> JsonValue:
     return arguments
 
 
-def tool_descriptor(name: str, arguments: JsonValue) -> str:
-    args = _decode_arguments(arguments)
+def _skill_name(name: str, args: object) -> str | None:
+    short_name = name.rsplit(".", 1)[-1].lower()
+    normalized = name.lower().replace("__", ".")
     if not isinstance(args, dict):
-        return _truncate(str(args), TOOL_DESC_MAX) if args else ""
-
-    for key in ("cmd", "command", "query", "pattern", "path", "file_path", "url"):
-        val = args.get(key)
-        if isinstance(val, str) and val:
-            return _truncate(val, TOOL_DESC_MAX)
-
-    # multi_tool_use.parallel stores nested recipient calls.
-    tool_uses = args.get("tool_uses")
-    if isinstance(tool_uses, list):
-        names = []
-        for item in tool_uses:
-            if isinstance(item, dict) and isinstance(item.get("recipient_name"), str):
-                names.append(str(item["recipient_name"]))
-        if names:
-            return _truncate(", ".join(names), TOOL_DESC_MAX)
-
-    try:
-        return _truncate(json.dumps(args, ensure_ascii=False), TOOL_DESC_MAX)
-    except (TypeError, ValueError):
-        return ""
+        return None
+    keys = ("skill", "name", "package") if short_name in ("skill", "read_skill") else ()
+    if normalized.endswith("skills.read"):
+        keys = ("package", "skill", "name")
+    value = next((args.get(key) for key in keys if args.get(key)), None)
+    return value if isinstance(value, str) else None
 
 
-# Existing native interpretation; remove in QUAL-2518.
-def skill_refs_from_call(  # noqa: C901
+def skill_refs_from_call(
     name: str, arguments: JsonValue
 ) -> List[Dict[str, Optional[str]]]:
     """Return skill names and definition paths evidenced by a tool call."""
@@ -347,19 +319,9 @@ def skill_refs_from_call(  # noqa: C901
                 return
         refs.append({"name": value, "path": path})
 
-    short_name = name.rsplit(".", 1)[-1].lower()
-
-    if short_name in ("skill", "read_skill"):
-        if isinstance(args, dict):
-            value = args.get("skill") or args.get("name") or args.get("package")
-            if isinstance(value, str) and value:
-                add(value)
-
-    normalized_name = name.lower().replace("__", ".")
-    if normalized_name.endswith("skills.read") and isinstance(args, dict):
-        value = args.get("package") or args.get("skill") or args.get("name")
-        if isinstance(value, str) and value:
-            add(value)
+    value = _skill_name(name, args)
+    if value:
+        add(value)
 
     try:
         blob = (
@@ -393,15 +355,6 @@ def _is_process_rejection(result: object) -> bool:
     )
 
 
-def result_note(output: JsonValue) -> str:
-    if isinstance(output, str):
-        return _truncate(output, RESULT_NOTE_MAX)
-    try:
-        return _truncate(json.dumps(output, ensure_ascii=False), RESULT_NOTE_MAX)
-    except (TypeError, ValueError):
-        return ""
-
-
 def _is_interaction_tool(name: str) -> bool:
     return any(name == tool or name.endswith("." + tool) for tool in INTERACTION_TOOLS)
 
@@ -420,25 +373,7 @@ def _collaboration_mode(payload: Dict[str, JsonValue]) -> str:
     return mode.strip().lower() if isinstance(mode, str) else ""
 
 
-class _PlanStep(TypedDict):
-    step: str
-    status: JsonValue
-
-
-class _PlanUpdate(TypedDict):
-    explanation: str
-    steps: list[_PlanStep]
-
-
-class _OptionAnswer(TypedDict):
-    question: JsonValue
-    header: JsonValue
-    options: list[dict[str, JsonValue]]
-    chosen_labels: list[JsonValue]
-    answer_text: str
-
-
-def _plan_update(arguments: JsonValue) -> Optional[_PlanUpdate]:
+def _plan_update(arguments: JsonValue) -> Optional[PlanUpdate]:
     """Decode one structured update_plan call for first-class rendering."""
     args = _decode_arguments(arguments)
     if not isinstance(args, dict):
@@ -446,7 +381,7 @@ def _plan_update(arguments: JsonValue) -> Optional[_PlanUpdate]:
     plan = args.get("plan")
     if not isinstance(plan, list):
         return None
-    steps: list[_PlanStep] = []
+    steps: list[PlanStep] = []
     for item in plan:
         if not isinstance(item, dict) or not isinstance(item.get("step"), str):
             continue
@@ -522,55 +457,52 @@ def _extract_answer_from_item(question: Dict[str, JsonValue], item: JsonValue) -
     return ""
 
 
-# Existing native interpretation; remove in QUAL-2518.
-def _structured_answer_for_question(  # noqa: C901, PLR0912
+def _answer_in_container(question: Dict[str, JsonValue], container: JsonValue) -> str:
+    if isinstance(container, dict):
+        for key in (
+            question.get("id"),
+            question.get("question"),
+            question.get("header"),
+        ):
+            if isinstance(key, str) and key in container:
+                text = _value_to_answer_text(container[key])
+                if text:
+                    return text
+        items = list(container.values())
+    elif isinstance(container, list):
+        items = container
+    else:
+        return ""
+    for item in items:
+        text = _extract_answer_from_item(question, item)
+        if text:
+            return text
+    return ""
+
+
+def _structured_answer_for_question(
     question: Dict[str, JsonValue], output: JsonValue
 ) -> str:
     output = _decode_jsonish(output)
-    qid = question.get("id")
-    qtext = question.get("question")
-    header = question.get("header")
-
     if isinstance(output, dict):
-        for key in (qid, qtext, header):
+        for key in (
+            question.get("id"),
+            question.get("question"),
+            question.get("header"),
+        ):
             if isinstance(key, str) and key in output:
                 text = _value_to_answer_text(output[key])
                 if text:
                     return text
-
-        for container_key in ("answers", "responses", "selections", "values"):
-            container = output.get(container_key)
-            if isinstance(container, dict):
-                for key in (qid, qtext, header):
-                    if isinstance(key, str) and key in container:
-                        text = _value_to_answer_text(container[key])
-                        if text:
-                            return text
-                for value in container.values():
-                    text = _extract_answer_from_item(question, value)
-                    if text:
-                        return text
-            elif isinstance(container, list):
-                for item in container:
-                    text = _extract_answer_from_item(question, item)
-                    if text:
-                        return text
-
-        text = _extract_answer_from_item(question, output)
-        if text:
-            return text
-
-    if isinstance(output, list):
-        for item in output:
-            text = _extract_answer_from_item(question, item)
+        for key in ("answers", "responses", "selections", "values"):
+            text = _answer_in_container(question, output.get(key))
             if text:
                 return text
+        return _extract_answer_from_item(question, output)
+    return _answer_in_container(question, output)
 
-    return ""
 
-
-# Existing native interpretation; remove in QUAL-2518.
-def _flatten_result_text(output: JsonValue) -> str:  # noqa: C901
+def _flatten_result_text(output: JsonValue) -> str:
     output = _decode_jsonish(output)
     if isinstance(output, str):
         return output
@@ -579,18 +511,19 @@ def _flatten_result_text(output: JsonValue) -> str:  # noqa: C901
     if isinstance(output, list):
         return " ".join(_flatten_result_text(item) for item in output)
     if isinstance(output, dict):
-        parts: List[str] = []
-        for key in ("message", "text", "output", "content", "answer", "value"):
-            if key in output:
-                text = _flatten_result_text(output[key])
-                if text:
-                    parts.append(text)
-        if not parts:
-            for value in output.values():
-                text = _flatten_result_text(value)
-                if text:
-                    parts.append(text)
-        return " ".join(parts)
+        parts = [
+            _flatten_result_text(output[key])
+            for key in ("message", "text", "output", "content", "answer", "value")
+            if key in output
+        ]
+        nonempty = [part for part in parts if part]
+        if not nonempty:
+            nonempty = [
+                text
+                for value in output.values()
+                if (text := _flatten_result_text(value))
+            ]
+        return " ".join(nonempty)
     return ""
 
 
@@ -690,282 +623,6 @@ def append_unique_path(paths: List[str], seen: set[str], path: str) -> None:
     paths.append(path)
 
 
-class Turn:
-    def __init__(
-        self, user_text: str, timestamp: Optional[str], collaboration_mode: str = ""
-    ):
-        self.user_text = user_text
-        self.timestamp = timestamp
-        self.collaboration_mode = collaboration_mode
-        self.images: List[Dict[str, JsonValue]] = []
-        self.shell_command: Optional[str] = None
-        self.command: Optional[str] = None
-        self.command_args: Optional[str] = None
-        self.assistant_text_blocks: List[str] = []
-        self.tool_bullets: List[str] = []
-        self.skills_used: List[str] = []
-        self.result_notes: List[str] = []
-        self.option_qas: List[_OptionAnswer] = []
-        self.permission_denials: List[
-            Dict[str, JsonValue]
-        ] = []  # denied tool + message
-        self.plan_updates: List[_PlanUpdate] = []
-
-    def add_assistant_text(self, text: str) -> None:
-        if text and text.strip():
-            self.assistant_text_blocks.append(text.strip())
-
-    def add_tool(self, name: str, descriptor: str) -> None:
-        if descriptor:
-            self.tool_bullets.append(f"- {name} -> {descriptor}")
-        else:
-            self.tool_bullets.append(f"- {name}")
-
-    def add_skill(self, name: str) -> None:
-        if name and name not in self.skills_used:
-            self.skills_used.append(name)
-
-    def add_command(self, name: str, args: str = "") -> None:
-        self.command = name
-        self.command_args = args or None
-
-    def add_result_note(self, note: str) -> None:
-        if note:
-            self.result_notes.append(note)
-
-
-# Existing native interpretation; remove in QUAL-2518.
-def build_turns(entries: List[Dict[str, JsonValue]]) -> Tuple[List[Turn], List[str]]:  # noqa: C901, PLR0912, PLR0915
-    turns: List[Turn] = []
-    files_changed: List[str] = []
-    files_seen: set[str] = set()
-    current: Optional[Turn] = None
-    call_names: Dict[object, str] = {}
-    pending_questions: Dict[str, List[JsonValue]] = {}
-    pending_plan_calls = set()
-    pending_user_images: List[Dict[str, JsonValue]] = []
-    pending_response_user: Optional[
-        Tuple[str, Optional[str], List[Dict[str, JsonValue]]]
-    ] = None
-    last_tool = ""  # most recent tool call, to name a denied permission
-    pending_mode = ""
-
-    def start_user_turn(
-        text: str,
-        timestamp: Optional[str],
-        images: List[Dict[str, JsonValue]],
-        raw_text: Optional[str] = None,
-    ) -> None:
-        nonlocal current, last_tool
-        raw_text = raw_text or text
-        tagged_command = _COMMAND_NAME.search(raw_text)
-        slash_command = _SLASH_COMMAND.match(text)
-        command = ""
-        command_args = ""
-        if tagged_command:
-            command = tagged_command.group(1).strip()
-            args_match = _COMMAND_ARGS.search(raw_text)
-            command_args = args_match.group(1).strip() if args_match else ""
-        elif slash_command:
-            command = slash_command.group(1)
-            command_args = (slash_command.group(2) or "").strip()
-        if command and not command.startswith("/"):
-            command = ""
-        if not text and not images and not command:
-            return
-        current = Turn(text, timestamp, pending_mode)
-        current.images = images
-        if command:
-            current.user_text = ""
-            current.add_command(command, command_args)
-        cmds = [c.strip() for c in _BASH_INPUT.findall(text) if c.strip()]
-        if cmds:
-            current.shell_command = "\n".join(cmds)
-        turns.append(current)
-        last_tool = ""
-
-    def flush_pending_response_user() -> None:
-        nonlocal pending_response_user
-        if pending_response_user is not None:
-            start_user_turn(*pending_response_user)
-            pending_response_user = None
-
-    for entry in entries:
-        etype = entry.get("type")
-        payload = _payload(entry)
-        ptype = payload.get("type")
-
-        mode = _collaboration_mode(payload)
-        if mode:
-            pending_mode = mode
-
-        if etype == "turn_context":
-            # Context describes the next/active task but is not conversational.
-            if current is not None and mode and not current.collaboration_mode:
-                current.collaboration_mode = mode
-            continue
-
-        if etype == "event_msg":
-            if ptype == "item_completed":
-                item = payload.get("item")
-                if (
-                    isinstance(item, dict)
-                    and item.get("type") == "FileChange"
-                    and item.get("status") == "completed"
-                ):
-                    changes = item.get("changes")
-                    if isinstance(changes, dict):
-                        for fp in changes:
-                            if isinstance(fp, str):
-                                append_unique_path(files_changed, files_seen, fp)
-                    if current is not None:
-                        note = result_note(item.get("stdout") or item.get("stderr"))
-                        if note:
-                            current.add_result_note("apply_patch: " + note)
-                continue
-            if ptype == "user_message":
-                text = user_text_from_event(payload)
-                response_images: List[Dict[str, JsonValue]] = []
-                if pending_response_user is not None:
-                    response_images = pending_response_user[2]
-                    pending_response_user = None
-                images = (
-                    response_images
-                    or pending_user_images
-                    or image_refs_from_event(payload)
-                )
-                pending_user_images = []
-                start_user_turn(
-                    text,
-                    string_value(entry.get("timestamp")),
-                    images,
-                    string_value(payload.get("message")) or text,
-                )
-                continue
-
-            if ptype == "patch_apply_end":
-                changes = payload.get("changes")
-                if isinstance(changes, dict):
-                    for fp in changes:
-                        if isinstance(fp, str):
-                            append_unique_path(files_changed, files_seen, fp)
-                if current is not None:
-                    stdout = payload.get("stdout")
-                    stderr = payload.get("stderr")
-                    note = result_note(stdout or stderr)
-                    if note:
-                        current.add_result_note("apply_patch: " + note)
-                continue
-
-        if etype != "response_item":
-            continue
-
-        if ptype == "message":
-            role = payload.get("role")
-            if role == "user":
-                text = user_text_from_response_item(payload)
-                images = image_refs_from_user_message_payload(payload)
-                if text and not is_startup_context(text):
-                    flush_pending_response_user()
-                    pending_response_user = (
-                        text,
-                        string_value(entry.get("timestamp")),
-                        images,
-                    )
-                else:
-                    pending_user_images = images
-                continue
-            if role == "assistant":
-                flush_pending_response_user()
-                if current is None:
-                    current = Turn(
-                        "", string_value(entry.get("timestamp")), pending_mode
-                    )
-                    turns.append(current)
-                text = assistant_text_from_payload(payload)
-                message = parse_permission_denial(text)
-                if message is not None:
-                    current.permission_denials.append(
-                        {"tool": last_tool or "(tool call)", "message": message}
-                    )
-                else:
-                    current.add_assistant_text(text)
-            # Ignore developer/system/user context response_items. Real user turns
-            # are represented by event_msg:user_message above.
-            continue
-
-        if ptype in ("function_call", "custom_tool_call"):
-            flush_pending_response_user()
-            if current is None:
-                current = Turn("", string_value(entry.get("timestamp")), pending_mode)
-                turns.append(current)
-            name = _tool_name(payload)
-            last_tool = name
-            call_id = payload.get("call_id")
-            if isinstance(call_id, str):
-                call_names[call_id] = name
-            arguments = payload.get("arguments")
-            if arguments is None:
-                arguments = payload.get("input")
-            if current.collaboration_mode == "plan" and _is_plan_tool(name):
-                plan = _plan_update(arguments)
-                if plan:
-                    current.plan_updates.append(plan)
-                    if isinstance(call_id, str):
-                        pending_plan_calls.add(call_id)
-                    continue
-            current.add_tool(name, tool_descriptor(name, arguments))
-            for skill_ref in skill_refs_from_call(name, arguments):
-                current.add_skill(str(skill_ref["name"]))
-            args = _decode_arguments(arguments)
-
-            if isinstance(call_id, str) and _is_interaction_tool(name):
-                qs = args.get("questions") if isinstance(args, dict) else None
-                if isinstance(qs, list):
-                    pending_questions[call_id] = qs
-
-            if name.endswith("apply_patch") or name == "apply_patch":
-                for fp in patch_paths(arguments):
-                    append_unique_path(files_changed, files_seen, fp)
-            continue
-
-        if ptype in ("function_call_output", "custom_tool_call_output"):
-            if current is None:
-                continue
-            call_id = payload.get("call_id")
-            if isinstance(call_id, str) and call_id in pending_plan_calls:
-                pending_plan_calls.remove(call_id)
-                continue
-            prefix = ""
-            if isinstance(call_id, str) and call_id in call_names:
-                prefix = f"{call_names[call_id]}: "
-            output = payload.get("output")
-            questions = (
-                pending_questions.get(call_id) if isinstance(call_id, str) else None
-            )
-            qas = option_qa_from_output(output, questions)
-            if qas:
-                current.option_qas.extend(qas)
-                continue
-            result = (
-                _flatten_result_text(output)
-                if ptype == "custom_tool_call_output"
-                else output
-            )
-            if ptype == "custom_tool_call_output" and _is_process_rejection(result):
-                current.permission_denials.append(
-                    {"tool": call_names.get(call_id, "(tool call)"), "message": ""}
-                )
-                continue
-            note = result_note(result)
-            if note:
-                current.add_result_note(prefix + note)
-            continue
-
-    flush_pending_response_user()
-    return turns, files_changed
-
-
 def envelope_images(
     refs: List[Dict[str, JsonValue]], image_inputs: Optional[ImageInputs] = None
 ) -> List[Image]:
@@ -989,145 +646,346 @@ def envelope_images(
     return images
 
 
-# Existing native interpretation; remove in QUAL-2518.
-def build_events(  # noqa: C901, PLR0912, PLR0915
-    entries: List[Dict[str, JsonValue]],
-    tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
-    *,
-    image_inputs: Optional[ImageInputs] = None,
-) -> List[Message]:
-    """Walk Codex entries in order, producing raw-envelope events.
+def _string(value: JsonValue) -> str | None:
+    return value if isinstance(value, str) else None
 
-    Retain native message, tool-result, and image interpretation.
-    """
-    events: List[Message] = []
-    pending_calls: Dict[object, ToolCall] = {}
-    pending_user_images: List[Dict[str, JsonValue]] = []
-    pending_response_user: Optional[
-        Tuple[str, Optional[str], List[Dict[str, JsonValue]]]
-    ] = None
-    index = 0
 
-    def flush_pending_response_user() -> None:
-        nonlocal pending_response_user, index
-        if pending_response_user is None:
-            return
-        text, timestamp, refs = pending_response_user
-        events.append(
-            user_event(index, timestamp, text, envelope_images(refs, image_inputs))
+def _copy_identity(
+    target: Message | ToolResult | PatchResult, payload: Mapping[str, object]
+) -> None:
+    value = payload.get("id")
+    if isinstance(value, str):
+        target["id"] = value
+    value = payload.get("parent_id")
+    if isinstance(value, str):
+        target["parent_id"] = value
+    value = payload.get("message_id")
+    if isinstance(value, str):
+        target["message_id"] = value
+
+
+def _user_commands(message: UserMessage, raw_text: str) -> None:
+    tagged = _COMMAND_NAME.search(raw_text)
+    slash = _SLASH_COMMAND.match(message.get("text") or "")
+    command, args = "", ""
+    if tagged:
+        command = tagged[1].strip()
+        match = _COMMAND_ARGS.search(raw_text)
+        args = match[1].strip() if match else ""
+    elif slash:
+        command, args = slash[1], (slash[2] or "").strip()
+    if command.startswith("/"):
+        message["command"] = command
+        message["command_args"] = args or None
+    commands = [c.strip() for c in _BASH_INPUT.findall(raw_text) if c.strip()]
+    if commands:
+        message["shell_command"] = "\n".join(commands)
+
+
+class _OptionAnswer(TypedDict):
+    question: JsonValue
+    header: JsonValue
+    options: list[dict[str, JsonValue]]
+    chosen_labels: list[JsonValue]
+    answer_text: str
+
+
+def _questions(call: ToolCall, output: JsonValue) -> list[QuestionAnswer]:
+    arguments = call.get("input")
+    questions = arguments.get("questions") if isinstance(arguments, dict) else None
+    if not _is_interaction_tool(call["name"]) or not isinstance(questions, list):
+        return []
+    return [
+        QuestionAnswer(
+            question=str(qa["question"]),
+            header=str(qa["header"]),
+            options=[o for o in qa["options"] if is_question_option(o)],
+            chosen_labels=[str(label) for label in qa["chosen_labels"]],
+            answer_text=str(qa["answer_text"]),
         )
-        index += 1
-        pending_response_user = None
+        for qa in option_qa_from_output(output, questions)
+    ]
 
-    for entry in entries:
-        etype = entry.get("type")
-        payload = _payload(entry)
-        ptype = payload.get("type")
 
-        if etype == "event_msg" and ptype == "user_message":
-            text = user_text_from_event(payload)
-            response_refs: List[Dict[str, JsonValue]] = []
-            if pending_response_user is not None:
-                response_refs = pending_response_user[2]
-                pending_response_user = None
-            refs = (
-                response_refs or pending_user_images or image_refs_from_event(payload)
+def _user_message(
+    payload: dict[str, JsonValue],
+    timestamp: str | None,
+    raw_text: str,
+    images: list[Image],
+) -> UserMessage:
+    """Normalize user content while retaining identity and command syntax."""
+    message = user_event(0, timestamp, clean_user_text(raw_text), images)
+    _copy_identity(message, payload)
+    _user_commands(message, raw_text)
+    return message
+
+
+def _new_tool_call(payload: dict[str, JsonValue]) -> ToolCall:
+    """Decode a native request without changing session state."""
+    name = _tool_name(payload)
+    arguments = payload.get("arguments")
+    if arguments is None:
+        arguments = payload.get("input")
+    decoded = _decode_arguments(arguments)
+    call = ToolCall(
+        name=name, input=decoded, input_schema=codex_input_schema(name, decoded)
+    )
+    call_id = _string(payload.get("call_id"))
+    native_id = _string(payload.get("id"))
+    if call_id is not None:
+        call["id"] = call_id
+    if native_id is not None:
+        call["native_id"] = native_id
+    return call
+
+
+class _CodexSessionBuilder:
+    """One native traversal with ordered canonical messages and ID matching."""
+
+    def __init__(self, source: CodexSource) -> None:
+        self.source = source
+        self.session = Session(
+            harness="codex",
+            session_id=source.identifier,
+            events=[],
+            cwd=source.cwd,
+            started_at=first_timestamp(source.entries),
+            models=session_models(source.entries),
+            skills_used=[],
+            files_changed=[],
+            unmatched_tool_results=[],
+            unsupported_tools=[],
+            patch_results=[],
+        )
+        self.pending_calls: dict[str, ToolCall] = {}
+        self.pending_user: UserMessage | None = None
+        self.pending_images: list[Image] = []
+        self.mode = ""
+        self.active_user: UserMessage | None = None
+        self.files_seen: set[str] = set()
+
+    def append(self, message: Message) -> None:
+        message["i"] = len(self.session["events"])
+        if self.mode:
+            message["collaboration_mode"] = self.mode
+        self.session["events"].append(message)
+
+    def flush_user(self) -> None:
+        if self.pending_user is not None:
+            self.active_user = self.pending_user
+            self.append(self.pending_user)
+            self.pending_user = None
+
+    def response_user(
+        self, payload: dict[str, JsonValue], timestamp: str | None
+    ) -> None:
+        """Buffer a response item until its event view or the next message arrives."""
+        raw_text = _content_text(payload.get("content"), ("text",)).strip()
+        images = envelope_images(
+            image_refs_from_user_message_payload(payload), self.source.image_inputs
+        )
+        message = _user_message(payload, timestamp, raw_text, images)
+        if not message["text"] or is_startup_context(message["text"]):
+            self.pending_images = images
+            return
+        self.flush_user()
+        self.pending_user = message
+
+    def event_user(self, payload: dict[str, JsonValue], timestamp: str | None) -> None:
+        """Emit the user event after reconciling its buffered response view."""
+        images = envelope_images(
+            image_refs_from_event(payload), self.source.image_inputs
+        )
+        raw_text = _string(payload.get("message")) or ""
+        message = _user_message(payload, timestamp, raw_text, images)
+        self.merge_pending_user(message)
+        if message["text"] or message.get("images") or message.get("command"):
+            self.active_user = message
+            self.append(message)
+
+    def merge_pending_user(self, message: UserMessage) -> None:
+        """Prefer the response view's identity and images for the same input."""
+        response_images = None
+        if self.pending_user is not None:
+            response_images = self.pending_user.get("images")
+            _copy_identity(message, self.pending_user)
+            self.pending_user = None
+        images = response_images or self.pending_images or message.get("images")
+        self.pending_images = []
+        if images:
+            message["images"] = images
+
+    def assistant(self, payload: dict[str, JsonValue], timestamp: str | None) -> None:
+        self.flush_user()
+        text = assistant_text_from_payload(payload)
+        if not text:
+            return
+        message = assistant_event(0, timestamp, text)
+        _copy_identity(message, payload)
+        denial = parse_permission_denial(text)
+        if denial is not None:
+            # A message without a call ID cannot establish tool ownership.
+            message["permission_denial"] = PermissionDenial(
+                tool="(tool call)", message=denial, by="user"
             )
-            pending_user_images = []
-            images = envelope_images(refs, image_inputs)
-            if not text and not images:
-                continue
-            events.append(
-                user_event(index, string_value(entry.get("timestamp")), text, images)
-            )
-            index += 1
-            continue
+        self.append(message)
 
-        if etype != "response_item":
-            continue
+    def call(self, payload: dict[str, JsonValue], timestamp: str | None) -> None:
+        self.flush_user()
+        call = _new_tool_call(payload)
+        if "id" in call:
+            self.pending_calls[call["id"]] = call
+        self.call_semantics(call)
+        message = assistant_event(0, timestamp, "", [call])
+        _copy_identity(message, payload)
+        self.append(message)
 
-        if ptype == "message":
-            role = payload.get("role")
-            if role == "user":
-                text = user_text_from_response_item(payload)
-                refs = image_refs_from_user_message_payload(payload)
-                if text and not is_startup_context(text):
-                    flush_pending_response_user()
-                    pending_response_user = (
-                        text,
-                        string_value(entry.get("timestamp")),
-                        refs,
-                    )
-                else:
-                    pending_user_images = refs
-                continue
-            if role == "assistant":
-                flush_pending_response_user()
-                text = assistant_text_from_payload(payload)
-                if not text.strip():
-                    continue
-                events.append(
-                    assistant_event(index, string_value(entry.get("timestamp")), text)
+    def call_semantics(self, call: ToolCall) -> None:
+        name, arguments = call["name"], json_value(call.get("input"))
+        if self.mode == "plan" and _is_plan_tool(name):
+            plan = _plan_update(arguments)
+            if plan is not None:
+                call["plan_update"] = plan
+        for skill in skill_names_from_call(name, arguments):
+            if skill not in self.session["skills_used"]:
+                self.session["skills_used"].append(skill)
+            call["skill"] = skill
+        if (
+            call["input_schema"] == "unsupported"
+            and name not in self.session["unsupported_tools"]
+        ):
+            self.session["unsupported_tools"].append(name)
+        if name.endswith("apply_patch"):
+            for path in patch_paths(arguments):
+                append_unique_path(self.session["files_changed"], self.files_seen, path)
+
+    def result(self, payload: dict[str, JsonValue], timestamp: str | None) -> None:
+        call_id = _string(payload.get("call_id"))
+        result = ToolResult(
+            tool_call_id=call_id,
+            ts=timestamp,
+            is_error=payload.get("is_error") is True,
+        )
+        if "output" in payload:
+            result["content"] = payload["output"]
+        _copy_identity(result, payload)
+        call = self.pending_calls.pop(call_id, None) if call_id is not None else None
+        if call is None:
+            self.session["unmatched_tool_results"].append(result)
+            return
+        call["result_record"] = result
+        if "output" in payload:
+            output = payload["output"]
+            # Keep the full native result above and the existing textual JSON
+            # interpretation here. Only the exporter applies byte limits.
+            call["result"] = None if output is None else _flatten_result_text(output)
+            questions = _questions(call, output)
+            if questions:
+                call["questions"] = questions
+            if _is_process_rejection(_flatten_result_text(output)):
+                call["permission_denial"] = PermissionDenial(
+                    tool=call["name"], message="", by="user"
                 )
-                index += 1
-            continue
+        if result["is_error"]:
+            call["is_error"] = True
 
-        if ptype in ("function_call", "custom_tool_call"):
-            flush_pending_response_user()
-            name = _tool_name(payload)
-            arguments = payload.get("arguments")
-            if arguments is None:
-                arguments = payload.get("input")
-            call = tool_call(
-                name, _decode_arguments(arguments), None, tool_result_max_bytes
-            )
-            events.append(
-                assistant_event(index, string_value(entry.get("timestamp")), "", [call])
-            )
-            index += 1
-            call_id = payload.get("call_id")
-            if isinstance(call_id, str):
-                pending_calls[call_id] = call
-            continue
+    def patch(self, payload: dict[str, JsonValue], timestamp: str | None) -> None:
+        changes = payload.get("changes")
+        paths = list(changes) if isinstance(changes, dict) else []
+        for path in paths:
+            append_unique_path(self.session["files_changed"], self.files_seen, path)
+        result = PatchResult(
+            ts=timestamp,
+            paths=paths,
+            stdout=payload.get("stdout"),
+            stderr=payload.get("stderr"),
+        )
+        _copy_identity(result, payload)
+        self.session["patch_results"].append(result)
 
-        if ptype in ("function_call_output", "custom_tool_call_output"):
-            pending_call = pending_calls.pop(payload.get("call_id"), None)
-            if pending_call is None:
-                continue
-            attach_result(
-                pending_call,
-                truncate_result(
-                    _flatten_result_text(payload.get("output")), tool_result_max_bytes
-                ),
-            )
-            continue
+    def entry(self, entry: dict[str, JsonValue]) -> None:
+        payload = entry.get("payload")
+        if not isinstance(payload, dict):
+            return
+        timestamp = _string(entry.get("timestamp"))
+        mode = _collaboration_mode(payload)
+        if mode:
+            self.mode = mode
+            if self.active_user is not None and not self.active_user.get(
+                "collaboration_mode"
+            ):
+                self.active_user["collaboration_mode"] = mode
+        if entry.get("type") == "event_msg":
+            self.event(payload, timestamp)
+        elif entry.get("type") == "response_item":
+            self.response(payload, timestamp)
 
-    flush_pending_response_user()
-    return events
+    def event(self, payload: dict[str, JsonValue], timestamp: str | None) -> None:
+        if payload.get("type") == "user_message":
+            self.event_user(payload, timestamp)
+        elif payload.get("type") == "patch_apply_end":
+            self.patch(payload, timestamp)
+        elif payload.get("type") == "item_completed":
+            item = payload.get("item")
+            if (
+                isinstance(item, dict)
+                and item.get("type") == "FileChange"
+                and item.get("status") == "completed"
+            ):
+                self.patch(item, timestamp)
+
+    def response(self, payload: dict[str, JsonValue], timestamp: str | None) -> None:
+        kind = payload.get("type")
+        if kind == "message":
+            if payload.get("role") == "user":
+                self.response_user(payload, timestamp)
+            elif payload.get("role") == "assistant":
+                self.assistant(payload, timestamp)
+        elif kind in ("function_call", "custom_tool_call"):
+            self.call(payload, timestamp)
+        elif kind in ("function_call_output", "custom_tool_call_output"):
+            self.result(payload, timestamp)
+
+
+def interpret_source(source: CodexSource) -> Session | None:
+    """Interpret supplied native data without I/O or export policy."""
+    interpreter = _CodexSessionBuilder(source)
+    for entry in source.entries:
+        interpreter.entry(entry)
+    interpreter.flush_user()
+    session = interpreter.session
+    return (
+        session
+        if session["events"]
+        or session["unmatched_tool_results"]
+        or session["patch_results"]
+        else None
+    )
 
 
 def build_raw_envelope(
-    source: CodexSource,
-    tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
-) -> Optional[Envelope]:
-    """Build the JSON envelope for one Codex transcript."""
-    entries = source.entries
-    events = build_events(
-        entries, tool_result_max_bytes, image_inputs=source.image_inputs
+    source: CodexSource, tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES
+) -> Envelope | None:
+    """Compatibility entry point; production uses the public adapter."""
+    session = interpret_source(source)
+    return (
+        export_session(session, tool_result_max_bytes)
+        if session and session["events"]
+        else None
     )
-    if not events:
-        return None
-    return build_envelope(
-        Session(
-            harness="codex",
-            session_id=source.identifier,
-            events=events,
-            cwd=source.cwd,
-            started_at=first_timestamp(entries),
-            models=session_models(entries),
-        ),
-        tool_result_max_bytes=tool_result_max_bytes,
-    )
+
+
+class CodexExtractor:
+    """Public Codex reader/interpreter adapter."""
+
+    def read_source(self, request: Path) -> CodexSource:
+        return read_source(request)
+
+    def interpret_source(self, source: CodexSource) -> Session | None:
+        return interpret_source(source)
+
+
+EXTRACTOR: Extractor[Path, CodexSource] = CodexExtractor()
 
 
 def _decode_image(
@@ -1279,17 +1137,26 @@ def read_source(path: Path) -> CodexSource:
 def extract_transcript(
     transcript: Path,
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
-) -> Optional[Envelope]:
+) -> Envelope | None:
     """Read one transcript directly into its JSON envelope."""
-    return _extract_source(read_source(transcript), tool_result_max_bytes)
+    return _extract_source(EXTRACTOR.read_source(transcript), tool_result_max_bytes)
 
 
-def _extract_source(
-    source: CodexSource, tool_result_max_bytes: int
-) -> Optional[Envelope]:
+def _extract_source(source: CodexSource, tool_result_max_bytes: int) -> Envelope | None:
     if not source.entries:
         raise ValueError(f"no parseable JSON entries found in {source.path}")
-    return build_raw_envelope(source, tool_result_max_bytes)
+    session = EXTRACTOR.interpret_source(source)
+    if session and session["unsupported_tools"]:
+        print(
+            "warning: unsupported tool input schemas: "
+            + ", ".join(session["unsupported_tools"]),
+            file=sys.stderr,
+        )
+    return (
+        export_session(session, tool_result_max_bytes)
+        if session and session["events"]
+        else None
+    )
 
 
 def _unique_identifier(base: str, used: set[str]) -> str:
@@ -1338,7 +1205,7 @@ def _extract_all(
     for transcript in files:
         ident = CodexSource(transcript, []).identifier
         try:
-            source = read_source(transcript)
+            source = EXTRACTOR.read_source(transcript)
             ident = source.identifier
             envelope = _extract_source(source, tool_result_max_bytes)
         except (OSError, ValueError) as exc:
