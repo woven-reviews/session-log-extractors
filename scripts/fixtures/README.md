@@ -54,3 +54,81 @@ CI generates candidate JSON for human review. Ordinary CI compares complete outp
 Before implementation ships, verify that JSON alone supports the existing frontend transcript, badges, and raw-log inspection, and update consumer/CLI integration.
 
 JSON-only uploads must handle invalid logs and valid-but-empty logs explicitly. Invalid logs should show an actionable error; valid logs with no displayable events should show an empty-session message. Neither should silently produce a blank transcript or require Markdown. Preserve existing handling for historical Markdown uploads.
+
+
+## Shared text authorship contract
+
+`MessageContent.authorship` is an optional ordered list of `AuthorshipRange`
+records over the message's **unchanged `text`**. This shared-model contract is
+ready for adapter adoption; these examples describe the proposed JSON fields,
+not output currently emitted by the production exporter. Adapter classification,
+production serialization, schema versioning, and runtime validation belong to
+follow-up tickets QUAL-2520/2521/2522 and QUAL-2533.
+
+| Field | Meaning |
+| --- | --- |
+| `start`, `end` | Required half-open Unicode code-point offsets: `text[start:end]` in Python. Not UTF-8 bytes, UTF-16 code units, or grapheme clusters. Require `0 <= start < end <= len(text)`. Ranges are ordered by `start` and must not overlap; adjacent ranges may have different evidence. Do not normalize text, remove wrappers, trim whitespace, or concatenate records to establish offsets. |
+| `source` | Required `candidate`, `harness`, `ide`, `other_agent`, or `unknown`. Candidate means the assessed human's own words; harness means injected CLI/runtime content; IDE means editor-supplied context; other_agent means another agent's contribution. Role alone, including `user`, never establishes source. Ordinary assistant output may remain unknown in this candidate-authorship contract; do not label it other-agent solely because its role is assistant. |
+| `markers` | Optional list of `AuthorshipMarker` records: `field` identifies the native source/type field path (for example `isMeta` or `payload.type`); `value` preserves its exact recorded JSON value, including null or structured values. Retain multiple relevant fields separately. Markers are evidence, not universal classification rules: a wrapper-looking string alone is insufficient proof. Missing or empty means no such evidence was retained; neither implies candidate authorship. |
+| `ts` | Optional verbatim timestamp recorded for the range's content. Missing means no range timestamp was supplied; null retains an explicitly unavailable timestamp. The owning message's `ts` stays unchanged. A message-level timestamp may be reused only when the record establishes it applies to that content; never infer a range timestamp from a nearby message, text mentioning a time, or chronological proximity. Different ranges may retain different recorded times. |
+
+Missing `authorship`, an empty list, an explicit `unknown` range, and uncovered
+text all mean unknown authorship for the affected text. Omission preserves
+backward compatibility and is never shorthand for candidate. The field itself
+is not nullable. Partial evidence is allowed: only label ranges supported by
+evidence. An entirely injected message retains its full original text, message
+timestamp and source/type markers so a consumer can render an activity marker.
+Do not insert a synthetic candidate message or discard the injected words.
+
+Absent, null, or empty `text` has no valid nonempty text ranges; omit `authorship`
+or use `[]`. Image-only activity still retains message identity, timestamps,
+image ordering, and image ownership, but text ranges do not assign image
+provenance. This contract leaves image authorship unspecified. Message IDs,
+ordering, and tool calls/results remain on their canonical owning records;
+authorship never reassigns tools or creates question/decision associations.
+No summary flag duplicates information derived from the ranges.
+
+The six examples below show candidate-only, mixed, entirely injected, explicitly
+unknown, missing evidence, and partial coverage. They are illustrative contract
+examples, not native captures. `Hi 🙂` has four code points; the emoji occupies
+one range position. All six have user role to demonstrate role independence.
+
+```json
+[
+  {"i": 0, "role": "user", "text": "Hi 🙂", "authorship": [
+    {"start": 0, "end": 4, "source": "candidate"}
+  ]},
+  {"i": 1, "role": "user", "ts": "2026-10-14T20:27:53.744Z", "text": "Hi 🙂<notice>context</notice>", "authorship": [
+    {"start": 0, "end": 4, "source": "candidate"},
+    {"start": 4, "end": 28, "source": "harness", "markers": [{"field": "block.type", "value": "notice"}], "ts": "2026-10-14T20:27:53.743Z"}
+  ]},
+  {"i": 2, "role": "user", "ts": "2026-10-14T20:27:53.744Z", "text": "IDE context", "authorship": [
+    {"start": 0, "end": 11, "source": "ide", "markers": [{"field": "source", "value": "editor"}]}
+  ]},
+  {"i": 3, "role": "user", "text": "Unattributed", "authorship": [
+    {"start": 0, "end": 12, "source": "unknown"}
+  ]},
+  {"i": 4, "role": "user", "text": "Missing evidence"},
+  {"i": 5, "role": "user", "text": "Known unknown", "authorship": [
+    {"start": 0, "end": 5, "source": "candidate"}
+  ]}
+]
+```
+
+### Native evidence and limits
+
+The focused model tests project existing native records into the proposed types;
+they do not run new classifiers or claim production adapter conformance. Each
+fixture's linked provenance distinguishes captures from hand-authored cases.
+
+| Harness | Committed evidence and interpretation inspected | Contract fit and gaps |
+| --- | --- | --- |
+| Claude | [Provenance](claude/README.md): Claude Code 2.1.292, 2026-10-09; `skill_command.jsonl` has user-role skill expansion with `isMeta: true`, `sourceToolUseID`, UUID, and timestamp. `extract_claude_session_log.py` strips noise wrappers and skips `isMeta` records. | A full-text harness range retains `isMeta` and its timestamp without claiming candidate words. Existing IDs and tool ownership stay separate; the range does not infer tool association. This fixture establishes entirely injected user-role content, not every mixed, IDE, or other-agent variant. |
+| Codex | [Provenance](codex/README.md): CLI 0.162.1, 2026-10-15; `slash.jsonl` contains user `response_item` / `input_text` and recorded timestamp. `extract_codex_session_log.py` now assembles canonical messages and ID-matched tools from native records, cleans user wrappers, and ignores developer/system context. | Original text and timestamp fit unchanged; absent authorship remains unknown despite user role. The generator removes startup/mode instructions, so these fixtures cannot establish complete injected-context coverage or native mixed/IDE/other-agent classifications. |
+| Copilot | [Provenance](copilot/README.md): CLI 1.0.90-5, 2026-10-14; `baseline/events.jsonl` has `data.content` and `data.transformedContent`, with a `<current_datetime>` prefix, message ID, and timestamp. `extract_copilot_session_log.py` now assembles canonical messages and ID-matched tools from native activity, uses DB turns as a fallback, and cleans wrapper text. | The transformed text's exact content suffix supports a mixed-range projection using the known capture prompt; preserve the prefix verbatim, never parse its displayed time as the range timestamp. Captures omit `system.message` and usage checkpoints. A shared `parentAgentTaskId` is not alone evidence of other-agent authorship. Native IDE/other-agent coverage remains unestablished. |
+
+The Unicode, partial-coverage, IDE, other-agent, and per-range timestamp boundary
+checks use explicitly illustrative data. No new captures were generated, and
+these tests do not establish runtime rejection of malformed ranges. Future
+adapters must retain complete text before assigning offsets and use native
+source evidence, rather than role, tag spelling alone, or timestamp proximity.

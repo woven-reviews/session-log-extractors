@@ -164,6 +164,33 @@ class ToolCall(TypedDict, total=False):
     skill: str
 
 
+AuthorshipSource: TypeAlias = Literal[
+    "candidate", "harness", "ide", "other_agent", "unknown"
+]
+
+
+class AuthorshipMarker(TypedDict):
+    """A recorded source/type field, retaining its native path and JSON value."""
+
+    field: str
+    value: JsonValue
+
+
+class AuthorshipRange(TypedDict):
+    """Evidence-based authorship of a half-open code-point range in message text.
+
+    Ranges are ordered and non-overlapping; uncovered text is unknown. The
+    optional timestamp belongs to this content, never an inferred nearby turn.
+    See scripts/fixtures/README.md for boundary and missing-evidence semantics.
+    """
+
+    start: int
+    end: int
+    source: AuthorshipSource
+    markers: NotRequired[list[AuthorshipMarker]]
+    ts: NotRequired[str | None]
+
+
 class MessageContent(NativeIdentity, total=False):
     """Content and native identity shared by ordered conversation messages."""
 
@@ -171,6 +198,7 @@ class MessageContent(NativeIdentity, total=False):
     ts: str | None
     text: str | None
     images: list[Image] | None
+    authorship: list[AuthorshipRange]
     collaboration_mode: str
     permission_denial: PermissionDenial
 
