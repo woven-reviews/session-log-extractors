@@ -162,8 +162,21 @@ native identities, collaboration mode, commands, plan updates, skill names,
 changed files, and patch completion records in named model fields. Tool results
 match calls by recorded call ID, including across later human messages; unmatched
 results remain explicit. Denial prose without a call ID stays on its recorded
-message without a guessed tool association. No question-association or authorship
-correction is included. `ToolCall.result_record.content` retains complete native
+message without a guessed tool association. User and assistant text retain
+whitespace and wrappers; startup-shaped user messages remain in order with their
+own timestamps and images. Exact response/event text duplicates reconcile using
+the existing response identity/image preference and event timestamp; differing
+text remains on separate messages, so an input cannot consume another's images.
+Nonempty text carries shared `authorship` ranges into JSON, with native record,
+payload, and text-block source/type markers and the recorded content timestamp.
+The committed Codex captures do not establish candidate, harness, IDE, or
+other-agent authorship: all supported text currently remains explicitly
+`unknown`, including wrapper-looking text. Role and unfamiliar source values
+never establish authorship. Candidate-only, mixed, and entirely injected
+classifications need native evidence before adapter support can be added;
+see the [fixture evidence limits](scripts/fixtures/README.md#native-evidence-and-limits).
+No question-association correction is included.
+`ToolCall.result_record.content` retains complete native
 results, while `ToolCall.result` retains the existing uncapped textual
 interpretation for JSON compatibility. Missing, null, and empty results stay
 distinct. The exporter alone caps that textual view, without mutating either

@@ -10,7 +10,8 @@ an event envelope with a top-level ``type`` such as ``session_meta``,
 ``event_msg``, or ``response_item``. The useful conversation data lives under
 ``payload``:
 
-* ``event_msg`` / ``payload.type == "user_message"`` starts a real user turn.
+* ``event_msg`` / ``payload.type == "user_message"`` records an input turn;
+  this alone does not establish candidate authorship.
 * ``response_item`` / ``payload.type == "message"`` and role ``assistant`` is
   assistant text.
 * ``response_item`` / ``payload.type == "function_call"`` is a tool call.
@@ -82,6 +83,8 @@ from session_log_extractors.session_log_envelope import (
     write_envelope,
 )
 from session_log_extractors.session_model import (
+    AuthorshipMarker,
+    AuthorshipRange,
     Image,
     Message,
     PatchResult,
@@ -112,19 +115,6 @@ INTERACTION_TOOLS = {"request_user_input"}
 # this tool in Plan mode or Default mode.
 PLAN_TOOLS = {"update_plan"}
 
-_NOISE_TAG_BLOCK = re.compile(
-    r"<(system-reminder|local-command-stdout|local-command-stderr|command-stdout|"
-    r"command-stderr|command-name|command-message|command-args|task-notification|"
-    r"bash-stdout|bash-stderr)>.*?"
-    r"</\1>",
-    re.DOTALL | re.IGNORECASE,
-)
-_NOISE_TAG_LOOSE = re.compile(
-    r"</?(system-reminder|local-command-stdout|local-command-stderr|command-stdout|"
-    r"command-stderr|command-name|command-message|command-args|task-notification|"
-    r"bash-stdout|bash-stderr)\b[^>]*/?>",
-    re.IGNORECASE,
-)
 _BASH_INPUT = re.compile(r"<bash-input>(.*?)</bash-input>", re.DOTALL | re.IGNORECASE)
 _COMMAND_NAME = re.compile(
     r"<command-name>\s*(.*?)\s*</command-name>", re.DOTALL | re.IGNORECASE
@@ -161,16 +151,6 @@ def parse_permission_denial(text: JsonValue) -> Optional[str]:
     return m.group(1).strip() if m else ""
 
 
-def clean_user_text(text: str) -> str:
-    """Strip harness-injected wrappers while keeping the human's prose."""
-    if not text:
-        return ""
-    cleaned = _NOISE_TAG_BLOCK.sub("", text)
-    cleaned = _NOISE_TAG_LOOSE.sub("", cleaned)
-    cleaned = re.sub(r"\n[ \t]*\n[ \t]*\n+", "\n\n", cleaned)
-    return cleaned.strip()
-
-
 def _payload(entry: Dict[str, JsonValue]) -> Dict[str, JsonValue]:
     payload = entry.get("payload")
     return payload if isinstance(payload, dict) else {}
@@ -193,29 +173,8 @@ def _content_text(content: JsonValue, text_keys: Tuple[str, ...]) -> str:
     return "\n".join(parts)
 
 
-def user_text_from_event(payload: Dict[str, JsonValue]) -> str:
-    text = payload.get("message")
-    if isinstance(text, str):
-        return clean_user_text(text)
-    return ""
-
-
-def user_text_from_response_item(payload: Dict[str, JsonValue]) -> str:
-    """Text from Codex's user-role response item, used for initial prompts."""
-    return clean_user_text(_content_text(payload.get("content"), ("text",)).strip())
-
-
-def is_startup_context(text: str) -> bool:
-    """Codex sends its plugin and workspace context as a user-role item."""
-    return (
-        text.startswith("<recommended_plugins>")
-        and "# AGENTS.md instructions" in text
-        and "<environment_context>" in text
-    )
-
-
 def assistant_text_from_payload(payload: Dict[str, JsonValue]) -> str:
-    return _content_text(payload.get("content"), ("text", "output_text")).strip()
+    return _content_text(payload.get("content"), ("text", "output_text"))
 
 
 def _image_ref_from_string(value: str) -> Optional[Dict[str, JsonValue]]:
@@ -707,16 +666,54 @@ def _questions(call: ToolCall, output: JsonValue) -> list[QuestionAnswer]:
     ]
 
 
+def _source_markers(record: dict[str, JsonValue], path: str) -> list[AuthorshipMarker]:
+    return [
+        AuthorshipMarker(field=f"{path}.{key}", value=record[key])
+        for key in ("type", "source")
+        if key in record
+    ]
+
+
+def _text_authorship(
+    payload: dict[str, JsonValue],
+    text: str,
+    timestamp: str | None,
+    record_type: str,
+) -> list[AuthorshipRange]:
+    """Retain native evidence without treating input role/type as authorship.
+
+    The captured Codex shapes do not establish who authored input_text, even
+    when it resembles a runtime wrapper. Keep its source explicitly unknown.
+    """
+    if not text:
+        return []
+    markers = [AuthorshipMarker(field="type", value=record_type)]
+    markers.extend(_source_markers(payload, "payload"))
+    content = payload.get("content")
+    if isinstance(content, list):
+        for index, block in enumerate(content):
+            if isinstance(block, dict) and any(
+                isinstance(block.get(key), str) for key in ("text", "output_text")
+            ):
+                markers.extend(_source_markers(block, f"payload.content[{index}]"))
+    span = AuthorshipRange(start=0, end=len(text), source="unknown", markers=markers)
+    if timestamp is not None:
+        span["ts"] = timestamp
+    return [span]
+
+
 def _user_message(
     payload: dict[str, JsonValue],
     timestamp: str | None,
     raw_text: str,
     images: list[Image],
+    record_type: str,
 ) -> UserMessage:
-    """Normalize user content while retaining identity and command syntax."""
-    message = user_event(0, timestamp, clean_user_text(raw_text), images)
+    """Preserve user content while retaining identity and command syntax."""
+    message = user_event(0, timestamp, raw_text, images)
     _copy_identity(message, payload)
     _user_commands(message, raw_text)
+    message["authorship"] = _text_authorship(payload, raw_text, timestamp, record_type)
     return message
 
 
@@ -759,7 +756,6 @@ class _CodexSessionBuilder:
         )
         self.pending_calls: dict[str, ToolCall] = {}
         self.pending_user: UserMessage | None = None
-        self.pending_images: list[Image] = []
         self.mode = ""
         self.active_user: UserMessage | None = None
         self.files_seen: set[str] = set()
@@ -780,16 +776,14 @@ class _CodexSessionBuilder:
         self, payload: dict[str, JsonValue], timestamp: str | None
     ) -> None:
         """Buffer a response item until its event view or the next message arrives."""
-        raw_text = _content_text(payload.get("content"), ("text",)).strip()
+        raw_text = _content_text(payload.get("content"), ("text",))
         images = envelope_images(
             image_refs_from_user_message_payload(payload), self.source.image_inputs
         )
-        message = _user_message(payload, timestamp, raw_text, images)
-        if not message["text"] or is_startup_context(message["text"]):
-            self.pending_images = images
-            return
+        message = _user_message(payload, timestamp, raw_text, images, "response_item")
         self.flush_user()
-        self.pending_user = message
+        if message["text"] or images:
+            self.pending_user = message
 
     def event_user(self, payload: dict[str, JsonValue], timestamp: str | None) -> None:
         """Emit the user event after reconciling its buffered response view."""
@@ -797,7 +791,7 @@ class _CodexSessionBuilder:
             image_refs_from_event(payload), self.source.image_inputs
         )
         raw_text = _string(payload.get("message")) or ""
-        message = _user_message(payload, timestamp, raw_text, images)
+        message = _user_message(payload, timestamp, raw_text, images, "event_msg")
         self.merge_pending_user(message)
         if message["text"] or message.get("images") or message.get("command"):
             self.active_user = message
@@ -805,15 +799,22 @@ class _CodexSessionBuilder:
 
     def merge_pending_user(self, message: UserMessage) -> None:
         """Prefer the response view's identity and images for the same input."""
-        response_images = None
-        if self.pending_user is not None:
-            response_images = self.pending_user.get("images")
-            _copy_identity(message, self.pending_user)
-            self.pending_user = None
-        images = response_images or self.pending_images or message.get("images")
-        self.pending_images = []
-        if images:
-            message["images"] = images
+        pending = self.pending_user
+        if pending is None:
+            return
+        if pending["text"] != message["text"]:
+            self.flush_user()
+            return
+        _copy_identity(message, pending)
+        if pending.get("images"):
+            message["images"] = pending["images"]
+        if message["authorship"]:
+            markers = message["authorship"][0]["markers"]
+            for span in pending.get("authorship", []):
+                for marker in span.get("markers", []):
+                    if marker not in markers:
+                        markers.append(marker)
+        self.pending_user = None
 
     def assistant(self, payload: dict[str, JsonValue], timestamp: str | None) -> None:
         self.flush_user()
@@ -822,6 +823,9 @@ class _CodexSessionBuilder:
             return
         message = assistant_event(0, timestamp, text)
         _copy_identity(message, payload)
+        message["authorship"] = _text_authorship(
+            payload, text, timestamp, "response_item"
+        )
         denial = parse_permission_denial(text)
         if denial is not None:
             # A message without a call ID cannot establish tool ownership.

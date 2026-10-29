@@ -60,10 +60,11 @@ JSON-only uploads must handle invalid logs and valid-but-empty logs explicitly. 
 
 `MessageContent.authorship` is an optional ordered list of `AuthorshipRange`
 records over the message's **unchanged `text`**. This shared-model contract is
-ready for adapter adoption; these examples describe the proposed JSON fields,
-not output currently emitted by the production exporter. Adapter classification,
-production serialization, schema versioning, and runtime validation belong to
-follow-up tickets QUAL-2520/2521/2522 and QUAL-2533.
+used by the production exporter when an adapter supplies it; missing and empty
+ranges preserve their distinct representations and both mean unknown. Codex
+supplies explicit unknown ranges with recorded source/type evidence. Further
+adapter classification, schema versioning, and runtime validation belong to
+QUAL-2520/2521/2522 and QUAL-2533.
 
 | Field | Meaning |
 | --- | --- |
@@ -124,7 +125,7 @@ fixture's linked provenance distinguishes captures from hand-authored cases.
 | Harness | Committed evidence and interpretation inspected | Contract fit and gaps |
 | --- | --- | --- |
 | Claude | [Provenance](claude/README.md): Claude Code 2.1.292, 2026-10-09; `skill_command.jsonl` has user-role skill expansion with `isMeta: true`, `sourceToolUseID`, UUID, and timestamp. `extract_claude_session_log.py` strips noise wrappers and skips `isMeta` records. | A full-text harness range retains `isMeta` and its timestamp without claiming candidate words. Existing IDs and tool ownership stay separate; the range does not infer tool association. This fixture establishes entirely injected user-role content, not every mixed, IDE, or other-agent variant. |
-| Codex | [Provenance](codex/README.md): CLI 0.162.1, 2026-10-15; `slash.jsonl` contains user `response_item` / `input_text` and recorded timestamp. `extract_codex_session_log.py` now assembles canonical messages and ID-matched tools from native records, cleans user wrappers, and ignores developer/system context. | Original text and timestamp fit unchanged; absent authorship remains unknown despite user role. The generator removes startup/mode instructions, so these fixtures cannot establish complete injected-context coverage or native mixed/IDE/other-agent classifications. |
+| Codex | [Provenance](codex/README.md): CLI 0.162.1, 2026-10-15; `slash.jsonl` contains user `response_item` / `input_text` and recorded timestamp. The adapter retains original user/assistant text, startup-shaped user records, and explicit unknown ranges with native record/payload/text-block source/type markers through production JSON. Developer/system context remains outside the conversation. | Native type/role does not prove authorship. The generator removes startup/mode instructions, so candidate-only, mixed, entirely injected, IDE, and other-agent classifications remain unestablished. Fixture mutations test wrapper/startup preservation and unfamiliar source values without pretending those are captured provenance. Image-only input retains its owning record with empty text ranges. Exact duplicate views retain the response identity/images and event timestamp; differing text remains separate. |
 | Copilot | [Provenance](copilot/README.md): CLI 1.0.90-5, 2026-10-14; `baseline/events.jsonl` has `data.content` and `data.transformedContent`, with a `<current_datetime>` prefix, message ID, and timestamp. `extract_copilot_session_log.py` now assembles canonical messages and ID-matched tools from native activity, uses DB turns as a fallback, and cleans wrapper text. | The transformed text's exact content suffix supports a mixed-range projection using the known capture prompt; preserve the prefix verbatim, never parse its displayed time as the range timestamp. Captures omit `system.message` and usage checkpoints. A shared `parentAgentTaskId` is not alone evidence of other-agent authorship. Native IDE/other-agent coverage remains unestablished. |
 
 The Unicode, partial-coverage, IDE, other-agent, and per-range timestamp boundary
