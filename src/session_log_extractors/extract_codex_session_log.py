@@ -707,6 +707,38 @@ def _questions(call: ToolCall, output: JsonValue) -> list[QuestionAnswer]:
     ]
 
 
+def _user_message(
+    payload: dict[str, JsonValue],
+    timestamp: str | None,
+    raw_text: str,
+    images: list[Image],
+) -> UserMessage:
+    """Normalize user content while retaining identity and command syntax."""
+    message = user_event(0, timestamp, clean_user_text(raw_text), images)
+    _copy_identity(message, payload)
+    _user_commands(message, raw_text)
+    return message
+
+
+def _new_tool_call(payload: dict[str, JsonValue]) -> ToolCall:
+    """Decode a native request without changing session state."""
+    name = _tool_name(payload)
+    arguments = payload.get("arguments")
+    if arguments is None:
+        arguments = payload.get("input")
+    decoded = _decode_arguments(arguments)
+    call = ToolCall(
+        name=name, input=decoded, input_schema=codex_input_schema(name, decoded)
+    )
+    call_id = _string(payload.get("call_id"))
+    native_id = _string(payload.get("id"))
+    if call_id is not None:
+        call["id"] = call_id
+    if native_id is not None:
+        call["native_id"] = native_id
+    return call
+
+
 class _CodexSessionBuilder:
     """One native traversal with ordered canonical messages and ID matching."""
 
@@ -744,49 +776,44 @@ class _CodexSessionBuilder:
             self.append(self.pending_user)
             self.pending_user = None
 
-    def user(
-        self, payload: dict[str, JsonValue], timestamp: str | None, *, response: bool
+    def response_user(
+        self, payload: dict[str, JsonValue], timestamp: str | None
     ) -> None:
-        text = (
-            user_text_from_response_item(payload)
-            if response
-            else user_text_from_event(payload)
+        """Buffer a response item until its event view or the next message arrives."""
+        raw_text = _content_text(payload.get("content"), ("text",)).strip()
+        images = envelope_images(
+            image_refs_from_user_message_payload(payload), self.source.image_inputs
         )
-        refs = (
-            image_refs_from_user_message_payload(payload)
-            if response
-            else image_refs_from_event(payload)
-        )
-        images = envelope_images(refs, self.source.image_inputs)
-        if response and (not text or is_startup_context(text)):
+        message = _user_message(payload, timestamp, raw_text, images)
+        if not message["text"] or is_startup_context(message["text"]):
             self.pending_images = images
             return
-        message = user_event(0, timestamp, text, images)
-        _copy_identity(message, payload)
-        raw = (
-            _content_text(payload.get("content"), ("text",))
-            if response
-            else _string(payload.get("message")) or text
+        self.flush_user()
+        self.pending_user = message
+
+    def event_user(self, payload: dict[str, JsonValue], timestamp: str | None) -> None:
+        """Emit the user event after reconciling its buffered response view."""
+        images = envelope_images(
+            image_refs_from_event(payload), self.source.image_inputs
         )
-        _user_commands(message, raw)
-        if response:
-            self.flush_user()
-            self.pending_user = message
-            return
-        # The response item and event are two native views of the same input.
-        response_images = (
-            self.pending_user.get("images") if self.pending_user is not None else None
-        )
+        raw_text = _string(payload.get("message")) or ""
+        message = _user_message(payload, timestamp, raw_text, images)
+        self.merge_pending_user(message)
+        if message["text"] or message.get("images") or message.get("command"):
+            self.active_user = message
+            self.append(message)
+
+    def merge_pending_user(self, message: UserMessage) -> None:
+        """Prefer the response view's identity and images for the same input."""
+        response_images = None
         if self.pending_user is not None:
+            response_images = self.pending_user.get("images")
             _copy_identity(message, self.pending_user)
             self.pending_user = None
-        images = response_images or self.pending_images or images
+        images = response_images or self.pending_images or message.get("images")
         self.pending_images = []
         if images:
             message["images"] = images
-        if text or images or message.get("command"):
-            self.active_user = message
-            self.append(message)
 
     def assistant(self, payload: dict[str, JsonValue], timestamp: str | None) -> None:
         self.flush_user()
@@ -805,25 +832,9 @@ class _CodexSessionBuilder:
 
     def call(self, payload: dict[str, JsonValue], timestamp: str | None) -> None:
         self.flush_user()
-        name = _tool_name(payload)
-        arguments = payload.get("arguments")
-        if arguments is None:
-            arguments = payload.get("input")
-        decoded = _decode_arguments(arguments)
-        call = ToolCall(
-            name=name, input=decoded, input_schema=codex_input_schema(name, decoded)
-        )
-        call_id = _string(payload.get("call_id"))
-        native_id = _string(payload.get("id"))
-        if call_id is not None:
-            call["id"] = call_id
-            self.pending_calls[call_id] = call
-        if native_id is not None:
-            call["native_id"] = native_id
-        if self.mode == "plan" and _is_plan_tool(name):
-            plan = _plan_update(decoded)
-            if plan is not None:
-                call["plan_update"] = plan
+        call = _new_tool_call(payload)
+        if "id" in call:
+            self.pending_calls[call["id"]] = call
         self.call_semantics(call)
         message = assistant_event(0, timestamp, "", [call])
         _copy_identity(message, payload)
@@ -831,6 +842,10 @@ class _CodexSessionBuilder:
 
     def call_semantics(self, call: ToolCall) -> None:
         name, arguments = call["name"], json_value(call.get("input"))
+        if self.mode == "plan" and _is_plan_tool(name):
+            plan = _plan_update(arguments)
+            if plan is not None:
+                call["plan_update"] = plan
         for skill in skill_names_from_call(name, arguments):
             if skill not in self.session["skills_used"]:
                 self.session["skills_used"].append(skill)
@@ -907,7 +922,7 @@ class _CodexSessionBuilder:
 
     def event(self, payload: dict[str, JsonValue], timestamp: str | None) -> None:
         if payload.get("type") == "user_message":
-            self.user(payload, timestamp, response=False)
+            self.event_user(payload, timestamp)
         elif payload.get("type") == "patch_apply_end":
             self.patch(payload, timestamp)
         elif payload.get("type") == "item_completed":
@@ -923,7 +938,7 @@ class _CodexSessionBuilder:
         kind = payload.get("type")
         if kind == "message":
             if payload.get("role") == "user":
-                self.user(payload, timestamp, response=True)
+                self.response_user(payload, timestamp)
             elif payload.get("role") == "assistant":
                 self.assistant(payload, timestamp)
         elif kind in ("function_call", "custom_tool_call"):
