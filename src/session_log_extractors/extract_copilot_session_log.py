@@ -66,6 +66,7 @@ from session_log_extractors.session_log_envelope import (
 from session_log_extractors.session_model import (
     AssistantMessage,
     FileActivity,
+    FileActivityProvenance,
     Image,
     Message,
     NativeIdentity,
@@ -263,72 +264,81 @@ def get_state_attachments(session_id: str) -> List[Dict[str, Any]]:
     return _attachments_from_events(copilot_sources.load_state_records(session_id))
 
 
-def _permissions_from_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Join ``permission.requested`` / ``permission.completed`` events into one
-    record per decision: the tool asked about, the outcome, and any feedback.
+def _permission_request(
+    record: dict[str, JsonValue], data: dict[str, JsonValue]
+) -> PermissionDecision | None:
+    request_id = _string(data.get("requestId"))
+    if request_id is None:
+        return None
+    request = data.get("permissionRequest")
+    request = request if isinstance(request, dict) else {}
+    description = (
+        request.get("fullCommandText")
+        or request.get("intention")
+        or request.get("kind")
+    )
+    return PermissionDecision(
+        tool=_string(description) or "tool",
+        request_id=request_id,
+        status="pending",
+        native_decision=None,
+        feedback="",
+        ts=_string(record.get("timestamp")),
+    )
 
-    Unlike Claude/Codex, Copilot records the full permission lifecycle — both
-    approvals and denials — so both are captured. A ``permission.requested`` with
-    no matching completion (aborted / still pending) is emitted as ``pending``.
-    """
-    requests: Dict[str, Dict[str, Any]] = {}
-    decided: set[str] = set()
-    out: List[Dict[str, Any]] = []
-    for obj in events:
-        if not isinstance(obj, dict):
-            continue
-        etype = obj.get("type")
-        data = obj.get("data")
+
+def _permission_completion(
+    record: dict[str, JsonValue],
+    data: dict[str, JsonValue],
+    request: PermissionDecision | None,
+) -> PermissionDecision:
+    result = data.get("result")
+    result = result if isinstance(result, dict) else {}
+    timestamp = _string(record.get("timestamp"))
+    if not timestamp and request is not None:
+        timestamp = request["ts"]
+    return PermissionDecision(
+        tool=request["tool"] if request is not None else "tool",
+        request_id=_string(data.get("requestId")),
+        status="completed",
+        native_decision=_string(result.get("kind")),
+        feedback=_string(result.get("feedback")) or "",
+        ts=timestamp,
+    )
+
+
+def _permissions_from_events(
+    events: list[dict[str, JsonValue]],
+) -> list[PermissionDecision]:
+    """Join permission records by request ID without interpreting native outcomes."""
+    requests: dict[str, PermissionDecision] = {}
+    completed_ids: set[str] = set()
+    decisions: list[PermissionDecision] = []
+    for record in events:
+        data = record.get("data")
         if not isinstance(data, dict):
             continue
-
-        if etype == "permission.requested":
-            pr = data.get("permissionRequest")
-            pr = pr if isinstance(pr, dict) else {}
-            rid = data.get("requestId")
-            if isinstance(rid, str):
-                requests[rid] = {
-                    "tool": (
-                        pr.get("fullCommandText")
-                        or pr.get("intention")
-                        or pr.get("kind")
-                        or "tool"
-                    ),
-                    "timestamp": obj.get("timestamp"),
-                }
-        elif etype == "permission.completed":
-            rid = data.get("requestId")
-            result = data.get("result")
-            result = result if isinstance(result, dict) else {}
-            feedback = result.get("feedback")
-            req = requests.get(rid, {}) if isinstance(rid, str) else {}
-            if isinstance(rid, str):
-                decided.add(rid)
-            out.append(
-                {
-                    "tool": req.get("tool", "tool"),
-                    "decision": result.get("kind") or "unknown",
-                    "feedback": feedback if isinstance(feedback, str) else "",
-                    "timestamp": obj.get("timestamp") or req.get("timestamp"),
-                }
-            )
-
-    for rid, req in requests.items():
-        if rid not in decided:
-            out.append(
-                {
-                    "tool": req.get("tool", "tool"),
-                    "decision": "pending",
-                    "feedback": "",
-                    "timestamp": req.get("timestamp"),
-                }
-            )
-    out.sort(key=lambda p: p.get("timestamp") or "")
-    return out
+        if record.get("type") == "permission.requested":
+            request = _permission_request(record, data)
+            request_id = _string(data.get("requestId"))
+            if request is not None and request_id is not None:
+                requests[request_id] = request
+        elif record.get("type") == "permission.completed":
+            request_id = _string(data.get("requestId"))
+            request = requests.get(request_id) if request_id is not None else None
+            decisions.append(_permission_completion(record, data, request))
+            if request_id is not None:
+                completed_ids.add(request_id)
+    decisions.extend(
+        request
+        for request_id, request in requests.items()
+        if request_id not in completed_ids
+    )
+    return sorted(decisions, key=lambda decision: decision["ts"] or "")
 
 
-def get_state_permissions(session_id: str) -> List[Dict[str, Any]]:
-    """Read permission decisions from the per-session events log, if present."""
+def get_state_permissions(session_id: str) -> list[PermissionDecision]:
+    """Read permission lifecycles, preserving native labels without inferred owners."""
     return _permissions_from_events(copilot_sources.load_state_records(session_id))
 
 
@@ -810,8 +820,11 @@ def _file_activity(source: CopilotSource) -> list[FileActivity]:
             FileActivity(
                 file_path=_string(file.get("file_path")) or "",
                 tool_name=_string(file.get("tool_name")) or "tool",
-                turn_index=index if isinstance(index, int) else None,
-                first_seen_at=_string(file.get("first_seen_at")),
+                provenance=FileActivityProvenance(
+                    record_type="copilot.session_files",
+                    turn_index=index if isinstance(index, int) else None,
+                    first_seen_at=_string(file.get("first_seen_at")),
+                ),
             )
         )
     return activity
@@ -841,18 +854,6 @@ def _session_skills(source: CopilotSource, calls: list[ToolCall]) -> list[str]:
             if ref["name"] and ref["name"] not in skills:
                 skills.append(ref["name"])
     return list(dict.fromkeys(skills))
-
-
-def _permission_decisions(source: CopilotSource) -> list[PermissionDecision]:
-    return [
-        PermissionDecision(
-            tool=_string(record["tool"]) or "tool",
-            decision=_string(record["decision"]) or "unknown",
-            feedback=_string(record["feedback"]) or "",
-            ts=_string(record["timestamp"]),
-        )
-        for record in _permissions_from_events(source.state_records)
-    ]
 
 
 def interpret_source(source: CopilotSource) -> Session | None:
@@ -885,7 +886,7 @@ def interpret_source(source: CopilotSource) -> Session | None:
         unmatched_tool_results=builder.unmatched,
         file_activity=_file_activity(source),
         unsupported_tools=sorted(unsupported_tools),
-        permission_decisions=_permission_decisions(source),
+        permission_decisions=_permissions_from_events(source.state_records),
     )
 
 

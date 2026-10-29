@@ -129,7 +129,7 @@ def test_copilot_permissions_join_approval_denial_and_pending():
         sources.parse_state_records(_hand_lines("permissions.jsonl"))
     )
     assert [
-        (p["tool"], p["decision"], p["feedback"], p["timestamp"]) for p in perms
+        (p["tool"], p["native_decision"], p["feedback"], p["ts"]) for p in perms
     ] == [
         ("pytest", "approved", "", "2026-07-01T22:04:04Z"),
         (
@@ -138,7 +138,7 @@ def test_copilot_permissions_join_approval_denial_and_pending():
             "not like that",
             "2026-07-01T22:05:30Z",
         ),
-        ("rm x", "pending", "", "2026-07-01T22:06:00Z"),
+        ("rm x", None, "", "2026-07-01T22:06:00Z"),
     ]
 
 
@@ -997,10 +997,10 @@ def test_session_retains_skills_and_unassociated_permission_lifecycle():
     session = copilot_log.interpret_source(source)
     assert session["skills_used"] == ["fixture-skill"]
     assert any("SKILL_FIXTURE_MARKER" in e.get("text", "") for e in session["events"])
-    assert [p["decision"] for p in session["permission_decisions"]] == [
+    assert [p["native_decision"] for p in session["permission_decisions"]] == [
         "approved",
         "denied-interactively-by-user",
-        "pending",
+        None,
     ]
     assert session["permission_decisions"][1]["feedback"] == "not like that"
 
@@ -1076,7 +1076,17 @@ def test_native_tools_preserve_recorded_database_file_activity():
         }
     ]
     session = copilot_log.interpret_source(source)
-    assert session["file_activity"] == source.files
+    assert session["file_activity"] == [
+        {
+            "file_path": "/tmp/file.py",
+            "tool_name": "view",
+            "provenance": {
+                "record_type": "copilot.session_files",
+                "turn_index": 0,
+                "first_seen_at": "recorded time",
+            },
+        }
+    ]
     assert [c["name"] for e in session["events"] for c in e.get("tool_calls", [])] == [
         "bash"
     ]
@@ -1097,4 +1107,86 @@ def test_copilot_reports_claude_tool_names_as_unsupported(name):
     assert call["input_schema"] == "unsupported"
     assert session["unsupported_tools"] == [name]
     assert call["input"] == request["arguments"]
+    assert "TOOL_FIXTURE_MARKER" in call["result"]
+
+
+@pytest.mark.parametrize("native_kind", ["pending", "future-policy-result", None])
+def test_permission_completion_status_is_separate_from_native_label(native_kind):
+    source = _supplied_native_source("baseline")
+    permissions = sources.parse_state_records(_hand_lines("permissions.jsonl"))
+    # Change only a completed result's label, including one resembling a lifecycle state.
+    permissions[1]["data"]["result"]["kind"] = native_kind
+    source.state_records.extend(permissions)
+    session = copilot_log.interpret_source(source)
+    first, _, pending = session["permission_decisions"]
+    assert first["status"] == "completed"
+    assert first["native_decision"] == native_kind
+    assert first["request_id"] == "r1"
+    assert pending["status"] == "pending"
+    assert pending["native_decision"] is None
+    assert pending["request_id"] == "r3"
+    assert not any(
+        "permission_denial" in call
+        for event in session["events"]
+        for call in event.get("tool_calls", [])
+    )
+
+
+def test_file_activity_keeps_database_fields_as_provenance():
+    source = _supplied_native_source("tool_success")
+    # This native database index deliberately differs from all shared message indices.
+    source.files = [
+        {
+            "file_path": "/a.py",
+            "tool_name": "view",
+            "turn_index": 99,
+            "first_seen_at": "recorded time",
+        }
+    ]
+    session = copilot_log.interpret_source(source)
+    [activity] = session["file_activity"]
+    assert activity["file_path"] == "/a.py"
+    assert activity["tool_name"] == "view"
+    assert activity["provenance"] == {
+        "record_type": "copilot.session_files",
+        "turn_index": 99,
+        "first_seen_at": "recorded time",
+    }
+    assert "turn_index" not in activity
+    assert "files_changed" not in session
+
+
+@pytest.mark.parametrize("request_id", [None, "r1", "orphan"])
+def test_permission_completion_retains_request_identity_and_timestamp_fallback(
+    request_id,
+):
+    records = sources.parse_state_records(_hand_lines("permissions.jsonl"))[:2]
+    # Remove completion time and vary only its recorded request ID.
+    records[1].pop("timestamp")
+    records[1]["data"]["requestId"] = request_id
+    permissions = copilot_log._permissions_from_events(records)
+    completion = next(
+        record for record in permissions if record["status"] == "completed"
+    )
+    assert completion["request_id"] == request_id
+    assert completion["native_decision"] == "approved"
+    assert completion["ts"] == (records[0]["timestamp"] if request_id == "r1" else None)
+    assert completion["tool"] == ("pytest" if request_id == "r1" else "tool")
+    assert any(record["status"] == "pending" for record in permissions) is (
+        request_id != "r1"
+    )
+
+
+def test_native_result_without_execution_start_does_not_invent_one():
+    source = _supplied_native_source("tool_success")
+    source.state_records = [
+        record
+        for record in source.state_records
+        if record["type"] != "tool.execution_start"
+    ]
+    session = copilot_log.interpret_source(source)
+    [call] = [
+        call for event in session["events"] for call in event.get("tool_calls", [])
+    ]
+    assert "execution" not in call
     assert "TOOL_FIXTURE_MARKER" in call["result"]

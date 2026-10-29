@@ -44,7 +44,12 @@ class PlanDecision(TypedDict):
 
 
 class PermissionDenial(TypedDict):
-    """A refused tool action and the recorded source of that refusal."""
+    """A normalized refusal summary attached to its evidenced tool call.
+
+    This asserts a denial, unlike PermissionDecision's lifecycle status and
+    native result label. Adapters must establish denial and call ownership from
+    recorded evidence; a native decision label alone does not create this record.
+    """
 
     tool: str
     message: str
@@ -83,7 +88,12 @@ class ToolResult(NativeIdentity):
 
 
 class ToolExecution(NativeIdentity, total=False):
-    """The recorded execution start, distinct from its assistant request."""
+    """A recorded start of a tool execution, distinct from its request.
+
+    Identity, timestamp, name, and input describe the execution-start record.
+    A harness that does not record a start leaves ToolCall.execution absent;
+    adapters must not synthesize a start from the request or result.
+    """
 
     ts: str | None
     name: str
@@ -91,10 +101,20 @@ class ToolExecution(NativeIdentity, total=False):
 
 
 class PermissionDecision(TypedDict):
-    """Recorded Copilot permission lifecycle, without inferred ownership."""
+    """A permission request's lifecycle, independent of normalized denial facts.
+
+    Status records whether a completion was observed. native_decision retains
+    the harness's result label verbatim, including unfamiliar labels; None
+    means no label was recorded. Neither field asserts approval, denial, or an
+    author. tool describes the requested action and need not be a tool name.
+    Request IDs belong to the source's permission lifecycle, not to tool calls.
+    ts is the completion time, or the request time when pending or untimed.
+    """
 
     tool: str
-    decision: str
+    request_id: str | None
+    status: Literal["pending", "completed"]
+    native_decision: str | None
     feedback: str
     ts: str | None
 
@@ -155,13 +175,30 @@ class Event(MessageContent, total=False):
 Message: TypeAlias = UserMessage | AssistantMessage | Event
 
 
+class FileActivityProvenance(TypedDict):
+    """Native evidence for file activity, independent of shared message order.
+
+    record_type identifies the harness-qualified source table or record kind.
+    turn_index is a recorded source index; it never indexes Session.events.
+    first_seen_at is a source-reported first-seen time, not a modification time.
+    Missing source fields remain None.
+    """
+
+    record_type: str
+    turn_index: int | None
+    first_seen_at: str | None
+
+
 class FileActivity(TypedDict):
-    """Recorded database file activity without inferred file-action semantics."""
+    """Evidence that a named tool touched a path, retaining its native provenance.
+
+    Activity alone establishes neither a read/write action nor a modification.
+    files_changed holds modification facts established separately by adapters.
+    """
 
     file_path: str
     tool_name: str
-    turn_index: int | None
-    first_seen_at: str | None
+    provenance: FileActivityProvenance
 
 
 class Session(TypedDict):

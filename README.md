@@ -120,8 +120,20 @@ recorded call ID. Repeated and orphan results remain in `unmatched_tool_results`
 and the complete native result stays in `result_record` beside the compatible
 textual JSON result. Database-only inputs retain file targets by `turn_index`.
 Recorded database file activity stays in `file_activity`, including when native
-tools supply the JSON.
-Permission lifecycle records remain session facts without inferred turn ownership.
+tools supply the JSON. `FileActivity` holds the path and tool name;
+`FileActivity.provenance` identifies the native record type and preserves its
+source turn index and first-seen time. Source indices never index `Session.events`,
+and first-seen times do not assert modification times. File activity alone does
+not populate `files_changed` or infer read/write actions.
+
+`PermissionDecision.status` records whether a completion was observed (`pending`
+or `completed`). `native_decision` retains the harness's result label verbatim;
+a missing label stays `None`, and a pending request has no result label.
+Recorded request IDs join permission lifecycle records, without inferred tool-call
+ownership. These session facts do not automatically create `PermissionDenial`,
+which is a normalized refusal summary attached to an evidenced tool call.
+`ToolExecution` likewise represents a recorded execution start; adapters leave it
+absent when only a request or result was recorded.
 Unsupported tool schemas are listed in `unsupported_tools`; opaque inputs survive.
 For replay, construct `CopilotSource`
 directly from supplied rows, state records, and optional `image_inputs`.
