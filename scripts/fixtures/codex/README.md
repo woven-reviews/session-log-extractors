@@ -1,6 +1,6 @@
 # Codex fixture provenance
 
-These seven native fixtures cover the captured shapes recorded in [QUAL-2400](https://linear.app/andela/issue/QUAL-2400/codex-test-coverage). Captured on 2026-10-15 with Codex CLI 0.162.1. There are **no hand-authored JSONL fixtures**. Tests read committed files and require no local Codex login or session directory.
+These seven native fixtures cover the captured shapes recorded in [QUAL-2400](https://linear.app/andela/issue/QUAL-2400/codex-test-coverage). Regenerated on 2026-10-29 with Codex CLI 0.165.0. There are **no hand-authored JSONL fixtures**. Tests read committed files and require no local Codex login or session directory.
 
 ## Regenerate
 
@@ -9,7 +9,7 @@ Run `python3 scripts/generate_codex_fixtures.py` from the repository root with a
 | QUAL-2400 shape | Classification and evidence |
 | --- | --- |
 | 1. Slash commands | **Headless-generatable:** bare `/review fixture` in `slash.jsonl`. **Fixture-only:** the interactive `<command-name>` wrapper cannot be emitted by `codex exec`; its narrow parser test remains inline. |
-| 2. Plan mode | **App-server capture:** `plan.jsonl` records a native Plan mode turn and Plan item. In CLI 0.162.1, Plan mode disallows `update_plan`, and a Default mode probe reported that tool unavailable. The inline structured `update_plan` test uses handwritten input; we have no native capture showing that combination. |
+| 2. Plan mode | **App-server capture:** `plan.jsonl` records a native Plan mode turn and Plan item. The original CLI 0.162.1 capture showed that Plan mode disallows `update_plan`, and a Default mode probe reported that tool unavailable. The inline structured `update_plan` test uses handwritten input; we have no native capture showing that combination. |
 | 3. Permission denial | **App-server capture:** `denial.jsonl` records a declined command approval in its native tool result. The current approval response accepts a decision without feedback text; a probe's extra message field did not appear in the saved rollout. The inline assistant-message denial with feedback uses handwritten input; we have no native capture showing that exact form. |
 | 4. `request_user_input` answer | **App-server capture:** `question.jsonl` records the native options request and the answered result. |
 | 5. Pasted images | **Headless-generatable:** `image.jsonl` contains a native base64 `input_image` block and image path; tests decode it using committed `pixel.png`. **Fixture-only:** a deleted backing file requires deliberate mutation; the missing-path test stays inline. |
@@ -26,5 +26,7 @@ The cleaner preserves `internal_chat_message_metadata_passthrough`, including
 block order or alignment. Session account/base instructions and unrelated
 reasoning/usage records remain excluded; turn-context collaboration settings
 retain the mode only. Home/workspace paths and emails are redacted throughout
-retained records, including nested provenance. The committed 2026-10-15 fixtures
-predate this cleaner fix and still omit this evidence until regeneration.
+retained records, including nested provenance. The committed 2026-10-29 fixtures retain this evidence after regeneration with
+the corrected cleaner. User input and startup context have separate recorded
+content kinds and provenance; image preparation wrappers also carry `user.text`,
+so that kind alone does not prove every character was typed by the human.
