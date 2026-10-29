@@ -24,9 +24,10 @@ from __future__ import annotations
 import base64
 import json
 import sys
+from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, List, Optional, TypedDict
+from typing import List, Optional, TypedDict
 
 from session_log_extractors.json_types import JsonValue
 from session_log_extractors.session_model import (
@@ -108,7 +109,7 @@ def image_from_base64(data: str, media_type: Optional[str]) -> Image:
     }
 
 
-def unavailable_image(ref: Any) -> Image:
+def unavailable_image(ref: object) -> Image:
     """An image the extractor knew about but could not resolve to bytes.
 
     Recorded rather than skipped: a session where the candidate pasted a
@@ -127,7 +128,7 @@ class TruncatedResult(TypedDict):
 
 
 def truncate_result(
-    text: Any, max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES
+    text: object, max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES
 ) -> TruncatedResult:
     """Cap a tool result, recording its original size.
 
@@ -184,8 +185,8 @@ def assistant_event(
 
 def tool_call(
     name: str,
-    tool_input: Any,
-    result: Any = None,
+    tool_input: object,
+    result: object = None,
     max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
 ) -> ToolCall:
     """One tool call with its input verbatim and its result capped.
@@ -205,10 +206,21 @@ def attach_result(call: ToolCall, result: TruncatedResult) -> None:
     call["result_truncated"] = result["result_truncated"]
 
 
+class _TruncationPolicy(TypedDict):
+    tool_result_max_bytes: int
+
+
+class Envelope(Session):
+    """The compatible JSON envelope plus its export policy."""
+
+    schema: str
+    truncation: _TruncationPolicy
+
+
 def build_envelope(
     session: Session,
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
-) -> Dict[str, Any]:
+) -> Envelope:
     """Wrap content without applying policy to already exported legacy events.
 
     New adapters use export_session with complete interpreted content instead.
@@ -228,7 +240,7 @@ def build_envelope(
 def export_session(
     session: Session,
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
-) -> Dict[str, Any]:
+) -> Envelope:
     """Export complete interpreted content without mutating the adapter's data.
 
     Lossy policy belongs here: cap textual results using the existing UTF-8
@@ -299,7 +311,7 @@ def _export_call(call: ToolCall, limit: int) -> ToolCall:
 
 def write_envelope(
     path: Path,
-    envelope: Dict[str, Any],
+    envelope: Mapping[str, object],
     cap_flag: str = "--raw-tool-result-bytes",
 ) -> int:
     """Write the envelope and return its size in bytes.
@@ -336,7 +348,7 @@ def _human_size(size: int) -> str:
     return f"{size} B"
 
 
-def _jsonable(value: Any) -> JsonValue:
+def _jsonable(value: object) -> JsonValue:
     """Coerce a tool input to something json.dumps can handle.
 
     Tool inputs come straight from a transcript, so they are normally plain JSON

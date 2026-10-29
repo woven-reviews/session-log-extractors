@@ -13,6 +13,7 @@ CI checks:
 uv run --locked ruff format --check .
 uv run --locked ruff check .
 uv run --locked mypy src
+uv run --locked lint-imports
 uv run --locked pytest --cov=scripts --cov=src --cov-report=term --cov-report=xml --cov-fail-under=95
 git fetch origin main
 uv run --locked diff-cover coverage.xml --compare-branch=origin/main --fail-under=95
@@ -21,7 +22,11 @@ uv run --locked pytest scripts/test_extract_claude_session_log.py --cov=session_
 uv run --locked pytest scripts/test_extract_copilot_session_log.py --cov=session_log_extractors.extract_copilot_session_log --cov-fail-under=95
 ```
 
-Run mypy in strict mode across the entire source package.
+The locked pre-commit hooks run Ruff, package-wide mypy, and Import Linter.
+Install with `uv run --locked pre-commit install`; run them with
+`uv run --locked pre-commit run --all-files`. CI uses the same tool versions and
+settings. Mypy enforces strict mode, `disallow_any_unimported`, and
+`disallow_any_explicit` across the entire source package.
 Fix type errors through accurate types, typed construction, and checked narrowing.
 Casts and `no_type_check` APIs are banned by Ruff. Do not replace casts with
 broader `Any` annotations, unchecked validators, or ignored errors.
@@ -42,6 +47,11 @@ Use diff-cover to identify missing coverage; add tests rather than lowering
 the threshold.
 
 ## Shared model and export boundaries
+
+Import Linter enforces model/exporter dependency directions and the permitted
+importers of harness schemas. Native-fixture contract tests cover source-free,
+uncapped interpretation and non-mutating export for protocol adopters. Review
+must still assess semantic ownership, naming, and the modeling rules below.
 
 Use `extractor_contract.Extractor[Request, Source]` for public reader/interpreter
 stages. Implementations must satisfy the protocol under mypy and be exercised
@@ -132,7 +142,8 @@ Agents must never add new lint exceptions or broaden existing ones. Do not add
 suppressions, disable rules, exclude files or directories, or raise thresholds
 to make a check pass. Fix the code to satisfy the rules. This also applies to
 adding or broadening type-checker ignores and weakening mypy settings. PR review
-must check the diff for new or broadened lint/type exceptions. Remove existing
+must check the diff for new or broadened lint/type exceptions and weakened
+configuration; these are review responsibilities, not automated guarantees. Remove existing
 ignore comments when fixing or replacing the code they cover; do not add new
 ones.
 

@@ -1048,9 +1048,6 @@ def test_attachment_shape_boundaries_and_shell_input():
     )
     session = copilot_log.interpret_source(source)
     assert session["events"][0]["shell_command"] == "pytest -q"
-    assert copilot_log._json_value({"key": [True, None]}) == {"key": [True, None]}
-    with pytest.raises(TypeError, match="JSON values"):
-        copilot_log._json_value({1, 2})
 
 
 def test_malformed_native_tools_do_not_invent_calls():

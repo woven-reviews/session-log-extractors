@@ -9,7 +9,15 @@ description = "Reusable extractors for Claude, Codex, and Copilot session logs"
 requires-python = ">=3.11"
 
 [project.optional-dependencies]
-test = ["pytest", "pytest-cov", "ruff==0.14.0", "diff-cover==9.7.1", "mypy==2.4.0"]
+test = [
+    "pytest",
+    "pytest-cov",
+    "ruff==0.14.0",
+    "diff-cover==9.7.1",
+    "mypy==2.4.0",
+    "import-linter==2.15",
+    "pre-commit==4.7.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -23,6 +31,8 @@ target-version = "py311"
 [tool.mypy]
 python_version = "3.11"
 strict = true
+disallow_any_unimported = true
+disallow_any_explicit = true
 enable_error_code = ["ignore-without-code"]
 
 [tool.coverage.run]
@@ -45,3 +55,57 @@ max-args = 5
 "typing_extensions.cast".msg = "Use typed construction or checked narrowing."
 "typing.no_type_check".msg = "Keep type checking enabled."
 "typing_extensions.no_type_check".msg = "Keep type checking enabled."
+
+[tool.importlinter]
+root_packages = ["session_log_extractors"]
+
+[[tool.importlinter.contracts]]
+id = "model-boundary"
+name = "Shared model is independent of readers, extractors and export"
+type = "forbidden"
+source_modules = ["session_log_extractors.session_model"]
+forbidden_modules = [
+    "session_log_extractors.claude_sources",
+    "session_log_extractors.codex_sources",
+    "session_log_extractors.copilot_sources",
+    "session_log_extractors.extract_claude_session_log",
+    "session_log_extractors.extract_codex_session_log",
+    "session_log_extractors.extract_copilot_session_log",
+    "session_log_extractors.session_log_envelope",
+]
+
+[[tool.importlinter.contracts]]
+id = "export-boundary"
+name = "Exporter is independent of readers and extractors"
+type = "forbidden"
+source_modules = ["session_log_extractors.session_log_envelope"]
+forbidden_modules = [
+    "session_log_extractors.claude_sources",
+    "session_log_extractors.codex_sources",
+    "session_log_extractors.copilot_sources",
+    "session_log_extractors.extract_claude_session_log",
+    "session_log_extractors.extract_codex_session_log",
+    "session_log_extractors.extract_copilot_session_log",
+]
+
+[[tool.importlinter.contracts]]
+id = "claude-schemas"
+name = "Claude schemas belong to Claude and the shared union"
+type = "protected"
+protected_modules = ["session_log_extractors.tool_inputs.claude"]
+allowed_importers = [
+    "session_log_extractors.extract_claude_session_log",
+    "session_log_extractors.tool_inputs",
+]
+as_packages = false
+
+[[tool.importlinter.contracts]]
+id = "copilot-schemas"
+name = "Copilot schemas belong to Copilot and the shared union"
+type = "protected"
+protected_modules = ["session_log_extractors.tool_inputs.copilot"]
+allowed_importers = [
+    "session_log_extractors.extract_copilot_session_log",
+    "session_log_extractors.tool_inputs",
+]
+as_packages = false

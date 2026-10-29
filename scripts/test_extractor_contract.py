@@ -254,3 +254,63 @@ def test_copilot_public_reader_errors_and_empty_source():
         )
         is None
     )
+
+
+@pytest.mark.parametrize("harness", ["claude", "copilot"])
+@pytest.mark.parametrize("unsupported", [False, True])
+def test_native_tool_payloads_keep_unknown_fields_through_export(harness, unsupported):
+    """Extend a captured call with a future field and optionally a future tool name."""
+    if harness == "claude":
+        source = claude.read_source(FIXTURES / "large_result.jsonl")
+        request = next(
+            block
+            for entry in source.entries
+            for block in claude._content_blocks(entry)
+            if isinstance(block, dict) and block.get("type") == "tool_use"
+        )
+        input_key = "input"
+        extractor = claude.EXTRACTOR
+    else:
+        records = copilot_sources.parse_state_records(
+            (FIXTURES.parent / "copilot" / "tool_success" / "events.jsonl")
+            .read_text()
+            .splitlines()
+        )
+        source = copilot_sources.CopilotSource(
+            {"id": "fixture"}, [], state_records=records
+        )
+        request = next(
+            r["data"]["toolRequests"][0]
+            for r in records
+            if r["type"] == "assistant.message" and r["data"].get("toolRequests")
+        )
+        input_key = "arguments"
+        extractor = copilot.EXTRACTOR
+    # Keep recorded call IDs/results; only extend the payload and vary recognition.
+    request[input_key]["future_field"] = {
+        "nested": [None, False, 17, {"value": "kept"}]
+    }
+    if unsupported:
+        request["name"] = "future_tool"
+    expected_input = deepcopy(request[input_key])
+    session = extractor.interpret_source(source)
+    call = next(
+        c
+        for event in session["events"]
+        for c in event.get("tool_calls", [])
+        if c["name"] == request["name"]
+    )
+    assert call["input"] == expected_input
+    assert (call["input_schema"] == "unsupported") is unsupported
+    if unsupported:
+        assert "future_tool" in session["unsupported_tools"]
+    original = deepcopy(session)
+    exported = export_session(session, 17)
+    exported_call = next(
+        c
+        for event in exported["events"]
+        for c in event.get("tool_calls", [])
+        if c["name"] == request["name"]
+    )
+    assert exported_call["input"] == expected_input
+    assert session == original
