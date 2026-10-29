@@ -55,6 +55,56 @@ Run local commands above from the repository root after `uv sync --locked`.
 uv installs the shared exporter from `src/session_log_extractors/`; keep the
 existing extractor scripts as entrypoints.
 
+### Deterministic capture sanitization
+
+`capture_sanitization.py` contains the capture redaction rules, separately from
+extraction. It reads no environment variables, credentials, home directory, or
+clock. Identical input bytes and explicit rules produce identical sanitized
+bytes and count/hash reports. Existing fixture generators retain their current
+sanitizers; this command is for preparing and reviewing capture copies.
+
+Create a private rules file outside the repository, for example:
+
+```json
+{
+  "literal_replacements": [
+    {"name": "home", "original": "/Users/example", "replacement": "/Users/PILOT_USER"},
+    {"name": "host", "original": "example-mac", "replacement": "PILOT_HOST"},
+    {"name": "known_secret", "original": "explicit-sensitive-value", "replacement": "[REDACTED_SECRET]"}
+  ],
+  "redact_emails": true,
+  "redact_api_keys": true
+}
+```
+
+```sh
+uv run --locked python scripts/sanitize_capture_cli.py /tmp/raw-session.jsonl \
+  --rules /tmp/private-rules.json --format jsonl \
+  --output /tmp/sanitized-session.jsonl --report /tmp/sanitization-report.json
+```
+
+The public Python entrypoint is `sanitize_capture(text, rules, format="jsonl")`
+in `session_log_extractors.capture_sanitization`. Formats are `text`, `json`, and
+`jsonl`. JSON formats parse string values before replacement, preserving record
+order, keys, scalar types, and inline image data. They normalize JSON whitespace
+and LF line endings; text mode retains existing formatting. Native IDs and
+timestamps remain unless an explicit rule matches their values. Original files
+are never overwritten by the CLI, including through symbolic or hard links.
+
+Literal replacements are case-sensitive and take priority over built-in
+patterns, with longer literals first. Replacement text is not processed again
+in the same pass. The named email pattern matches all email-like strings,
+including public attribution addresses; the API-key pattern matches
+`sk-ant-` values and displayed fragments. Other secrets require explicit literal
+rules. JSON keys and binary assets are outside text redaction; inline image
+payloads are preserved byte-for-byte. This is a configured sanitizer, not a
+general secret detector.
+
+Reports contain SHA-256 hashes and counts for every enabled rule, including zero
+matches, sorted by rule name. They contain no matched values, timestamps, or
+machine-specific paths. With no `--report`, the report goes to stdout. Invalid
+rules or malformed JSON fail explicitly rather than silently dropping records.
+
 Build Docker from the repository root so the context includes `pyproject.toml`
 and `src/`:
 
