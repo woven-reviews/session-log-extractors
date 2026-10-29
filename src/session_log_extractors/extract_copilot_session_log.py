@@ -45,14 +45,17 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from session_log_extractors import copilot_sources
 from session_log_extractors.copilot_sources import CopilotSource, ImageInputs
 from session_log_extractors.extractor_contract import Extractor
 from session_log_extractors.json_types import JsonValue
+from session_log_extractors.json_types import json_value as _json_value
+from session_log_extractors.json_types import string_value as _string
 from session_log_extractors.session_log_envelope import (
     DEFAULT_TOOL_RESULT_MAX_BYTES,
+    Envelope,
     assistant_event,
     export_session,
     image_from_bytes,
@@ -114,20 +117,11 @@ def _decode_arguments(arguments: JsonValue) -> JsonValue:
     return arguments
 
 
-def _json_value(value: object) -> JsonValue:
-    """Copy JSON recursively at the native boundary without dropping fields."""
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    if isinstance(value, list):
-        return [_json_value(item) for item in value]
-    if isinstance(value, dict):
-        return {str(key): _json_value(item) for key, item in value.items()}
-    raise TypeError("Native activity must contain JSON values")
-
-
-def skill_refs_from_call(name: str, arguments: Any) -> List[Dict[str, Optional[str]]]:
+def skill_refs_from_call(
+    name: str, arguments: object
+) -> List[Dict[str, Optional[str]]]:
     """Return skill names and definition paths evidenced by a tool call."""
-    args = _decode_arguments(arguments)
+    args = _decode_arguments(arguments) if isinstance(arguments, str) else arguments
     refs: List[Dict[str, Optional[str]]] = []
 
     def add(value: str, path: Optional[str] = None) -> None:
@@ -198,8 +192,10 @@ def date_only(ts: Optional[str]) -> str:
     return formatted.split(" ")[0]
 
 
-def _binary_assets(events: List[Dict[str, Any]]) -> Dict[str, tuple[str, JsonValue]]:
-    assets = {}
+def _binary_assets(
+    events: List[Dict[str, JsonValue]],
+) -> Dict[str, tuple[str, JsonValue]]:
+    assets: Dict[str, tuple[str, JsonValue]] = {}
     for obj in events:
         asset = obj.get("data")
         if (
@@ -208,7 +204,7 @@ def _binary_assets(events: List[Dict[str, Any]]) -> Dict[str, tuple[str, JsonVal
             and isinstance(asset.get("assetId"), str)
             and isinstance(asset.get("data"), str)
         ):
-            assets[asset["assetId"]] = (asset["data"], asset.get("mimeType"))
+            assets[str(asset["assetId"])] = (str(asset["data"]), asset.get("mimeType"))
     return assets
 
 
@@ -242,9 +238,11 @@ def _state_attachment(
     return rec
 
 
-def _attachments_from_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _attachments_from_events(
+    events: List[Dict[str, JsonValue]],
+) -> List[Dict[str, JsonValue]]:
     assets = _binary_assets(events)
-    attachments: List[Dict[str, Any]] = []
+    attachments: List[Dict[str, JsonValue]] = []
     for obj in events:
         data = obj.get("data")
         if obj.get("type") != "user.message" or not isinstance(data, dict):
@@ -259,7 +257,7 @@ def _attachments_from_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any
     return attachments
 
 
-def get_state_attachments(session_id: str) -> List[Dict[str, Any]]:
+def get_state_attachments(session_id: str) -> List[Dict[str, JsonValue]]:
     """Load state attachments for callers needing only this evidence."""
     return _attachments_from_events(copilot_sources.load_state_records(session_id))
 
@@ -342,9 +340,11 @@ def get_state_permissions(session_id: str) -> list[PermissionDecision]:
     return _permissions_from_events(copilot_sources.load_state_records(session_id))
 
 
-def _skills_from_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _skills_from_events(
+    events: List[Dict[str, JsonValue]],
+) -> List[Dict[str, JsonValue]]:
     """Extract Copilot's first-class ``skill.invoked`` events."""
-    skills: List[Dict[str, Any]] = []
+    skills: List[Dict[str, JsonValue]] = []
     for obj in events:
         if not isinstance(obj, dict) or obj.get("type") != "skill.invoked":
             continue
@@ -364,12 +364,12 @@ def _skills_from_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return skills
 
 
-def get_state_skills(session_id: str) -> List[Dict[str, Any]]:
+def get_state_skills(session_id: str) -> List[Dict[str, JsonValue]]:
     """Read invoked skills from the per-session events log, if present."""
     return _skills_from_events(copilot_sources.load_state_records(session_id))
 
 
-def _result_text(result: Any) -> str:
+def _result_text(result: JsonValue) -> str:
     """Flatten a ``tool.execution_complete`` result to plain text."""
     if isinstance(result, dict):
         for key in ("detailedContent", "content"):
@@ -387,7 +387,9 @@ def _result_text(result: Any) -> str:
         return ""
 
 
-def _attachment_lookup(attachments: List[Dict[str, Any]]) -> Dict[str, Dict[str, str]]:
+def _attachment_lookup(
+    attachments: List[Dict[str, JsonValue]],
+) -> Dict[str, Dict[str, str]]:
     lookup: Dict[str, Dict[str, str]] = {}
     for item in attachments:
         raw_display = item.get("display_name")
@@ -405,9 +407,9 @@ def _attachment_lookup(attachments: List[Dict[str, Any]]) -> Dict[str, Dict[str,
         if has_path and isinstance(raw_path, str):
             rec["path"] = raw_path
         if has_data_url and isinstance(item.get("data_url"), str):
-            rec["data_url"] = item["data_url"]
+            rec["data_url"] = str(item["data_url"])
         if has_data and isinstance(item.get("data"), str):
-            rec["data"] = item["data"]
+            rec["data"] = str(item["data"])
             media_type = item.get("media_type")
             if isinstance(media_type, str):
                 rec["media_type"] = media_type
@@ -489,7 +491,7 @@ def _path_image_ext(ref: Dict[str, str]) -> str:
     return guessed.split("/")[-1] if "/" in guessed else "img"
 
 
-def output_identifier(session: Dict[str, Any]) -> str:
+def output_identifier(session: Dict[str, JsonValue]) -> str:
     """Generate a short identifier for output filenames."""
     session_id = session.get("id", "unknown")
     if not isinstance(session_id, str):
@@ -497,7 +499,7 @@ def output_identifier(session: Dict[str, Any]) -> str:
     # Use first 8 chars of session id
     short_id = session_id[:8] if len(session_id) >= 8 else session_id
 
-    date = date_only(session.get("created_at"))
+    date = date_only(_string(session.get("created_at")))
     if date and date != "unknown":
         return f"{date}_{short_id}"
     return short_id
@@ -519,10 +521,6 @@ class CopilotRequest:
 
     connection: sqlite3.Connection
     session: dict[str, JsonValue]
-
-
-def _string(value: object) -> str | None:
-    return value if isinstance(value, str) else None
 
 
 def _identity(
@@ -804,7 +802,9 @@ def _file_events(source: CopilotSource) -> list[Message]:
     return events
 
 
-def read_source(conn: sqlite3.Connection, session: Dict[str, Any]) -> CopilotSource:
+def read_source(
+    conn: sqlite3.Connection, session: Dict[str, JsonValue]
+) -> CopilotSource:
     """Snapshot native records and referenced external image bytes."""
     source = copilot_sources.read_source(conn, session)
     attachments = source.attachments + _attachments_from_events(source.state_records)
@@ -879,8 +879,8 @@ def interpret_source(source: CopilotSource) -> Session | None:
         harness="copilot",
         session_id=output_identifier(source.session),
         events=events,
-        cwd=source.session.get("cwd"),
-        started_at=source.session.get("created_at"),
+        cwd=_string(source.session.get("cwd")),
+        started_at=_string(source.session.get("created_at")),
         models=source.models,
         skills_used=_session_skills(source, calls),
         unmatched_tool_results=builder.unmatched,
@@ -906,7 +906,7 @@ EXTRACTOR: Extractor[CopilotRequest, CopilotSource] = CopilotExtractor()
 def build_raw_envelope(
     source: CopilotSource,
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
-) -> Optional[Dict[str, Any]]:
+) -> Optional[Envelope]:
     """Apply output policy only at the shared exporter boundary."""
     session = EXTRACTOR.interpret_source(source)
     return None if session is None else export_session(session, tool_result_max_bytes)
@@ -914,9 +914,9 @@ def build_raw_envelope(
 
 def extract_session(
     conn: sqlite3.Connection,
-    session: Dict[str, Any],
+    session: Dict[str, JsonValue],
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
-) -> Optional[Dict[str, Any]]:
+) -> Optional[Envelope]:
     """Run the public stages, preserving caller-owned connection lifetime."""
     source = EXTRACTOR.read_source(CopilotRequest(conn, session))
     return build_raw_envelope(source, tool_result_max_bytes)
@@ -1002,7 +1002,7 @@ def _extract_all(
     if not sessions:
         print(f"error: no Copilot sessions for {Path.cwd()}", file=sys.stderr)
         return 1
-    sessions.sort(key=lambda s: s.get("created_at", ""))
+    sessions.sort(key=lambda s: _string(s.get("created_at")) or "")
     out_dir = Path(output).expanduser() if output else project_root
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"extracting {len(sessions)} Copilot session(s)", file=sys.stderr)
@@ -1028,7 +1028,7 @@ def _extract_all(
 
 def _select_session(
     conn: sqlite3.Connection, args: argparse.Namespace
-) -> Optional[Dict[str, Any]]:
+) -> Optional[Dict[str, JsonValue]]:
     if args.session:
         session = copilot_sources.get_session_by_id(conn, args.session)
         if session is None:

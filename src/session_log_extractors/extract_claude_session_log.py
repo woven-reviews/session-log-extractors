@@ -25,7 +25,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from session_log_extractors import session_log_envelope
 from session_log_extractors.claude_sources import (
@@ -37,9 +37,11 @@ from session_log_extractors.claude_sources import (
     load_entries as load_entries,
 )
 from session_log_extractors.extractor_contract import Extractor
+from session_log_extractors.json_types import JsonValue, string_value
 from session_log_extractors.question_types import QuestionOption, is_question_option
 from session_log_extractors.session_log_envelope import (
     DEFAULT_TOOL_RESULT_MAX_BYTES,
+    Envelope,
     assistant_event,
     image_from_base64,
     raw_filename,
@@ -358,12 +360,12 @@ def _newest_global_transcript() -> Optional[Path]:
 # --------------------------------------------------------------------------- #
 
 
-def _get_message(entry: Dict[str, Any]) -> Dict[str, Any]:
+def _get_message(entry: Dict[str, JsonValue]) -> Dict[str, JsonValue]:
     msg = entry.get("message")
     return msg if isinstance(msg, dict) else {}
 
 
-def _content_blocks(entry: Dict[str, Any]) -> List[Any]:
+def _content_blocks(entry: Dict[str, JsonValue]) -> List[JsonValue]:
     """Return the message content as a list of blocks.
 
     Content may be a plain string (older / simple user messages) or a list of
@@ -379,7 +381,7 @@ def _content_blocks(entry: Dict[str, Any]) -> List[Any]:
     return []
 
 
-def _is_tool_result_entry(entry: Dict[str, Any]) -> bool:
+def _is_tool_result_entry(entry: Dict[str, JsonValue]) -> bool:
     """True if this user-role entry is a tool result, not a human message."""
     for block in _content_blocks(entry):
         if isinstance(block, dict) and block.get("type") == "tool_result":
@@ -391,7 +393,7 @@ def _is_tool_result_entry(entry: Dict[str, Any]) -> bool:
     return False
 
 
-def _human_text(entry: Dict[str, Any]) -> str:
+def _human_text(entry: Dict[str, JsonValue]) -> str:
     """Concatenate the text blocks of a (user or assistant) message."""
     parts: List[str] = []
     for block in _content_blocks(entry):
@@ -404,9 +406,9 @@ def _human_text(entry: Dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
-def _image_sources(entry: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _image_sources(entry: Dict[str, JsonValue]) -> List[Dict[str, JsonValue]]:
     """Base64 image ``source`` dicts attached to a message, in order."""
-    out: List[Dict[str, Any]] = []
+    out: List[Dict[str, JsonValue]] = []
     for block in _content_blocks(entry):
         if isinstance(block, dict) and block.get("type") == "image":
             src = block.get("source")
@@ -437,7 +439,7 @@ def _truncate(text: str, limit: int) -> str:
     return text[: limit - 1].rstrip() + "…"  # ellipsis
 
 
-def tool_descriptor(name: str, tool_input: Any) -> str:
+def tool_descriptor(name: str, tool_input: object) -> str:
     """Build a short one-line descriptor for a tool_use block."""
     if not isinstance(tool_input, dict):
         return _truncate(str(tool_input), TOOL_DESC_MAX) if tool_input else ""
@@ -445,7 +447,7 @@ def tool_descriptor(name: str, tool_input: Any) -> str:
     # File-oriented tools: show the path.
     for key in FILE_PATH_KEYS:
         if key in tool_input and isinstance(tool_input[key], str):
-            return _truncate(tool_input[key], TOOL_DESC_MAX)
+            return _truncate(str(tool_input[key]), TOOL_DESC_MAX)
 
     # Shell.
     if "command" in tool_input and isinstance(tool_input["command"], str):
@@ -454,7 +456,7 @@ def tool_descriptor(name: str, tool_input: Any) -> str:
     # Common search/agent tools.
     for key in ("pattern", "query", "url", "prompt", "description"):
         if key in tool_input and isinstance(tool_input[key], str):
-            return _truncate(tool_input[key], TOOL_DESC_MAX)
+            return _truncate(str(tool_input[key]), TOOL_DESC_MAX)
 
     # Fallback: compact JSON of the input.
     try:
@@ -463,7 +465,7 @@ def tool_descriptor(name: str, tool_input: Any) -> str:
         return ""
 
 
-def extract_file_path(tool_input: Any) -> Optional[str]:
+def extract_file_path(tool_input: object) -> Optional[str]:
     if not isinstance(tool_input, dict):
         return None
     for key in FILE_PATH_KEYS:
@@ -473,14 +475,14 @@ def extract_file_path(tool_input: Any) -> Optional[str]:
     return None
 
 
-def _result_block_text(block: Dict[str, Any]) -> str:
+def _result_block_text(block: Dict[str, JsonValue]) -> str:
     """Flatten a tool_result block's content to a string."""
     content = block.get("content")
     if isinstance(content, str):
         return content
     if isinstance(content, list):
         return " ".join(
-            c["text"]
+            str(c["text"])
             for c in content
             if isinstance(c, dict) and isinstance(c.get("text"), str)
         )
@@ -518,7 +520,8 @@ def _parse_chosen(
 
 
 def option_qa_from_result(
-    entry: Dict[str, Any], pending_questions: Dict[str, Any]
+    entry: Dict[str, JsonValue],
+    pending_questions: Dict[str, Sequence[QuestionAnswer] | JsonValue],
 ) -> List[QuestionAnswer]:
     """Build structured Q/options/choice records for an AskUserQuestion result.
 
@@ -530,18 +533,20 @@ def option_qa_from_result(
             continue
         qid = block.get("tool_use_id")
         questions = pending_questions.get(qid) if isinstance(qid, str) else None
-        if not questions:
+        if not isinstance(questions, (list, tuple)) or not questions:
             continue
         result_text = _result_block_text(block)
         for q in questions:
             if not isinstance(q, dict):
                 continue
             options = _question_options(q.get("options"))
-            val, chosen = _parse_chosen(q.get("question", ""), options, result_text)
+            val, chosen = _parse_chosen(
+                string_value(q.get("question")) or "", options, result_text
+            )
             out.append(
                 {
-                    "question": q.get("question", ""),
-                    "header": q.get("header", ""),
+                    "question": string_value(q.get("question")) or "",
+                    "header": string_value(q.get("header")) or "",
                     "options": options,
                     "chosen_labels": [o["label"] for o in chosen],
                     "answer_text": val,
@@ -551,7 +556,7 @@ def option_qa_from_result(
 
 
 def apply_plan_decisions(
-    entry: Dict[str, Any], pending_plans: Dict[str, PlanDecision]
+    entry: Dict[str, JsonValue], pending_plans: Dict[str, PlanDecision]
 ) -> bool:
     """Record the human's approve/reject decision on any plan in this result.
 
@@ -583,7 +588,7 @@ def apply_plan_decisions(
 
 
 def permission_denials_from_result(
-    entry: Dict[str, Any], tool_uses: Dict[str, str]
+    entry: Dict[str, JsonValue], tool_uses: Dict[str, str]
 ) -> List[PermissionDenial]:
     """Build a record for each permission the human denied in this tool_result.
 
@@ -612,7 +617,7 @@ def permission_denials_from_result(
     return out
 
 
-def _message_identity(entry: Dict[str, Any]) -> NativeIdentity:
+def _message_identity(entry: Dict[str, JsonValue]) -> NativeIdentity:
     """Retain native record, parent, and API-message IDs without guessing links."""
     identity = NativeIdentity()
     record_id = entry.get("uuid")
@@ -642,18 +647,19 @@ def _question_options(value: object) -> List[QuestionOption]:
     return [option for option in value if is_question_option(option)]
 
 
-def _questions(tool_input: Any) -> List[QuestionAnswer]:
-    if not isinstance(tool_input, dict) or not isinstance(
-        tool_input.get("questions"), list
-    ):
+def _questions(tool_input: object) -> List[QuestionAnswer]:
+    if not isinstance(tool_input, dict):
+        return []
+    questions = tool_input.get("questions")
+    if not isinstance(questions, list):
         return []
     return [
         QuestionAnswer(
-            question=q.get("question", ""),
-            header=q.get("header", ""),
+            question=string_value(q.get("question")) or "",
+            header=string_value(q.get("header")) or "",
             options=_question_options(q.get("options")),
         )
-        for q in tool_input["questions"]
+        for q in questions
         if isinstance(q, dict)
     ]
 
@@ -670,7 +676,7 @@ class _ClaudeInterpreter:
         self.unmatched_tool_results: List[ToolResult] = []
         self.unsupported_tools: List[str] = []
 
-    def consume(self, entry: Dict[str, Any]) -> None:
+    def consume(self, entry: Dict[str, JsonValue]) -> None:
         etype = entry.get("type")
         if entry.get("isMeta") is True or etype in ("summary", "system"):
             return
@@ -686,11 +692,11 @@ class _ClaudeInterpreter:
         elif etype == "assistant":
             self.assistant(entry)
 
-    def user(self, entry: Dict[str, Any]) -> None:
+    def user(self, entry: Dict[str, JsonValue]) -> None:
         raw = _human_text(entry)
         text = clean_user_text(raw)
         images = [
-            image_from_base64(src["data"], src.get("media_type"))
+            image_from_base64(str(src["data"]), string_value(src.get("media_type")))
             for src in _image_sources(entry)
         ]
         match = _COMMAND_NAME.search(raw)
@@ -698,7 +704,9 @@ class _ClaudeInterpreter:
         command = command if command.startswith("/") else ""
         if not text and not images and not command:
             return
-        message = user_event(len(self.events), entry.get("timestamp"), text, images)
+        message = user_event(
+            len(self.events), string_value(entry.get("timestamp")), text, images
+        )
         _attach_identity(message, _message_identity(entry))
         if command:
             args = _COMMAND_ARGS.search(raw)
@@ -711,7 +719,7 @@ class _ClaudeInterpreter:
             message["shell_command"] = "\n".join(commands)
         self.events.append(message)
 
-    def assistant(self, entry: Dict[str, Any]) -> None:
+    def assistant(self, entry: Dict[str, JsonValue]) -> None:
         texts: List[str] = []
         calls: List[ToolCall] = []
         for block in _content_blocks(entry):
@@ -725,13 +733,16 @@ class _ClaudeInterpreter:
                 calls.append(self.call(block))
         if texts or calls:
             message = assistant_event(
-                len(self.events), entry.get("timestamp"), "\n\n".join(texts), calls
+                len(self.events),
+                string_value(entry.get("timestamp")),
+                "\n\n".join(texts),
+                calls,
             )
             _attach_identity(message, _message_identity(entry))
             self.events.append(message)
 
-    def call(self, block: Dict[str, Any]) -> ToolCall:
-        name = block.get("name", "tool")
+    def call(self, block: Dict[str, JsonValue]) -> ToolCall:
+        name = string_value(block.get("name")) or "tool"
         tool_input = block.get("input")
         # Preserve Claude's explicit null result for unanswered calls.
         schema = input_schema(name, tool_input)
@@ -746,7 +757,9 @@ class _ClaudeInterpreter:
                 self.pending_calls[tool_id] = call
         if name in PLAN_TOOLS:
             call["plan_decision"] = PlanDecision(
-                plan=tool_input.get("plan", "") if isinstance(tool_input, dict) else "",
+                plan=(string_value(tool_input.get("plan")) or "")
+                if isinstance(tool_input, dict)
+                else "",
                 decision="no decision recorded",
                 edited_plan="",
                 message="",
@@ -771,7 +784,7 @@ class _ClaudeInterpreter:
             if path and path not in self.files_changed:
                 self.files_changed.append(path)
 
-    def results(self, entry: Dict[str, Any]) -> None:
+    def results(self, entry: Dict[str, JsonValue]) -> None:
         blocks = [
             block
             for block in _content_blocks(entry)
@@ -783,7 +796,7 @@ class _ClaudeInterpreter:
             self.unmatched_tool_results.append(
                 ToolResult(
                     tool_call_id=None,
-                    ts=entry.get("timestamp"),
+                    ts=string_value(entry.get("timestamp")),
                     content=entry["toolUseResult"],
                     is_error=False,
                     **_message_identity(entry),
@@ -793,7 +806,7 @@ class _ClaudeInterpreter:
             tool_id = block.get("tool_use_id")
             record = ToolResult(
                 tool_call_id=tool_id if isinstance(tool_id, str) else None,
-                ts=entry.get("timestamp"),
+                ts=string_value(entry.get("timestamp")),
                 content=block.get("content"),
                 is_error=bool(block.get("is_error")),
                 **_message_identity(entry),
@@ -812,10 +825,10 @@ class _ClaudeInterpreter:
                 call["is_error"] = True
             self.decision(call, block)
 
-    def decision(self, call: ToolCall, block: Dict[str, Any]) -> None:
+    def decision(self, call: ToolCall, block: Dict[str, JsonValue]) -> None:
         # Apply existing semantic parsers to this ID-matched call only. A later
         # user message, or another result in the same entry, cannot change ownership.
-        entry = {"message": {"content": [block]}}
+        entry: Dict[str, JsonValue] = {"message": {"content": [block]}}
         tool_id = call["id"]
         if "plan_decision" in call:
             apply_plan_decisions(entry, {tool_id: call["plan_decision"]})
@@ -832,23 +845,23 @@ class _ClaudeInterpreter:
 
 
 def build_events(
-    entries: List[Dict[str, Any]],
+    entries: List[Dict[str, JsonValue]],
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
-) -> List[Dict[str, Any]]:
+) -> List[Message]:
     """Compatibility export helper; native interpretation is shared with the CLI."""
     envelope = build_raw_envelope(Path("session.jsonl"), entries, tool_result_max_bytes)
     return envelope["events"] if envelope is not None else []
 
 
-def first_timestamp(entries: List[Dict[str, Any]]) -> Optional[str]:
+def first_timestamp(entries: List[Dict[str, JsonValue]]) -> Optional[str]:
     for entry in entries:
-        ts = entry.get("timestamp")
+        ts = string_value(entry.get("timestamp"))
         if isinstance(ts, str) and ts:
             return ts
     return None
 
 
-def session_models(entries: List[Dict[str, Any]]) -> List[str]:
+def session_models(entries: List[Dict[str, JsonValue]]) -> List[str]:
     """Distinct model ids used by assistant messages, in first-seen order.
 
     A session can switch models mid-run (e.g. /model), so return all of them.
@@ -867,7 +880,7 @@ def session_models(entries: List[Dict[str, Any]]) -> List[str]:
     return models
 
 
-def session_cwd(entries: List[Dict[str, Any]]) -> Optional[str]:
+def session_cwd(entries: List[Dict[str, JsonValue]]) -> Optional[str]:
     """The working directory the session ran in, from the first entry carrying it."""
     for entry in entries:
         cwd = entry.get("cwd")
@@ -878,9 +891,9 @@ def session_cwd(entries: List[Dict[str, Any]]) -> Optional[str]:
 
 def build_raw_envelope(
     transcript: Path,
-    entries: List[Dict[str, Any]],
+    entries: List[Dict[str, JsonValue]],
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
-) -> Optional[Dict[str, Any]]:
+) -> Optional[Envelope]:
     """Build the JSON envelope, or None when there are no exportable events."""
     session = EXTRACTOR.interpret_source(ClaudeSource(transcript, entries))
     if session is None:
@@ -956,7 +969,7 @@ def summarize_subagent_source(source: ClaudeSource) -> Optional[SubagentSummary]
 
     tools, result = _subagent_activity(entries)
     return {
-        "agent_type": source.metadata.get("agentType", "subagent"),
+        "agent_type": string_value(source.metadata.get("agentType")) or "subagent",
         "start_ts": first_timestamp(entries),
         "task": task,
         "tool_count": len(tools),
@@ -965,7 +978,7 @@ def summarize_subagent_source(source: ClaudeSource) -> Optional[SubagentSummary]
     }
 
 
-def _subagent_activity(entries: List[Dict[str, Any]]) -> Tuple[List[str], str]:
+def _subagent_activity(entries: List[Dict[str, JsonValue]]) -> Tuple[List[str], str]:
     tools: List[str] = []
     result = ""
     for entry in entries:
@@ -975,7 +988,7 @@ def _subagent_activity(entries: List[Dict[str, Any]]) -> Tuple[List[str], str]:
             if not isinstance(block, dict):
                 continue
             if block.get("type") == "tool_use":
-                tools.append(block.get("name", "tool"))
+                tools.append(string_value(block.get("name")) or "tool")
             elif block.get("type") == "text":
                 text = block.get("text")
                 if isinstance(text, str) and text.strip():
@@ -1087,7 +1100,7 @@ NO_EVENTS_NOTE = "no exportable events (no user or assistant messages); no JSON 
 def extract_transcript(
     transcript: Path,
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
-) -> Optional[Dict[str, Any]]:
+) -> Optional[Envelope]:
     """Read one transcript directly into its JSON envelope.
 
     Keep the existing parse-error and no-exportable-events behavior.

@@ -6,11 +6,17 @@ ordinary records and bytes, so interpretation never needs a live connection.
 
 from __future__ import annotations
 
-import json
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional
+
+from session_log_extractors.json_types import (
+    JsonValue,
+    json_value,
+    parse_json,
+    string_value,
+)
 
 COPILOT_DB = Path.home() / ".copilot" / "session-store.db"
 COPILOT_STATE_ROOT = Path.home() / ".copilot" / "session-state"
@@ -22,11 +28,11 @@ ImageInputs = Dict[str, Optional[bytes]]
 class CopilotSource:
     """Loaded session metadata, native rows, ordered state, and optional images."""
 
-    session: Dict[str, Any]
-    turns: List[Dict[str, Any]]
-    files: List[Dict[str, Any]] = field(default_factory=list)
-    attachments: List[Dict[str, Any]] = field(default_factory=list)
-    state_records: List[Dict[str, Any]] = field(default_factory=list)
+    session: Dict[str, JsonValue]
+    turns: List[Dict[str, JsonValue]]
+    files: List[Dict[str, JsonValue]] = field(default_factory=list)
+    attachments: List[Dict[str, JsonValue]] = field(default_factory=list)
+    state_records: List[Dict[str, JsonValue]] = field(default_factory=list)
     models: List[str] = field(default_factory=list)
     image_inputs: ImageInputs = field(default_factory=dict)
 
@@ -85,9 +91,14 @@ def _cwd_matches(session_cwd: Optional[str], cwd: Path, strict: bool = False) ->
     return _paths_overlap(rec, cwd)
 
 
+def _row_record(row: sqlite3.Row) -> Dict[str, JsonValue]:
+    """Check SQLite's untyped cell values when snapshotting a native row."""
+    return {key: json_value(row[key]) for key in row.keys()}
+
+
 def matching_sessions(
     conn: sqlite3.Connection, cwd: Path, strict: bool = False
-) -> List[Dict[str, Any]]:
+) -> List[Dict[str, JsonValue]]:
     """Return every Copilot session whose cwd overlaps the given path.
 
     In ``strict`` mode the recorded cwd must equal ``cwd`` exactly (no
@@ -102,8 +113,8 @@ def matching_sessions(
 
     sessions = []
     for row in cursor:
-        session = dict(row)
-        if _cwd_matches(session.get("cwd"), cwd, strict=strict):
+        session = _row_record(row)
+        if _cwd_matches(string_value(session.get("cwd")), cwd, strict=strict):
             sessions.append(session)
 
     return sessions
@@ -111,7 +122,7 @@ def matching_sessions(
 
 def newest_session(
     conn: sqlite3.Connection, cwd: Path, strict: bool = False
-) -> Optional[Dict[str, Any]]:
+) -> Optional[Dict[str, JsonValue]]:
     """Return the most recently updated session for cwd (or newest globally)."""
     sessions = matching_sessions(conn, cwd, strict=strict)
     if not sessions and not strict:
@@ -123,15 +134,18 @@ def newest_session(
             LIMIT 1
         """)
         row = cursor.fetchone()
-        return dict(row) if row else None
+        return _row_record(row) if row else None
     if not sessions:
         return None
-    return max(sessions, key=lambda s: s.get("updated_at", s.get("created_at", "")))
+    return max(
+        sessions,
+        key=lambda s: string_value(s.get("updated_at", s.get("created_at"))) or "",
+    )
 
 
 def get_session_by_id(
     conn: sqlite3.Connection, session_id: str
-) -> Optional[Dict[str, Any]]:
+) -> Optional[Dict[str, JsonValue]]:
     """Retrieve a session by its ID."""
     cursor = conn.cursor()
     cursor.execute(
@@ -143,12 +157,12 @@ def get_session_by_id(
         (session_id, f"{session_id}%"),
     )
     row = cursor.fetchone()
-    return dict(row) if row else None
+    return _row_record(row) if row else None
 
 
 def get_session_turns(
     conn: sqlite3.Connection, session_id: str
-) -> List[Dict[str, Any]]:
+) -> List[Dict[str, JsonValue]]:
     """Retrieve all turns for a session."""
     cursor = conn.cursor()
     cursor.execute(
@@ -160,12 +174,12 @@ def get_session_turns(
     """,
         (session_id,),
     )
-    return [dict(row) for row in cursor]
+    return [_row_record(row) for row in cursor]
 
 
 def get_session_checkpoints(
     conn: sqlite3.Connection, session_id: str
-) -> List[Dict[str, Any]]:
+) -> List[Dict[str, JsonValue]]:
     """Retrieve all checkpoints for a session."""
     cursor = conn.cursor()
     cursor.execute(
@@ -177,12 +191,12 @@ def get_session_checkpoints(
     """,
         (session_id,),
     )
-    return [dict(row) for row in cursor]
+    return [_row_record(row) for row in cursor]
 
 
 def get_session_files(
     conn: sqlite3.Connection, session_id: str
-) -> List[Dict[str, Any]]:
+) -> List[Dict[str, JsonValue]]:
     """Retrieve all files touched in a session."""
     cursor = conn.cursor()
     cursor.execute(
@@ -194,10 +208,12 @@ def get_session_files(
     """,
         (session_id,),
     )
-    return [dict(row) for row in cursor]
+    return [_row_record(row) for row in cursor]
 
 
-def get_session_refs(conn: sqlite3.Connection, session_id: str) -> List[Dict[str, Any]]:
+def get_session_refs(
+    conn: sqlite3.Connection, session_id: str
+) -> List[Dict[str, JsonValue]]:
     """Retrieve all refs (commits, PRs, issues) for a session."""
     cursor = conn.cursor()
     cursor.execute(
@@ -209,12 +225,12 @@ def get_session_refs(conn: sqlite3.Connection, session_id: str) -> List[Dict[str
     """,
         (session_id,),
     )
-    return [dict(row) for row in cursor]
+    return [_row_record(row) for row in cursor]
 
 
 def get_session_attachments(
     conn: sqlite3.Connection, session_id: str
-) -> List[Dict[str, Any]]:
+) -> List[Dict[str, JsonValue]]:
     """Retrieve image attachment records for a session if available."""
     cols = _table_columns(conn, "attachments")
     required = {"session_id", "display_name", "path", "type"}
@@ -231,15 +247,15 @@ def get_session_attachments(
     """,
         (session_id,),
     )
-    return [dict(row) for row in cursor]
+    return [_row_record(row) for row in cursor]
 
 
-def parse_state_records(lines: List[str]) -> List[Dict[str, Any]]:
+def parse_state_records(lines: List[str]) -> List[Dict[str, JsonValue]]:
     """Decode state JSONL once, retaining object records in source order."""
     records = []
     for line in lines:
         try:
-            obj = json.loads(line)
+            obj = parse_json(line)
         except ValueError:
             continue
         if isinstance(obj, dict):
@@ -247,7 +263,7 @@ def parse_state_records(lines: List[str]) -> List[Dict[str, Any]]:
     return records
 
 
-def load_state_records(session_id: str) -> List[Dict[str, Any]]:
+def load_state_records(session_id: str) -> List[Dict[str, JsonValue]]:
     """Read optional state input, preserving the missing/unreadable fallback."""
     events_path = COPILOT_STATE_ROOT / session_id / "events.jsonl"
     if not events_path.is_file():
@@ -295,9 +311,13 @@ def get_session_models(conn: sqlite3.Connection, session_id: str) -> List[str]:
     return models
 
 
-def read_source(conn: sqlite3.Connection, session: Dict[str, Any]) -> CopilotSource:
+def read_source(
+    conn: sqlite3.Connection, session: Dict[str, JsonValue]
+) -> CopilotSource:
     """Snapshot required rows and state once; leave connection ownership intact."""
     session_id = session["id"]
+    if not isinstance(session_id, str):
+        raise TypeError("Copilot session id must be a string")
     return CopilotSource(
         session=dict(session),
         turns=get_session_turns(conn, session_id),
@@ -316,7 +336,7 @@ def read_image(path_value: str) -> Optional[bytes]:
         return None
 
 
-def load_image_inputs(refs: Iterable[Dict[str, Any]]) -> ImageInputs:
+def load_image_inputs(refs: Iterable[Dict[str, JsonValue]]) -> ImageInputs:
     """Read each referenced path once, retaining unresolved paths as well."""
     images: ImageInputs = {}
     for ref in refs:

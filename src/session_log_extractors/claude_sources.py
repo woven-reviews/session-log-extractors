@@ -10,7 +10,9 @@ import json
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Dict, List
+
+from session_log_extractors.json_types import JsonValue, parse_json
 
 
 @dataclass
@@ -18,17 +20,17 @@ class ClaudeSource:
     """Recorded entries and optional sidecar metadata, ready to interpret."""
 
     path: Path
-    entries: List[Dict[str, Any]]
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    entries: List[Dict[str, JsonValue]]
+    metadata: Dict[str, JsonValue] = field(default_factory=dict)
 
 
-def load_entries(path: Path) -> List[Dict[str, Any]]:
+def load_entries(path: Path) -> List[Dict[str, JsonValue]]:
     """Load a JSONL transcript, skipping blank/malformed lines.
 
     A single bad line never aborts the run; it is reported to stderr (rate
     limited) and skipped.
     """
-    entries: List[Dict[str, Any]] = []
+    entries: List[Dict[str, JsonValue]] = []
     bad = 0
     with path.open("r", encoding="utf-8", errors="replace") as fh:
         for lineno, line in enumerate(fh, 1):
@@ -36,7 +38,7 @@ def load_entries(path: Path) -> List[Dict[str, Any]]:
             if not line:
                 continue
             try:
-                obj = json.loads(line)
+                obj = parse_json(line)
             except json.JSONDecodeError:
                 bad += 1
                 if bad <= 5:
@@ -57,11 +59,11 @@ def load_entries(path: Path) -> List[Dict[str, Any]]:
     return entries
 
 
-def _read_metadata(path: Path) -> Dict[str, Any]:
+def _read_metadata(path: Path) -> Dict[str, JsonValue]:
     if not path.is_file():
         return {}
     try:
-        metadata = json.loads(path.read_text("utf-8"))
+        metadata = parse_json(path.read_text("utf-8"))
     except (OSError, ValueError):
         return {}
     return metadata if isinstance(metadata, dict) else {}

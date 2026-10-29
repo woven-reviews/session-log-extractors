@@ -7,7 +7,9 @@ import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
+
+from session_log_extractors.json_types import JsonValue, parse_json
 
 CODEX_SESSIONS_ROOT = Path.home() / ".codex" / "sessions"
 
@@ -19,7 +21,7 @@ class CodexSource:
     """Loaded native records and metadata; safe to interpret without I/O."""
 
     path: Path
-    entries: List[Dict[str, Any]]
+    entries: List[Dict[str, JsonValue]]
     session_id: Optional[str] = None
     cwd: Optional[str] = None
     image_inputs: ImageInputs = field(default_factory=dict)
@@ -31,7 +33,7 @@ class CodexSource:
         return ident or self.path.stem
 
 
-def _payload(entry: Dict[str, Any]) -> Dict[str, Any]:
+def _payload(entry: Dict[str, JsonValue]) -> Dict[str, JsonValue]:
     payload = entry.get("payload")
     return payload if isinstance(payload, dict) else {}
 
@@ -49,8 +51,8 @@ def newest(paths: Iterable[Path]) -> Optional[Path]:
     return max(paths, key=lambda p: p.stat().st_mtime)
 
 
-def _load_records(path: Path) -> List[Tuple[int, Dict[str, Any]]]:
-    entries: List[Tuple[int, Dict[str, Any]]] = []
+def _load_records(path: Path) -> List[Tuple[int, Dict[str, JsonValue]]]:
+    entries: List[Tuple[int, Dict[str, JsonValue]]] = []
     bad = 0
     with path.open("r", encoding="utf-8", errors="replace") as fh:
         for lineno, line in enumerate(fh, 1):
@@ -58,7 +60,7 @@ def _load_records(path: Path) -> List[Tuple[int, Dict[str, Any]]]:
             if not line:
                 continue
             try:
-                obj = json.loads(line)
+                obj = parse_json(line)
             except json.JSONDecodeError:
                 bad += 1
                 if bad <= 5:
@@ -81,8 +83,10 @@ def session_id_from_file(path: Path) -> Optional[str]:
         with path.open("r", encoding="utf-8", errors="replace") as fh:
             for _, line in zip(range(50), fh, strict=False):
                 try:
-                    obj = json.loads(line)
+                    obj = parse_json(line)
                 except json.JSONDecodeError:
+                    continue
+                if not isinstance(obj, dict):
                     continue
                 if obj.get("type") == "session_meta":
                     sid = _payload(obj).get("id")
@@ -97,8 +101,10 @@ def session_cwd_from_file(path: Path) -> Optional[str]:
         with path.open("r", encoding="utf-8", errors="replace") as fh:
             for _, line in zip(range(80), fh, strict=False):
                 try:
-                    obj = json.loads(line)
+                    obj = parse_json(line)
                 except json.JSONDecodeError:
+                    continue
+                if not isinstance(obj, dict):
                     continue
                 payload = _payload(obj)
                 if obj.get("type") == "session_meta":
@@ -236,7 +242,7 @@ def _select_prefix(files: List[Path], selector: str) -> Path:
     raise FileNotFoundError(f"no Codex transcript matching {selector!r}")
 
 
-def load_entries(path: Path) -> List[Dict[str, Any]]:
+def load_entries(path: Path) -> List[Dict[str, JsonValue]]:
     """Load records with the same diagnostics as a complete source read."""
     return [entry for _, entry in _load_records(path)]
 
@@ -268,7 +274,7 @@ def read_image(path_value: str) -> Optional[Tuple[bytes, str]]:
         return None
 
 
-def load_image_inputs(refs: Iterable[Dict[str, Any]]) -> ImageInputs:
+def load_image_inputs(refs: Iterable[Dict[str, JsonValue]]) -> ImageInputs:
     """Snapshot referenced path assets, retaining unresolved paths too."""
     images: ImageInputs = {}
     for ref in refs:
