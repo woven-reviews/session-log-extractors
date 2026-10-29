@@ -14,3 +14,5 @@ coverage.xml
 .mypy_cache/
 
 .import_linter_cache/
+
+/captures/
