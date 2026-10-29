@@ -157,11 +157,10 @@ checks signature rejection, source-free interpretation, full results, and
 non-mutating export using native fixtures. The package includes `py.typed` so
 imports retain their annotations when checked outside the source directory.
 
-Codex and Copilot contract adoption remains in QUAL-2518 and QUAL-2519. Codex
-still combines interpretation with envelope construction; Copilot interpretation
-still applies result caps and uses legacy turn state. Their existing behavior
-has not been rewritten here; typed builders and checked narrowing allow
-package-wide checking without casts or ignores.
+Codex protocol adoption remains in QUAL-2518: its interpretation still combines
+with envelope construction and applies result caps. Claude and Copilot implement
+the public protocol and return uncapped sessions; the native-fixture contract
+matrix covers both. Package-wide mypy checks all three harnesses.
 
 ## Shared session/export boundary
 
@@ -174,10 +173,10 @@ truncation flags. Negative limits retain full text. Structured results, nested
 payloads, images, ordering, and missing/null/empty values pass through unchanged.
 The model has no presentation state, adapter base class, or runtime validation.
 
-Codex and Copilot continue applying their own limits and use
-`build_envelope(Session(...), tool_result_max_bytes=...)` only to assemble the
-legacy envelope. Their interpretation migrations and shared policy rollout are
-separate follow-ups; current CLI behavior and defaults are unchanged.
+Codex continues applying its own limits and uses
+`build_envelope(Session(...), tool_result_max_bytes=...)` to assemble its legacy
+envelope. Its interpretation migration remains a separate follow-up. Claude and
+Copilot apply limits through `export_session`; current CLI defaults are unchanged.
 
 ## Ownership
 
@@ -200,8 +199,9 @@ uv sync --locked --extra test
 
 uv manages `.venv` automatically; no activation is needed. Python 3.11 or newer
 is supported; CI uses 3.11 (`uv sync --locked --extra test --python 3.11` to match).
-Ruff and mypy are pinned in `pyproject.toml`; mypy checks the entire source
-package in strict mode. All test dependencies are locked in
+Ruff, mypy, Import Linter, and pre-commit are pinned in `pyproject.toml`; mypy
+checks the entire source package in strict mode, including
+`disallow_any_unimported` and `disallow_any_explicit`. All test dependencies are locked in
 `uv.lock`. Format Python with `uv run --locked ruff format .`. Run the same
 checks as CI before opening a PR:
 
@@ -209,26 +209,58 @@ checks as CI before opening a PR:
 uv run --locked ruff format --check .
 uv run --locked ruff check .
 uv run --locked mypy src
+uv run --locked lint-imports
 uv run --locked pytest --cov=scripts --cov=src --cov-report=term --cov-report=xml --cov-fail-under=95
 git fetch origin main
 uv run --locked diff-cover coverage.xml --compare-branch=origin/main --fail-under=95
 uv run --locked pytest scripts/test_extract_codex_session_log.py --cov=session_log_extractors.extract_codex_session_log --cov-fail-under=95
 uv run --locked pytest scripts/test_extract_claude_session_log.py --cov=session_log_extractors.extract_claude_session_log --cov-fail-under=95
+uv run --locked pytest scripts/test_extract_copilot_session_log.py --cov=session_log_extractors.extract_copilot_session_log --cov-fail-under=95
 ```
 
-Overall coverage excludes test modules. Overall, changed-line, Codex, and Claude
-coverage must each reach 95%. Run diff-cover immediately after the overall test
+Overall coverage excludes test modules. All five gates—overall, changed-line, Codex, Claude,
+and Copilot coverage—must each reach 95%. Run diff-cover immediately after the overall test
 run, which generates `coverage.xml`.
 
 After intentionally changing dependencies in `pyproject.toml`, run `uv lock`
 and commit `uv.lock` with the change. Use `uv lock --upgrade` only when intending
 to upgrade the locked dependencies.
 
+## Automated boundaries and review responsibilities
+
+Install the local hooks with `uv run --locked pre-commit install`. Run all hooks
+with `uv run --locked pre-commit run --all-files`. Hooks invoke the same locked
+Ruff, mypy, and Import Linter commands as CI. Mypy and Import Linter always run
+for the whole package, regardless of the staged filenames; Ruff checks Python
+files passed by pre-commit.
+
+Import Linter's declarative contracts in `pyproject.toml` prohibit direct and
+indirect model dependencies on readers, extractors, or export, and exporter
+dependencies on readers or extractors. Protected contracts restrict direct
+imports of each harness schema module to its own extractor and the exact shared
+union module. The union remains available to the model. Architecture regression
+tests inject forbidden graph edges, including indirect dependencies, and verify
+the configured contracts reject them. No custom lint rules or checker scripts
+are needed.
+
+Module dependencies cannot prove that interpretation avoids source access or
+export caps when orchestration shares a module. Native-fixture contract tests
+cover those behavioral boundaries for Claude and Copilot, including unknown
+payload fields and non-mutating export. Codex protocol adoption is out of scope.
+
+Review still judges names, readability, semantic ownership, recorded versus
+derived values, fixture selection, and payload preservation. Review must also
+reject new suppressions or weakened configuration and compare complexity inside
+existing suppressed functions: automated tools do not detect that growth.
+See [AGENTS.md](AGENTS.md) for these judgment-based rules.
+
 ## Type escape policy
 
 The package has no casts or type ignores. Ruff's `TID251` bans `typing.cast`,
 `typing_extensions.cast`, and both `no_type_check` APIs; `PGH003` requires coded
-ignores. Mypy runs in strict mode, requires error codes, and rejects unused ignores.
+ignores. Mypy runs in strict mode with both `Any` restrictions across the whole source
+package, requires error codes, and rejects unused ignores. Recursive JSON types
+and checked narrowing preserve opaque values and unknown native fields.
 
 Adding or broadening type-checker suppressions is prohibited by AGENTS.md and
 checked in PR review alongside Ruff exceptions. Remove existing ignores when
