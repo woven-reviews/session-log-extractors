@@ -42,12 +42,10 @@ from session_log_extractors.extract_codex_session_log import (
     append_unique_path,
     assistant_text_from_payload,
     build_raw_envelope,
-    clean_user_text,
     extract_transcript,
     first_timestamp,
     image_refs_from_event,
     image_refs_from_user_message_payload,
-    is_startup_context,
     main,
     option_qa_from_output,
     parse_permission_denial,
@@ -55,8 +53,6 @@ from session_log_extractors.extract_codex_session_log import (
     session_models,
     skill_names_from_call,
     skill_refs_from_call,
-    user_text_from_event,
-    user_text_from_response_item,
 )
 
 # 1x1 transparent PNG.
@@ -67,6 +63,139 @@ _PNG_B64 = (
 
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "codex"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "/review fixture",
+        "  Hi 🙂\n<system-reminder>context</system-reminder>\n\n\n",
+        "<task-notification>agent result</task-notification>",
+        "<recommended_plugins>x</recommended_plugins>\n# AGENTS.md instructions\n"
+        "<environment_context>y</environment_context>",
+    ],
+)
+def test_codex_preserves_text_and_unknown_authorship_through_cli(
+    text, tmp_path, capsys
+):
+    entries = load_entries(FIXTURES / "slash.jsonl")
+    native = next(e for e in entries if e["payload"].get("role") == "user")
+    # Vary only the captured input text: wrappers do not establish provenance.
+    native["payload"]["content"][0]["text"] = text
+    session = _interpret(entries)
+    message = session["events"][0]
+    expected = [
+        {
+            "start": 0,
+            "end": len(text),
+            "source": "unknown",
+            "markers": [
+                {"field": "type", "value": "response_item"},
+                {"field": "payload.type", "value": "message"},
+                {"field": "payload.content[0].type", "value": "input_text"},
+            ],
+            "ts": native["timestamp"],
+        }
+    ]
+    assert message["text"] == text
+    assert message["ts"] == native["timestamp"]
+    assert message["authorship"] == expected
+    transcript = tmp_path / "session.jsonl"
+    transcript.write_text("\n".join(json.dumps(e) for e in entries))
+    assert main(["--transcript", str(transcript), "--output", "-"]) == 0
+    exported = json.loads(capsys.readouterr().out)["events"]
+    assert exported[0]["text"] == text
+    assert exported[0]["authorship"] == expected
+    assert [e["ts"] for e in exported] == [e["ts"] for e in session["events"]]
+
+
+@pytest.mark.parametrize("startup", [False, True])
+def test_codex_distinct_response_and_event_keep_text_and_image_owner(startup):
+    entries = load_entries(FIXTURES / "image.jsonl")
+    native = next(e for e in entries if e["payload"].get("role") == "user")
+    if startup:
+        # Replace one captured text block with the formerly skipped startup shape.
+        native["payload"]["content"][0]["text"] = (
+            "<recommended_plugins>x</recommended_plugins>\n# AGENTS.md instructions\n"
+            "<environment_context>y</environment_context>"
+        )
+    # Insert a distinct event after the image-bearing response, not a duplicate.
+    entries.insert(
+        entries.index(native) + 1,
+        {
+            "type": "event_msg",
+            "timestamp": "later",
+            "payload": {"type": "user_message", "message": "Different input"},
+        },
+    )
+    users = _users(entries)
+    assert len(users) == 2
+    assert users[0]["text"] == "\n".join(
+        block["text"] for block in native["payload"]["content"] if "text" in block
+    )
+    assert users[0]["images"]
+    assert users[1]["text"] == "Different input"
+    assert users[1]["ts"] == "later"
+    assert "images" not in users[1]
+
+
+@pytest.mark.parametrize("text", ["", "  keep whitespace 🙂  "])
+def test_codex_image_only_and_unfamiliar_source_remain_on_recorded_input(text):
+    entries = load_entries(FIXTURES / "image.jsonl")
+    native = next(e for e in entries if e["payload"].get("role") == "user")
+    # Keep the captured image block, replacing text blocks to exercise no-text input.
+    native["payload"]["content"] = [
+        {"type": "input_text", "text": text, "source": {"future": [None, "ide"]}},
+        *[b for b in native["payload"]["content"] if b["type"] == "input_image"],
+    ]
+    native["payload"]["source"] = None
+    native.pop("timestamp")
+    message = _events(entries)[0]
+    assert message["text"] == text
+    assert message["ts"] is None
+    assert message["images"]
+    if text:
+        span = message["authorship"][0]
+        assert span["source"] == "unknown"
+        assert "ts" not in span
+        assert {"field": "payload.source", "value": None} in span["markers"]
+        assert span["markers"][-1] == {
+            "field": "payload.content[0].source",
+            "value": {"future": [None, "ide"]},
+        }
+    else:
+        assert message["authorship"] == []
+
+
+def test_codex_exact_duplicate_view_keeps_images_identity_and_tools():
+    entries = load_entries(FIXTURES / "image.jsonl")
+    native = next(e for e in entries if e["payload"].get("role") == "user")
+    text = "\n".join(b["text"] for b in native["payload"]["content"] if "text" in b)
+    original = _interpret(entries)
+    # Add an exact event view, retaining the response view's recorded identity.
+    native["payload"]["id"] = "response-id"
+    native["payload"]["source"] = "unfamiliar-origin"
+    entries.insert(
+        entries.index(native) + 1,
+        {
+            "type": "event_msg",
+            "timestamp": native["timestamp"],
+            "payload": {"type": "user_message", "message": text},
+        },
+    )
+    session = _interpret(entries)
+    assert len(session["events"]) == len(original["events"])
+    assert session["events"][0]["id"] == "response-id"
+    assert session["events"][0]["images"] == original["events"][0]["images"]
+    span = session["events"][0]["authorship"][0]
+    assert span["source"] == "unknown"
+    assert span["markers"][:2] == [
+        {"field": "type", "value": "event_msg"},
+        {"field": "payload.type", "value": "user_message"},
+    ]
+    assert {"field": "type", "value": "response_item"} in span["markers"]
+    assert {"field": "payload.source", "value": "unfamiliar-origin"} in span["markers"]
+    assert session["events"][1:] == original["events"][1:]
 
 
 QUESTIONS = [
@@ -371,14 +500,6 @@ def test_codex_default_mode_update_plan_remains_execution_tool():
     assert call["name"] == "update_plan"
 
 
-def test_codex_noise_cleaning():
-    assert clean_user_text("<bash-stdout>output</bash-stdout>") == ""
-    assert (
-        clean_user_text("<bash-input>ls -la</bash-input>")
-        == "<bash-input>ls -la</bash-input>"
-    )
-
-
 def test_codex_summary_options_and_shell_command():
     entries = [
         {
@@ -424,9 +545,10 @@ def test_codex_summary_options_and_shell_command():
     ]
 
     assert _interpret(entries)["files_changed"] == []
-    assert len(_users(entries)) == 2
+    assert len(_users(entries)) == 3
     assert _calls(entries)[0]["questions"][0]["chosen_labels"] == ["QUAL"]
-    assert _users(entries)[1]["shell_command"] == "ls -la"
+    assert _users(entries)[1]["text"] == "<bash-stdout>ignored</bash-stdout>"
+    assert _users(entries)[2]["shell_command"] == "ls -la"
 
 
 def test_codex_native_question_fixture_marks_answered_option():
@@ -656,11 +778,6 @@ def test_interpret_events_attaches_output_to_its_function_call():
 def test_parse_permission_denial_rejects_non_string():
     assert parse_permission_denial(None) is None
     assert parse_permission_denial(123) is None
-
-
-def test_clean_user_text_empty_returns_empty():
-    assert clean_user_text("") == ""
-    assert clean_user_text(None) == ""
 
 
 # --- file discovery / selection ---------------------------------------
@@ -929,21 +1046,6 @@ def test_image_refs_from_user_message_payload_ignores_non_list_and_other_blocks(
     )
     assert len(refs) == 1
     assert refs[0]["path"] == "/tmp/f.png"
-
-
-def test_is_startup_context_requires_all_markers():
-    assert not is_startup_context("plain text")
-    assert not is_startup_context(
-        "<recommended_plugins>only this</recommended_plugins>"
-    )
-
-
-def test_user_text_from_event_non_string_message():
-    assert user_text_from_event({"message": 123}) == ""
-
-
-def test_user_text_from_response_item_strips():
-    assert user_text_from_response_item({"content": [{"text": "  hi  "}]}) == "hi"
 
 
 def test_assistant_text_from_payload_uses_output_text_key():
@@ -1281,42 +1383,20 @@ def test_interpret_events_skips_blank_user_event_without_text_or_images():
     assert events[0]["text"] == "real text"
 
 
-def test_interpret_events_startup_context_sets_pending_images_not_text():
-    startup_text = "<recommended_plugins>x</recommended_plugins>\n# AGENTS.md instructions\n<environment_context>y</environment_context>"
-    entries = [
-        {
-            "type": "response_item",
-            "timestamp": "2026-01-01T00:00:00Z",
-            "payload": {
-                "type": "message",
-                "role": "user",
-                "content": [{"type": "input_text", "text": startup_text}],
-            },
-        },
-        {
-            "type": "event_msg",
-            "timestamp": "2026-01-01T00:00:01Z",
-            "payload": {"type": "user_message", "message": "actual turn"},
-        },
-    ]
+@pytest.mark.parametrize("text", ["", "   ", "  reply 🙂  "])
+def test_interpret_events_assistant_text_is_preserved(text):
+    entries = load_entries(FIXTURES / "slash.jsonl")
+    native = next(e for e in entries if e["payload"].get("role") == "assistant")
+    # Vary the captured reply to cover empty and whitespace-preserving boundaries.
+    native["payload"]["content"][0]["text"] = text
+    entries = [native]
     events = _events(entries)
-    assert len(events) == 1
-    assert events[0]["text"] == "actual turn"
-
-
-def test_interpret_events_assistant_blank_text_is_skipped():
-    entries = [
-        {
-            "type": "response_item",
-            "timestamp": "2026-01-01T00:00:00Z",
-            "payload": {
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "output_text", "text": "   "}],
-            },
-        }
-    ]
-    assert _events(entries) == []
+    if text:
+        assert events[0]["text"] == text
+        assert events[0]["authorship"][0]["source"] == "unknown"
+        assert events[0]["authorship"][0]["end"] == len(text)
+    else:
+        assert events == []
 
 
 def test_interpret_events_function_call_flushes_pending_user_message():
@@ -1635,32 +1715,7 @@ def test_interpret_tagged_command_without_leading_slash_is_ignored():
         }
     ]
     assert "command" not in _users(entries)[0]
-    assert _users(entries)[0]["text"] == "some text"
-
-
-def test_interpret_startup_context_response_item_sets_pending_images_only():
-    startup_text = (
-        "<recommended_plugins>x</recommended_plugins>\n"
-        "# AGENTS.md instructions\n<environment_context>y</environment_context>"
-    )
-    entries = [
-        {
-            "type": "response_item",
-            "timestamp": "2026-01-01T00:00:00Z",
-            "payload": {
-                "type": "message",
-                "role": "user",
-                "content": [{"type": "input_text", "text": startup_text}],
-            },
-        },
-        {
-            "type": "event_msg",
-            "timestamp": "2026-01-01T00:00:01Z",
-            "payload": {"type": "user_message", "message": "actual turn"},
-        },
-    ]
-    assert len(_users(entries)) == 1
-    assert _users(entries)[0]["text"] == "actual turn"
+    assert _users(entries)[0]["text"] == entries[0]["payload"]["message"]
 
 
 def test_interpret_events_function_call_arguments_fallback_to_input():

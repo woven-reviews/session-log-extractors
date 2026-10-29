@@ -388,7 +388,7 @@ def test_copilot_native_transformed_prompt_fits_mixed_ranges():
     assert decoded["message_id"] == data["messageId"]
 
 
-def test_authorship_retains_message_structure_without_changing_export():
+def test_authorship_retains_message_structure_through_export():
     events = [
         Event(
             i=0,
@@ -414,6 +414,8 @@ def test_authorship_retains_message_structure_without_changing_export():
     assert decoded["events"][1]["tool_calls"][0]["id"] == "call-1"
     assert decoded["events"][1]["authorship"][0]["ts"] is None
     exported = export_session(session)
-    assert all("authorship" not in event for event in exported["events"])
+    assert [event.get("authorship") for event in exported["events"]] == [
+        event.get("authorship") for event in session["events"]
+    ]
     assert [event["i"] for event in exported["events"]] == [0, 1, 2]
     assert session == original
