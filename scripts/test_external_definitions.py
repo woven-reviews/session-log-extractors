@@ -6,22 +6,19 @@ from pathlib import Path
 
 import pytest
 
+from session_log_extractors import copilot_sources
 from session_log_extractors import extract_claude_session_log as claude
 from session_log_extractors import extract_codex_session_log as codex
 from session_log_extractors import extract_copilot_session_log as copilot
 
 
-@pytest.mark.parametrize("extractor", [codex, copilot])
+@pytest.mark.parametrize("extractor", [codex])
 def test_skill_invocations_do_not_load_definitions(extractor, monkeypatch):
     def forbidden(*args):
         pytest.fail("Extraction must not load external skill definitions")
 
     monkeypatch.setattr(extractor, "load_skill_details", forbidden, raising=False)
-    turn = (
-        extractor.Turn("use skill", "", None, 0)
-        if extractor is copilot
-        else extractor.Turn("use skill", None)
-    )
+    turn = extractor.Turn("use skill", None)
     turn.add_skill("recorded-skill")
     turn.add_skill("recorded-skill")
     turn.add_skill("")
@@ -80,3 +77,24 @@ def test_local_definitions_are_not_read_or_added_to_the_envelope(tmp_path, monke
     # These markers belong to recorded assistant replies and must remain.
     assert "SKILL_FIXTURE_MARKER" in output
     assert "COMMAND_FIXTURE_MARKER" in output
+
+
+def test_copilot_skill_invocations_do_not_load_definitions(monkeypatch):
+    fixtures = FIXTURES.parent / "copilot"
+    records = copilot_sources.parse_state_records(
+        (fixtures / "skill" / "events.jsonl").read_text().splitlines()
+    )
+    # A repeated invocation and an empty name must preserve deduplication.
+    invoked = next(record for record in records if record["type"] == "skill.invoked")
+    records.extend([invoked, {"type": "skill.invoked", "data": {"name": ""}}])
+    source = copilot_sources.CopilotSource(
+        {"id": "recorded-skill"}, [], state_records=records
+    )
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Extraction must not load external skill definitions")
+
+    with monkeypatch.context() as guard:
+        guard.setattr(Path, "open", forbidden)
+        session = copilot.interpret_source(source)
+    assert session["skills_used"] == ["fixture-skill"]

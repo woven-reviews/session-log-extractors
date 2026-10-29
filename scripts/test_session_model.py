@@ -178,6 +178,27 @@ def test_export_reads_json_fields_without_mutating_session_semantics():
         subagent_count=1,
         unmatched_tool_results=[],
         files_changed=["/workspace/app.py"],
+        permission_decisions=[
+            {
+                "tool": "read app.py",
+                "request_id": "request-1",
+                "status": "completed",
+                "native_decision": "source-specific-label",
+                "feedback": "",
+                "ts": "recorded time",
+            }
+        ],
+        file_activity=[
+            {
+                "file_path": "/workspace/app.py",
+                "tool_name": "Read",
+                "provenance": {
+                    "record_type": "claude.tool_use",
+                    "turn_index": None,
+                    "first_seen_at": None,
+                },
+            }
+        ],
     )
     original = deepcopy(session)
     assert export_session(session) == {

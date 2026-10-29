@@ -14,7 +14,7 @@ User prose is reproduced verbatim; assistant responses are reproduced verbatim.
 
 Copilot records the full permission lifecycle in the per-session events log
 (``~/.copilot/session-state/<id>/events.jsonl``), so both approvals and denials
-are surfaced per turn (the tool asked about, the decision, and any feedback the
+are retained as session records (the tool asked about, the decision, and feedback the
 human typed when denying) -- unlike the Claude/Codex logs, where only denials are
 observable.
 
@@ -42,27 +42,44 @@ import json
 import re
 import sqlite3
 import sys
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from session_log_extractors import copilot_sources
 from session_log_extractors.copilot_sources import CopilotSource, ImageInputs
+from session_log_extractors.extractor_contract import Extractor
+from session_log_extractors.json_types import JsonValue
+from session_log_extractors.json_types import json_value as _json_value
+from session_log_extractors.json_types import string_value as _string
 from session_log_extractors.session_log_envelope import (
     DEFAULT_TOOL_RESULT_MAX_BYTES,
+    Envelope,
     assistant_event,
-    build_envelope,
+    export_session,
     image_from_bytes,
     media_type_for_ext,
     raw_filename,
-    tool_call,
     unavailable_image,
     user_event,
     warn_if_oversized,
     write_envelope,
 )
-from session_log_extractors.session_model import Image, Message, Session
-from session_log_extractors.tool_inputs import JsonValue
+from session_log_extractors.session_model import (
+    AssistantMessage,
+    FileActivity,
+    FileActivityProvenance,
+    Image,
+    Message,
+    NativeIdentity,
+    PermissionDecision,
+    Session,
+    ToolCall,
+    ToolResult,
+    UserMessage,
+)
+from session_log_extractors.tool_inputs.copilot import input_schema
 
 _NOISE_TAG_BLOCK = re.compile(
     r"<(system-reminder|system-notification|local-command-stdout|local-command-stderr|"
@@ -90,60 +107,21 @@ _IMAGE_EXT = {
     "image/svg+xml": "svg",
 }
 
-TOOL_DESC_MAX = 120
-RESULT_NOTE_MAX = 160
 
-
-def _decode_arguments(arguments: Any) -> Any:
+def _decode_arguments(arguments: JsonValue) -> JsonValue:
     if isinstance(arguments, str):
         try:
-            return json.loads(arguments)
+            return _json_value(json.loads(arguments))
         except json.JSONDecodeError:
             return arguments
     return arguments
 
 
-def tool_descriptor(name: str, arguments: Any) -> str:
-    """Summarize a tool call's most salient argument for a retained tool descriptor."""
-    args = _decode_arguments(arguments)
-    if not isinstance(args, dict):
-        return _truncate(str(args), TOOL_DESC_MAX) if args else ""
-
-    for key in (
-        "cmd",
-        "command",
-        "query",
-        "pattern",
-        "path",
-        "file_path",
-        "filePath",
-        "url",
-        "skill",
-    ):
-        val = args.get(key)
-        if isinstance(val, str) and val:
-            return _truncate(val, TOOL_DESC_MAX)
-
-    try:
-        return _truncate(json.dumps(args, ensure_ascii=False), TOOL_DESC_MAX)
-    except (TypeError, ValueError):
-        return ""
-
-
-def result_note(output: Any) -> str:
-    if isinstance(output, str):
-        return _truncate(output, RESULT_NOTE_MAX)
-    if output is None:
-        return ""
-    try:
-        return _truncate(json.dumps(output, ensure_ascii=False), RESULT_NOTE_MAX)
-    except (TypeError, ValueError):
-        return ""
-
-
-def skill_refs_from_call(name: str, arguments: Any) -> List[Dict[str, Optional[str]]]:
+def skill_refs_from_call(
+    name: str, arguments: object
+) -> List[Dict[str, Optional[str]]]:
     """Return skill names and definition paths evidenced by a tool call."""
-    args = _decode_arguments(arguments)
+    args = _decode_arguments(arguments) if isinstance(arguments, str) else arguments
     refs: List[Dict[str, Optional[str]]] = []
 
     def add(value: str, path: Optional[str] = None) -> None:
@@ -172,13 +150,6 @@ def skill_refs_from_call(name: str, arguments: Any) -> List[Dict[str, Optional[s
         if skill:
             add(skill, match.group("path"))
     return refs
-
-
-def _truncate(text: str, limit: int) -> str:
-    text = " ".join(str(text).split())
-    if len(text) <= limit:
-        return text
-    return text[: limit - 3].rstrip() + "..."
 
 
 def clean_user_text(text: str) -> str:
@@ -221,40 +192,10 @@ def date_only(ts: Optional[str]) -> str:
     return formatted.split(" ")[0]
 
 
-class Turn:
-    def __init__(
-        self,
-        user_text: str,
-        assistant_text: str,
-        timestamp: Optional[str],
-        turn_index: int,
-    ):
-        self.user_text = user_text
-        self.assistant_text = assistant_text
-        self.timestamp = timestamp
-        self.turn_index = turn_index
-        self.shell_command: Optional[str] = None
-        self.tools: List[tuple[str, str]] = []
-        self.skills_used: List[str] = []
-        self.image_refs: List[Dict[str, str]] = []
-        self.permission_decisions: List[Dict[str, Any]] = []
-        self.result_notes: List[str] = []
-        self.tool_calls: List[Dict[str, Any]] = []
-
-    def add_tool(self, name: str, descriptor: str) -> None:
-        self.tools.append((name, descriptor))
-
-    def add_result_note(self, note: str) -> None:
-        if note:
-            self.result_notes.append(note)
-
-    def add_skill(self, name: str) -> None:
-        if name and name not in self.skills_used:
-            self.skills_used.append(name)
-
-
-def _binary_assets(events: List[Dict[str, Any]]) -> Dict[str, tuple[str, JsonValue]]:
-    assets = {}
+def _binary_assets(
+    events: List[Dict[str, JsonValue]],
+) -> Dict[str, tuple[str, JsonValue]]:
+    assets: Dict[str, tuple[str, JsonValue]] = {}
     for obj in events:
         asset = obj.get("data")
         if (
@@ -263,7 +204,7 @@ def _binary_assets(events: List[Dict[str, Any]]) -> Dict[str, tuple[str, JsonVal
             and isinstance(asset.get("assetId"), str)
             and isinstance(asset.get("data"), str)
         ):
-            assets[asset["assetId"]] = (asset["data"], asset.get("mimeType"))
+            assets[str(asset["assetId"])] = (str(asset["data"]), asset.get("mimeType"))
     return assets
 
 
@@ -297,9 +238,11 @@ def _state_attachment(
     return rec
 
 
-def _attachments_from_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _attachments_from_events(
+    events: List[Dict[str, JsonValue]],
+) -> List[Dict[str, JsonValue]]:
     assets = _binary_assets(events)
-    attachments: List[Dict[str, Any]] = []
+    attachments: List[Dict[str, JsonValue]] = []
     for obj in events:
         data = obj.get("data")
         if obj.get("type") != "user.message" or not isinstance(data, dict):
@@ -314,84 +257,94 @@ def _attachments_from_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any
     return attachments
 
 
-def get_state_attachments(session_id: str) -> List[Dict[str, Any]]:
+def get_state_attachments(session_id: str) -> List[Dict[str, JsonValue]]:
     """Load state attachments for callers needing only this evidence."""
     return _attachments_from_events(copilot_sources.load_state_records(session_id))
 
 
-# Existing native interpretation; remove in QUAL-2519.
-def _permissions_from_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Join ``permission.requested`` / ``permission.completed`` events into one
-    record per decision: the tool asked about, the outcome, and any feedback.
+def _permission_request(
+    record: dict[str, JsonValue], data: dict[str, JsonValue]
+) -> PermissionDecision | None:
+    request_id = _string(data.get("requestId"))
+    if request_id is None:
+        return None
+    request = data.get("permissionRequest")
+    request = request if isinstance(request, dict) else {}
+    description = (
+        request.get("fullCommandText")
+        or request.get("intention")
+        or request.get("kind")
+    )
+    return PermissionDecision(
+        tool=_string(description) or "tool",
+        request_id=request_id,
+        status="pending",
+        native_decision=None,
+        feedback="",
+        ts=_string(record.get("timestamp")),
+    )
 
-    Unlike Claude/Codex, Copilot records the full permission lifecycle — both
-    approvals and denials — so both are captured. A ``permission.requested`` with
-    no matching completion (aborted / still pending) is emitted as ``pending``.
-    """
-    requests: Dict[str, Dict[str, Any]] = {}
-    decided: set[str] = set()
-    out: List[Dict[str, Any]] = []
-    for obj in events:
-        if not isinstance(obj, dict):
-            continue
-        etype = obj.get("type")
-        data = obj.get("data")
+
+def _permission_completion(
+    record: dict[str, JsonValue],
+    data: dict[str, JsonValue],
+    request: PermissionDecision | None,
+) -> PermissionDecision:
+    result = data.get("result")
+    result = result if isinstance(result, dict) else {}
+    timestamp = _string(record.get("timestamp"))
+    if not timestamp and request is not None:
+        timestamp = request["ts"]
+    return PermissionDecision(
+        tool=request["tool"] if request is not None else "tool",
+        request_id=_string(data.get("requestId")),
+        status="completed",
+        native_decision=_string(result.get("kind")),
+        feedback=_string(result.get("feedback")) or "",
+        ts=timestamp,
+    )
+
+
+def _permissions_from_events(
+    events: list[dict[str, JsonValue]],
+) -> list[PermissionDecision]:
+    """Join permission records by request ID without interpreting native outcomes."""
+    requests: dict[str, PermissionDecision] = {}
+    completed_ids: set[str] = set()
+    decisions: list[PermissionDecision] = []
+    for record in events:
+        data = record.get("data")
         if not isinstance(data, dict):
             continue
-
-        if etype == "permission.requested":
-            pr = data.get("permissionRequest")
-            pr = pr if isinstance(pr, dict) else {}
-            rid = data.get("requestId")
-            if isinstance(rid, str):
-                requests[rid] = {
-                    "tool": (
-                        pr.get("fullCommandText")
-                        or pr.get("intention")
-                        or pr.get("kind")
-                        or "tool"
-                    ),
-                    "timestamp": obj.get("timestamp"),
-                }
-        elif etype == "permission.completed":
-            rid = data.get("requestId")
-            result = data.get("result")
-            result = result if isinstance(result, dict) else {}
-            feedback = result.get("feedback")
-            req = requests.get(rid, {}) if isinstance(rid, str) else {}
-            if isinstance(rid, str):
-                decided.add(rid)
-            out.append(
-                {
-                    "tool": req.get("tool", "tool"),
-                    "decision": result.get("kind") or "unknown",
-                    "feedback": feedback if isinstance(feedback, str) else "",
-                    "timestamp": obj.get("timestamp") or req.get("timestamp"),
-                }
-            )
-
-    for rid, req in requests.items():
-        if rid not in decided:
-            out.append(
-                {
-                    "tool": req.get("tool", "tool"),
-                    "decision": "pending",
-                    "feedback": "",
-                    "timestamp": req.get("timestamp"),
-                }
-            )
-    out.sort(key=lambda p: p.get("timestamp") or "")
-    return out
+        if record.get("type") == "permission.requested":
+            request = _permission_request(record, data)
+            request_id = _string(data.get("requestId"))
+            if request is not None and request_id is not None:
+                requests[request_id] = request
+        elif record.get("type") == "permission.completed":
+            request_id = _string(data.get("requestId"))
+            request = requests.get(request_id) if request_id is not None else None
+            decisions.append(_permission_completion(record, data, request))
+            if request_id is not None:
+                completed_ids.add(request_id)
+    decisions.extend(
+        request
+        for request_id, request in requests.items()
+        if request_id not in completed_ids
+    )
+    return sorted(decisions, key=lambda decision: decision["ts"] or "")
 
 
-def get_state_permissions(session_id: str) -> List[Dict[str, Any]]:
-    """Read permission decisions from the per-session events log, if present."""
+def get_state_permissions(session_id: str) -> list[PermissionDecision]:
+    """Read permission lifecycles, preserving native labels without inferred owners."""
     return _permissions_from_events(copilot_sources.load_state_records(session_id))
 
 
-def _skills_from_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _skills_from_events(
+    events: List[Dict[str, JsonValue]],
+) -> List[Dict[str, JsonValue]]:
     """Extract Copilot's first-class ``skill.invoked`` events."""
-    skills: List[Dict[str, Any]] = []
+    skills: List[Dict[str, JsonValue]] = []
     for obj in events:
         if not isinstance(obj, dict) or obj.get("type") != "skill.invoked":
             continue
@@ -411,12 +364,12 @@ def _skills_from_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return skills
 
 
-def get_state_skills(session_id: str) -> List[Dict[str, Any]]:
+def get_state_skills(session_id: str) -> List[Dict[str, JsonValue]]:
     """Read invoked skills from the per-session events log, if present."""
     return _skills_from_events(copilot_sources.load_state_records(session_id))
 
 
-def _result_text(result: Any) -> str:
+def _result_text(result: JsonValue) -> str:
     """Flatten a ``tool.execution_complete`` result to plain text."""
     if isinstance(result, dict):
         for key in ("detailedContent", "content"):
@@ -434,129 +387,9 @@ def _result_text(result: Any) -> str:
         return ""
 
 
-def _tools_from_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Join ``tool.execution_start`` / ``tool.execution_complete`` events.
-
-    Copilot records the full tool call (name and arguments) and its result in the
-    per-session events log, so both are surfaced -- unlike the DB's
-    ``session_files`` table, which only lists edited paths. One record per call,
-    ordered by start time.
-    """
-    starts: Dict[str, Dict[str, Any]] = {}
-    order: List[str] = []
-    for obj in events:
-        if not isinstance(obj, dict):
-            continue
-        etype = obj.get("type")
-        data = obj.get("data")
-        if not isinstance(data, dict):
-            continue
-
-        if etype == "tool.execution_start":
-            call_id = data.get("toolCallId")
-            if not isinstance(call_id, str) or not call_id:
-                continue
-            starts[call_id] = {
-                "call_id": call_id,
-                "name": data.get("toolName")
-                if isinstance(data.get("toolName"), str)
-                else "tool",
-                "arguments": data.get("arguments"),
-                "timestamp": obj.get("timestamp"),
-                "success": None,
-                "result": None,
-            }
-            order.append(call_id)
-        elif etype == "tool.execution_complete":
-            call_id = data.get("toolCallId")
-            rec = starts.get(call_id) if isinstance(call_id, str) else None
-            if rec is None:
-                continue
-            rec["success"] = data.get("success")
-            rec["result"] = _result_text(data.get("result"))
-
-    return [starts[cid] for cid in order]
-
-
-def get_state_tools(session_id: str) -> List[Dict[str, Any]]:
-    """Read tool calls + results from the per-session events log, if present."""
-    return _tools_from_events(copilot_sources.load_state_records(session_id))
-
-
-def _turn_for(turns: List[Turn], ts: Optional[str]) -> Optional[Turn]:
-    """The turn an event at ts belongs to.
-
-    DB turn timestamps mark completion, so that is the first turn ending at or
-    after the event; later events go to the last turn, untimed ones to the first.
-    """
-    if not turns:
-        return None
-    return _turn_for_nonempty(turns, ts)
-
-
-def _turn_for_nonempty(turns: List[Turn], ts: Optional[str]) -> Turn:
-    """Select from a caller-checked nonempty list of turns."""
-    at = _parse_ts(ts)
-    if at is None:
-        return turns[0]
-    for turn in turns:
-        turn_at = _parse_ts(turn.timestamp)
-        if turn_at is not None and at <= turn_at:
-            return turn
-    return turns[-1]
-
-
-def attribute_tools(turns: List[Turn], tools: List[Dict[str, Any]]) -> None:
-    """Fold each tool call under the turn it happened in.
-
-    Populates the tool target, a structured record for the JSON envelope, a
-    result note, and any skill evidenced by the call's arguments.
-    """
-    for tool in tools:
-        target = _turn_for(turns, tool.get("timestamp"))
-        if target is None:
-            continue
-
-        name = tool.get("name") or "tool"
-        arguments = tool.get("arguments")
-        target.add_tool(str(name), tool_descriptor(str(name), arguments))
-        target.tool_calls.append(
-            {
-                "name": str(name),
-                "arguments": arguments,
-                "result": tool.get("result"),
-                "timestamp": tool.get("timestamp"),
-            }
-        )
-
-        note = result_note(tool.get("result"))
-        if tool.get("success") is False:
-            note = f"error: {note}" if note else "error"
-        if note:
-            target.add_result_note(f"{name}: {note}")
-
-        for skill_ref in skill_refs_from_call(str(name), arguments):
-            target.add_skill(str(skill_ref["name"]))
-
-
-def attribute_skills(turns: List[Turn], skills: List[Dict[str, Any]]) -> None:
-    """Fold each skill invocation under the turn it happened in."""
-    for skill in skills:
-        target = _turn_for(turns, skill.get("timestamp"))
-        name = skill.get("name")
-        if target is not None and isinstance(name, str):
-            target.add_skill(name)
-
-
-def attribute_permissions(turns: List[Turn], perms: List[Dict[str, Any]]) -> None:
-    """Fold each permission decision under the turn it happened in."""
-    for p in perms:
-        target = _turn_for(turns, p.get("timestamp"))
-        if target is not None:
-            target.permission_decisions.append(p)
-
-
-def _attachment_lookup(attachments: List[Dict[str, Any]]) -> Dict[str, Dict[str, str]]:
+def _attachment_lookup(
+    attachments: List[Dict[str, JsonValue]],
+) -> Dict[str, Dict[str, str]]:
     lookup: Dict[str, Dict[str, str]] = {}
     for item in attachments:
         raw_display = item.get("display_name")
@@ -574,9 +407,9 @@ def _attachment_lookup(attachments: List[Dict[str, Any]]) -> Dict[str, Dict[str,
         if has_path and isinstance(raw_path, str):
             rec["path"] = raw_path
         if has_data_url and isinstance(item.get("data_url"), str):
-            rec["data_url"] = item["data_url"]
+            rec["data_url"] = str(item["data_url"])
         if has_data and isinstance(item.get("data"), str):
-            rec["data"] = item["data"]
+            rec["data"] = str(item["data"])
             media_type = item.get("media_type")
             if isinstance(media_type, str):
                 rec["media_type"] = media_type
@@ -587,102 +420,6 @@ def _attachment_lookup(attachments: List[Dict[str, Any]]) -> Dict[str, Dict[str,
         if has_path and isinstance(raw_path, str):
             lookup.setdefault(Path(raw_path).name, rec)
     return lookup
-
-
-# Existing native interpretation; remove in QUAL-2519.
-def _build_turn_objects(  # noqa: C901, PLR0912, PLR0915
-    turns: List[Dict[str, Any]],
-    files: List[Dict[str, Any]],
-    attachments: List[Dict[str, Any]],
-) -> List[Turn]:
-    built: List[Turn] = []
-    by_turn: Dict[int, List[Dict[str, Any]]] = {}
-    attachment_by_name = _attachment_lookup(attachments)
-    for file_rec in files:
-        idx = file_rec.get("turn_index")
-        if isinstance(idx, int):
-            by_turn.setdefault(idx, []).append(file_rec)
-
-    for i, raw in enumerate(turns, 1):
-        user_msg = clean_user_text(raw.get("user_message") or "")
-        asst_msg = (raw.get("assistant_response") or "").strip()
-        turn_idx = raw.get("turn_index")
-        if not isinstance(turn_idx, int):
-            turn_idx = i - 1
-        turn = Turn(user_msg, asst_msg, raw.get("timestamp"), turn_idx)
-
-        cmds = [c.strip() for c in _BASH_INPUT.findall(user_msg) if c.strip()]
-        if cmds:
-            turn.shell_command = "\n".join(cmds)
-
-        for raw_name in _COPILOT_IMAGE_REF.findall(user_msg):
-            image_name = raw_name.strip()
-            if not image_name:
-                continue
-            attached = attachment_by_name.get(image_name)
-            if attached:
-                ref = {"name": image_name}
-                for key in ("path", "type", "data_url", "data", "media_type"):
-                    if key in attached:
-                        ref[key] = attached[key]
-                turn.image_refs.append(ref)
-            else:
-                turn.image_refs.append({"name": image_name})
-
-        for item in by_turn.get(turn.turn_index, []):
-            tool_name = item.get("tool_name") or "tool"
-            file_path = item.get("file_path") or ""
-            turn.add_tool(str(tool_name), str(file_path))
-
-        built.append(turn)
-
-    for attachment in attachments:
-        attached_at = _parse_ts(attachment.get("timestamp"))
-        if attached_at is None or not built:
-            continue
-        path = attachment.get("path")
-        name = attachment.get("display_name")
-        if not isinstance(name, str) or not name:
-            name = Path(path).name if isinstance(path, str) else ""
-        media_type = attachment.get("type") or attachment.get("media_type")
-        data_url = attachment.get("data_url")
-        if (
-            isinstance(media_type, str)
-            and media_type
-            and not media_type.startswith("image/")
-        ):
-            continue
-        if not name or not (
-            isinstance(media_type, str)
-            and media_type.startswith("image/")
-            or isinstance(path, str)
-            and media_type_for_ext(Path(path).suffix)
-            or isinstance(data_url, str)
-            and _DATA_IMAGE_URL.match(data_url)
-        ):
-            continue
-        target = _turn_for_nonempty(built, attachment.get("timestamp"))
-        ref = {"name": name}
-        for key in ("path", "type", "data_url", "data", "media_type"):
-            if attachment.get(key):
-                ref[key] = attachment[key]
-        # Two different files can share a display name, so match on the image
-        # itself; only a ref with no source falls back to its name.
-        source = _image_source(ref)
-        if any(
-            _image_source(r) == source
-            if source and _image_source(r)
-            else r["name"] == name
-            for r in target.image_refs
-        ):
-            continue
-        if len(ref) > 1:
-            target.image_refs.append(ref)
-    return built
-
-
-def _image_source(ref: Dict[str, Any]) -> Optional[str]:
-    return ref.get("path") or ref.get("data_url") or ref.get("data")
 
 
 def envelope_images(
@@ -707,68 +444,6 @@ def envelope_images(
         raw, ext = decoded
         images.append(image_from_bytes(raw, media_type_for_ext(ext)))
     return images
-
-
-def build_events(
-    turns: List["Turn"],
-    tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
-    *,
-    image_inputs: Optional[ImageInputs] = None,
-) -> List[Message]:
-    """Produce raw-envelope events from already-built Copilot turns.
-
-    Copilot's store hands us whole turns rather than an event stream, so this
-    reads the Turn objects instead of re-walking a transcript.
-
-    When a turn carries structured ``tool_calls`` (recovered from the events log),
-    each call becomes its own assistant event stamped with that call's own
-    timestamp -- mirroring Codex, where every tool call is a separate event -- and
-    its arguments and result are emitted in full (result capped at
-    ``tool_result_max_bytes``). Older turns that only have file-edit records fall
-    back to a single grouped assistant event with no per-call timestamp or result.
-    """
-    events: List[Message] = []
-    index = 0
-
-    for turn in turns:
-        images = envelope_images(turn.image_refs, image_inputs or {})
-        if turn.user_text.strip() or images:
-            events.append(user_event(index, turn.timestamp, turn.user_text, images))
-            index += 1
-
-        if turn.tool_calls:
-            # One event per tool call, each with its own timestamp, so the stream
-            # matches Codex's granularity. Assistant prose (if any) leads.
-            if turn.assistant_text.strip():
-                events.append(
-                    assistant_event(index, turn.timestamp, turn.assistant_text)
-                )
-                index += 1
-            for tc in turn.tool_calls:
-                call = tool_call(
-                    tc["name"],
-                    tc.get("arguments"),
-                    tc.get("result"),
-                    tool_result_max_bytes,
-                )
-                events.append(
-                    assistant_event(
-                        index, tc.get("timestamp") or turn.timestamp, "", [call]
-                    )
-                )
-                index += 1
-        else:
-            calls = [
-                tool_call(name, {"target": target} if target else {})
-                for name, target in turn.tools
-            ]
-            if turn.assistant_text.strip() or calls:
-                events.append(
-                    assistant_event(index, turn.timestamp, turn.assistant_text, calls)
-                )
-                index += 1
-
-    return events
 
 
 def _inline_image_bytes(ref: Dict[str, str]) -> Optional[tuple[bytes, str]]:
@@ -816,7 +491,7 @@ def _path_image_ext(ref: Dict[str, str]) -> str:
     return guessed.split("/")[-1] if "/" in guessed else "img"
 
 
-def output_identifier(session: Dict[str, Any]) -> str:
+def output_identifier(session: Dict[str, JsonValue]) -> str:
     """Generate a short identifier for output filenames."""
     session_id = session.get("id", "unknown")
     if not isinstance(session_id, str):
@@ -824,7 +499,7 @@ def output_identifier(session: Dict[str, Any]) -> str:
     # Use first 8 chars of session id
     short_id = session_id[:8] if len(session_id) >= 8 else session_id
 
-    date = date_only(session.get("created_at"))
+    date = date_only(_string(session.get("created_at")))
     if date and date != "unknown":
         return f"{date}_{short_id}"
     return short_id
@@ -840,81 +515,411 @@ def _unique_identifier(base: str, used: set[str]) -> str:
     return ident
 
 
-def read_source(conn: sqlite3.Connection, session: Dict[str, Any]) -> CopilotSource:
-    """Load database/state records and snapshot referenced external images."""
+@dataclass(frozen=True)
+class CopilotRequest:
+    """Selected metadata and a connection whose lifetime belongs to the caller."""
+
+    connection: sqlite3.Connection
+    session: dict[str, JsonValue]
+
+
+def _identity(
+    record: dict[str, JsonValue], data: dict[str, JsonValue]
+) -> NativeIdentity:
+    identity = NativeIdentity()
+    for source, target in (("id", "id"), ("parentId", "parent_id")):
+        value = _string(record.get(source))
+        if value is not None:
+            if target == "id":
+                identity["id"] = value
+            else:
+                identity["parent_id"] = value
+    if isinstance(data.get("messageId"), str):
+        identity["message_id"] = str(data["messageId"])
+    if isinstance(data.get("originatingMessageId"), str):
+        identity["originating_message_id"] = str(data["originatingMessageId"])
+    if isinstance(data.get("interactionId"), str):
+        identity["interaction_id"] = str(data["interactionId"])
+    if isinstance(data.get("turnId"), str):
+        identity["turn_id"] = str(data["turnId"])
+    return identity
+
+
+def _apply_identity(message: Message, identity: NativeIdentity) -> None:
+    """Copy only the named identity fields into the typed message union."""
+    if "id" in identity:
+        message["id"] = identity["id"]
+    if "parent_id" in identity:
+        message["parent_id"] = identity["parent_id"]
+    if "message_id" in identity:
+        message["message_id"] = identity["message_id"]
+    if "originating_message_id" in identity:
+        message["originating_message_id"] = identity["originating_message_id"]
+    if "interaction_id" in identity:
+        message["interaction_id"] = identity["interaction_id"]
+    if "turn_id" in identity:
+        message["turn_id"] = identity["turn_id"]
+
+
+def _image_refs(
+    text: str, attachments: list[dict[str, JsonValue]], *, explicit: bool = True
+) -> list[dict[str, str]]:
+    """Resolve legacy tokens and explicit attachments within their recorded owner."""
+    lookup = _attachment_lookup(attachments)
+    refs = [
+        {"name": name.strip(), **lookup.get(name.strip(), {})}
+        for name in _COPILOT_IMAGE_REF.findall(text)
+        if name.strip()
+    ]
+    for attachment in attachments if explicit else []:
+        ref = _attachment_ref(attachment)
+        if ref is not None and not any(_same_image(ref, other) for other in refs):
+            refs.append(ref)
+    return refs
+
+
+def _attachment_ref(attachment: dict[str, JsonValue]) -> dict[str, str] | None:
+    path = _string(attachment.get("path")) or ""
+    name = _string(attachment.get("display_name")) or Path(path).name
+    mime = attachment.get("type") or attachment.get("media_type")
+    data_url = attachment.get("data_url")
+    if isinstance(mime, str) and mime and not mime.startswith("image/"):
+        return None
+    has_image_type = isinstance(mime, str) and mime.startswith("image/")
+    has_image_extension = bool(media_type_for_ext(Path(path).suffix))
+    has_image_data_url = isinstance(data_url, str) and bool(
+        _DATA_IMAGE_URL.match(data_url)
+    )
+    if not name or not (has_image_type or has_image_extension or has_image_data_url):
+        return None
+    ref = {"name": name}
+    for key in ("path", "type", "data_url", "data", "media_type"):
+        value = attachment.get(key)
+        if isinstance(value, str) and value:
+            ref[key] = value
+    return ref
+
+
+def _same_image(left: dict[str, str], right: dict[str, str]) -> bool:
+    def source(ref: dict[str, str]) -> str | None:
+        return ref.get("path") or ref.get("data_url") or ref.get("data")
+
+    a, b = source(left), source(right)
+    return a == b if a and b else left["name"] == right["name"]
+
+
+def _user_message(
+    text: str, timestamp: str | None, refs: list[dict[str, str]], source: CopilotSource
+) -> UserMessage:
+    message = user_event(
+        0, timestamp, clean_user_text(text), envelope_images(refs, source.image_inputs)
+    )
+    commands = [
+        command.strip() for command in _BASH_INPUT.findall(text) if command.strip()
+    ]
+    if commands:
+        message["shell_command"] = "\n".join(commands)
+    return message
+
+
+def _new_call(name: str, arguments: JsonValue) -> ToolCall:
+    payload = _decode_arguments(arguments)
+    return ToolCall(
+        name=name, input=payload, input_schema=input_schema(name, payload), result=None
+    )
+
+
+class _CopilotSessionBuilder:
+    """Assemble one session, joining tool activity by recorded identities."""
+
+    def __init__(self, source: CopilotSource):
+        self.source = source
+        self.events: list[Message] = []
+        self.calls: dict[str, ToolCall] = {}
+        self.messages: dict[str, AssistantMessage] = {}
+        self.unmatched: list[ToolResult] = []
+
+    def user_message(
+        self, record: dict[str, JsonValue], data: dict[str, JsonValue]
+    ) -> None:
+        text = _string(data.get("content")) or ""
+        refs = self.user_image_refs(record, data)
+        message = _user_message(
+            text, _string(record.get("timestamp")), refs, self.source
+        )
+        _apply_identity(message, _identity(record, data))
+        self.events.append(message)
+
+    def user_image_refs(
+        self, record: dict[str, JsonValue], data: dict[str, JsonValue]
+    ) -> list[dict[str, str]]:
+        # Only this message's attachments belong here; assets may occur anywhere.
+        assets = _binary_assets(self.source.state_records)
+        items = data.get("attachments")
+        attachments = []
+        if isinstance(items, list):
+            for item in items:
+                if isinstance(item, dict):
+                    attachments.append(
+                        _state_attachment(item, record.get("timestamp"), assets)
+                    )
+
+        text = _string(data.get("content")) or ""
+        if attachments:
+            return _image_refs(text, attachments)
+        return _image_refs(text, self.source.attachments, explicit=False)
+
+    def assistant_message(
+        self, record: dict[str, JsonValue], data: dict[str, JsonValue]
+    ) -> None:
+        text = _string(data.get("content")) or ""
+        message = assistant_event(0, _string(record.get("timestamp")), text)
+        requests = data.get("toolRequests")
+        if isinstance(requests, list):
+            for request in requests:
+                if isinstance(request, dict):
+                    message.setdefault("tool_calls", []).append(self.request(request))
+        _apply_identity(message, _identity(record, data))
+        self.messages[str(record.get("id"))] = message
+        self.events.append(message)
+
+    def request(self, data: dict[str, JsonValue]) -> ToolCall:
+        call = _new_call(
+            _string(data.get("name")) or "tool", _json_value(data.get("arguments"))
+        )
+        call_id = _string(data.get("toolCallId"))
+        if call_id:
+            call["id"] = call_id
+            self.calls[call_id] = call
+        return call
+
+    def start(self, record: dict[str, JsonValue], data: dict[str, JsonValue]) -> None:
+        call_id = _string(data.get("toolCallId"))
+        if not call_id:
+            return
+        call = self.calls.get(call_id)
+        if call is None:
+            call = self.recover_request(record, data)
+        call["execution"] = {
+            **_identity(record, data),
+            "ts": _string(record.get("timestamp")),
+            "name": _string(data.get("toolName")) or "tool",
+            "input": _decode_arguments(data.get("arguments")),
+        }
+
+    def recover_request(
+        self, record: dict[str, JsonValue], data: dict[str, JsonValue]
+    ) -> ToolCall:
+        """Keep a start without a request, attaching only to a recorded parent."""
+        call = self.request({**data, "name": data.get("toolName")})
+        parent = self.messages.get(str(record.get("parentId")))
+        if parent is not None:
+            parent.setdefault("tool_calls", []).append(call)
+            return call
+
+        message = assistant_event(0, _string(record.get("timestamp")), "", [call])
+        _apply_identity(message, _identity(record, {}))
+        self.events.append(message)
+        return call
+
+    def complete(
+        self, record: dict[str, JsonValue], data: dict[str, JsonValue]
+    ) -> None:
+        call_id = _string(data.get("toolCallId"))
+        result = ToolResult(
+            **_identity(record, data),
+            tool_call_id=call_id,
+            ts=_string(record.get("timestamp")),
+            content=_json_value(data.get("result")),
+            is_error=data.get("success") is False,
+        )
+        call = self.calls.get(call_id) if call_id else None
+        if call is None or "result_record" in call:
+            self.unmatched.append(result)
+            return
+        call["result_record"] = result
+        call["result"] = _result_text(data.get("result"))
+        if result["is_error"]:
+            call["is_error"] = True
+
+    def build(self) -> list[Message]:
+        handlers = {
+            "user.message": self.user_message,
+            "assistant.message": self.assistant_message,
+            "tool.execution_start": self.start,
+            "tool.execution_complete": self.complete,
+        }
+        for record in self.source.state_records:
+            data = record.get("data")
+            handler = handlers.get(str(record.get("type")))
+            if handler is not None and isinstance(data, dict):
+                handler(record, data)
+        return self.events
+
+
+def _database_events(
+    source: CopilotSource, *, include_files: bool = True
+) -> list[Message]:
+    events: list[Message] = []
+    for index, row in enumerate(source.turns):
+        timestamp = _string(row.get("timestamp"))
+        text = _string(row.get("user_message")) or ""
+        user = _user_message(
+            text,
+            timestamp,
+            _image_refs(text, source.attachments, explicit=False),
+            source,
+        )
+        if user["text"] or user.get("images"):
+            events.append(user)
+        turn_index = row.get("turn_index", index)
+        calls = []
+        if include_files:
+            calls = [
+                _file_call(file)
+                for file in source.files
+                if file.get("turn_index") == turn_index
+            ]
+        text = (_string(row.get("assistant_response")) or "").strip()
+        if text or calls:
+            events.append(assistant_event(0, timestamp, text, calls))
+    return events
+
+
+def _file_call(file: dict[str, JsonValue]) -> ToolCall:
+    """Translate the database's tool name and target without parsing display text."""
+    name = str(file.get("tool_name") or "tool")
+    target = file.get("file_path")
+    return _new_call(name, {"target": str(target)} if target else {})
+
+
+def _file_events(source: CopilotSource) -> list[Message]:
+    """Keep DB file fallback as explicit activity without guessing native owners."""
+    events: list[Message] = []
+    for file in source.files:
+        timestamp = _string(file.get("first_seen_at"))
+        events.append(assistant_event(0, timestamp, "", [_file_call(file)]))
+    return events
+
+
+def read_source(
+    conn: sqlite3.Connection, session: Dict[str, JsonValue]
+) -> CopilotSource:
+    """Snapshot native records and referenced external image bytes."""
     source = copilot_sources.read_source(conn, session)
-    turns = _build_turn_objects(
-        source.turns,
-        source.files,
-        source.attachments + _attachments_from_events(source.state_records),
-    )
-    source.image_inputs = copilot_sources.load_image_inputs(
-        ref for turn in turns for ref in turn.image_refs if not _has_inline_image(ref)
-    )
+    attachments = source.attachments + _attachments_from_events(source.state_records)
+    source.image_inputs = copilot_sources.load_image_inputs(attachments)
     return source
 
 
-def interpret_turns(source: CopilotSource) -> List[Turn]:
-    """Attribute already-loaded evidence without source access."""
-    turns = _build_turn_objects(
-        source.turns,
-        source.files,
-        source.attachments + _attachments_from_events(source.state_records),
+def _file_activity(source: CopilotSource) -> list[FileActivity]:
+    activity = []
+    for file in source.files:
+        index = file.get("turn_index")
+        activity.append(
+            FileActivity(
+                file_path=_string(file.get("file_path")) or "",
+                tool_name=_string(file.get("tool_name")) or "tool",
+                provenance=FileActivityProvenance(
+                    record_type="copilot.session_files",
+                    turn_index=index if isinstance(index, int) else None,
+                    first_seen_at=_string(file.get("first_seen_at")),
+                ),
+            )
+        )
+    return activity
+
+
+def _apply_database_fallbacks(
+    source: CopilotSource, builder: _CopilotSessionBuilder
+) -> list[Message]:
+    """Supplement partial native activity without guessing message ownership."""
+    events = builder.events
+    has_native_messages = any(
+        record.get("type") in ("user.message", "assistant.message")
+        for record in source.state_records
     )
-    tools = _tools_from_events(source.state_records)
-    if tools:
-        for turn in turns:
-            turn.tools = []
-        attribute_tools(turns, tools)
-    attribute_permissions(turns, _permissions_from_events(source.state_records))
-    attribute_skills(turns, _skills_from_events(source.state_records))
-    return turns
+    if not has_native_messages:
+        events = _database_events(source, include_files=not builder.calls) + events
+    if not builder.calls and events and any(event.get("id") for event in events):
+        events.extend(_file_events(source))
+    return events
 
 
-def load_session_turns(conn: sqlite3.Connection, session: Dict[str, Any]) -> List[Turn]:
-    """Compatibility helper for callers needing attributed Turn objects."""
-    return interpret_turns(read_source(conn, session))
+def _session_skills(source: CopilotSource, calls: list[ToolCall]) -> list[str]:
+    """Combine recorded skill invocations and tool evidence in encounter order."""
+    skills = [str(skill["name"]) for skill in _skills_from_events(source.state_records)]
+    for call in calls:
+        for ref in skill_refs_from_call(call["name"], call.get("input")):
+            if ref["name"] and ref["name"] not in skills:
+                skills.append(ref["name"])
+    return list(dict.fromkeys(skills))
 
 
-def interpret_source(
-    source: CopilotSource,
-    tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
-) -> Optional[Session]:
-    """Interpret supplied rows, records, and image inputs without source access."""
-    session = source.session
-    events = build_events(
-        interpret_turns(source), tool_result_max_bytes, image_inputs=source.image_inputs
-    )
+def interpret_source(source: CopilotSource) -> Session | None:
+    """Interpret complete supplied activity without I/O or export limits."""
+    builder = _CopilotSessionBuilder(source)
+    builder.build()
+    conversation = _apply_database_fallbacks(source, builder)
+    events = [
+        event
+        for event in conversation
+        if event.get("text") or event.get("images") or event.get("tool_calls")
+    ]
     if not events:
         return None
+    for index, event in enumerate(events):
+        event["i"] = index
+
+    calls = [call for event in events for call in event.get("tool_calls") or []]
+    unsupported_tools = {
+        call["name"] for call in calls if call.get("input_schema") == "unsupported"
+    }
     return Session(
         harness="copilot",
-        session_id=output_identifier(session),
+        session_id=output_identifier(source.session),
         events=events,
-        cwd=session.get("cwd"),
-        started_at=session.get("created_at"),
+        cwd=_string(source.session.get("cwd")),
+        started_at=_string(source.session.get("created_at")),
         models=source.models,
+        skills_used=_session_skills(source, calls),
+        unmatched_tool_results=builder.unmatched,
+        file_activity=_file_activity(source),
+        unsupported_tools=sorted(unsupported_tools),
+        permission_decisions=_permissions_from_events(source.state_records),
     )
+
+
+class CopilotExtractor:
+    """Public Copilot stage adapter; connection ownership stays with orchestration."""
+
+    def read_source(self, request: CopilotRequest) -> CopilotSource:
+        return read_source(request.connection, request.session)
+
+    def interpret_source(self, source: CopilotSource) -> Session | None:
+        return interpret_source(source)
+
+
+EXTRACTOR: Extractor[CopilotRequest, CopilotSource] = CopilotExtractor()
 
 
 def build_raw_envelope(
     source: CopilotSource,
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
-) -> Optional[Dict[str, Any]]:
-    """Export interpreted source content through the shared envelope boundary."""
-    session = interpret_source(source, tool_result_max_bytes)
-    if session is None:
-        return None
-    return build_envelope(session, tool_result_max_bytes=tool_result_max_bytes)
+) -> Optional[Envelope]:
+    """Apply output policy only at the shared exporter boundary."""
+    session = EXTRACTOR.interpret_source(source)
+    return None if session is None else export_session(session, tool_result_max_bytes)
 
 
 def extract_session(
     conn: sqlite3.Connection,
-    session: Dict[str, Any],
+    session: Dict[str, JsonValue],
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
-) -> Optional[Dict[str, Any]]:
-    """Load once, then interpret independently of the source store."""
-    return build_raw_envelope(read_source(conn, session), tool_result_max_bytes)
+) -> Optional[Envelope]:
+    """Run the public stages, preserving caller-owned connection lifetime."""
+    source = EXTRACTOR.read_source(CopilotRequest(conn, session))
+    return build_raw_envelope(source, tool_result_max_bytes)
 
 
 def build_arg_parser(project_root: Optional[Path] = None) -> argparse.ArgumentParser:
@@ -997,7 +1002,7 @@ def _extract_all(
     if not sessions:
         print(f"error: no Copilot sessions for {Path.cwd()}", file=sys.stderr)
         return 1
-    sessions.sort(key=lambda s: s.get("created_at", ""))
+    sessions.sort(key=lambda s: _string(s.get("created_at")) or "")
     out_dir = Path(output).expanduser() if output else project_root
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"extracting {len(sessions)} Copilot session(s)", file=sys.stderr)
@@ -1023,7 +1028,7 @@ def _extract_all(
 
 def _select_session(
     conn: sqlite3.Connection, args: argparse.Namespace
-) -> Optional[Dict[str, Any]]:
+) -> Optional[Dict[str, JsonValue]]:
     if args.session:
         session = copilot_sources.get_session_by_id(conn, args.session)
         if session is None:

@@ -56,12 +56,14 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, TypedDict
 
 from session_log_extractors import codex_sources
 from session_log_extractors.codex_sources import CodexSource, ImageInputs
+from session_log_extractors.json_types import JsonValue, parse_json, string_value
 from session_log_extractors.session_log_envelope import (
     DEFAULT_TOOL_RESULT_MAX_BYTES,
+    Envelope,
     assistant_event,
     attach_result,
     build_envelope,
@@ -132,7 +134,7 @@ _DENIAL_MESSAGE = re.compile(
 )
 
 
-def parse_permission_denial(text: Any) -> Optional[str]:
+def parse_permission_denial(text: JsonValue) -> Optional[str]:
     """If ``text`` is a permission-denial message, return the human's steering
     message (``""`` if they just denied). Return ``None`` otherwise."""
     if not isinstance(text, str):
@@ -170,12 +172,12 @@ def _parse_ts(ts: Optional[str]) -> Optional[datetime]:
         return None
 
 
-def _payload(entry: Dict[str, Any]) -> Dict[str, Any]:
+def _payload(entry: Dict[str, JsonValue]) -> Dict[str, JsonValue]:
     payload = entry.get("payload")
     return payload if isinstance(payload, dict) else {}
 
 
-def _content_text(content: Any, text_keys: Tuple[str, ...]) -> str:
+def _content_text(content: JsonValue, text_keys: Tuple[str, ...]) -> str:
     parts: List[str] = []
     if isinstance(content, str):
         return content
@@ -192,14 +194,14 @@ def _content_text(content: Any, text_keys: Tuple[str, ...]) -> str:
     return "\n".join(parts)
 
 
-def user_text_from_event(payload: Dict[str, Any]) -> str:
+def user_text_from_event(payload: Dict[str, JsonValue]) -> str:
     text = payload.get("message")
     if isinstance(text, str):
         return clean_user_text(text)
     return ""
 
 
-def user_text_from_response_item(payload: Dict[str, Any]) -> str:
+def user_text_from_response_item(payload: Dict[str, JsonValue]) -> str:
     """Text from Codex's user-role response item, used for initial prompts."""
     return clean_user_text(_content_text(payload.get("content"), ("text",)).strip())
 
@@ -213,11 +215,11 @@ def is_startup_context(text: str) -> bool:
     )
 
 
-def assistant_text_from_payload(payload: Dict[str, Any]) -> str:
+def assistant_text_from_payload(payload: Dict[str, JsonValue]) -> str:
     return _content_text(payload.get("content"), ("text", "output_text")).strip()
 
 
-def _image_ref_from_string(value: str) -> Optional[Dict[str, Any]]:
+def _image_ref_from_string(value: str) -> Optional[Dict[str, JsonValue]]:
     if value.startswith("data:image/"):
         return {"type": "data_url", "data_url": value}
     if value.startswith(("/", "~")):
@@ -226,9 +228,9 @@ def _image_ref_from_string(value: str) -> Optional[Dict[str, Any]]:
 
 
 # Existing native interpretation; remove in QUAL-2518.
-def image_refs_from_event(payload: Dict[str, Any]) -> List[Dict[str, Any]]:  # noqa: C901, PLR0912
+def image_refs_from_event(payload: Dict[str, JsonValue]) -> List[Dict[str, JsonValue]]:  # noqa: C901, PLR0912
     """Image refs from Codex ``event_msg:user_message`` payloads."""
-    refs: List[Dict[str, Any]] = []
+    refs: List[Dict[str, JsonValue]] = []
 
     local_images = payload.get("local_images")
     if isinstance(local_images, list):
@@ -275,10 +277,10 @@ def image_refs_from_event(payload: Dict[str, Any]) -> List[Dict[str, Any]]:  # n
 
 
 def image_refs_from_user_message_payload(
-    payload: Dict[str, Any],
-) -> List[Dict[str, Any]]:
+    payload: Dict[str, JsonValue],
+) -> List[Dict[str, JsonValue]]:
     """Base64 image refs from ``response_item`` user-message content."""
-    refs: List[Dict[str, Any]] = []
+    refs: List[Dict[str, JsonValue]] = []
     content = payload.get("content")
     if not isinstance(content, list):
         return refs
@@ -294,16 +296,16 @@ def image_refs_from_user_message_payload(
     return refs
 
 
-def _decode_arguments(arguments: Any) -> Any:
+def _decode_arguments(arguments: JsonValue) -> JsonValue:
     if isinstance(arguments, str):
         try:
-            return json.loads(arguments)
+            return parse_json(arguments)
         except json.JSONDecodeError:
             return arguments
     return arguments
 
 
-def tool_descriptor(name: str, arguments: Any) -> str:
+def tool_descriptor(name: str, arguments: JsonValue) -> str:
     args = _decode_arguments(arguments)
     if not isinstance(args, dict):
         return _truncate(str(args), TOOL_DESC_MAX) if args else ""
@@ -319,7 +321,7 @@ def tool_descriptor(name: str, arguments: Any) -> str:
         names = []
         for item in tool_uses:
             if isinstance(item, dict) and isinstance(item.get("recipient_name"), str):
-                names.append(item["recipient_name"])
+                names.append(str(item["recipient_name"]))
         if names:
             return _truncate(", ".join(names), TOOL_DESC_MAX)
 
@@ -330,7 +332,9 @@ def tool_descriptor(name: str, arguments: Any) -> str:
 
 
 # Existing native interpretation; remove in QUAL-2518.
-def skill_refs_from_call(name: str, arguments: Any) -> List[Dict[str, Optional[str]]]:  # noqa: C901
+def skill_refs_from_call(  # noqa: C901
+    name: str, arguments: JsonValue
+) -> List[Dict[str, Optional[str]]]:
     """Return skill names and definition paths evidenced by a tool call."""
     args = _decode_arguments(arguments)
     refs: List[Dict[str, Optional[str]]] = []
@@ -371,12 +375,12 @@ def skill_refs_from_call(name: str, arguments: Any) -> List[Dict[str, Optional[s
     return refs
 
 
-def skill_names_from_call(name: str, arguments: Any) -> List[str]:
+def skill_names_from_call(name: str, arguments: JsonValue) -> List[str]:
     """Return skill names evidenced by a call (backwards-compatible helper)."""
     return [str(ref["name"]) for ref in skill_refs_from_call(name, arguments)]
 
 
-def _tool_name(payload: Dict[str, Any]) -> str:
+def _tool_name(payload: Dict[str, JsonValue]) -> str:
     name = payload.get("name")
     return name if isinstance(name, str) else "tool"
 
@@ -389,7 +393,7 @@ def _is_process_rejection(result: object) -> bool:
     )
 
 
-def result_note(output: Any) -> str:
+def result_note(output: JsonValue) -> str:
     if isinstance(output, str):
         return _truncate(output, RESULT_NOTE_MAX)
     try:
@@ -406,7 +410,7 @@ def _is_plan_tool(name: str) -> bool:
     return any(name == tool or name.endswith("." + tool) for tool in PLAN_TOOLS)
 
 
-def _collaboration_mode(payload: Dict[str, Any]) -> str:
+def _collaboration_mode(payload: Dict[str, JsonValue]) -> str:
     """Return the normalized collaboration mode carried by a rollout event."""
     mode = payload.get("collaboration_mode_kind")
     if not isinstance(mode, str):
@@ -416,18 +420,39 @@ def _collaboration_mode(payload: Dict[str, Any]) -> str:
     return mode.strip().lower() if isinstance(mode, str) else ""
 
 
-def _plan_update(arguments: Any) -> Optional[Dict[str, Any]]:
+class _PlanStep(TypedDict):
+    step: str
+    status: JsonValue
+
+
+class _PlanUpdate(TypedDict):
+    explanation: str
+    steps: list[_PlanStep]
+
+
+class _OptionAnswer(TypedDict):
+    question: JsonValue
+    header: JsonValue
+    options: list[dict[str, JsonValue]]
+    chosen_labels: list[JsonValue]
+    answer_text: str
+
+
+def _plan_update(arguments: JsonValue) -> Optional[_PlanUpdate]:
     """Decode one structured update_plan call for first-class rendering."""
     args = _decode_arguments(arguments)
-    if not isinstance(args, dict) or not isinstance(args.get("plan"), list):
+    if not isinstance(args, dict):
         return None
-    steps = []
-    for item in args["plan"]:
+    plan = args.get("plan")
+    if not isinstance(plan, list):
+        return None
+    steps: list[_PlanStep] = []
+    for item in plan:
         if not isinstance(item, dict) or not isinstance(item.get("step"), str):
             continue
         steps.append(
             {
-                "step": item["step"],
+                "step": str(item["step"]),
                 "status": item.get("status", "pending"),
             }
         )
@@ -440,16 +465,16 @@ def _plan_update(arguments: Any) -> Optional[Dict[str, Any]]:
     }
 
 
-def _decode_jsonish(value: Any) -> Any:
+def _decode_jsonish(value: JsonValue) -> JsonValue:
     if isinstance(value, str):
         try:
-            return json.loads(value)
+            return parse_json(value)
         except json.JSONDecodeError:
             return value
     return value
 
 
-def _value_to_answer_text(value: Any) -> str:
+def _value_to_answer_text(value: JsonValue) -> str:
     if isinstance(value, str):
         return value
     if isinstance(value, (int, float, bool)):
@@ -478,7 +503,7 @@ def _value_to_answer_text(value: Any) -> str:
     return ""
 
 
-def _extract_answer_from_item(question: Dict[str, Any], item: Any) -> str:
+def _extract_answer_from_item(question: Dict[str, JsonValue], item: JsonValue) -> str:
     if not isinstance(item, dict):
         return ""
 
@@ -498,7 +523,9 @@ def _extract_answer_from_item(question: Dict[str, Any], item: Any) -> str:
 
 
 # Existing native interpretation; remove in QUAL-2518.
-def _structured_answer_for_question(question: Dict[str, Any], output: Any) -> str:  # noqa: C901, PLR0912
+def _structured_answer_for_question(  # noqa: C901, PLR0912
+    question: Dict[str, JsonValue], output: JsonValue
+) -> str:
     output = _decode_jsonish(output)
     qid = question.get("id")
     qtext = question.get("question")
@@ -543,7 +570,7 @@ def _structured_answer_for_question(question: Dict[str, Any], output: Any) -> st
 
 
 # Existing native interpretation; remove in QUAL-2518.
-def _flatten_result_text(output: Any) -> str:  # noqa: C901
+def _flatten_result_text(output: JsonValue) -> str:  # noqa: C901
     output = _decode_jsonish(output)
     if isinstance(output, str):
         return output
@@ -568,8 +595,8 @@ def _flatten_result_text(output: Any) -> str:  # noqa: C901
 
 
 def _parse_chosen(
-    question_text: str, options: List[Dict[str, Any]], result_text: str
-) -> Tuple[str, List[Dict[str, Any]]]:
+    question_text: str, options: List[Dict[str, JsonValue]], result_text: str
+) -> Tuple[str, List[Dict[str, JsonValue]]]:
     val = ""
     if question_text and result_text:
         marker = f'"{question_text}"="'
@@ -584,26 +611,41 @@ def _parse_chosen(
             tail = parts[1]
             end = tail.find('"')
             val = tail[:end] if end != -1 else tail
-    chosen = [o for o in options if o.get("label") and o["label"] in val]
+    chosen = [
+        o
+        for o in options
+        if isinstance(label := o.get("label"), str) and label and label in val
+    ]
     return val, chosen
 
 
 def option_qa_from_output(
-    output: Any, questions: Optional[List[Any]]
-) -> List[Dict[str, Any]]:
+    output: JsonValue, questions: Optional[List[JsonValue]]
+) -> List[_OptionAnswer]:
     if not questions:
         return []
 
     result_text = _flatten_result_text(output)
-    out: List[Dict[str, Any]] = []
+    out: List[_OptionAnswer] = []
     for q in questions:
         if not isinstance(q, dict):
             continue
-        options = [o for o in q.get("options", []) if isinstance(o, dict)]
-        val, chosen = _parse_chosen(q.get("question", ""), options, result_text)
+        raw_options = q.get("options")
+        options = (
+            [o for o in raw_options if isinstance(o, dict)]
+            if isinstance(raw_options, list)
+            else []
+        )
+        val, chosen = _parse_chosen(
+            string_value(q.get("question")) or "", options, result_text
+        )
         if not val:
             val = _structured_answer_for_question(q, output)
-            chosen = [o for o in options if o.get("label") and o["label"] in val]
+            chosen = [
+                o
+                for o in options
+                if isinstance(label := o.get("label"), str) and label and label in val
+            ]
         out.append(
             {
                 "question": q.get("question", ""),
@@ -616,7 +658,7 @@ def option_qa_from_output(
     return out
 
 
-def patch_paths(arguments: Any) -> List[str]:
+def patch_paths(arguments: JsonValue) -> List[str]:
     args = _decode_arguments(arguments)
     if isinstance(args, dict):
         text = args.get("patch") or args.get("input") or args.get("content")
@@ -655,7 +697,7 @@ class Turn:
         self.user_text = user_text
         self.timestamp = timestamp
         self.collaboration_mode = collaboration_mode
-        self.images: List[Dict[str, Any]] = []
+        self.images: List[Dict[str, JsonValue]] = []
         self.shell_command: Optional[str] = None
         self.command: Optional[str] = None
         self.command_args: Optional[str] = None
@@ -663,9 +705,11 @@ class Turn:
         self.tool_bullets: List[str] = []
         self.skills_used: List[str] = []
         self.result_notes: List[str] = []
-        self.option_qas: List[Dict[str, Any]] = []
-        self.permission_denials: List[Dict[str, Any]] = []  # denied tool + message
-        self.plan_updates: List[Dict[str, Any]] = []
+        self.option_qas: List[_OptionAnswer] = []
+        self.permission_denials: List[
+            Dict[str, JsonValue]
+        ] = []  # denied tool + message
+        self.plan_updates: List[_PlanUpdate] = []
 
     def add_assistant_text(self, text: str) -> None:
         if text and text.strip():
@@ -691,25 +735,25 @@ class Turn:
 
 
 # Existing native interpretation; remove in QUAL-2518.
-def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]:  # noqa: C901, PLR0912, PLR0915
+def build_turns(entries: List[Dict[str, JsonValue]]) -> Tuple[List[Turn], List[str]]:  # noqa: C901, PLR0912, PLR0915
     turns: List[Turn] = []
     files_changed: List[str] = []
     files_seen: set[str] = set()
     current: Optional[Turn] = None
     call_names: Dict[object, str] = {}
-    pending_questions: Dict[str, List[Any]] = {}
+    pending_questions: Dict[str, List[JsonValue]] = {}
     pending_plan_calls = set()
-    pending_user_images: List[Dict[str, Any]] = []
-    pending_response_user: Optional[Tuple[str, Optional[str], List[Dict[str, Any]]]] = (
-        None
-    )
+    pending_user_images: List[Dict[str, JsonValue]] = []
+    pending_response_user: Optional[
+        Tuple[str, Optional[str], List[Dict[str, JsonValue]]]
+    ] = None
     last_tool = ""  # most recent tool call, to name a denied permission
     pending_mode = ""
 
     def start_user_turn(
         text: str,
         timestamp: Optional[str],
-        images: List[Dict[str, Any]],
+        images: List[Dict[str, JsonValue]],
         raw_text: Optional[str] = None,
     ) -> None:
         nonlocal current, last_tool
@@ -781,7 +825,7 @@ def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]: 
                 continue
             if ptype == "user_message":
                 text = user_text_from_event(payload)
-                response_images: List[Dict[str, Any]] = []
+                response_images: List[Dict[str, JsonValue]] = []
                 if pending_response_user is not None:
                     response_images = pending_response_user[2]
                     pending_response_user = None
@@ -793,11 +837,9 @@ def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]: 
                 pending_user_images = []
                 start_user_turn(
                     text,
-                    entry.get("timestamp"),
+                    string_value(entry.get("timestamp")),
                     images,
-                    payload.get("message")
-                    if isinstance(payload.get("message"), str)
-                    else text,
+                    string_value(payload.get("message")) or text,
                 )
                 continue
 
@@ -825,14 +867,20 @@ def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]: 
                 images = image_refs_from_user_message_payload(payload)
                 if text and not is_startup_context(text):
                     flush_pending_response_user()
-                    pending_response_user = (text, entry.get("timestamp"), images)
+                    pending_response_user = (
+                        text,
+                        string_value(entry.get("timestamp")),
+                        images,
+                    )
                 else:
                     pending_user_images = images
                 continue
             if role == "assistant":
                 flush_pending_response_user()
                 if current is None:
-                    current = Turn("", entry.get("timestamp"), pending_mode)
+                    current = Turn(
+                        "", string_value(entry.get("timestamp")), pending_mode
+                    )
                     turns.append(current)
                 text = assistant_text_from_payload(payload)
                 message = parse_permission_denial(text)
@@ -849,7 +897,7 @@ def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]: 
         if ptype in ("function_call", "custom_tool_call"):
             flush_pending_response_user()
             if current is None:
-                current = Turn("", entry.get("timestamp"), pending_mode)
+                current = Turn("", string_value(entry.get("timestamp")), pending_mode)
                 turns.append(current)
             name = _tool_name(payload)
             last_tool = name
@@ -919,7 +967,7 @@ def build_turns(entries: List[Dict[str, Any]]) -> Tuple[List[Turn], List[str]]: 
 
 
 def envelope_images(
-    refs: List[Dict[str, Any]], image_inputs: Optional[ImageInputs] = None
+    refs: List[Dict[str, JsonValue]], image_inputs: Optional[ImageInputs] = None
 ) -> List[Image]:
     """Interpret Codex image refs using supplied bytes as inline base64 entries.
 
@@ -943,7 +991,7 @@ def envelope_images(
 
 # Existing native interpretation; remove in QUAL-2518.
 def build_events(  # noqa: C901, PLR0912, PLR0915
-    entries: List[Dict[str, Any]],
+    entries: List[Dict[str, JsonValue]],
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
     *,
     image_inputs: Optional[ImageInputs] = None,
@@ -954,10 +1002,10 @@ def build_events(  # noqa: C901, PLR0912, PLR0915
     """
     events: List[Message] = []
     pending_calls: Dict[object, ToolCall] = {}
-    pending_user_images: List[Dict[str, Any]] = []
-    pending_response_user: Optional[Tuple[str, Optional[str], List[Dict[str, Any]]]] = (
-        None
-    )
+    pending_user_images: List[Dict[str, JsonValue]] = []
+    pending_response_user: Optional[
+        Tuple[str, Optional[str], List[Dict[str, JsonValue]]]
+    ] = None
     index = 0
 
     def flush_pending_response_user() -> None:
@@ -978,7 +1026,7 @@ def build_events(  # noqa: C901, PLR0912, PLR0915
 
         if etype == "event_msg" and ptype == "user_message":
             text = user_text_from_event(payload)
-            response_refs: List[Dict[str, Any]] = []
+            response_refs: List[Dict[str, JsonValue]] = []
             if pending_response_user is not None:
                 response_refs = pending_response_user[2]
                 pending_response_user = None
@@ -989,7 +1037,9 @@ def build_events(  # noqa: C901, PLR0912, PLR0915
             images = envelope_images(refs, image_inputs)
             if not text and not images:
                 continue
-            events.append(user_event(index, entry.get("timestamp"), text, images))
+            events.append(
+                user_event(index, string_value(entry.get("timestamp")), text, images)
+            )
             index += 1
             continue
 
@@ -1003,7 +1053,11 @@ def build_events(  # noqa: C901, PLR0912, PLR0915
                 refs = image_refs_from_user_message_payload(payload)
                 if text and not is_startup_context(text):
                     flush_pending_response_user()
-                    pending_response_user = (text, entry.get("timestamp"), refs)
+                    pending_response_user = (
+                        text,
+                        string_value(entry.get("timestamp")),
+                        refs,
+                    )
                 else:
                     pending_user_images = refs
                 continue
@@ -1012,7 +1066,9 @@ def build_events(  # noqa: C901, PLR0912, PLR0915
                 text = assistant_text_from_payload(payload)
                 if not text.strip():
                     continue
-                events.append(assistant_event(index, entry.get("timestamp"), text))
+                events.append(
+                    assistant_event(index, string_value(entry.get("timestamp")), text)
+                )
                 index += 1
             continue
 
@@ -1025,7 +1081,9 @@ def build_events(  # noqa: C901, PLR0912, PLR0915
             call = tool_call(
                 name, _decode_arguments(arguments), None, tool_result_max_bytes
             )
-            events.append(assistant_event(index, entry.get("timestamp"), "", [call]))
+            events.append(
+                assistant_event(index, string_value(entry.get("timestamp")), "", [call])
+            )
             index += 1
             call_id = payload.get("call_id")
             if isinstance(call_id, str):
@@ -1051,7 +1109,7 @@ def build_events(  # noqa: C901, PLR0912, PLR0915
 def build_raw_envelope(
     source: CodexSource,
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
-) -> Optional[Dict[str, Any]]:
+) -> Optional[Envelope]:
     """Build the JSON envelope for one Codex transcript."""
     entries = source.entries
     events = build_events(
@@ -1072,7 +1130,9 @@ def build_raw_envelope(
     )
 
 
-def _decode_image(data: Any, media_type: Any) -> Optional[Tuple[bytes, str]]:
+def _decode_image(
+    data: JsonValue, media_type: JsonValue
+) -> Optional[Tuple[bytes, str]]:
     if not isinstance(data, str):
         return None
     try:
@@ -1084,7 +1144,7 @@ def _decode_image(data: Any, media_type: Any) -> Optional[Tuple[bytes, str]]:
 
 
 def _image_bytes_and_ext(
-    ref: Dict[str, Any], image_inputs: Optional[ImageInputs] = None
+    ref: Dict[str, JsonValue], image_inputs: Optional[ImageInputs] = None
 ) -> Optional[Tuple[bytes, str]]:
     kind = ref.get("type")
     if kind == "data_url":
@@ -1094,19 +1154,19 @@ def _image_bytes_and_ext(
     if kind == "base64":
         return _decode_image(ref.get("data"), ref.get("media_type"))
     if kind == "path" and isinstance(ref.get("path"), str):
-        return (image_inputs or {}).get(ref["path"])
+        return (image_inputs or {}).get(str(ref["path"]))
     return None
 
 
-def first_timestamp(entries: List[Dict[str, Any]]) -> Optional[str]:
+def first_timestamp(entries: List[Dict[str, JsonValue]]) -> Optional[str]:
     for entry in entries:
-        ts = entry.get("timestamp")
+        ts = string_value(entry.get("timestamp"))
         if isinstance(ts, str) and ts:
             return ts
     return None
 
 
-def session_models(entries: List[Dict[str, Any]]) -> List[str]:
+def session_models(entries: List[Dict[str, JsonValue]]) -> List[str]:
     """Distinct model ids from turn_context payloads, in first-seen order.
 
     Codex records the model on each ``turn_context`` entry; a session can
@@ -1219,14 +1279,14 @@ def read_source(path: Path) -> CodexSource:
 def extract_transcript(
     transcript: Path,
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
-) -> Optional[Dict[str, Any]]:
+) -> Optional[Envelope]:
     """Read one transcript directly into its JSON envelope."""
     return _extract_source(read_source(transcript), tool_result_max_bytes)
 
 
 def _extract_source(
     source: CodexSource, tool_result_max_bytes: int
-) -> Optional[Dict[str, Any]]:
+) -> Optional[Envelope]:
     if not source.entries:
         raise ValueError(f"no parseable JSON entries found in {source.path}")
     return build_raw_envelope(source, tool_result_max_bytes)

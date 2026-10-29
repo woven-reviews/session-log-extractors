@@ -13,6 +13,7 @@ CI checks:
 uv run --locked ruff format --check .
 uv run --locked ruff check .
 uv run --locked mypy src
+uv run --locked lint-imports
 uv run --locked pytest --cov=scripts --cov=src --cov-report=term --cov-report=xml --cov-fail-under=95
 git fetch origin main
 uv run --locked diff-cover coverage.xml --compare-branch=origin/main --fail-under=95
@@ -21,7 +22,11 @@ uv run --locked pytest scripts/test_extract_claude_session_log.py --cov=session_
 uv run --locked pytest scripts/test_extract_copilot_session_log.py --cov=session_log_extractors.extract_copilot_session_log --cov-fail-under=95
 ```
 
-Run mypy in strict mode across the entire source package.
+The locked pre-commit hooks run Ruff, package-wide mypy, and Import Linter.
+Install with `uv run --locked pre-commit install`; run them with
+`uv run --locked pre-commit run --all-files`. CI uses the same tool versions and
+settings. Mypy enforces strict mode, `disallow_any_unimported`, and
+`disallow_any_explicit` across the entire source package.
 Fix type errors through accurate types, typed construction, and checked narrowing.
 Casts and `no_type_check` APIs are banned by Ruff. Do not replace casts with
 broader `Any` annotations, unchecked validators, or ignored errors.
@@ -43,6 +48,11 @@ the threshold.
 
 ## Shared model and export boundaries
 
+Import Linter enforces model/exporter dependency directions and the permitted
+importers of harness schemas. Native-fixture contract tests cover source-free,
+uncapped interpretation and non-mutating export for protocol adopters. Review
+must still assess semantic ownership, naming, and the modeling rules below.
+
 Use `extractor_contract.Extractor[Request, Source]` for public reader/interpreter
 stages. Implementations must satisfy the protocol under mypy and be exercised
 by the native-fixture contract tests. Keep source access in `read_source` and
@@ -57,6 +67,11 @@ meaning is already known. Passing regression tests alone does not establish
 that a model or abstraction is appropriate; review where each semantic concept
 belongs and whether the model duplicates another representation.
 
+When adding shared model fields, choose names and types that distinguish
+recorded data from derived conclusions. Separate values with different meanings
+into separate fields. If that distinction requires a long explanation,
+reconsider the representation before adding comments.
+
 Use ordered, typed messages and their tool calls as the canonical conversation.
 Associate results, questions, and decisions using recorded message/tool IDs
 where available. Do not infer ownership from the most recent human message or
@@ -69,6 +84,11 @@ for opaque payloads. Types describe the fields we understand; they must not
 filter out additional recorded fields. Preserve unsupported tool payloads and
 report the missing schema support explicitly instead of silently treating them
 as fully understood. Schema recognition is distinct from runtime validation.
+
+Keep native tool payload types and schema recognition in harness-owned modules.
+Share genuinely common primitives and explicit type unions where the shared
+contract needs them. Recognize tool names within their harness; matching names
+alone do not establish equivalent payloads or semantics.
 
 Treat output compatibility as a serialization constraint. Exporters should read
 the fields required by their output schema, leaving other model fields available
@@ -93,6 +113,26 @@ filesystem errors, and other cases that existing fixtures cannot meaningfully
 exercise. Do not replace a focused edge-case test with a fixture that no longer
 tests that edge case, or invoke paid fixture generators as part of tests.
 
+## Readability review
+
+Review changed functions for readability even when lint passes. For functions
+exceeding roughly 50 body lines, explicitly check whether they mix
+responsibilities, obscure the main flow, or contain dense nested expressions.
+Treat length as a review signal, not a hard limit. Extract helpers only when
+they name a meaningful operation and make the caller easier to follow; do not
+split code merely to reduce line counts. Long declarative structures, test
+setup, and expected data can remain together when that improves understanding.
+Apply the same judgment to shorter functions with dense or mixed logic.
+
+Name classes and helpers for the responsibility they perform. Distinguish
+records representing domain facts from objects that build, read, or export
+those records; include lifecycle or scope when it helps explain their role.
+For example, `_CopilotSessionBuilder` describes a temporary session assembler
+more clearly than `NativeActivity`. Mark module-internal implementation classes
+and helpers with a leading underscore; reserve public names for intended
+supported interfaces. Avoid adding classes or design-pattern suffixes solely
+to satisfy this naming guidance.
+
 ## Lint policy
 
 Ruff checks application code, fixture generators, and tests. Keep the enabled
@@ -102,7 +142,8 @@ Agents must never add new lint exceptions or broaden existing ones. Do not add
 suppressions, disable rules, exclude files or directories, or raise thresholds
 to make a check pass. Fix the code to satisfy the rules. This also applies to
 adding or broadening type-checker ignores and weakening mypy settings. PR review
-must check the diff for new or broadened lint/type exceptions. Remove existing
+must check the diff for new or broadened lint/type exceptions and weakened
+configuration; these are review responsibilities, not automated guarantees. Remove existing
 ignore comments when fixing or replacing the code they cover; do not add new
 ones.
 
