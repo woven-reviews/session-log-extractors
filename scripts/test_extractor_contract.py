@@ -11,6 +11,7 @@ import pytest
 
 from session_log_extractors import copilot_sources
 from session_log_extractors import extract_claude_session_log as claude
+from session_log_extractors import extract_codex_session_log as codex
 from session_log_extractors import extract_copilot_session_log as copilot
 from session_log_extractors.claude_sources import ClaudeSource
 from session_log_extractors.session_log_envelope import export_session
@@ -65,6 +66,13 @@ def _read_contract_source(extractor, selection, harness, full_result, monkeypatc
             )["data"]["result"]["content"] = "x" * 20000
     else:
         source = extractor.read_source(selection)
+        if harness == "codex" and full_result:
+            # Extend a captured completion past the default export cap.
+            next(
+                e["payload"]
+                for e in source.entries
+                if e["payload"].get("type") == "custom_tool_call_output"
+            )["output"] = "x" * 20000
 
     return source
 
@@ -84,17 +92,23 @@ def _read_contract_source(extractor, selection, harness, full_result, monkeypatc
     + [
         (copilot.EXTRACTOR, case, "copilot", case == "tool_success")
         for case in ["baseline", "image", "tool_success", "continued", "skill"]
-    ],
-    ids=[
-        "claude-baseline",
-        "claude-images",
-        "claude-large-result",
-        "claude-questions",
-        "copilot-baseline",
-        "copilot-image",
-        "copilot-large-result",
-        "copilot-continued",
-        "copilot-skill",
+    ]
+    + [
+        (
+            codex.EXTRACTOR,
+            FIXTURES.parent / "codex" / name,
+            "codex",
+            name == "tool_patch_large.jsonl",
+        )
+        for name in [
+            "slash.jsonl",
+            "image.jsonl",
+            "tool_patch_large.jsonl",
+            "question.jsonl",
+            "denial.jsonl",
+            "model.jsonl",
+            "plan.jsonl",
+        ]
     ],
 )
 def test_public_interpretation_is_source_free_and_export_is_non_mutating(

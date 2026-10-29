@@ -12,33 +12,39 @@ from session_log_extractors import extract_codex_session_log as codex
 from session_log_extractors import extract_copilot_session_log as copilot
 
 
-@pytest.mark.parametrize("extractor", [codex])
-def test_skill_invocations_do_not_load_definitions(extractor, monkeypatch):
-    def forbidden(*args):
-        pytest.fail("Extraction must not load external skill definitions")
+@pytest.mark.parametrize("command_args", ["fixture", None])
+def test_codex_invocations_do_not_load_definitions(command_args, monkeypatch):
+    fixture_root = Path(__file__).parent / "fixtures" / "codex"
+    source = codex.read_source(fixture_root / "slash.jsonl")
+    if command_args is None:
+        # Remove only the captured command arguments to exercise their absence.
+        next(
+            e["payload"] for e in source.entries if e["payload"].get("role") == "user"
+        )["content"][0]["text"] = "/review"
+    # The fixture has no explicit skill call. Add a narrow structured call,
+    # repeated to retain the existing de-duplication assertion.
+    call = {
+        "type": "response_item",
+        "payload": {
+            "type": "function_call",
+            "name": "skills.read",
+            "arguments": '{"package": "recorded-skill"}',
+        },
+    }
+    empty_call = {
+        **call,
+        "payload": {**call["payload"], "arguments": '{"package": ""}'},
+    }
+    source.entries.extend([call, call, empty_call])
 
-    monkeypatch.setattr(extractor, "load_skill_details", forbidden, raising=False)
-    turn = extractor.Turn("use skill", None)
-    turn.add_skill("recorded-skill")
-    turn.add_skill("recorded-skill")
-    turn.add_skill("")
-    assert turn.skills_used == ["recorded-skill"]
+    def forbidden(*args, **kwargs):
+        pytest.fail("Extraction must not read external definitions")
 
-
-@pytest.mark.parametrize("extractor", [codex])
-def test_command_invocations_do_not_load_definitions(extractor, monkeypatch):
-    def forbidden(*args):
-        pytest.fail("Extraction must not load external command definitions")
-
-    monkeypatch.setattr(extractor, "load_command_details", forbidden, raising=False)
-    turn = extractor.Turn("", None)
-    turn.add_command("/recorded-command", "literal arguments")
-    assert (turn.command, turn.command_args) == (
-        "/recorded-command",
-        "literal arguments",
-    )
-    turn.add_command("/recorded-command")
-    assert turn.command_args is None
+    monkeypatch.setattr(Path, "open", forbidden)
+    session = codex.interpret_source(source)
+    assert session["skills_used"] == ["recorded-skill"]
+    user = session["events"][0]
+    assert (user["command"], user["command_args"]) == ("/review", command_args)
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "claude"

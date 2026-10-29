@@ -44,8 +44,8 @@ not generate Markdown or image descriptions.
 Codex filesystem discovery, selection, transcript loading, and optional image
 asset reads live in `session_log_extractors.codex_sources`. The extractor's
 `read_source(path)` loads a `CodexSource` with records, bounded session metadata,
-and image inputs. `build_raw_envelope(source)` and `build_events(entries,
-image_inputs=...)` interpret supplied inputs without filesystem access. Missing
+and image inputs. `interpret_source(source)` returns an uncapped shared `Session`
+without filesystem access; `build_raw_envelope(source)` exports it. Missing
 path inputs retain unavailable-image markers. Export reuses loaded metadata;
 discovery retains the original 50-line ID and 80-line cwd lookup windows.
 
@@ -150,17 +150,28 @@ all required records/assets; interpreters do no source I/O and apply no export
 limits. Selection, connection ownership, diagnostics, and writing remain in the
 CLI. All implementations use the shared exporter rather than overriding export.
 
-Claude implements this protocol in `ClaudeExtractor`; its typed `EXTRACTOR`
-instance is used by production extraction. The existing public functions remain
-compatible. Mypy checks conformance in CI, and `scripts/test_extractor_contract.py`
+Claude, Codex, and Copilot implement this protocol in their public extractor adapters;
+their typed `EXTRACTOR` instances are used by single-session and batch extraction.
+The public reader and envelope functions remain compatible. Mypy checks conformance in CI, and `scripts/test_extractor_contract.py`
 checks signature rejection, source-free interpretation, full results, and
 non-mutating export using native fixtures. The package includes `py.typed` so
 imports retain their annotations when checked outside the source directory.
 
-Codex protocol adoption remains in QUAL-2518: its interpretation still combines
-with envelope construction and applies result caps. Claude and Copilot implement
-the public protocol and return uncapped sessions; the native-fixture contract
-matrix covers both. Package-wide mypy checks all three harnesses.
+Codex uses one native interpreter with ordered messages and calls. It retains
+native identities, collaboration mode, commands, plan updates, skill names,
+changed files, and patch completion records in named model fields. Tool results
+match calls by recorded call ID, including across later human messages; unmatched
+results remain explicit. Denial prose without a call ID stays on its recorded
+message without a guessed tool association. No question-association or authorship
+correction is included. `ToolCall.result_record.content` retains complete native
+results, while `ToolCall.result` retains the existing uncapped textual
+interpretation for JSON compatibility. Missing, null, and empty results stay
+distinct. The exporter alone caps that textual view, without mutating either
+representation. Unsupported tool inputs are retained and reported on stderr.
+The duplicate `Turn`, `build_turns`, and `build_events` paths are removed; callers
+use `interpret_source(CodexSource(...))` and `export_session` instead.
+
+Copilot also implements the public contract and returns uncapped sessions.
 
 ## Shared session/export boundary
 
@@ -173,10 +184,7 @@ truncation flags. Negative limits retain full text. Structured results, nested
 payloads, images, ordering, and missing/null/empty values pass through unchanged.
 The model has no presentation state, adapter base class, or runtime validation.
 
-Codex continues applying its own limits and uses
-`build_envelope(Session(...), tool_result_max_bytes=...)` to assemble its legacy
-envelope. Its interpretation migration remains a separate follow-up. Claude and
-Copilot apply limits through `export_session`; current CLI defaults are unchanged.
+All three harnesses apply limits through `export_session`; CLI defaults are unchanged.
 
 ## Ownership
 
@@ -283,7 +291,7 @@ was **107 findings**: 30 C901, 21 PLR0912, 13 PLR0915, 4 PLR0913, 15 B011,
 10 PT017, 9 I001, 4 B905, and 1 PIE810. The 39 non-complexity findings are fixed
 (imports, exception tests, explicit zip behavior, and redundant startswith). The
 initial 68 complexity findings were recorded as function-level, rule-specific
-exceptions.
+exceptions. The remaining exceptions exist
 solely because the codebase predates lint enforcement. This is temporary debt
 for pre-existing code, not precedent or permission to suppress future violations.
 No directory exclusion or raised threshold hides them.
@@ -296,12 +304,6 @@ Algorithms and interfaces are preserved in this tooling change.
 
 | File (relative to `scripts/` unless shown) | Function | Rules | Removal ticket |
 | --- | --- | --- | --- |
-| `src/session_log_extractors/extract_codex_session_log.py` | `_flatten_result_text` | C901 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |
-| `src/session_log_extractors/extract_codex_session_log.py` | `_structured_answer_for_question` | C901, PLR0912 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |
-| `src/session_log_extractors/extract_codex_session_log.py` | `build_events` | C901, PLR0912, PLR0915 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |
-| `src/session_log_extractors/extract_codex_session_log.py` | `build_turns` | C901, PLR0912, PLR0915 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |
-| `src/session_log_extractors/extract_codex_session_log.py` | `image_refs_from_event` | C901, PLR0912 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |
-| `src/session_log_extractors/extract_codex_session_log.py` | `skill_refs_from_call` | C901 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |
 | `generate_claude_fixtures.py` | `run_case` | C901, PLR0912, PLR0915 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
 | `generate_codex_fixtures.py` | `capture_interactive` | C901, PLR0915 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
 | `generate_codex_fixtures.py` | `clean` | C901, PLR0912 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |

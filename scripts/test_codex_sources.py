@@ -54,7 +54,15 @@ def test_supplied_path_images_are_portable(monkeypatch):
         pytest.fail("interpretation tried to read an asset")
 
     monkeypatch.setattr(Path, "open", forbidden)
-    events = codex.build_events(entries, image_inputs={"/supplied.png": (raw, "png")})
+    session = codex.interpret_source(
+        sources.CodexSource(
+            Path("supplied.jsonl"),
+            entries,
+            image_inputs={"/supplied.png": (raw, "png")},
+        )
+    )
+    assert session is not None
+    events = session["events"]
     images = next(event["images"] for event in events if event.get("images"))
     assert base64.b64decode(images[0]["data"]) == raw
     assert images[0]["media_type"] == "image/png"
