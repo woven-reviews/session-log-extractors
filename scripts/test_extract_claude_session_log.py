@@ -108,37 +108,17 @@ def _question_calls():
     ]
 
 
-def test_skill_tool_use_is_recorded():
-    entries = [
-        {
-            "type": "user",
-            "timestamp": "2026-01-01T00:00:00Z",
-            "message": {"content": "Make a document"},
-        },
-        {
-            "type": "assistant",
-            "timestamp": "2026-01-01T00:00:01Z",
-            "message": {
-                "content": [
-                    {
-                        "type": "tool_use",
-                        "id": "toolu_skill",
-                        "name": "Skill",
-                        "input": {"skill": "documents", "args": ""},
-                    }
-                ]
-            },
-        },
-    ]
-    session = _session(entries)
-    assert session["skills_used"] == ["documents"]
-    assert session["events"][1]["tool_calls"][0]["skill"] == "documents"
-
-
 def test_native_skill_and_command_invocations_are_retained():
     entries = _fixture_entries("skill_command.jsonl")
     session = _session(entries)
     assert session["skills_used"] == ["fixture-skill"]
+    skill_calls = [
+        call
+        for message in session["events"]
+        for call in message.get("tool_calls", [])
+        if call["name"] == "Skill"
+    ]
+    assert [call["skill"] for call in skill_calls] == ["fixture-skill"]
     assert any(
         message.get("command") == "/fixture-command" for message in session["events"]
     )
@@ -817,6 +797,65 @@ def test_apply_plan_decisions_ignores_non_tool_result_blocks():
 def test_permission_denials_from_result_ignores_non_tool_result_blocks():
     entry = {"message": {"content": [{"type": "text", "text": "ignored"}]}}
     assert permission_denials_from_result(entry, {}) == []
+
+
+def test_legacy_plan_helper_consumes_native_matches_and_updates_plan_records():
+    entries = _fixture_entries("plan_modes.jsonl")
+    calls = _calls(entries)
+    records = [
+        {
+            "plan": call["input"]["plan"],
+            "decision": "no decision recorded",
+            "edited_plan": "",
+            "message": "",
+        }
+        for call in calls
+    ]
+    pending = {call["id"]: record for call, record in zip(calls, records, strict=True)}
+    handled = [apply_plan_decisions(entry, pending) for entry in entries]
+    assert sum(handled) == 3
+    assert pending == {}
+    assert [record["decision"] for record in records] == [
+        "approved",
+        "approved",
+        "rejected",
+    ]
+    assert records[0]["edited_plan"] == ""
+    assert records[1]["edited_plan"] == "# Plan\n\nStep one, but smaller."
+    assert records[2]["message"] == "Too big, split it up"
+
+
+@pytest.mark.parametrize("tool_id", [None, "unknown-call"])
+def test_legacy_plan_helper_leaves_unmatched_plans_pending(tool_id):
+    entries = _fixture_entries("plan_modes.jsonl")
+    result = next(entry for entry in entries if _is_tool_result_entry(entry))
+    # Change only the captured result ID to exercise absent/unmatched associations.
+    result["message"]["content"][0]["tool_use_id"] = tool_id
+    pending = {call["id"]: call["plan_decision"] for call in _calls(entries)}
+    original = deepcopy(pending)
+    assert apply_plan_decisions(result, pending) is False
+    assert pending == original
+
+
+@pytest.mark.parametrize(
+    ("fixture", "expected"),
+    [
+        ("continued.jsonl", []),
+        (
+            "permission_denial.jsonl",
+            [{"tool": "Bash", "message": "", "by": "settings"}],
+        ),
+    ],
+)
+def test_legacy_denial_helper_matches_native_result_blocks(fixture, expected):
+    entries = _fixture_entries(fixture)
+    tool_names = {call["id"]: call["name"] for call in _calls(entries)}
+    denials = [
+        denial
+        for entry in entries
+        for denial in permission_denials_from_result(entry, tool_names)
+    ]
+    assert denials == expected
 
 
 def test_activity_keeps_commands_shell_subagents_questions_and_files():

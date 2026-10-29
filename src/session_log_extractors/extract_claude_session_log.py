@@ -519,102 +519,98 @@ def _parse_chosen(
     return val, chosen
 
 
+def _answer_questions(
+    questions: Sequence[QuestionAnswer], result_text: str
+) -> List[QuestionAnswer]:
+    """Interpret answers for the questions on an already matched tool call."""
+    answers: List[QuestionAnswer] = []
+    for question in questions:
+        options = question["options"]
+        value, chosen = _parse_chosen(question["question"], options, result_text)
+        answers.append(
+            QuestionAnswer(
+                question=question["question"],
+                header=question["header"],
+                options=options,
+                chosen_labels=[option["label"] for option in chosen],
+                answer_text=value,
+            )
+        )
+    return answers
+
+
+def _apply_plan_result(record: PlanDecision, result_text: str) -> None:
+    """Update the plan on an already matched call with its recorded decision."""
+    decision, edited, message = parse_plan_decision(result_text)
+    record["decision"] = decision
+    # An approval can echo the unchanged plan under the edited-plan heading.
+    record["edited_plan"] = (
+        edited if edited and edited.strip() != (record["plan"] or "").strip() else ""
+    )
+    record["message"] = message
+
+
+def _interpret_permission_denial(
+    tool: str, result_text: str
+) -> PermissionDenial | None:
+    """Interpret a refusal for the tool whose result has already been matched."""
+    message = parse_permission_denial(result_text)
+    if message is None:
+        return None
+    return PermissionDenial(
+        tool=tool,
+        message=message,
+        by="settings" if _PERMISSION_DENIED_TOOL.match(result_text) else "user",
+    )
+
+
 def option_qa_from_result(
     entry: Dict[str, JsonValue],
     pending_questions: Dict[str, Sequence[QuestionAnswer] | JsonValue],
 ) -> List[QuestionAnswer]:
-    """Build structured Q/options/choice records for an AskUserQuestion result.
-
-    Returns [] for any tool_result that isn't a tracked pop-up question.
-    """
-    out: List[QuestionAnswer] = []
+    """Compatibility helper matching native result blocks to pending questions."""
+    answers: List[QuestionAnswer] = []
     for block in _content_blocks(entry):
         if not isinstance(block, dict) or block.get("type") != "tool_result":
             continue
-        qid = block.get("tool_use_id")
-        questions = pending_questions.get(qid) if isinstance(qid, str) else None
-        if not isinstance(questions, (list, tuple)) or not questions:
-            continue
-        result_text = _result_block_text(block)
-        for q in questions:
-            if not isinstance(q, dict):
-                continue
-            options = _question_options(q.get("options"))
-            val, chosen = _parse_chosen(
-                string_value(q.get("question")) or "", options, result_text
-            )
-            out.append(
-                {
-                    "question": string_value(q.get("question")) or "",
-                    "header": string_value(q.get("header")) or "",
-                    "options": options,
-                    "chosen_labels": [o["label"] for o in chosen],
-                    "answer_text": val,
-                }
-            )
-    return out
+        tool_id = block.get("tool_use_id")
+        questions = pending_questions.get(tool_id) if isinstance(tool_id, str) else None
+        answers.extend(
+            _answer_questions(_question_records(questions), _result_block_text(block))
+        )
+    return answers
 
 
 def apply_plan_decisions(
     entry: Dict[str, JsonValue], pending_plans: Dict[str, PlanDecision]
 ) -> bool:
-    """Record the human's approve/reject decision on any plan in this result.
-
-    ``pending_plans`` maps a tool_use id to the plan record already attached to
-    the turn, so filling it in here updates the interpreted activity. Returns True when
-    the entry was a plan decision (and so should not also be folded in as a
-    generic result note or permission denial).
-    """
+    """Compatibility helper consuming matched plans from the caller's pending map."""
     handled = False
     for block in _content_blocks(entry):
         if not isinstance(block, dict) or block.get("type") != "tool_result":
             continue
-        tuid = block.get("tool_use_id")
-        record = pending_plans.pop(tuid, None) if isinstance(tuid, str) else None
-        if record is None:
-            continue
-        decision, edited, message = parse_plan_decision(_result_block_text(block))
-        record["decision"] = decision
-        # The approval result always carries an "edited by user" copy of the
-        # plan, edited or not — only keep it when it actually differs.
-        record["edited_plan"] = (
-            edited
-            if edited and edited.strip() != (record["plan"] or "").strip()
-            else ""
-        )
-        record["message"] = message
-        handled = True
+        tool_id = block.get("tool_use_id")
+        record = pending_plans.pop(tool_id, None) if isinstance(tool_id, str) else None
+        if record is not None:
+            _apply_plan_result(record, _result_block_text(block))
+            handled = True
     return handled
 
 
 def permission_denials_from_result(
     entry: Dict[str, JsonValue], tool_uses: Dict[str, str]
 ) -> List[PermissionDenial]:
-    """Build a record for each permission the human denied in this tool_result.
-
-    ``tool_uses`` maps a tool_use id to its recorded tool label ("Name — descriptor")
-    so we can name the tool that was denied. Returns [] when nothing was denied.
-    """
-    out: List[PermissionDenial] = []
+    """Compatibility helper matching native result blocks to recorded tool labels."""
+    denials: List[PermissionDenial] = []
     for block in _content_blocks(entry):
         if not isinstance(block, dict) or block.get("type") != "tool_result":
             continue
-        text = _result_block_text(block)
-        message = parse_permission_denial(text)
-        if message is None:
-            continue
-        tuid = block.get("tool_use_id")
-        out.append(
-            {
-                "tool": tool_uses.get(tuid, "tool")
-                if isinstance(tuid, str)
-                else "tool",
-                "message": message,
-                # Don't-ask/deny rules refuse without a human in the loop.
-                "by": "settings" if _PERMISSION_DENIED_TOOL.match(text) else "user",
-            }
-        )
-    return out
+        tool_id = block.get("tool_use_id")
+        tool = tool_uses.get(tool_id, "tool") if isinstance(tool_id, str) else "tool"
+        denial = _interpret_permission_denial(tool, _result_block_text(block))
+        if denial is not None:
+            denials.append(denial)
+    return denials
 
 
 def _message_identity(entry: Dict[str, JsonValue]) -> NativeIdentity:
@@ -647,21 +643,26 @@ def _question_options(value: object) -> List[QuestionOption]:
     return [option for option in value if is_question_option(option)]
 
 
+def _question_records(value: object) -> List[QuestionAnswer]:
+    """Read known question fields while retaining additional option fields."""
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [
+        QuestionAnswer(
+            question=string_value(question.get("question")) or "",
+            header=string_value(question.get("header")) or "",
+            options=_question_options(question.get("options")),
+        )
+        for question in value
+        if isinstance(question, dict)
+    ]
+
+
 def _questions(tool_input: object) -> List[QuestionAnswer]:
     if not isinstance(tool_input, dict):
         return []
     questions = tool_input.get("questions")
-    if not isinstance(questions, list):
-        return []
-    return [
-        QuestionAnswer(
-            question=string_value(q.get("question")) or "",
-            header=string_value(q.get("header")) or "",
-            options=_question_options(q.get("options")),
-        )
-        for q in questions
-        if isinstance(q, dict)
-    ]
+    return _question_records(questions) if isinstance(questions, list) else []
 
 
 class _ClaudeInterpreter:
@@ -820,28 +821,23 @@ class _ClaudeInterpreter:
                 self.unmatched_tool_results.append(record)
                 continue
             call["result_record"] = record
-            call["result"] = _result_block_text(block)
+            result_text = _result_block_text(block)
+            call["result"] = result_text
             if block.get("is_error"):
                 call["is_error"] = True
-            self.decision(call, block)
+            self.decision(call, result_text)
 
-    def decision(self, call: ToolCall, block: Dict[str, JsonValue]) -> None:
-        # Apply existing semantic parsers to this ID-matched call only. A later
-        # user message, or another result in the same entry, cannot change ownership.
-        entry: Dict[str, JsonValue] = {"message": {"content": [block]}}
-        tool_id = call["id"]
+    def decision(self, call: ToolCall, result_text: str) -> None:
         if "plan_decision" in call:
-            apply_plan_decisions(entry, {tool_id: call["plan_decision"]})
+            _apply_plan_result(call["plan_decision"], result_text)
             return
         if "questions" in call:
-            call["questions"] = option_qa_from_result(
-                entry, {tool_id: call["questions"]}
-            )
+            call["questions"] = _answer_questions(call["questions"], result_text)
         descriptor = tool_descriptor(call["name"], call["input"])
         label = f"{call['name']} — {descriptor}" if descriptor else call["name"]
-        denials = permission_denials_from_result(entry, {tool_id: label})
-        if denials:
-            call["permission_denial"] = denials[0]
+        denial = _interpret_permission_denial(label, result_text)
+        if denial is not None:
+            call["permission_denial"] = denial
 
 
 def build_events(
