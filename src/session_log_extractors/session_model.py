@@ -9,12 +9,9 @@ session semantics remain available on the model for other consumers.
 
 from typing import Literal, Never, NotRequired, Required, TypeAlias, TypedDict
 
-from session_log_extractors.tool_inputs import (
-    JsonValue,
-    QuestionOption,
-    ToolInput,
-    ToolInputSchema,
-)
+from session_log_extractors.json_types import JsonValue
+from session_log_extractors.question_types import QuestionOption
+from session_log_extractors.tool_inputs import ToolInput, ToolInputSchema
 
 
 class Image(TypedDict, total=False):
@@ -47,7 +44,12 @@ class PlanDecision(TypedDict):
 
 
 class PermissionDenial(TypedDict):
-    """A refused tool action and the recorded source of that refusal."""
+    """A normalized refusal summary attached to its evidenced tool call.
+
+    This asserts a denial, unlike PermissionDecision's lifecycle status and
+    native result label. Adapters must establish denial and call ownership from
+    recorded evidence; a native decision label alone does not create this record.
+    """
 
     tool: str
     message: str
@@ -71,6 +73,9 @@ class NativeIdentity(TypedDict, total=False):
     id: str
     parent_id: str
     message_id: str
+    originating_message_id: str
+    interaction_id: str
+    turn_id: str
 
 
 class ToolResult(NativeIdentity):
@@ -80,6 +85,38 @@ class ToolResult(NativeIdentity):
     ts: str | None
     content: JsonValue
     is_error: bool
+
+
+class ToolExecution(NativeIdentity, total=False):
+    """A recorded start of a tool execution, distinct from its request.
+
+    Identity, timestamp, name, and input describe the execution-start record.
+    A harness that does not record a start leaves ToolCall.execution absent;
+    adapters must not synthesize a start from the request or result.
+    """
+
+    ts: str | None
+    name: str
+    input: ToolInput
+
+
+class PermissionDecision(TypedDict):
+    """A permission request's lifecycle, independent of normalized denial facts.
+
+    Status records whether a completion was observed. native_decision retains
+    the harness's result label verbatim, including unfamiliar labels; None
+    means no label was recorded. Neither field asserts approval, denial, or an
+    author. tool describes the requested action and need not be a tool name.
+    Request IDs belong to the source's permission lifecycle, not to tool calls.
+    ts is the completion time, or the request time when pending or untimed.
+    """
+
+    tool: str
+    request_id: str | None
+    status: Literal["pending", "completed"]
+    native_decision: str | None
+    feedback: str
+    ts: str | None
 
 
 class ToolCall(TypedDict, total=False):
@@ -95,6 +132,7 @@ class ToolCall(TypedDict, total=False):
     is_error: bool
     error: JsonValue
     result_record: ToolResult
+    execution: ToolExecution
     questions: list[QuestionAnswer]
     plan_decision: PlanDecision
     permission_denial: PermissionDenial
@@ -137,6 +175,32 @@ class Event(MessageContent, total=False):
 Message: TypeAlias = UserMessage | AssistantMessage | Event
 
 
+class FileActivityProvenance(TypedDict):
+    """Native evidence for file activity, independent of shared message order.
+
+    record_type identifies the harness-qualified source table or record kind.
+    turn_index is a recorded source index; it never indexes Session.events.
+    first_seen_at is a source-reported first-seen time, not a modification time.
+    Missing source fields remain None.
+    """
+
+    record_type: str
+    turn_index: int | None
+    first_seen_at: str | None
+
+
+class FileActivity(TypedDict):
+    """Evidence that a named tool touched a path, retaining its native provenance.
+
+    Activity alone establishes neither a read/write action nor a modification.
+    files_changed holds modification facts established separately by adapters.
+    """
+
+    file_path: str
+    tool_name: str
+    provenance: FileActivityProvenance
+
+
 class Session(TypedDict):
     """Interpreted session supplied directly to the shared exporter."""
 
@@ -150,4 +214,6 @@ class Session(TypedDict):
     subagent_count: NotRequired[int]
     unmatched_tool_results: NotRequired[list[ToolResult]]
     unsupported_tools: NotRequired[list[str]]
+    permission_decisions: NotRequired[list[PermissionDecision]]
     files_changed: NotRequired[list[str]]
+    file_activity: NotRequired[list[FileActivity]]

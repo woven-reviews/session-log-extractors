@@ -57,6 +57,11 @@ meaning is already known. Passing regression tests alone does not establish
 that a model or abstraction is appropriate; review where each semantic concept
 belongs and whether the model duplicates another representation.
 
+When adding shared model fields, choose names and types that distinguish
+recorded data from derived conclusions. Separate values with different meanings
+into separate fields. If that distinction requires a long explanation,
+reconsider the representation before adding comments.
+
 Use ordered, typed messages and their tool calls as the canonical conversation.
 Associate results, questions, and decisions using recorded message/tool IDs
 where available. Do not infer ownership from the most recent human message or
@@ -69,6 +74,11 @@ for opaque payloads. Types describe the fields we understand; they must not
 filter out additional recorded fields. Preserve unsupported tool payloads and
 report the missing schema support explicitly instead of silently treating them
 as fully understood. Schema recognition is distinct from runtime validation.
+
+Keep native tool payload types and schema recognition in harness-owned modules.
+Share genuinely common primitives and explicit type unions where the shared
+contract needs them. Recognize tool names within their harness; matching names
+alone do not establish equivalent payloads or semantics.
 
 Treat output compatibility as a serialization constraint. Exporters should read
 the fields required by their output schema, leaving other model fields available
@@ -92,6 +102,26 @@ Hand-authored inputs remain appropriate for malformed data, missing files,
 filesystem errors, and other cases that existing fixtures cannot meaningfully
 exercise. Do not replace a focused edge-case test with a fixture that no longer
 tests that edge case, or invoke paid fixture generators as part of tests.
+
+## Readability review
+
+Review changed functions for readability even when lint passes. For functions
+exceeding roughly 50 body lines, explicitly check whether they mix
+responsibilities, obscure the main flow, or contain dense nested expressions.
+Treat length as a review signal, not a hard limit. Extract helpers only when
+they name a meaningful operation and make the caller easier to follow; do not
+split code merely to reduce line counts. Long declarative structures, test
+setup, and expected data can remain together when that improves understanding.
+Apply the same judgment to shorter functions with dense or mixed logic.
+
+Name classes and helpers for the responsibility they perform. Distinguish
+records representing domain facts from objects that build, read, or export
+those records; include lifecycle or scope when it helps explain their role.
+For example, `_CopilotSessionBuilder` describes a temporary session assembler
+more clearly than `NativeActivity`. Mark module-internal implementation classes
+and helpers with a leading underscore; reserve public names for intended
+supported interfaces. Avoid adding classes or design-pattern suffixes solely
+to satisfy this naming guidance.
 
 ## Lint policy
 

@@ -89,8 +89,13 @@ actions; tool calls retain native IDs, results, questions, plan decisions,
 permission denials, and skill invocations. Results and decisions attach to their
 call by native ID even across later human messages. Native message/parent IDs
 and complete result records remain available on the model. Known tool inputs
-have named schemas, including `BashInput` and `ReadInput`; opaque values use the
-recursive `JsonValue` type. Schema recognition preserves additional keys and
+have named schemas in `tool_inputs/claude.py`, including `BashInput` and
+`ReadInput`. Copilot owns its payload types and tool-name recognition in
+`tool_inputs/copilot.py`, with explicit `CopilotBash`, `CopilotSkill`, and file-tool
+schema identifiers. Each extractor recognizes only its own tool vocabulary.
+`tool_inputs/__init__.py` combines the harness types for the shared model without
+a global registry. Opaque values use `json_types.JsonValue`; the question-option
+shape used by the shared model lives in `question_types.py`. Schema recognition preserves additional keys and
 does not validate payloads at runtime. `ToolCall.input_schema` and
 `Session.unsupported_tools` identify unsupported names or non-object inputs;
 the CLI reports them on stderr while preserving their payloads. Unmatched results
@@ -106,8 +111,31 @@ Copilot readers and discovery live in `session_log_extractors.copilot_sources`.
 `read_source(connection, session)` loads metadata, required database rows, models,
 and ordered state records into `CopilotSource`. The extractor's `read_source`
 also snapshots referenced external image bytes, following the Codex reader pattern.
-`interpret_source(source)` returns a shared `Session` without database or filesystem
-access; `build_raw_envelope(source)` exports it. For replay, construct `CopilotSource`
+`EXTRACTOR: Extractor[CopilotRequest, CopilotSource]` exposes the production stages.
+`CopilotRequest` holds the selected metadata and caller-owned connection.
+`interpret_source(source)` returns an uncapped shared `Session` without database
+or filesystem access; `build_raw_envelope(source)` applies `export_session`.
+Ordered native messages own their tool requests and images; results join by
+recorded call ID. Repeated and orphan results remain in `unmatched_tool_results`,
+and the complete native result stays in `result_record` beside the compatible
+textual JSON result. Database-only inputs retain file targets by `turn_index`.
+Recorded database file activity stays in `file_activity`, including when native
+tools supply the JSON. `FileActivity` holds the path and tool name;
+`FileActivity.provenance` identifies the native record type and preserves its
+source turn index and first-seen time. Source indices never index `Session.events`,
+and first-seen times do not assert modification times. File activity alone does
+not populate `files_changed` or infer read/write actions.
+
+`PermissionDecision.status` records whether a completion was observed (`pending`
+or `completed`). `native_decision` retains the harness's result label verbatim;
+a missing label stays `None`, and a pending request has no result label.
+Recorded request IDs join permission lifecycle records, without inferred tool-call
+ownership. These session facts do not automatically create `PermissionDenial`,
+which is a normalized refusal summary attached to an evidenced tool call.
+`ToolExecution` likewise represents a recorded execution start; adapters leave it
+absent when only a request or result was recorded.
+Unsupported tool schemas are listed in `unsupported_tools`; opaque inputs survive.
+For replay, construct `CopilotSource`
 directly from supplied rows, state records, and optional `image_inputs`.
 State JSONL is read and decoded once per extraction. Image bytes are keyed by
 recorded path, with media type inferred per reference; inline images remain in
@@ -242,7 +270,6 @@ Algorithms and interfaces are preserved in this tooling change.
 | `src/session_log_extractors/extract_codex_session_log.py` | `build_turns` | C901, PLR0912, PLR0915 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |
 | `src/session_log_extractors/extract_codex_session_log.py` | `image_refs_from_event` | C901, PLR0912 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |
 | `src/session_log_extractors/extract_codex_session_log.py` | `skill_refs_from_call` | C901 | [QUAL-2518](https://linear.app/andela/issue/QUAL-2518) |
-| `src/session_log_extractors/extract_copilot_session_log.py` | `_build_turn_objects` | C901, PLR0912, PLR0915 | [QUAL-2519](https://linear.app/andela/issue/QUAL-2519) |
 | `generate_claude_fixtures.py` | `run_case` | C901, PLR0912, PLR0915 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
 | `generate_codex_fixtures.py` | `capture_interactive` | C901, PLR0915 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
 | `generate_codex_fixtures.py` | `clean` | C901, PLR0912 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |

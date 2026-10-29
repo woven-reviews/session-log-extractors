@@ -11,7 +11,7 @@ import pytest
 
 from session_log_extractors import copilot_sources as sources
 from session_log_extractors import extract_copilot_session_log as copilot
-from session_log_extractors.session_log_envelope import build_envelope
+from session_log_extractors.session_log_envelope import export_session
 
 FIXTURES = Path(__file__).parent / "fixtures" / "copilot"
 CASES = json.loads((FIXTURES / "manifest.json").read_text())["cases"]
@@ -80,7 +80,7 @@ def test_supplied_source_interprets_to_shared_session_without_io(monkeypatch):
     assert session["harness"] == "copilot"
     assert session["started_at"] == metadata["created_at"]
     assert session["models"] == models
-    assert build_envelope(session) == expected
+    assert export_session(session) == expected
     assert copilot.build_raw_envelope(source) == expected
     assert source.image_inputs == {}
 

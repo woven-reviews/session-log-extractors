@@ -28,6 +28,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TypedDict
 
+from session_log_extractors.json_types import JsonValue
 from session_log_extractors.session_model import (
     AssistantMessage,
     Event,
@@ -37,7 +38,6 @@ from session_log_extractors.session_model import (
     ToolCall,
     UserMessage,
 )
-from session_log_extractors.tool_inputs import JsonValue
 
 SCHEMA = "raw-session-log/1"
 
