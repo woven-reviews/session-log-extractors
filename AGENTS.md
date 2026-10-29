@@ -104,6 +104,15 @@ split code merely to reduce line counts. Long declarative structures, test
 setup, and expected data can remain together when that improves understanding.
 Apply the same judgment to shorter functions with dense or mixed logic.
 
+Name classes and helpers for the responsibility they perform. Distinguish
+records representing domain facts from objects that build, read, or export
+those records; include lifecycle or scope when it helps explain their role.
+For example, `_CopilotSessionBuilder` describes a temporary session assembler
+more clearly than `NativeActivity`. Mark module-internal implementation classes
+and helpers with a leading underscore; reserve public names for intended
+supported interfaces. Avoid adding classes or design-pattern suffixes solely
+to satisfy this naming guidance.
+
 ## Lint policy
 
 Ruff checks application code, fixture generators, and tests. Keep the enabled

@@ -620,8 +620,8 @@ def _new_call(name: str, arguments: JsonValue) -> ToolCall:
     )
 
 
-class NativeActivity:
-    """Build canonical messages, joining only recorded tool-call identities."""
+class _CopilotSessionBuilder:
+    """Assemble one session, joining tool activity by recorded identities."""
 
     def __init__(self, source: CopilotSource):
         self.source = source
@@ -817,17 +817,17 @@ def _file_activity(source: CopilotSource) -> list[FileActivity]:
 
 
 def _apply_database_fallbacks(
-    source: CopilotSource, activity: NativeActivity
+    source: CopilotSource, builder: _CopilotSessionBuilder
 ) -> list[Message]:
     """Supplement partial native activity without guessing message ownership."""
-    events = activity.events
+    events = builder.events
     has_native_messages = any(
         record.get("type") in ("user.message", "assistant.message")
         for record in source.state_records
     )
     if not has_native_messages:
-        events = _database_events(source, include_files=not activity.calls) + events
-    if not activity.calls and events and any(event.get("id") for event in events):
+        events = _database_events(source, include_files=not builder.calls) + events
+    if not builder.calls and events and any(event.get("id") for event in events):
         events.extend(_file_events(source))
     return events
 
@@ -856,9 +856,9 @@ def _permission_decisions(source: CopilotSource) -> list[PermissionDecision]:
 
 def interpret_source(source: CopilotSource) -> Session | None:
     """Interpret complete supplied activity without I/O or export limits."""
-    activity = NativeActivity(source)
-    activity.build()
-    conversation = _apply_database_fallbacks(source, activity)
+    builder = _CopilotSessionBuilder(source)
+    builder.build()
+    conversation = _apply_database_fallbacks(source, builder)
     events = [
         event
         for event in conversation
@@ -881,7 +881,7 @@ def interpret_source(source: CopilotSource) -> Session | None:
         started_at=source.session.get("created_at"),
         models=source.models,
         skills_used=_session_skills(source, calls),
-        unmatched_tool_results=activity.unmatched,
+        unmatched_tool_results=builder.unmatched,
         file_activity=_file_activity(source),
         unsupported_tools=sorted(unsupported_tools),
         permission_decisions=_permission_decisions(source),
