@@ -5,15 +5,19 @@
 Use harness, then exact observed CLI version, then capture run for evidence. Use `claude`, `codex`, and `copilot` as harness names. A UTC timestamp is a suitable run ID; it is not a substitute for native session IDs.
 
 ```text
-skills/
-  capture-native-session/
-    SKILL.md
-    references/
-      claude.md
-      codex.md
-      copilot.md
-      conversation-coverage.md
-      evidence-and-validation.md
+.agents/
+  skills/
+    capture-native-session/
+      SKILL.md
+      references/
+        claude.md
+        codex.md
+        copilot.md
+        conversation-coverage.md
+        evidence-and-validation.md
+.claude/
+  skills/
+    capture-native-session -> ../../.agents/skills/capture-native-session
 captures/                              # untracked; sanitized evidence only
   <harness>/
     <cli-version>/
