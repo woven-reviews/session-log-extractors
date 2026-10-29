@@ -4,7 +4,7 @@ These seven native fixtures cover the captured shapes recorded in [QUAL-2400](ht
 
 ## Regenerate
 
-Run `python3 scripts/generate_codex_fixtures.py` from the repository root with a logged-in `codex` CLI for the headless captures, then `python3 scripts/generate_codex_fixtures.py --interactive` for Plan mode, answered question, and declined permission captures. Both commands make model calls. Each case runs in a temporary workspace. The headless cases use `codex exec --json --ignore-user-config`; the interactive cases use the `codex app-server` protocol and read its saved native rollout JSONL, not its JSON-RPC notification stream. The model case resumes its first thread under `gpt-6-luna`. The image case attaches `pixel.png`, a 64×64 synthetic test asset enlarged from the existing one-pixel Copilot fixture; the 1×1 source was too small for this Codex CLI to process. The script finds only the new thread IDs, retains relevant native records, strips startup and mode instructions and unrelated tool output, redacts home/workspace paths, checks each capture's shape, and stages all outputs before replacement. Session IDs and timestamps vary on regeneration. Review the diff before committing.
+Run `python3 scripts/generate_codex_fixtures.py` from the repository root with a logged-in `codex` CLI for the headless captures, then `python3 scripts/generate_codex_fixtures.py --interactive` for Plan mode, answered question, and declined permission captures. Both commands make model calls. Each case runs in a temporary workspace. The headless cases use `codex exec --json --ignore-user-config`; the interactive cases use the `codex app-server` protocol and read its saved native rollout JSONL, not its JSON-RPC notification stream. The model case resumes its first thread under `gpt-6-luna`. The image case attaches `pixel.png`, a 64×64 synthetic test asset enlarged from the existing one-pixel Copilot fixture; the 1×1 source was too small for this Codex CLI to process. The script finds only the new thread IDs, retains relevant native records including startup messages of every role, per-content kinds/provenance, message IDs, timestamps, native envelope metadata, session source, and agent-message authors/recipients; selects focused tool output; redacts home/workspace paths, checks each capture's shape, and stages all outputs before replacement. Session IDs and timestamps vary on regeneration. Review the diff before committing.
 
 | QUAL-2400 shape | Classification and evidence |
 | --- | --- |
@@ -20,3 +20,11 @@ Run `python3 scripts/generate_codex_fixtures.py` from the repository root with a
 | 10. Large tool result | **Headless-generatable:** `tool_patch_large.jsonl` contains thirty repeated tool-output lines. The native result is checked for truncation at a 64-byte limit; large `function_call_output` values remain covered inline. The native `question.jsonl` contains a shorter `function_call_output`. |
 
 The extractor handles the captured native tool and patch records while retaining parser branches for uncaptured variants. Verify with `pytest -q scripts/test_extract_codex_session_log.py scripts/test_generate_codex_fixtures.py` and both coverage gates in `AGENTS.md`.
+
+The cleaner preserves `internal_chat_message_metadata_passthrough`, including
+`content_item_kinds` and `content_item_metadata[].provenance`, without changing
+block order or alignment. Session account/base instructions and unrelated
+reasoning/usage records remain excluded; turn-context collaboration settings
+retain the mode only. Home/workspace paths and emails are redacted throughout
+retained records, including nested provenance. The committed 2026-10-15 fixtures
+predate this cleaner fix and still omit this evidence until regeneration.

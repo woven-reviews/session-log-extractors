@@ -44,97 +44,73 @@ INTERACTIVE_PROMPTS = {
 }
 
 
-# Existing capture validation; remove in QUAL-2547.
-def clean(entries: list[dict], workspace: Path) -> list[dict]:  # noqa: C901, PLR0912
-    """Retain native extractor fields, excluding account and startup instructions."""
+def _fixture_payload(entry: dict) -> dict | None:
+    """Select record kinds while preserving complete conversation payloads."""
+    kind = entry.get("type")
+    payload = entry.get("payload", {})
+    if kind == "session_meta":
+        return {
+            key: payload[key]
+            for key in ("id", "cwd", "source", "originator", "cli_version")
+            if key in payload
+        }
+    if kind == "turn_context":
+        context = {
+            key: payload[key]
+            for key in ("turn_id", "cwd", "model", "collaboration_mode")
+            if key in payload
+        }
+        mode = context.get("collaboration_mode")
+        if isinstance(mode, dict):
+            context["collaboration_mode"] = {"mode": mode.get("mode")}
+        return context
+    if kind == "response_item" and payload.get("type") in {
+        "message",
+        "agent_message",
+        "function_call",
+        "custom_tool_call",
+        "function_call_output",
+        "custom_tool_call_output",
+    }:
+        return payload
+    if kind == "event_msg":
+        if payload.get("type") == "item_completed":
+            return (
+                payload
+                if payload.get("item", {}).get("type") in {"FileChange", "Plan"}
+                else None
+            )
+        if payload.get("type") in {"user_message", "patch_apply_end", "task_started"}:
+            return payload
+    if kind == "inter_agent_communication_metadata":
+        return payload
+    return None
+
+
+def clean(entries: list[dict], workspace: Path) -> list[dict]:
+    """Retain conversation evidence and startup messages, then redact private data.
+
+    Preserve native envelope and payload fields, including per-block provenance,
+    IDs, timestamps, and agent authors. Account/base-instruction fields in session
+    metadata and unrelated record kinds stay outside these focused captures.
+    """
     kept = []
     for entry in entries:
-        kind = entry.get("type")
-        payload = entry.get("payload", {})
-        if kind == "session_meta":
-            payload = {key: payload[key] for key in ("id", "cwd") if key in payload}
-        elif kind == "turn_context":
-            payload = {
-                key: payload[key]
-                for key in ("cwd", "model", "collaboration_mode")
-                if key in payload
-            }
-            mode = payload.get("collaboration_mode")
-            if isinstance(mode, dict):
-                payload["collaboration_mode"] = {"mode": mode.get("mode")}
-        elif kind == "response_item":
-            if payload.get("type") == "message":
-                if payload.get("role") not in ("user", "assistant"):
-                    continue
-                if payload.get("role") == "user" and "# AGENTS.md instructions" in str(
-                    payload.get("content")
-                ):
-                    continue
-                payload = {
-                    key: payload[key]
-                    for key in ("type", "role", "content")
-                    if key in payload
-                }
-            elif payload.get("type") in ("function_call", "custom_tool_call"):
-                payload = {
-                    key: payload[key]
-                    for key in (
-                        "type",
-                        "name",
-                        "call_id",
-                        "arguments",
-                        "input",
-                        "status",
-                    )
-                    if key in payload
-                }
-            elif payload.get("type") in (
-                "function_call_output",
-                "custom_tool_call_output",
-            ):
-                payload = {
-                    key: payload[key]
-                    for key in ("type", "call_id", "output")
-                    if key in payload
-                }
-            else:
-                continue
-        elif kind == "event_msg":
-            if payload.get("type") == "item_completed":
-                if payload.get("item", {}).get("type") not in ("FileChange", "Plan"):
-                    continue
-                payload = {"type": "item_completed", "item": payload["item"]}
-            elif payload.get("type") not in (
-                "user_message",
-                "patch_apply_end",
-                "task_started",
-            ):
-                continue
-            else:
-                payload = {
-                    key: payload[key]
-                    for key in (
-                        "type",
-                        "message",
-                        "images",
-                        "local_images",
-                        "changes",
-                        "collaboration_mode_kind",
-                    )
-                    if key in payload
-                }
-        else:
-            continue
-        kept.append(
-            {"timestamp": entry.get("timestamp"), "type": kind, "payload": payload}
-        )
+        payload = _fixture_payload(entry)
+        if payload is not None:
+            kept.append({**entry, "payload": payload})
 
     raw = json.dumps(kept, ensure_ascii=False)
-    for path in sorted(
-        {str(workspace), str(workspace.resolve())}, key=len, reverse=True
-    ):
-        raw = raw.replace(path, "/workspace")
-    raw = raw.replace(str(Path.home()), "/home/fixture-user")
+    temporary_root = Path(tempfile.gettempdir())
+    replacements = {
+        str(temporary_root): "/tmp",
+        str(temporary_root.resolve()): "/tmp",
+        str(Path.home()): "/home/fixture-user",
+        str(workspace): "/workspace",
+        str(workspace.resolve()): "/workspace",
+    }
+    for path in sorted(replacements, key=len, reverse=True):
+        raw = raw.replace(path, replacements[path])
     raw = EMAIL.sub("fixture@example.invalid", raw)
     if any(
         value in raw

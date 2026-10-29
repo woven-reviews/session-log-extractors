@@ -2,6 +2,8 @@
 
 import json
 import queue
+import tempfile
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,6 +18,89 @@ from session_log_extractors.extract_codex_session_log import (
 from session_log_extractors.session_log_envelope import export_session
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "codex"
+
+
+@pytest.mark.parametrize("role", ["user", "assistant", "developer", "system"])
+def test_clean_preserves_message_provenance_startup_and_identity(role, tmp_path):
+    rows = load_entries(FIXTURES / "slash.jsonl")
+    original = next(row for row in rows if row["payload"].get("role") == "user")
+    # Restore the native metadata shape removed by the old cleaner; vary role
+    # and content to ensure neither startup text nor role filters discard it.
+    original["payload"].update(
+        {
+            "role": role,
+            "id": "message-id",
+            "content": [{"type": "input_text", "text": "# AGENTS.md instructions"}],
+            "internal_chat_message_metadata_passthrough": {
+                "turn_id": "turn-id",
+                "create_time": 1793294515.163969,
+                "content_item_kinds": ["agents_md.instructions"],
+                "content_item_metadata": [{"provenance": {"type": "agents_md"}}],
+                "future_evidence": {"values": [None, False, 1]},
+            },
+        }
+    )
+    original["ordinal"] = 7
+    original["metadata"] = {"client_authored": False, "user_input_order": 0}
+    before = deepcopy(original)
+    cleaned = generator.clean(generator.select("slash", [original]), tmp_path)
+    assert cleaned == [before]
+    assert original == before
+
+
+def test_clean_redacts_paths_and_emails_inside_provenance(tmp_path):
+    rows = load_entries(FIXTURES / "slash.jsonl")
+    original = next(row for row in rows if row["payload"].get("role") == "user")
+    original["payload"]["internal_chat_message_metadata_passthrough"] = {
+        "content_item_kinds": ["user.text"],
+        "content_item_metadata": [
+            {
+                "provenance": {
+                    "type": "user",
+                    "path": str(tmp_path / "instructions.md"),
+                    "home": str(Path.home() / "notes.md"),
+                    "email": "private@example.org",
+                }
+            }
+        ],
+    }
+    cleaned = generator.clean([original], tmp_path)
+    provenance = cleaned[0]["payload"]["internal_chat_message_metadata_passthrough"][
+        "content_item_metadata"
+    ][0]["provenance"]
+    assert provenance == {
+        "type": "user",
+        "path": "/workspace/instructions.md",
+        "home": "/home/fixture-user/notes.md",
+        "email": "fixture@example.invalid",
+    }
+
+
+def test_clean_preserves_agent_authors_and_session_source(tmp_path):
+    rows = load_entries(FIXTURES / "slash.jsonl")
+    # Add the native subagent source and agent_message shape observed locally.
+    rows[0]["payload"]["source"] = {"subagent": {"other": "guardian"}}
+    message = deepcopy(rows[3])
+    message["payload"]["type"] = "agent_message"
+    message["payload"].pop("role")
+    message["payload"].update({"author": "/root/reviewer", "recipient": "/root"})
+    cleaned = generator.clean(generator.select("slash", [rows[0], message]), tmp_path)
+    assert cleaned[0]["payload"]["source"] == rows[0]["payload"]["source"]
+    assert cleaned[1] == message
+
+
+def test_clean_redacts_system_temp_paths_in_retained_startup(tmp_path):
+    rows = load_entries(FIXTURES / "slash.jsonl")
+    original = next(row for row in rows if row["payload"].get("role") == "user")
+    # Startup permission instructions name the system temp root as writable.
+    temp_root = Path(tempfile.gettempdir())
+    original["payload"]["content"][0]["text"] = (
+        f"Writable roots: {temp_root}/one {temp_root.resolve()}/two"
+    )
+    cleaned = generator.clean([original], tmp_path)
+    assert cleaned[0]["payload"]["content"][0]["text"] == (
+        "Writable roots: /tmp/one /tmp/two"
+    )
 
 
 def test_native_fixtures_record_headless_codex_shapes():
@@ -89,7 +174,7 @@ def test_sanitizer_keeps_native_shape_and_hides_private_data():
     assert "secret" not in json.dumps(cleaned)
 
 
-def test_clean_filters_startup_and_unrelated_records(tmp_path):
+def test_clean_keeps_startup_and_filters_unrelated_records(tmp_path):
     workspace = tmp_path / "work"
     workspace.mkdir()
     rows = [
@@ -168,6 +253,8 @@ def test_clean_filters_startup_and_unrelated_records(tmp_path):
     assert [r["payload"].get("type") for r in cleaned] == [
         None,
         None,
+        "message",
+        "message",
         "message",
         "custom_tool_call",
         "custom_tool_call_output",

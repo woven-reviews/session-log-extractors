@@ -319,7 +319,6 @@ Algorithms and interfaces are preserved in this tooling change.
 | --- | --- | --- | --- |
 | `generate_claude_fixtures.py` | `run_case` | C901, PLR0912, PLR0915 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
 | `generate_codex_fixtures.py` | `capture_interactive` | C901, PLR0915 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
-| `generate_codex_fixtures.py` | `clean` | C901, PLR0912 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
 | `generate_codex_fixtures.py` | `validate` | C901, PLR0912 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
 | `generate_codex_fixtures.py` | `wait_for` | C901 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
 | `generate_copilot_fixtures.py` | `main` | C901, PLR0912, PLR0915 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
