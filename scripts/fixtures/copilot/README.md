@@ -70,9 +70,9 @@ and a checkpoint; the original native history remained available.
 for questions; rendered comma-separated result text is not an answer parser.
 The interpreted model retains agent identities, question answers, plan decisions,
 refusal sources, native shell success/exit status, complete tool-result blocks,
-and separately accessible child summaries. The current JSON schema omits those
-semantic fields intentionally; it exports complete tool inputs/results/errors,
-ordered images and user-shell rendered text. Native user-shell streams are
+and separately accessible child summaries. The current JSON schema omits question/plan decisions and child summaries
+intentionally; it exports complete tool inputs/results/errors, ordered images,
+agent scope, authorship, source/type markers, and user-shell rendered text. Native user-shell streams are
 combined; separate stdout/stderr ordering cannot be recovered. Tool-result
 budgets 0/17/4096/unlimited and a real multibyte split, non-mutation, and exact
 selected-source CLI stdout/file parity are tested.
@@ -102,3 +102,57 @@ have been removed, together with the scripted headless generator and its fake-CL
 tests. Only the selected interactive capture and test-consumed focused boundary
 inputs remain. Use the repository's capture-native-session skill for future
 captures. Paid capture is explicit, bounded, and excluded from tests and CI.
+
+## Authorship interpretation (QUAL-2522)
+
+The PR uses this same complete interactive capture; no SDK fixtures, case
+manifests, headless generators, or new capture sessions are required. Its native
+evidence covers 22 user-message records: 19 with a uniquely located original in
+transformed text, two original-only steering inputs, and one replaced slash
+submission. One of the 19 mixed inputs has both an identified-agent `source` and
+recipient `agentId`; the other operator inputs use the native unscoped human
+default. System messages, a structured notification, instruction updates with
+`authority: runtime`, and a user-requested shell action establish harness context
+and command/output boundaries. Tests assert recorded data relationships, not
+assistant wording or model names.
+
+`text` preserves complete `transformedContent` when recorded, otherwise original
+`content`. The named `submitted` record preserves original input plus its
+interpreted authorship. In the slash case, the full submission does not occur in
+transformed skill instructions. It survives in `submitted`; the parent-ID chain
+through recorded hooks uniquely links it to `skill.invoked` with trigger
+`user-invoked`. The supported invocation notice and exact supplied arguments
+retain candidate activity. Loaded definition text and automatic reminders stay
+harness content. This does not classify from wrapper appearance or event timing. Command/argument recognition still uses the
+recorded original; wrapper-looking human text remains candidate input. Ranges
+always refer to unchanged message `text`, with Unicode code-point offsets.
+
+Source classification precedes boundary matching: explicit supported agent/system
+sources override the unscoped human default, scoped records without source stay
+unknown, and contradictory automatic-continuation evidence stays unknown.
+`parentAgentTaskId`, delivery timing, and tag spelling alone do not establish an
+author. The original-only steering inputs retain their full candidate text.
+All 32 assistant prose records have `model` and `apiCallId` producer
+evidence; they retain assistant role and resolved `other_agent` contribution
+ranges. Assistant role or an agent ID alone is insufficient. User-shell output
+retains candidate activity through the recorded unique, same-agent call ID and
+`isUserRequested: true` completion (or an unambiguous direct parent link when
+that optional flag is absent). An explicitly non-user completion never inherits
+candidate activity. The inserted display separator shares that
+outcome attribution. Ambiguous request IDs and mismatched agent scopes leave
+results explicitly unmatched; missing completion provenance stays unknown.
+DB fallback text remains verbatim without inferred provenance.
+
+All reviewed nonempty text in this selected capture now has resolved attribution,
+including generated notices of deliberate actions. This is asserted through JSON
+export with unchanged text, native identities, ordering, and timestamps. Empty
+messages have no text range to classify. Missing/contradictory model provenance,
+broken or cyclic parent chains, duplicate IDs, unsupported renderings, and
+ambiguous argument matches remain explicit controlled uncertainty cases.
+
+The selected capture has image attachments, not selection attachments. IDE
+selection schema support, explicit system-sourced user input, unfamiliar source
+values, malformed fields, Unicode, and ambiguous matches are explicitly controlled
+boundary tests. They do not establish additional native-format coverage. Native
+snapshots and delivery-reference bookkeeping are not duplicated into conversation
+messages. No paid CLI is invoked by these tests.

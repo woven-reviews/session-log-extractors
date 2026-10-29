@@ -38,7 +38,6 @@ from session_log_extractors.copilot_sources import (
 from session_log_extractors.extract_copilot_session_log import (
     _permissions_from_events,
     _skills_from_events,
-    clean_user_text,
 )
 
 FIXTURES = ROOT
@@ -130,17 +129,6 @@ def _write_events_log(session_id: str, lines) -> Path:
     path = session_dir / "events.jsonl"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
-
-
-def test_copilot_noise_cleaning():
-    assert clean_user_text("<system-notification>test</system-notification>") == ""
-    assert clean_user_text("<bash-stdout>output</bash-stdout>") == ""
-    assert (
-        clean_user_text(
-            "Real text\n<system-reminder>ignore</system-reminder>\nMore text"
-        )
-        == "Real text\n\nMore text"
-    )
 
 
 def test_copilot_permissions_join_approval_denial_and_pending():
@@ -349,14 +337,6 @@ def test_skill_refs_from_call_finds_named_skill_and_fills_in_its_path():
 
 def test_skill_refs_from_call_survives_unserializable_arguments():
     assert copilot_log.skill_refs_from_call("bash", {"bad": {1, 2}}) == []
-
-
-def test_copilot_clean_user_text_empty_input_returns_empty():
-    assert clean_user_text("") == ""
-    assert clean_user_text(None) == ""
-
-
-# -- timestamp helpers ------------------------------------------------------
 
 
 def test_copilot_parse_ts_and_format_timestamp_edge_cases():
@@ -1143,7 +1123,8 @@ def test_owned_images_keep_distinct_paths_and_deduplicate_tokens():
     for image in message["images"]:
         images_match_asset.append(base64.b64decode(image["data"]) == PNG)
     assert all(images_match_asset)
-    assert user["data"]["content"] == message["text"]
+    assert user["data"]["content"] == message["submitted"]["text"]
+    assert user["data"]["transformedContent"] == message["text"]
 
 
 def test_attachment_shape_boundaries_and_shell_input():
