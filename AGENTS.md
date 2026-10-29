@@ -57,6 +57,11 @@ meaning is already known. Passing regression tests alone does not establish
 that a model or abstraction is appropriate; review where each semantic concept
 belongs and whether the model duplicates another representation.
 
+When adding shared model fields, choose names and types that distinguish
+recorded data from derived conclusions. Separate values with different meanings
+into separate fields. If that distinction requires a long explanation,
+reconsider the representation before adding comments.
+
 Use ordered, typed messages and their tool calls as the canonical conversation.
 Associate results, questions, and decisions using recorded message/tool IDs
 where available. Do not infer ownership from the most recent human message or
@@ -69,6 +74,11 @@ for opaque payloads. Types describe the fields we understand; they must not
 filter out additional recorded fields. Preserve unsupported tool payloads and
 report the missing schema support explicitly instead of silently treating them
 as fully understood. Schema recognition is distinct from runtime validation.
+
+Keep native tool payload types and schema recognition in harness-owned modules.
+Share genuinely common primitives and explicit type unions where the shared
+contract needs them. Recognize tool names within their harness; matching names
+alone do not establish equivalent payloads or semantics.
 
 Treat output compatibility as a serialization constraint. Exporters should read
 the fields required by their output schema, leaving other model fields available
