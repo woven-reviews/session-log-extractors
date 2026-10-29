@@ -167,14 +167,25 @@ whitespace and wrappers; startup-shaped user messages remain in order with their
 own timestamps and images. Exact response/event text duplicates reconcile using
 the existing response identity/image preference and event timestamp; differing
 text remains on separate messages, so an input cannot consume another's images.
-Nonempty text carries shared `authorship` ranges into JSON, with native record,
-payload, and text-block source/type markers and the recorded content timestamp.
-The committed Codex captures do not establish candidate, harness, IDE, or
-other-agent authorship: all supported text currently remains explicitly
-`unknown`, including wrapper-looking text. Role and unfamiliar source values
-never establish authorship. Candidate-only, mixed, and entirely injected
-classifications need native evidence before adapter support can be added;
-see the [fixture evidence limits](scripts/fixtures/README.md#native-evidence-and-limits).
+Nonempty text carries shared `authorship` ranges into JSON, with exact native
+record, payload, block, and per-content provenance markers. The harness-owned
+`codex_authorship` module uses aligned `content_item_kinds` and
+`content_item_metadata[].provenance` from
+`internal_chat_message_metadata_passthrough`. Recorded human input is
+`candidate`; recorded workspace/environment context and selected-skill expansion
+are `harness`. Either understood kind or provenance can supply evidence; missing,
+unsupported, misaligned, or conflicting evidence stays `unknown`. Role and
+wrapper-looking text alone never establish source. The original text is
+unchanged, and offsets count Unicode code points. Newlines inserted by the
+existing block serialization stay uncovered (unknown).
+
+Native image delimiters around an image block remain unknown even when Codex
+labels them `user.text`; the human prompt and image ownership remain separate.
+For exact duplicate views, response ranges and their timestamps survive alongside
+the event timestamp and both views' markers. Recorded message and turn IDs stay
+on the model. Developer/system instructions remain outside the exported
+conversation. Native IDE and other-agent classification coverage remains a
+follow-up; see the [fixture evidence limits](scripts/fixtures/README.md#native-evidence-and-limits).
 No question-association correction is included.
 `ToolCall.result_record.content` retains complete native
 results, while `ToolCall.result` retains the existing uncapped textual

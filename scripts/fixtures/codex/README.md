@@ -30,3 +30,10 @@ retained records, including nested provenance. The committed 2026-10-29 fixtures
 the corrected cleaner. User input and startup context have separate recorded
 content kinds and provenance; image preparation wrappers also carry `user.text`,
 so that kind alone does not prove every character was typed by the human.
+
+The extractor reads the retained per-content kind/provenance arrays: human input
+becomes candidate ranges and workspace/environment context becomes harness
+ranges. Missing, unsupported, conflicting, or misaligned evidence stays unknown.
+Image delimiters around a native image stay unknown even with the user.text
+kind. A controlled fixture mutation combines captured text/context blocks for
+mixed-range tests; it is not a new native mixed-message capture.

@@ -19,7 +19,12 @@ def test_codex_invocations_do_not_load_definitions(command_args, monkeypatch):
     if command_args is None:
         # Remove only the captured command arguments to exercise their absence.
         next(
-            e["payload"] for e in source.entries if e["payload"].get("role") == "user"
+            e["payload"]
+            for e in source.entries
+            if "user.text"
+            in e["payload"]
+            .get("internal_chat_message_metadata_passthrough", {})
+            .get("content_item_kinds", [])
         )["content"][0]["text"] = "/review"
     # The fixture has no explicit skill call. Add a narrow structured call,
     # repeated to retain the existing de-duplication assertion.
@@ -43,7 +48,7 @@ def test_codex_invocations_do_not_load_definitions(command_args, monkeypatch):
     monkeypatch.setattr(Path, "open", forbidden)
     session = codex.interpret_source(source)
     assert session["skills_used"] == ["recorded-skill"]
-    user = session["events"][0]
+    user = next(e for e in session["events"] if e.get("command") == "/review")
     assert (user["command"], user["command_args"]) == ("/review", command_args)
 
 

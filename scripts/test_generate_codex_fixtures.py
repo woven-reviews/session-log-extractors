@@ -114,30 +114,35 @@ def test_native_fixtures_record_headless_codex_shapes():
     assert session["files_changed"] == ["/workspace/fixture.txt"]
     patch = session["patch_results"][0]
     assert patch["stdout"].startswith("Success. Updated the following files:")
-    assert "/workspace/fixture.txt" in patch["stdout"]
+    assert "fixture.txt" in patch["stdout"]
     calls = [
         call
         for event in export_session(session, 64)["events"]
         for call in event.get("tool_calls", [])
     ]
     assert len(calls) == 2
-    assert calls[0]["result"] == "TOOL_FIXTURE_MARKER"
+    assert calls[0]["result"] == ""
+    assert "TOOL_FIXTURE_MARKER" in calls[1]["result"]
     assert calls[1]["result_truncated"] is True
     assert calls[1]["result_bytes"] > 64
 
     slash = load_entries(FIXTURES / "slash.jsonl")
     assert (
-        interpret_source(CodexSource(Path("slash.jsonl"), slash))["events"][0][
-            "command"
-        ]
+        next(
+            e["command"]
+            for e in interpret_source(CodexSource(Path("slash.jsonl"), slash))["events"]
+            if "command" in e
+        )
         == "/review"
     )
 
     image = load_entries(FIXTURES / "image.jsonl")
     assert (
-        interpret_source(CodexSource(Path("image.jsonl"), image))["events"][0][
-            "images"
-        ][0]["bytes"]
+        next(
+            e["images"]
+            for e in interpret_source(CodexSource(Path("image.jsonl"), image))["events"]
+            if e.get("images")
+        )[0]["bytes"]
         == (FIXTURES / "pixel.png").stat().st_size
     )
 

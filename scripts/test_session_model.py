@@ -342,12 +342,15 @@ def test_claude_native_injected_message_fits_authorship_contract():
     assert event["id"] == native["uuid"]
 
 
-def test_codex_native_prompt_can_remain_unknown_without_evidence():
+def test_codex_native_prompt_can_omit_authorship_in_shared_model():
     records = _native_records("codex/slash.jsonl")
     native = next(
         r
         for r in records
-        if r["type"] == "response_item" and r["payload"].get("role") == "user"
+        if "user.text"
+        in r.get("payload", {})
+        .get("internal_chat_message_metadata_passthrough", {})
+        .get("content_item_kinds", [])
     )
     text = native["payload"]["content"][0]["text"]
     event = UserMessage(i=0, role="user", text=text, ts=native["timestamp"])

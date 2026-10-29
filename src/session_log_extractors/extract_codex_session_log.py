@@ -60,6 +60,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, TypedDict
 
 from session_log_extractors import codex_sources
+from session_log_extractors.codex_authorship import message_authorship
 from session_log_extractors.codex_sources import CodexSource, ImageInputs
 from session_log_extractors.extractor_contract import Extractor
 from session_log_extractors.json_types import (
@@ -83,8 +84,6 @@ from session_log_extractors.session_log_envelope import (
     write_envelope,
 )
 from session_log_extractors.session_model import (
-    AuthorshipMarker,
-    AuthorshipRange,
     Image,
     Message,
     PatchResult,
@@ -621,6 +620,12 @@ def _copy_identity(
     value = payload.get("message_id")
     if isinstance(value, str):
         target["message_id"] = value
+    value = payload.get("turn_id")
+    if not isinstance(value, str):
+        metadata = payload.get("internal_chat_message_metadata_passthrough")
+        value = metadata.get("turn_id") if isinstance(metadata, dict) else None
+    if isinstance(value, str):
+        target["turn_id"] = value
 
 
 def _user_commands(message: UserMessage, raw_text: str) -> None:
@@ -666,42 +671,6 @@ def _questions(call: ToolCall, output: JsonValue) -> list[QuestionAnswer]:
     ]
 
 
-def _source_markers(record: dict[str, JsonValue], path: str) -> list[AuthorshipMarker]:
-    return [
-        AuthorshipMarker(field=f"{path}.{key}", value=record[key])
-        for key in ("type", "source")
-        if key in record
-    ]
-
-
-def _text_authorship(
-    payload: dict[str, JsonValue],
-    text: str,
-    timestamp: str | None,
-    record_type: str,
-) -> list[AuthorshipRange]:
-    """Retain native evidence without treating input role/type as authorship.
-
-    The captured Codex shapes do not establish who authored input_text, even
-    when it resembles a runtime wrapper. Keep its source explicitly unknown.
-    """
-    if not text:
-        return []
-    markers = [AuthorshipMarker(field="type", value=record_type)]
-    markers.extend(_source_markers(payload, "payload"))
-    content = payload.get("content")
-    if isinstance(content, list):
-        for index, block in enumerate(content):
-            if isinstance(block, dict) and any(
-                isinstance(block.get(key), str) for key in ("text", "output_text")
-            ):
-                markers.extend(_source_markers(block, f"payload.content[{index}]"))
-    span = AuthorshipRange(start=0, end=len(text), source="unknown", markers=markers)
-    if timestamp is not None:
-        span["ts"] = timestamp
-    return [span]
-
-
 def _user_message(
     payload: dict[str, JsonValue],
     timestamp: str | None,
@@ -713,7 +682,9 @@ def _user_message(
     message = user_event(0, timestamp, raw_text, images)
     _copy_identity(message, payload)
     _user_commands(message, raw_text)
-    message["authorship"] = _text_authorship(payload, raw_text, timestamp, record_type)
+    message["authorship"] = message_authorship(
+        payload, raw_text, timestamp, record_type
+    )
     return message
 
 
@@ -808,12 +779,17 @@ class _CodexSessionBuilder:
         _copy_identity(message, pending)
         if pending.get("images"):
             message["images"] = pending["images"]
-        if message["authorship"]:
-            markers = message["authorship"][0]["markers"]
-            for span in pending.get("authorship", []):
-                for marker in span.get("markers", []):
-                    if marker not in markers:
-                        markers.append(marker)
+        event_markers = [
+            marker
+            for span in message.get("authorship", [])
+            for marker in span.get("markers", [])
+        ]
+        message["authorship"] = pending.get("authorship", [])
+        for span in message["authorship"]:
+            markers = span.setdefault("markers", [])
+            for marker in event_markers:
+                if marker not in markers:
+                    markers.append(marker)
         self.pending_user = None
 
     def assistant(self, payload: dict[str, JsonValue], timestamp: str | None) -> None:
@@ -823,7 +799,7 @@ class _CodexSessionBuilder:
             return
         message = assistant_event(0, timestamp, text)
         _copy_identity(message, payload)
-        message["authorship"] = _text_authorship(
+        message["authorship"] = message_authorship(
             payload, text, timestamp, "response_item"
         )
         denial = parse_permission_denial(text)
