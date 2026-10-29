@@ -9,12 +9,9 @@ session semantics remain available on the model for other consumers.
 
 from typing import Literal, Never, NotRequired, Required, TypeAlias, TypedDict
 
-from session_log_extractors.tool_inputs import (
-    JsonValue,
-    QuestionOption,
-    ToolInput,
-    ToolInputSchema,
-)
+from session_log_extractors.json_types import JsonValue
+from session_log_extractors.question_types import QuestionOption
+from session_log_extractors.tool_inputs import ToolInput, ToolInputSchema
 
 
 class Image(TypedDict, total=False):

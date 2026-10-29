@@ -1,16 +1,13 @@
-"""Known tool-input shapes and an explicit opaque-JSON fallback.
+"""Claude tool payloads and recognition; additional recorded fields survive.
 
-These types describe fields the adapter understands. They do not reconstruct
-payloads or remove additional recorded keys, and are not runtime validators.
-A schema name identifies recognized object inputs; unsupported names/shapes
-remain complete JSON values for retention and diagnostics.
+Schema recognition identifies supported names and object inputs. It does not
+validate native fields or reconstruct payloads from the types below.
 """
 
-from typing import Literal, TypeAlias, TypedDict, TypeGuard
+from typing import Literal, TypeAlias, TypedDict
 
-JsonValue: TypeAlias = (
-    str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
-)
+from session_log_extractors.json_types import JsonValue
+from session_log_extractors.question_types import QuestionOption
 
 
 class BashInput(TypedDict, total=False):
@@ -25,11 +22,6 @@ class ReadInput(TypedDict, total=False):
     offset: int
     limit: int
     pages: str
-
-
-class QuestionOption(TypedDict, total=False):
-    label: str
-    description: str
 
 
 class Question(TypedDict, total=False):
@@ -92,22 +84,6 @@ class NotebookEditInput(FilePathInput, total=False):
     edit_mode: str
 
 
-class CopilotViewInput(TypedDict, total=False):
-    path: str
-    view_range: list[int]
-
-
-class CopilotEditInput(TypedDict, total=False):
-    path: str
-    old_str: str
-    new_str: str
-
-
-class CopilotCreateInput(TypedDict, total=False):
-    path: str
-    file_text: str
-
-
 KnownToolInput: TypeAlias = (
     BashInput
     | ReadInput
@@ -119,9 +95,6 @@ KnownToolInput: TypeAlias = (
     | EditInput
     | MultiEditInput
     | NotebookEditInput
-    | CopilotViewInput
-    | CopilotEditInput
-    | CopilotCreateInput
 )
 ToolInput: TypeAlias = KnownToolInput | JsonValue
 ToolInputSchema: TypeAlias = Literal[
@@ -136,18 +109,10 @@ ToolInputSchema: TypeAlias = Literal[
     "MultiEdit",
     "NotebookEdit",
     "Create",
-    "CopilotView",
-    "CopilotEdit",
-    "CopilotCreate",
     "unsupported",
 ]
 
 _INPUT_SCHEMAS: dict[str, ToolInputSchema] = {
-    "bash": "Bash",
-    "view": "CopilotView",
-    "edit": "CopilotEdit",
-    "create": "CopilotCreate",
-    "skill": "Skill",
     "Bash": "Bash",
     "Read": "Read",
     "AskUserQuestion": "AskUserQuestion",
@@ -162,16 +127,8 @@ _INPUT_SCHEMAS: dict[str, ToolInputSchema] = {
 }
 
 
-def is_question_option(value: object) -> TypeGuard[QuestionOption]:
-    """Validate known option fields while retaining all additional recorded keys."""
-    return isinstance(value, dict) and all(
-        key not in value or isinstance(value[key], str)
-        for key in ("label", "description")
-    )
-
-
 def input_schema(name: str, payload: ToolInput) -> ToolInputSchema:
-    """Name recognized object schemas without filtering or validating payloads."""
+    """Recognize Claude's tool vocabulary without validating or filtering input."""
     canonical = "ExitPlanMode" if name == "exit_plan_mode" else name
     schema = _INPUT_SCHEMAS.get(canonical)
     if schema is not None and isinstance(payload, dict):

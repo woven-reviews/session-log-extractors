@@ -1893,3 +1893,19 @@ def test_question_options_are_checked_without_losing_recorded_payload():
         "markdown": "**keep this**"
     }
     assert call["questions"][0]["chosen_labels"] == ["section", "manufacturer_part_no"]
+
+
+@pytest.mark.parametrize("name", ["bash", "view", "edit", "create", "skill"])
+def test_claude_reports_copilot_tool_names_as_unsupported(name):
+    assistant, result = _native_tool_pair()
+    # Change only the captured name to the other harness's vocabulary.
+    block = assistant["message"]["content"][0]
+    block["name"] = name
+    session = _session([assistant, result])
+    call = session["events"][0]["tool_calls"][0]
+    assert call["input_schema"] == "unsupported"
+    assert session["unsupported_tools"] == [name]
+    assert call["input"] == block["input"]
+    assert (
+        call["result_record"]["content"] == result["message"]["content"][0]["content"]
+    )

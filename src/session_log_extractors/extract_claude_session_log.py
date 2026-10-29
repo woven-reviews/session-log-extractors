@@ -37,6 +37,7 @@ from session_log_extractors.claude_sources import (
     load_entries as load_entries,
 )
 from session_log_extractors.extractor_contract import Extractor
+from session_log_extractors.question_types import QuestionOption, is_question_option
 from session_log_extractors.session_log_envelope import (
     DEFAULT_TOOL_RESULT_MAX_BYTES,
     assistant_event,
@@ -58,11 +59,7 @@ from session_log_extractors.session_model import (
     ToolCall,
     ToolResult,
 )
-from session_log_extractors.tool_inputs import (
-    QuestionOption,
-    input_schema,
-    is_question_option,
-)
+from session_log_extractors.tool_inputs.claude import input_schema
 
 # --------------------------------------------------------------------------- #
 # Constants

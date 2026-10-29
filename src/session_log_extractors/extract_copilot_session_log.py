@@ -50,6 +50,7 @@ from typing import Any, Dict, List, Optional
 from session_log_extractors import copilot_sources
 from session_log_extractors.copilot_sources import CopilotSource, ImageInputs
 from session_log_extractors.extractor_contract import Extractor
+from session_log_extractors.json_types import JsonValue
 from session_log_extractors.session_log_envelope import (
     DEFAULT_TOOL_RESULT_MAX_BYTES,
     assistant_event,
@@ -74,7 +75,7 @@ from session_log_extractors.session_model import (
     ToolResult,
     UserMessage,
 )
-from session_log_extractors.tool_inputs import JsonValue, input_schema
+from session_log_extractors.tool_inputs.copilot import input_schema
 
 _NOISE_TAG_BLOCK = re.compile(
     r"<(system-reminder|system-notification|local-command-stdout|local-command-stderr|"

@@ -1080,3 +1080,21 @@ def test_native_tools_preserve_recorded_database_file_activity():
     assert [c["name"] for e in session["events"] for c in e.get("tool_calls", [])] == [
         "bash"
     ]
+
+
+@pytest.mark.parametrize(
+    "name", ["Bash", "Read", "Skill", "AskUserQuestion", "exit_plan_mode"]
+)
+def test_copilot_reports_claude_tool_names_as_unsupported(name):
+    source = _supplied_native_source("tool_success")
+    request = next(r for r in source.state_records if r["type"] == "assistant.message")[
+        "data"
+    ]["toolRequests"][0]
+    # Rename only the native tool request; complete input and call links must survive.
+    request["name"] = name
+    session = copilot_log.interpret_source(source)
+    [call] = [c for event in session["events"] for c in event.get("tool_calls", [])]
+    assert call["input_schema"] == "unsupported"
+    assert session["unsupported_tools"] == [name]
+    assert call["input"] == request["arguments"]
+    assert "TOOL_FIXTURE_MARKER" in call["result"]

@@ -89,8 +89,13 @@ actions; tool calls retain native IDs, results, questions, plan decisions,
 permission denials, and skill invocations. Results and decisions attach to their
 call by native ID even across later human messages. Native message/parent IDs
 and complete result records remain available on the model. Known tool inputs
-have named schemas, including `BashInput` and `ReadInput`; opaque values use the
-recursive `JsonValue` type. Schema recognition preserves additional keys and
+have named schemas in `tool_inputs/claude.py`, including `BashInput` and
+`ReadInput`. Copilot owns its payload types and tool-name recognition in
+`tool_inputs/copilot.py`, with explicit `CopilotBash`, `CopilotSkill`, and file-tool
+schema identifiers. Each extractor recognizes only its own tool vocabulary.
+`tool_inputs/__init__.py` combines the harness types for the shared model without
+a global registry. Opaque values use `json_types.JsonValue`; the question-option
+shape used by the shared model lives in `question_types.py`. Schema recognition preserves additional keys and
 does not validate payloads at runtime. `ToolCall.input_schema` and
 `Session.unsupported_tools` identify unsupported names or non-object inputs;
 the CLI reports them on stderr while preserving their payloads. Unmatched results
