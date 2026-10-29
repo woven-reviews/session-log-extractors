@@ -132,3 +132,105 @@ checks use explicitly illustrative data. No new captures were generated, and
 these tests do not establish runtime rejection of malformed ranges. Future
 adapters must retain complete text before assigning offsets and use native
 source evidence, rather than role, tag spelling alone, or timestamp proximity.
+
+## Shared questions and responses contract
+
+`Session.interaction_questions` and `Session.question_responses` are optional,
+ordered lists of separate `Question` and `QuestionResponse` records. These are
+shared-model fields ready for adapter adoption, not production JSON additions.
+The current exporter continues to read only its existing schema and leaves
+these records intact on the source model, even when it truncates raw results.
+`QuestionAnswer` and `ToolCall.questions` remain migration debt for
+QUAL-2523/QUAL-2524; do not populate both representations in new consumers.
+
+| Record/field | Meaning |
+| --- | --- |
+| `Question.ref`, `QuestionResponse.ref` | Required local occurrence references, unique within their respective session lists. Never deduplicate repeated text or repeated native IDs. List order preserves occurrences, not a newly inferred chronology. |
+| `native_id` | Optional verbatim source-recorded question, response, or option ID. Omit when absent; never substitute a local ref or tool ID. Native question IDs may be scoped to a call and reused later. |
+| `Question.text`, `header`, `options` | Full question text, optional recorded header, and ordered offered `QuestionChoice` records. `options: []` allows a free-text question. No truncation, label cleanup, or inferred header. |
+| `QuestionChoice.ref`, `label`, `description` | Required local option occurrence ref (unique within its question) and full recorded label, with optional recorded description. Repeated labels remain distinct options. |
+| `recommendation_markers` | Optional list of `QuestionEvidence` records identifying recorded recommendation fields or label markers. Each has a native `field` path and exact recorded JSON `value`. Keep the complete label, including any suffix. Missing/empty means no retained recommendation evidence, not a recorded negative. A recommendation or default/preselected UI option is never a selection. |
+| `multiple_selections` | Optional recorded boolean indicating whether multiple selections were offered. Missing means unknown capability, not false; the response still retains every recorded selection. |
+| `QuestionResponse.question` | Required `QuestionAssociation` or explicit null for unassociated responses. An association has a local `question_ref` and nonempty `evidence` of recorded IDs or an explicit native structural relationship. This addresses an occurrence, not a question string or native ID alone. |
+| `activity` | Optional `QuestionActivityReference` on a question or response. `message_i` addresses canonical `Message.i`; optional zero-based `tool_call_index` addresses that message's ordered calls (including the call's matching result). Nonempty `evidence` establishes the address through native containment or recorded identifiers. Omit when unknown; a response may have an evidenced activity while its particular question remains unassociated. |
+| `outcome` | Required evidence-based `answered`, `refused`, or `unknown`. Unknown means a response is present but its meaning cannot be established. A question with no associated response is unanswered **in the observed log**; this does not prove a person ignored it. Never synthesize an empty answer or refusal from silence, tool failure, missing results, or unfamiliar labels. |
+| `selections` | Optional ordered `QuestionSelection` records with full recorded `label` and optional `option_ref` scoped to the associated question. Retain multiple/repeated selections. An option ref requires native selection evidence establishing the offered option; substring similarity is insufficient. Unassociated or ambiguous selections retain labels without option refs. Missing means unknown/not supplied; `[]` means explicitly no selected options. |
+| `free_text` | Optional complete answer text, distinct from selected labels. May coexist with selections; an empty recorded string stays empty. Do not turn arbitrary raw tool text into a human answer. |
+| `refusal` | Required for `outcome: refused`, otherwise absent. `QuestionRefusal.by` is `candidate`, `settings`, `harness`, or `unknown`, based on recorded evidence. Optional `explanation` retains the refusal explanation, independently of its author. Tool errors remain on canonical calls/results, never automatic candidate refusals. This is not the permission/plan contract. |
+| `candidate_feedback` | Optional full feedback known to be candidate-authored. Keep harness-generated refusal explanations in `refusal.explanation`; unknown authorship does not justify candidate feedback. |
+
+All optional fields are non-nullable unless explicitly stated above. Missing
+session lists mean this interpretation was not supplied; empty lists mean no
+such records were retained. These are type and semantic contracts, not runtime
+validators; schema/version handling remains QUAL-2533. Response timestamps
+remain QUAL-2499; source timestamps stay on canonical records.
+
+Association evidence names source paths and retains recorded values, including
+structured JSON when native containment establishes the relationship. For ID
+joins, retain both sides and the question's call scope. For explicit textual
+relationships, retain the containing call relationship and question text; if
+repeated identical questions make the occurrence ambiguous, leave the response
+unassociated. Matching counts, list positions alone, nearest timestamps, the
+most recent human message, and shared labels do not establish associations.
+Never pair lists with `zip` to resolve missing evidence. Local addresses identify
+records only after evidence establishes ownership; they are not evidence.
+
+Keep complete raw tool inputs/results on canonical calls and unmatched results
+in `Session.unmatched_tool_results`. Structured facts are an additional semantic
+view, not replacement raw payloads or a second conversation. Preserve all
+unknown payload fields. Questions, selections, refusals, and feedback must be
+interpreted before applying result limits. Consumers may derive interaction
+groups from the references; they must not reassign canonical messages/tools.
+
+The illustrative JSON below covers repeated questions, a recommended option
+that was not selected, multiple selections plus free text, refusal with separate
+feedback, an unanswered question, unassociated answers, an unknown response,
+and an unrelated tool error. The `native.*` paths are illustrative evidence,
+not claims about any harness's schema. These are proposed model shapes only.
+
+```json
+{
+  "harness": "illustrative", "session_id": "questions-example",
+  "events": [{"i": 0, "role": "assistant", "tool_calls": [
+    {"name": "unrelated-tool", "result": "Tool failed", "is_error": true}
+  ]}],
+  "interaction_questions": [
+    {"ref": "q1", "native_id": "request-a", "text": "Choose?", "multiple_selections": true, "options": [
+      {"ref": "o1", "label": "A (Recommended)", "description": "First option", "recommendation_markers": [
+        {"field": "native.options[0].label", "value": "A (Recommended)"}
+      ]},
+      {"ref": "o2", "label": "B"}, {"ref": "o3", "label": "C"}
+    ]},
+    {"ref": "q2", "native_id": "request-b", "text": "Choose?", "options": []},
+    {"ref": "q3", "text": "Anything else?", "options": []}
+  ],
+  "question_responses": [
+    {"ref": "r1", "outcome": "answered", "question": {"question_ref": "q1", "evidence": [
+      {"field": "native.question.id", "value": "request-a"},
+      {"field": "native.answer.question_id", "value": "request-a"}
+    ]}, "selections": [{"option_ref": "o2", "label": "B"}, {"option_ref": "o3", "label": "C"}], "free_text": "Also keep this text"},
+    {"ref": "r2", "outcome": "refused", "question": {"question_ref": "q2", "evidence": [
+      {"field": "native.question.id", "value": "request-b"},
+      {"field": "native.refusal.question_id", "value": "request-b"}
+    ]}, "refusal": {"by": "candidate", "explanation": "Prompt dismissed"}, "candidate_feedback": "Please ask later"},
+    {"ref": "r3", "outcome": "answered", "question": null, "selections": [], "free_text": "Unassociated answer"},
+    {"ref": "r4", "outcome": "unknown", "question": null}
+  ]
+}
+```
+
+### Question fixture evidence and limits
+
+The focused tests project fixture facts into shared records; they do not fix
+native parsers or assert adapter conformance. No paid captures were generated.
+
+| Harness | Evidence and interpretation inspected | Fit and gaps |
+| --- | --- | --- |
+| Claude | [Provenance](claude/README.md): `questions.jsonl` is **hand-authored**, not a capture. It has `AskUserQuestion`, `multiSelect`, options/descriptions, `tool_use.id` / `tool_result.tool_use_id`, explicit question-text answers, and a custom answer. `_answer_questions` / `_parse_chosen` in `extract_claude_session_log.py` still combine records and use substring selection plus a first-answer fallback. | Local refs preserve question occurrences without invented native question IDs. Tool IDs plus explicit text support only unambiguous occurrences. Repeated identical question text, recommendations, refusals, and candidate feedback need further evidence. Parser fixes remain QUAL-2523. |
+| Codex | [Provenance](codex/README.md): native `question.jsonl`, CLI 0.162.1 (2026-10-15), records `request_user_input` with `questions[0].id: fixture_owner`, matched `call_id`, and output `answers.fixture_owner.answers: ["QUAL"]`. `_questions`, `option_qa_from_output`, and `_structured_answer_for_question` in `extract_codex_session_log.py` still produce combined records through text and structured fallbacks. | Both call scope and question ID establish the answer relationship. Full input/output coexist with structured records in cap/non-mutation tests. This capture has no recommendation, refusal, feedback, multi-selection, or repeated-question evidence; the known parsing regression remains QUAL-2524. |
+| Copilot | [Provenance](copilot/README.md): native captures contain no question tool or responses. `tool_failure/events.jsonl` records shell exit code 1 despite wrapper `success: true`. `extract_copilot_session_log.py` interprets canonical tools and permission lifecycles, with no question-response interpretation. | Shell failure supplies no candidate refusal/answer evidence. Hand-authored permission fixtures establish no question contract conformance. Question schemas and interactions require future evidence and QUAL-2525 integration. |
+
+Recommendations, unknown/unassociated responses, repeated identical questions,
+and refusals/feedback use explicitly illustrative boundary examples. Tests do
+not establish rejection of malformed references, classify arbitrary native
+refusal strings, or claim complete native-format coverage.
