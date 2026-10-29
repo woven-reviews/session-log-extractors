@@ -18,6 +18,7 @@ from session_log_extractors.json_types import JsonValue, parse_json
 CaptureFormat = Literal["text", "json", "jsonl"]
 _EMAIL_PATTERN = r"[A-Za-z0-9_.+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
 _API_KEY_PATTERN = r"sk-ant-[A-Za-z0-9_.-]+"
+_ORGANIZATION_PLACEHOLDER = "[REDACTED_ORGANIZATION_ID]"
 
 
 @dataclass(frozen=True)
@@ -63,7 +64,7 @@ def _is_inline_image(value: dict[str, JsonValue]) -> bool:
 
 
 def _replacement_rules(rules: SanitizationRules) -> list[_Rule]:
-    names = {"email", "api_key"}
+    names = {"email", "api_key", "organization_id"}
     originals: set[str] = set()
     compiled: list[_Rule] = []
     ordered = sorted(
@@ -116,10 +117,19 @@ class _CaptureSanitizer:
         if isinstance(value, dict):
             image = _is_inline_image(value)
             return {
-                key: item if image and key == "data" else self.value(item)
+                key: item if image and key == "data" else self._field_value(value, key)
                 for key, item in value.items()
             }
         return value
+
+    def _field_value(self, record: dict[str, JsonValue], key: str) -> JsonValue:
+        item = record[key]
+        if record.get("type") == "credential_org" and key == "organizationUuid":
+            self.counts.setdefault("organization_id", 0)
+            if item != _ORGANIZATION_PLACEHOLDER:
+                self.counts["organization_id"] += 1
+            return _ORGANIZATION_PLACEHOLDER
+        return self.value(item)
 
     def redactions(self) -> tuple[RedactionCount, ...]:
         return tuple(

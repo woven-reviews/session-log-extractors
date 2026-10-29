@@ -137,6 +137,39 @@ def test_jsonl_preserves_record_order_and_blank_lines():
     assert sanitize_capture("", SanitizationRules(), format="jsonl").text == ""
 
 
+@pytest.mark.parametrize("format", ["json", "jsonl"])
+def test_credential_organization_is_redacted_by_field_without_literal_rules(format):
+    # Synthetic identity boundary: the existing native fixtures have no credential_org.
+    organization = "00000000-0000-4000-8000-000000000001"
+    original = {
+        "uuid": "message-1",
+        "attachment": {
+            "type": "credential_org",
+            "organizationUuid": organization,
+            "unknown_field": {"kept": True},
+        },
+        "other": {"type": "session", "organizationUuid": organization},
+    }
+    rules = SanitizationRules(redact_emails=False, redact_api_keys=False)
+    result = sanitize_capture(json.dumps(original), rules, format=format)
+    expected = json.loads(json.dumps(original))
+    expected["attachment"]["organizationUuid"] = "[REDACTED_ORGANIZATION_ID]"
+    assert json.loads(result.text) == expected
+    assert original["attachment"]["organizationUuid"] == organization
+    assert [(item.rule, item.matches) for item in result.redactions] == [
+        ("organization_id", 1)
+    ]
+    repeated = sanitize_capture(result.text, rules, format=format)
+    assert repeated.text == result.text
+    assert repeated.redactions[0].matches == 0
+
+
+def test_credential_organization_without_identity_keeps_other_fields():
+    original = {"type": "credential_org", "context": {"kept": True}}
+    result = sanitize_capture(json.dumps(original), SanitizationRules(), format="json")
+    assert json.loads(result.text) == original
+
+
 def test_invalid_jsonl_reports_line_number_without_echoing_private_content():
     with pytest.raises(ValueError, match="Invalid JSON on line 2") as error:
         sanitize_capture(
@@ -187,6 +220,7 @@ def test_invalid_rule_documents_are_rejected(value):
     [
         (LiteralReplacement("", "value", "x"),),
         (LiteralReplacement("email", "value", "x"),),
+        (LiteralReplacement("organization_id", "value", "x"),),
         (LiteralReplacement("x", "", "x"),),
         (LiteralReplacement("x", "a", "x"), LiteralReplacement("x", "b", "y")),
         (LiteralReplacement("x", "a", "x"), LiteralReplacement("y", "a", "y")),

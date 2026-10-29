@@ -88,8 +88,13 @@ in `session_log_extractors.capture_sanitization`. Formats are `text`, `json`, an
 `jsonl`. JSON formats parse string values before replacement, preserving record
 order, keys, scalar types, and inline image data. They normalize JSON whitespace
 and LF line endings; text mode retains existing formatting. Native IDs and
-timestamps remain unless an explicit rule matches their values. Original files
-are never overwritten by the CLI, including through symbolic or hard links.
+timestamps remain unless an explicit rule matches their values.
+In JSON formats, objects with `type: "credential_org"` always have their
+`organizationUuid` replaced with `[REDACTED_ORGANIZATION_ID]`, without requiring
+the original value in configuration. Each newly redacted field is reported as
+an `organization_id` match; existing placeholders are left unchanged.
+Original files are never overwritten by the CLI, including through symbolic or
+hard links.
 
 Literal replacements are case-sensitive and take priority over built-in
 patterns, with longer literals first. Replacement text is not processed again
