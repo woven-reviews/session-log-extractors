@@ -407,7 +407,7 @@ def test_copilot_native_transformed_prompt_fits_mixed_ranges():
     assert decoded["message_id"] == data["messageId"]
 
 
-def test_authorship_retains_message_structure_without_changing_export():
+def test_authorship_retains_message_structure_through_export():
     events = [
         Event(
             i=0,
@@ -433,6 +433,50 @@ def test_authorship_retains_message_structure_without_changing_export():
     assert decoded["events"][1]["tool_calls"][0]["id"] == "call-1"
     assert decoded["events"][1]["authorship"][0]["ts"] is None
     exported = export_session(session)
-    assert all("authorship" not in event for event in exported["events"])
+    assert [e["authorship"] for e in exported["events"]] == [
+        e["authorship"] for e in events
+    ]
     assert [event["i"] for event in exported["events"]] == [0, 1, 2]
+    assert session == original
+
+
+@pytest.mark.parametrize(
+    "source", ["candidate", "harness", "ide", "other_agent", "unknown"]
+)
+def test_export_preserves_authorship_ranges_and_copies_nested_markers(source):
+    # Illustrative shared-contract boundary: not a native Claude classification.
+    text = "Hi 🙂<notice>context</notice>"
+    spans = [
+        AuthorshipRange(start=0, end=4, source=source, ts=None),
+        AuthorshipRange(
+            start=4,
+            end=len(text),
+            source="harness",
+            markers=[
+                AuthorshipMarker(field="block.type", value={"kind": ["notice", None]})
+            ],
+        ),
+    ]
+    session = Session(
+        harness="test",
+        session_id="s",
+        events=[
+            UserMessage(
+                i=0, role="user", ts="message-time", text=text, authorship=spans
+            )
+        ],
+    )
+    original = deepcopy(session)
+    exported = export_session(session, 0)
+    message = json.loads(json.dumps(exported))["events"][0]
+    assert message["text"] == text
+    assert message["ts"] == "message-time"
+    assert message["authorship"] == spans
+    assert [text[r["start"] : r["end"]] for r in message["authorship"]] == [
+        "Hi 🙂",
+        "<notice>context</notice>",
+    ]
+    exported["events"][0]["authorship"][1]["markers"][0]["value"]["kind"].append(
+        "changed"
+    )
     assert session == original
