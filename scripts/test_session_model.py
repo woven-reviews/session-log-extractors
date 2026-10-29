@@ -18,6 +18,14 @@ from session_log_extractors.session_model import (
     AuthorshipRange,
     Event,
     Image,
+    Question,
+    QuestionActivityReference,
+    QuestionAssociation,
+    QuestionChoice,
+    QuestionEvidence,
+    QuestionRefusal,
+    QuestionResponse,
+    QuestionSelection,
     Session,
     ToolCall,
     UserMessage,
@@ -25,6 +33,252 @@ from session_log_extractors.session_model import (
 
 ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312"
 (TRANSCRIPT,) = (ROOT / "native").glob("*.jsonl")
+
+
+def test_question_occurrences_and_response_states_are_independent():
+    # Illustrative boundaries absent from native captures: repeated identical
+    # questions, a recommendation, a refusal, and an ambiguous orphan response.
+    option = QuestionChoice(
+        ref="o1",
+        label="A (Recommended)",
+        description="First choice",
+        recommendation_markers=[
+            QuestionEvidence(field="label", value="A (Recommended)")
+        ],
+    )
+    questions = [
+        Question(ref=ref, text="Choose?", options=[option])
+        for ref in ("q1", "q2", "q3")
+    ]
+    questions[0]["native_id"] = "native-q1"
+    responses = [
+        QuestionResponse(
+            ref="r1",
+            outcome="answered",
+            question=QuestionAssociation(
+                question_ref="q1",
+                evidence=[
+                    QuestionEvidence(field="answer.question_id", value="native-q1"),
+                    QuestionEvidence(field="questions[0].id", value="native-q1"),
+                ],
+            ),
+            selections=[QuestionSelection(label="B"), QuestionSelection(label="C")],
+            free_text="Also keep this exact text",
+        ),
+        QuestionResponse(
+            ref="r2",
+            outcome="refused",
+            question=None,
+            refusal=QuestionRefusal(by="candidate", explanation="Prompt dismissed"),
+            candidate_feedback="Please ask later",
+        ),
+        QuestionResponse(ref="r3", outcome="unknown", question=None),
+    ]
+    session = Session(
+        harness="test",
+        session_id="s",
+        events=[],
+        interaction_questions=questions,
+        question_responses=responses,
+    )
+    decoded = json.loads(json.dumps(session))
+    assert len({q["ref"] for q in decoded["interaction_questions"]}) == 3
+    assert all(q["text"] == "Choose?" for q in questions)
+    assert responses[0]["selections"] == [{"label": "B"}, {"label": "C"}]
+    assert responses[0]["free_text"] == "Also keep this exact text"
+    assert "selections" not in responses[1]
+    assert responses[1]["candidate_feedback"] != responses[1]["refusal"]["explanation"]
+    assert responses[1]["question"] is None and responses[2]["question"] is None
+    assert {
+        r["question"]["question_ref"] for r in responses if r["question"] is not None
+    } == {"q1"}
+    assert "selected" not in option and "native_id" not in questions[1]
+
+
+def _codex_question_contract():
+    records = _native_records("codex/question.jsonl")
+    request = next(
+        r["payload"] for r in records if r["payload"].get("type") == "function_call"
+    )
+    result = next(
+        r["payload"]
+        for r in records
+        if r["payload"].get("type") == "function_call_output"
+    )
+    native = json.loads(request["arguments"])["questions"][0]
+    answers = json.loads(result["output"])["answers"]
+    evidence = [
+        QuestionEvidence(field="function_call.call_id", value=request["call_id"]),
+        QuestionEvidence(field="function_call_output.call_id", value=result["call_id"]),
+        QuestionEvidence(field="questions[0].id", value=native["id"]),
+        QuestionEvidence(field="answers key", value=next(iter(answers))),
+    ]
+    question = Question(
+        ref="q1",
+        native_id=native["id"],
+        text=native["question"],
+        header=native["header"],
+        options=[
+            QuestionChoice(ref=f"o{i}", **o) for i, o in enumerate(native["options"])
+        ],
+        activity=QuestionActivityReference(
+            message_i=0, tool_call_index=0, evidence=evidence[:1]
+        ),
+    )
+    response = QuestionResponse(
+        ref="r1",
+        outcome="answered",
+        question=QuestionAssociation(question_ref=question["ref"], evidence=evidence),
+        selections=[
+            QuestionSelection(label=a) for a in answers[native["id"]]["answers"]
+        ],
+        activity=QuestionActivityReference(
+            message_i=0, tool_call_index=0, evidence=evidence[:2]
+        ),
+    )
+    call = ToolCall(
+        name=request["name"],
+        id=request["call_id"],
+        input=json.loads(request["arguments"]),
+        result=result["output"],
+    )
+    return question, response, call
+
+
+@pytest.mark.parametrize("limit", [0, 8, -1])
+def test_native_question_facts_survive_export_policy(limit):
+    question, response, call = _codex_question_contract()
+    session = Session(
+        harness="codex",
+        session_id="s",
+        events=[Event(i=0, role="assistant", tool_calls=[call])],
+        interaction_questions=[question],
+        question_responses=[response],
+    )
+    original = deepcopy(session)
+    exported = export_session(session, limit)
+    actual = exported["events"][0]["tool_calls"][0]
+    assert actual["input"] == call["input"]
+    assert actual["result_truncated"] is (limit >= 0)
+    assert actual["result"] == (call["result"] if limit < 0 else call["result"][:limit])
+    assert response["selections"] == [{"label": "QUAL"}]
+    assert question["native_id"] == "fixture_owner"
+    assert question["activity"]["message_i"] == session["events"][0]["i"]
+    assert "interaction_questions" not in exported
+    assert "question_responses" not in exported
+    assert session == original
+    actual["input"]["questions"].clear()
+    assert session == original
+
+
+def test_claude_fixture_supports_call_and_explicit_question_text_relationship():
+    records = _native_records("claude/questions.jsonl")
+    request = records[1]["message"]["content"][0]
+    result = records[2]["message"]["content"][0]
+    native = request["input"]["questions"][0]
+    assert result["tool_use_id"] == request["id"]
+    assert (
+        f'"{native["question"]}"="section, manufacturer_part_no"' in result["content"]
+    )
+    question = Question(
+        ref="q1",
+        text=native["question"],
+        header=native["header"],
+        multiple_selections=native["multiSelect"],
+        options=[
+            QuestionChoice(ref=f"o{i}", **o) for i, o in enumerate(native["options"])
+        ],
+    )
+    response = QuestionResponse(
+        ref="r1",
+        outcome="answered",
+        question=QuestionAssociation(
+            question_ref="q1",
+            evidence=[
+                QuestionEvidence(
+                    field="tool_result.tool_use_id", value=result["tool_use_id"]
+                ),
+                QuestionEvidence(field="tool_use.id", value=request["id"]),
+                QuestionEvidence(
+                    field="result question text", value=native["question"]
+                ),
+            ],
+        ),
+        selections=[
+            QuestionSelection(option_ref=o["ref"], label=o["label"])
+            for o in question["options"]
+        ],
+    )
+    assert len(response["selections"]) == 2
+    assert "native_id" not in question
+    assert json.loads(json.dumps(response)) == response
+
+
+def test_copilot_shell_failure_does_not_supply_question_response_evidence():
+    records = _native_records("copilot/tool_failure/events.jsonl")
+    result = next(r["data"] for r in records if r["type"] == "tool.execution_complete")
+    assert result["shellExecution"]["exitCode"] == 1
+    assert result["success"] is True
+    call = ToolCall(
+        name="bash",
+        result=result["result"],
+        result_record={
+            "tool_call_id": result["toolCallId"],
+            "ts": None,
+            "content": result["result"],
+            "is_error": False,
+        },
+    )
+    session = Session(
+        harness="copilot",
+        session_id="s",
+        events=[Event(i=0, role="assistant", tool_calls=[call])],
+        question_responses=[],
+    )
+    original = deepcopy(session)
+    exported = export_session(session, 0)
+    assert exported["events"][0]["tool_calls"][0]["result"] == result["result"]
+    assert session["question_responses"] == []
+    assert session == original
+
+
+@pytest.mark.parametrize("by", ["candidate", "settings", "harness", "unknown"])
+def test_question_refusal_preserves_source_without_fabricating_feedback(by):
+    # Illustrative only: committed fixtures do not capture question refusals.
+    response = QuestionResponse(
+        ref="r1",
+        question=None,
+        outcome="refused",
+        refusal=QuestionRefusal(by=by, explanation="Recorded refusal explanation"),
+    )
+    assert json.loads(json.dumps(response))["refusal"]["by"] == by
+    assert "candidate_feedback" not in response
+    assert "selections" not in response and "free_text" not in response
+
+
+def test_documented_question_examples_preserve_distinct_states():
+    documentation = (FIXTURES / "README.md").read_text()
+    section = documentation.split("## Shared questions and responses contract", 1)[1]
+    example = json.loads(section.split("```json\n", 1)[1].split("```", 1)[0])
+    first, repeated, unanswered = example["interaction_questions"]
+    answer, refusal, orphan, unknown = example["question_responses"]
+    assert first["text"] == repeated["text"] and first["ref"] != repeated["ref"]
+    assert (
+        first["options"][0]["recommendation_markers"][0]["value"] == "A (Recommended)"
+    )
+    assert [s["label"] for s in answer["selections"]] == ["B", "C"]
+    assert answer["free_text"] == "Also keep this text"
+    assert refusal["outcome"] == "refused"
+    assert refusal["refusal"]["by"] == "candidate"
+    assert refusal["candidate_feedback"] != refusal["refusal"]["explanation"]
+    assert orphan["question"] is None and orphan["selections"] == []
+    assert unknown == {"ref": "r4", "outcome": "unknown", "question": None}
+    associated = [r["question"] for r in example["question_responses"] if r["question"]]
+    assert all(a["evidence"] for a in associated)
+    assert unanswered["ref"] not in [a["question_ref"] for a in associated]
+    assert example["events"][0]["tool_calls"][0]["is_error"] is True
+    assert all("activity" not in r for r in example["question_responses"])
+    assert json.loads(json.dumps(example)) == example
 
 
 @pytest.mark.parametrize("harness", ["claude", "codex", "copilot"])
