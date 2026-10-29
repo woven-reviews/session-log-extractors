@@ -60,10 +60,11 @@ JSON-only uploads must handle invalid logs and valid-but-empty logs explicitly. 
 
 `MessageContent.authorship` is an optional ordered list of `AuthorshipRange`
 records over the message's **unchanged `text`**. This shared-model contract is
-ready for adapter adoption; these examples describe the proposed JSON fields,
-not output currently emitted by the production exporter. Adapter classification,
-production serialization, schema versioning, and runtime validation belong to
-follow-up tickets QUAL-2520/2521/2522 and QUAL-2533.
+adopted by Claude's production user-message interpreter and serialized by the
+shared exporter when supplied. Codex/Copilot classification, schema versioning,
+and runtime validation remain follow-ups (QUAL-2521/2522 and QUAL-2533). The
+examples below illustrate the shared contract, not classifications all harnesses
+can establish from their native recordings.
 
 | Field | Meaning |
 | --- | --- |
@@ -117,9 +118,10 @@ one range position. All six have user role to demonstrate role independence.
 
 ### Native evidence and limits
 
-The focused model tests project existing native records into the proposed types;
-they do not run new classifiers or claim production adapter conformance. Each
-fixture's linked provenance distinguishes captures from hand-authored cases.
+The focused model tests project native records into the shared types. Claude's
+fixture-backed interpretation and CLI tests additionally exercise its production
+classifier and export path. Each fixture's linked provenance distinguishes
+captures from hand-authored cases.
 
 | Harness | Committed evidence and interpretation inspected | Contract fit and gaps |
 | --- | --- | --- |
@@ -129,6 +131,6 @@ fixture's linked provenance distinguishes captures from hand-authored cases.
 
 The Unicode, partial-coverage, IDE, other-agent, and per-range timestamp boundary
 checks use explicitly illustrative data. No new captures were generated, and
-these tests do not establish runtime rejection of malformed ranges. Future
-adapters must retain complete text before assigning offsets and use native
-source evidence, rather than role, tag spelling alone, or timestamp proximity.
+these tests do not establish runtime rejection of malformed ranges. Adapters
+must retain complete text before assigning offsets and use native source
+evidence, rather than role, tag spelling alone, or timestamp proximity.

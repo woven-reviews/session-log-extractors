@@ -32,6 +32,16 @@ project root. Use a session id or `--transcript PATH` for one session, with
 `--output PATH` for an explicit JSON destination or `--output -` for stdout.
 `--tool-result-bytes N` sets the tool-result cap (negative for no cap).
 Recorded Markdown, inline images, and tool results remain in the JSON.
+Claude user-message text now retains wrappers, whitespace, and injected skill
+and command expansions verbatim. Nonempty user text carries Unicode code-point
+`authorship` ranges: recorded `isMeta: true` establishes `harness`; other input
+stays `unknown`. Role, `userType: external`, and tag spelling do not establish
+candidate authorship. Ranges retain recorded provenance fields and timestamps;
+command actions and native identities remain available on the interpreted model.
+The exporter copies supplied authorship ranges without applying the tool-result
+cap to message text. Missing ranges still mean unknown, including on other
+harnesses. See the [authorship contract](scripts/fixtures/README.md#shared-text-authorship-contract)
+for evidence limits.
 
 Codex extraction also produces only JSON. Run
 `uv run --locked python scripts/extract_codex_session_log.py` to export every matching project

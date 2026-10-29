@@ -50,6 +50,8 @@ from session_log_extractors.session_log_envelope import (
     write_envelope,
 )
 from session_log_extractors.session_model import (
+    AuthorshipMarker,
+    AuthorshipRange,
     Message,
     MessageContent,
     NativeIdentity,
@@ -88,9 +90,8 @@ FILE_PATH_KEYS = ("file_path", "path", "notebook_path", "filePath")
 # Max length for a condensed tool descriptor before it gets an ellipsis.
 TOOL_DESC_MAX = 100
 
-# Patterns for harness noise embedded in user-message text. These wrappers are
-# injected by the CLI, not typed by the human, so we strip them while keeping
-# the surrounding human prose.
+# Legacy sidecar-summary cleaning only. Main conversation text is preserved;
+# wrapper spelling alone does not establish authorship.
 _NOISE_TAG_BLOCK = re.compile(
     r"<(system-reminder|local-command-stdout|local-command-stderr|command-stdout|"
     r"command-stderr|command-name|command-message|command-args|task-notification|"
@@ -108,14 +109,12 @@ _NOISE_TAG_LOOSE = re.compile(
 
 # A `!`-prefixed shell command the human ran in-session is recorded as a user
 # message wrapped in <bash-input>…</bash-input>. We surface it as a shell command
-# rather than as prose. (The matching <bash-stdout>/<bash-stderr> output arrives
-# as a separate user message and is stripped as noise above.)
+# alongside its unchanged prose. Output wrappers also remain in the conversation.
 _BASH_INPUT = re.compile(r"<bash-input>(.*?)</bash-input>", re.DOTALL | re.IGNORECASE)
 
 # A slash-command invocation (e.g. `/extract-claude-session-logs`) is recorded as
 # a user message wrapping <command-name>…</command-name> (plus command-message and
-# command-args). clean_user_text strips those tags to nothing, so we pull the
-# command name from the raw text *before* cleaning and surface it as its own turn.
+# command-args). Retain these action fields alongside the original text.
 _COMMAND_NAME = re.compile(
     r"<command-name>\s*(.*?)\s*</command-name>", re.DOTALL | re.IGNORECASE
 )
@@ -671,6 +670,29 @@ def _questions(tool_input: object) -> List[QuestionAnswer]:
     return _question_records(questions) if isinstance(questions, list) else []
 
 
+def _user_authorship(entry: Dict[str, JsonValue], text: str) -> AuthorshipRange:
+    """Only recorded isMeta establishes injection; external input stays unknown."""
+    span = AuthorshipRange(
+        start=0,
+        end=len(text),
+        source="harness" if entry.get("isMeta") is True else "unknown",
+        markers=[
+            AuthorshipMarker(field=field, value=entry[field])
+            for field in (
+                "isMeta",
+                "sourceToolUseID",
+                "promptSource",
+                "turnOrigin",
+                "userType",
+            )
+            if field in entry
+        ],
+    )
+    if "timestamp" in entry:
+        span["ts"] = string_value(entry["timestamp"])
+    return span
+
+
 class _ClaudeInterpreter:
     """Interpret ordered messages and associate tool activity by native call ID."""
 
@@ -685,7 +707,7 @@ class _ClaudeInterpreter:
 
     def consume(self, entry: Dict[str, JsonValue]) -> None:
         etype = entry.get("type")
-        if entry.get("isMeta") is True or etype in ("summary", "system"):
+        if etype in ("summary", "system"):
             return
         if entry.get("isSidechain") is True:
             if etype == "user" and not _is_tool_result_entry(entry):
@@ -700,13 +722,12 @@ class _ClaudeInterpreter:
             self.assistant(entry)
 
     def user(self, entry: Dict[str, JsonValue]) -> None:
-        raw = _human_text(entry)
-        text = clean_user_text(raw)
+        text = _human_text(entry)
         images = [
             image_from_base64(str(src["data"]), string_value(src.get("media_type")))
             for src in _image_sources(entry)
         ]
-        match = _COMMAND_NAME.search(raw)
+        match = _COMMAND_NAME.search(text)
         command = match.group(1).strip() if match else ""
         command = command if command.startswith("/") else ""
         if not text and not images and not command:
@@ -715,12 +736,12 @@ class _ClaudeInterpreter:
             len(self.events), string_value(entry.get("timestamp")), text, images
         )
         _attach_identity(message, _message_identity(entry))
+        if text:
+            message["authorship"] = [_user_authorship(entry, text)]
         if command:
-            args = _COMMAND_ARGS.search(raw)
+            args = _COMMAND_ARGS.search(text)
             message["command"] = command
             message["command_args"] = (args.group(1).strip() if args else "") or None
-            if not text:
-                message["text"] = f"{command} {message['command_args'] or ''}".strip()
         commands = [c.strip() for c in _BASH_INPUT.findall(text) if c.strip()]
         if commands:
             message["shell_command"] = "\n".join(commands)

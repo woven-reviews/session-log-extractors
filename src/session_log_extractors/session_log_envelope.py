@@ -276,6 +276,8 @@ def _export_event(event: Message, limit: int) -> Event:
         exported["ts"] = event["ts"]
     if "text" in event:
         exported["text"] = event["text"]
+    if "authorship" in event:
+        exported["authorship"] = event["authorship"]
     if "images" in event:
         exported["images"] = event["images"]
     if "tool_calls" in event:
