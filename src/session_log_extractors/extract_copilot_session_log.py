@@ -47,7 +47,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from session_log_extractors import copilot_sources
+from session_log_extractors import copilot_authorship, copilot_sources
 from session_log_extractors.copilot_interactions import (
     apply_configured_refusal,
     apply_human_response,
@@ -76,6 +76,8 @@ from session_log_extractors.session_log_envelope import (
 )
 from session_log_extractors.session_model import (
     AssistantMessage,
+    AuthorshipRange,
+    Event,
     FileActivity,
     FileActivityProvenance,
     Image,
@@ -89,19 +91,6 @@ from session_log_extractors.session_model import (
 )
 from session_log_extractors.tool_inputs.copilot import input_schema
 
-_NOISE_TAG_BLOCK = re.compile(
-    r"<(system-reminder|system-notification|local-command-stdout|local-command-stderr|"
-    r"command-stdout|command-stderr|command-name|command-message|command-args|"
-    r"task-notification|bash-stdout|bash-stderr)>.*?"
-    r"</\1>",
-    re.DOTALL | re.IGNORECASE,
-)
-_NOISE_TAG_LOOSE = re.compile(
-    r"</?(system-reminder|system-notification|local-command-stdout|local-command-stderr|"
-    r"command-stdout|command-stderr|command-name|command-message|command-args|"
-    r"task-notification|bash-stdout|bash-stderr)\b[^>]*/?>",
-    re.IGNORECASE,
-)
 _BASH_INPUT = re.compile(r"<bash-input>(.*?)</bash-input>", re.DOTALL | re.IGNORECASE)
 _COPILOT_IMAGE_REF = re.compile(r"\[image:\s*([^\]]+?)\s*\]", re.IGNORECASE)
 _DATA_IMAGE_URL = re.compile(r"^data:(image/[A-Za-z0-9.+-]+);base64,(.*)$", re.DOTALL)
@@ -158,16 +147,6 @@ def skill_refs_from_call(
         if skill:
             add(skill, match.group("path"))
     return refs
-
-
-def clean_user_text(text: str) -> str:
-    """Strip harness-injected wrappers while keeping the human's prose."""
-    if not text:
-        return ""
-    cleaned = _NOISE_TAG_BLOCK.sub("", text)
-    cleaned = _NOISE_TAG_LOOSE.sub("", cleaned)
-    cleaned = re.sub(r"\n[ \t]*\n[ \t]*\n+", "\n\n", cleaned)
-    return cleaned.strip()
 
 
 def _parse_ts(ts: Optional[str]) -> Optional[datetime]:
@@ -575,6 +554,9 @@ def _identity(
     agent_id = _string(record.get("agentId"))
     if agent_id is not None:
         identity["agent_id"] = agent_id
+    task_id = _string(data.get("parentAgentTaskId"))
+    if task_id is not None:
+        identity["parent_agent_task_id"] = task_id
     return identity
 
 
@@ -594,6 +576,8 @@ def _apply_identity(message: Message | ToolResult, identity: NativeIdentity) -> 
         message["interaction_id"] = identity["interaction_id"]
     if "turn_id" in identity:
         message["turn_id"] = identity["turn_id"]
+    if "parent_agent_task_id" in identity:
+        message["parent_agent_task_id"] = identity["parent_agent_task_id"]
 
 
 def _image_refs(
@@ -646,9 +630,7 @@ def _same_image(left: dict[str, str], right: dict[str, str]) -> bool:
 def _user_message(
     text: str, timestamp: str | None, refs: list[dict[str, str]], source: CopilotSource
 ) -> UserMessage:
-    message = user_event(
-        0, timestamp, clean_user_text(text), envelope_images(refs, source.image_inputs)
-    )
+    message = user_event(0, timestamp, text, envelope_images(refs, source.image_inputs))
     commands = [
         command.strip() for command in _BASH_INPUT.findall(text) if command.strip()
     ]
@@ -664,33 +646,58 @@ def _new_call(name: str, arguments: JsonValue) -> ToolCall:
     )
 
 
+def _ambiguous_user_shell_ids(records: list[dict[str, JsonValue]]) -> set[str]:
+    """Detect duplicate request IDs across the complete input before joining."""
+    seen: set[str] = set()
+    ambiguous: set[str] = set()
+    for record in records:
+        data = record.get("data")
+        if record.get("type") != "tool.user_requested" or not isinstance(data, dict):
+            continue
+        call_id = _string(data.get("toolCallId"))
+        if call_id is None:
+            continue
+        if call_id in seen:
+            ambiguous.add(call_id)
+        seen.add(call_id)
+    return ambiguous
+
+
 class _CopilotSessionBuilder:
     """Assemble one session, joining tool activity by recorded identities."""
 
     def __init__(self, source: CopilotSource):
         self.source = source
+        self.record_index = copilot_authorship.record_index(source.state_records)
         self.events: list[Message] = []
         self.calls: dict[str, ToolCall] = {}
         self.messages: dict[str, AssistantMessage] = {}
         self.unmatched: list[ToolResult] = []
         self.user_shells: dict[str, UserMessage] = {}
+        self.ambiguous_user_shells = _ambiguous_user_shell_ids(source.state_records)
 
     def user_message(
         self, record: dict[str, JsonValue], data: dict[str, JsonValue]
     ) -> None:
-        text = _string(data.get("content")) or ""
+        text, authorship = copilot_authorship.user_content(record, self.record_index)
+        submitted = copilot_authorship.submitted_text(record)
         refs = self.user_image_refs(record, data)
-        # Native content is human input; only the DB fallback needs legacy cleanup.
         message = user_event(
             0,
             _string(record.get("timestamp")),
             text,
             envelope_images(refs, self.source.image_inputs),
         )
-        if text.startswith("/"):
-            command, _, arguments = text.partition(" ")
+        original = submitted["text"] if submitted is not None else ""
+        if original.startswith("/"):
+            command, _, arguments = original.partition(" ")
             message["command"] = command
             message["command_args"] = arguments or None
+        message["authorship"] = authorship
+        message["source_markers"] = copilot_authorship.source_markers(record)
+        message["context_attachments"] = copilot_authorship.context_attachments(data)
+        if submitted is not None:
+            message["submitted"] = submitted
         _apply_identity(message, _identity(record, data))
         self.events.append(message)
 
@@ -722,9 +729,35 @@ class _CopilotSessionBuilder:
         if isinstance(requests, list):
             for request in requests:
                 if isinstance(request, dict):
-                    message.setdefault("tool_calls", []).append(self.request(request))
+                    call = self.request(request)
+                    if isinstance(record.get("agentId"), str):
+                        call["agent_id"] = str(record["agentId"])
+                    message.setdefault("tool_calls", []).append(call)
         _apply_identity(message, _identity(record, data))
+        message["source_markers"] = copilot_authorship.source_markers(record)
+        message["authorship"] = copilot_authorship.assistant_authorship(record)
         self.messages[str(record.get("id"))] = message
+        self.events.append(message)
+
+    def activity(
+        self, record: dict[str, JsonValue], data: dict[str, JsonValue]
+    ) -> None:
+        """Retain runtime context and notifications without creating human speech."""
+        text = _string(data.get("content")) or ""
+        markers = copilot_authorship.source_markers(record)
+        message = Event(
+            i=0,
+            role=_string(data.get("role")) or "system",
+            ts=_string(record.get("timestamp")),
+            text=text,
+            source_markers=markers,
+        )
+        message["authorship"] = (
+            [AuthorshipRange(start=0, end=len(text), source="harness", markers=markers)]
+            if text
+            else []
+        )
+        _apply_identity(message, _identity(record, data))
         self.events.append(message)
 
     def request(self, data: dict[str, JsonValue]) -> ToolCall:
@@ -758,6 +791,8 @@ class _CopilotSessionBuilder:
     ) -> ToolCall:
         """Keep a start without a request, attaching only to a recorded parent."""
         call = self.request({**data, "name": data.get("toolName")})
+        if isinstance(record.get("agentId"), str):
+            call["agent_id"] = str(record["agentId"])
         parent = self.messages.get(str(record.get("parentId")))
         if parent is not None:
             parent.setdefault("tool_calls", []).append(call)
@@ -784,8 +819,7 @@ class _CopilotSessionBuilder:
         exit_code = shell.get("exitCode") if isinstance(shell, dict) else None
         if isinstance(exit_code, int) and not isinstance(exit_code, bool):
             result["is_error"] |= exit_code != 0
-        if call_id in self.user_shells:
-            self.complete_user_shell(self.user_shells[call_id], result, data)
+        if self._complete_user_shell_result(result, record):
             return
         call = self.calls.get(call_id) if call_id else None
         if call is None or "result_record" in call:
@@ -806,9 +840,28 @@ class _CopilotSessionBuilder:
         if result["is_error"]:
             call["is_error"] = True
 
+    def _complete_user_shell_result(
+        self, result: ToolResult, record: dict[str, JsonValue]
+    ) -> bool:
+        """Join only unique, same-agent human shell requests to their completions."""
+        call_id = result["tool_call_id"]
+        if call_id in self.ambiguous_user_shells:
+            self.unmatched.append(result)
+            return True
+        message = self.user_shells.get(call_id) if call_id else None
+        if message is None:
+            return False
+        if message.get("agent_id") != result.get("agent_id"):
+            self.unmatched.append(result)
+        else:
+            self.complete_user_shell(message, result, record)
+        return True
+
     def complete_user_shell(
-        self, message: UserMessage, result: ToolResult, data: dict[str, JsonValue]
+        self, message: UserMessage, result: ToolResult, record: dict[str, JsonValue]
     ) -> None:
+        data = record.get("data")
+        data = data if isinstance(data, dict) else {}
         if "shell_result" in message:
             self.unmatched.append(result)
             return
@@ -819,15 +872,27 @@ class _CopilotSessionBuilder:
         message["authorship"] = []
         if command:
             message["authorship"].append(
-                {"start": 0, "end": len(command), "source": "candidate"}
+                {
+                    "start": 0,
+                    "end": len(command),
+                    "source": "candidate",
+                    "markers": message.get("source_markers", []),
+                }
             )
         if output:
             message["text"] = command + "\n" + output
+            markers = copilot_authorship.source_markers(record)
+            if "id" in message:
+                markers.append({"field": "request.id", "value": message["id"]})
             message["authorship"].append(
                 {
-                    "start": len(command) + 1,
+                    "start": len(command),
                     "end": len(command) + 1 + len(output),
-                    "source": "harness",
+                    "source": copilot_authorship.user_shell_output_source(
+                        message, record
+                    ),
+                    "markers": markers,
+                    "ts": result["ts"],
                 }
             )
 
@@ -857,8 +922,22 @@ class _CopilotSessionBuilder:
             return
         message = user_event(0, _string(record.get("timestamp")), command)
         message["shell_command"] = command
+        message["source_markers"] = copilot_authorship.source_markers(record)
+        message["authorship"] = (
+            [
+                AuthorshipRange(
+                    start=0,
+                    end=len(command),
+                    source="candidate",
+                    markers=message["source_markers"],
+                )
+            ]
+            if command
+            else []
+        )
         _apply_identity(message, _identity(record, data))
-        self.user_shells[call_id] = message
+        if call_id not in self.ambiguous_user_shells:
+            self.user_shells[call_id] = message
         self.events.append(message)
 
     def build(self) -> list[Message]:
@@ -868,6 +947,9 @@ class _CopilotSessionBuilder:
             "human_response.recorded": self.human_response,
             "permission.completed": self.permission_completion,
             "assistant.message": self.assistant_message,
+            "system.message": self.activity,
+            "system.notification": self.activity,
+            "instruction.update": self.activity,
             "tool.execution_start": self.start,
             "tool.execution_complete": self.complete,
         }
@@ -986,7 +1068,11 @@ def interpret_source(source: CopilotSource) -> Session | None:
     events = [
         event
         for event in conversation
-        if event.get("text") or event.get("images") or event.get("tool_calls")
+        if event.get("text")
+        or event.get("images")
+        or event.get("tool_calls")
+        or event.get("context_attachments")
+        or event["role"] == "system"
     ]
     if not events:
         return None

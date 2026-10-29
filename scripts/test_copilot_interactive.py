@@ -28,11 +28,17 @@ def test_native_human_markup_survives_interpretation():
 
     assert native is not None, "Required human markup evidence is missing"
     session = copilot.interpret_source(source)
-    actual = session["events"][0]["text"]
+    message = session["events"][0]
     expected = native["data"]["content"]
+    actual_candidate_text = []
+    for span in message["authorship"]:
+        if span["source"] == "candidate":
+            actual_candidate_text.append(message["text"][span["start"] : span["end"]])
 
     assert "CAPTURE_LITERAL_MARKUP" in expected
-    assert actual == expected
+    assert message["submitted"]["text"] == expected
+    assert actual_candidate_text == [expected]
+    assert message["text"] == native["data"]["transformedContent"]
 
 
 def test_native_question_answers_use_recorded_maps_and_call_ids():
@@ -400,7 +406,10 @@ def test_native_skill_calls_and_slash_arguments_remain_distinct():
     assert len(commands) == 1
     (command,) = commands
     assert command["command_args"] == 'CAPTURE_ARGS "two words", café 雪'
-    assert command["text"] == '/capture-command CAPTURE_ARGS "two words", café 雪'
+    assert (
+        command["submitted"]["text"]
+        == '/capture-command CAPTURE_ARGS "two words", café 雪'
+    )
 
 
 def test_native_question_cancellation_is_not_an_answer():

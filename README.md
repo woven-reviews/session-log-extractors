@@ -244,6 +244,34 @@ Ordered native messages own their tool requests and images; results join by
 recorded call ID. Repeated and orphan results remain in `unmatched_tool_results`,
 and the complete native result stays in `result_record` beside the compatible
 textual JSON result. Database-only inputs retain file targets by `turn_index`.
+
+Copilot authorship is independent of role. Recorded `data.source` and automatic
+continuation evidence distinguish candidate, harness, and other-agent input;
+unfamiliar or contradictory evidence remains unknown. The supported unscoped
+human default applies when source is omitted; agent-scoped input without source
+remains unknown. Native transformed text is retained verbatim in `text`, with
+code-point authorship ranges where the original input can be located uniquely.
+The named `submitted` record separately retains pre-transformation input and its
+interpreted authorship. A transformed slash expansion follows a unique same-agent
+parent-ID chain through hooks to a matching `skill.invoked` / `user-invoked`
+record. Its supported invocation notice and exact supplied arguments are candidate
+activity; loaded skill instructions and automatic context stay harness content.
+Missing links, conflicting definitions, or ambiguous rendered matches stay unknown.
+Native assistant prose with model and provider response ID evidence is an
+`other_agent` contribution, retaining assistant role. Role alone is insufficient.
+Original-only steering messages and DB fallback text remain verbatim.
+
+Native system messages, notifications, and instruction updates remain ordered
+runtime activity with source/type markers. Message and tool agent scope and
+parent task identity survive the JSON boundary. User-shell command/output
+ranges retain candidate activity only through a unique same-agent recorded call
+ID and an explicit user-requested completion or direct recorded parent link.
+Missing completion evidence stays
+unknown; ambiguous or cross-agent results stay unmatched. Editor-selection
+schema support is covered by controlled boundaries; the selected interactive
+capture does not establish native IDE authorship. See the
+[Copilot evidence and limits](scripts/fixtures/copilot/README.md).
+
 Recorded database file activity stays in `file_activity`, including when native
 tools supply the JSON. `FileActivity` holds the path and tool name;
 `FileActivity.provenance` identifies the native record type and preserves its
