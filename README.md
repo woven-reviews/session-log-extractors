@@ -8,6 +8,13 @@ The [extraction information contract](scripts/fixtures/README.md) records the
 move to JSON-only output, the complete information to preserve across
 harnesses, and the fixture acceptance requirements.
 
+Tests target one explicitly selected current versioned native capture per harness.
+When a newer capture records changed upstream behavior, retain the previous input
+and assertion as a focused legacy compatibility case, documenting its CLI version
+and reason, and add an assertion for current behavior. Run the main suite against
+the current capture rather than every version; retain older captures while legacy
+cases need them. Extractor bugs still require fixes, not changed expectations.
+
 Claude extraction produces JSON. Run
 `uv run --locked python scripts/extract_claude_session_log.py` to export every session in the
 resolved project directory to `claude_session_log_raw_<session-id>.json` in the
