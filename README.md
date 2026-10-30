@@ -45,6 +45,9 @@ retain candidate attribution for the invocation and supplied arguments.
 Captured standalone `/model` control invocations also count as candidate activity,
 retaining the user's decision to open the model selector. Its result notices
 retain the chosen model as candidate activity through the recorded parent ID.
+The native CLI's plain and wrapped `/compact` invocation records likewise retain
+the user's compaction action as candidate activity; the generated summary stays
+harness content. Unmarked SDK `/compact` prompts remain unknown.
 Shell output likewise inherits candidate activity only through its recorded
 parent ID pointing to a unique candidate shell input. Output and input formats
 must match; unlinked or ambiguous output stays unknown. Explicit injections, task notifications,

@@ -702,7 +702,7 @@ def test_model_selector_recognition_requires_its_native_control_record(shape):
     elif shape == "list":
         entry["message"]["content"] = [{"type": "text", "text": content}]
     elif shape == "wrong_command":
-        entry["message"]["content"] = content.replace("model", "compact")
+        entry["message"]["content"] = content.replace("model", "unsupported-control")
     elif shape == "extra_text":
         entry["message"]["content"] += "\nAdditional unattributed text."
     else:
@@ -818,3 +818,62 @@ def test_model_result_link_respects_native_shape_and_injection_provenance(shape)
     actual_sources = _sources(output)
     expected_source = "harness" if shape == "injected" else "unknown"
     assert actual_sources == [expected_source]
+
+
+def _recorded_compact_invocations():
+    matches = []
+    forms = set()
+    for entry in claude.load_entries(TRANSCRIPT):
+        content = entry.get("message", {}).get("content")
+        if entry.get("type") != "user" or not isinstance(content, str):
+            continue
+        if content == "/compact":
+            forms.add("plain")
+            matches.append(entry)
+        elif content.startswith("<command-name>/compact</command-name>"):
+            forms.add("wrapped")
+            matches.append(entry)
+    assert forms == {"plain", "wrapped"}, "Missing native compaction-invocation forms"
+    return matches
+
+
+def test_both_native_compaction_invocation_forms_remain_candidate_visible():
+    entries = _recorded_compact_invocations()
+    original = deepcopy(entries)
+    session = _interpret(entries)
+    exported = export_session(session)
+    for native, message, actual in zip(
+        entries, session["events"], exported["events"], strict=True
+    ):
+        actual_sources = _sources(message)
+        expected_text = native["message"]["content"]
+        assert actual_sources == ["candidate"]
+        assert message["text"] == actual["text"] == expected_text
+        assert message["ts"] == actual["ts"] == native["timestamp"]
+        assert message["id"] == native["uuid"]
+        assert actual["authorship"] == message["authorship"]
+        (span,) = message["authorship"]
+        assert {"field": "entrypoint", "value": "cli"} in span["markers"]
+    assert entries == original
+
+
+@pytest.mark.parametrize("shape", ["quoted", "list", "extra_text", "sdk", "injected"])
+def test_compact_control_recognition_excludes_other_text_and_unmarked_sdk_prompts(
+    shape,
+):
+    for entry in _recorded_compact_invocations():
+        content = entry["message"]["content"]
+        if shape == "quoted":
+            entry["message"]["content"] = "Example: " + content
+        elif shape == "list":
+            entry["message"]["content"] = [{"type": "text", "text": content}]
+        elif shape == "extra_text":
+            entry["message"]["content"] += "\nAdditional unattributed text."
+        elif shape == "sdk":
+            entry["entrypoint"] = "sdk-cli"
+        else:
+            entry["isMeta"] = True
+        message = _single_message(entry)
+        actual_sources = _sources(message)
+        expected_source = "harness" if shape == "injected" else "unknown"
+        assert actual_sources == [expected_source]

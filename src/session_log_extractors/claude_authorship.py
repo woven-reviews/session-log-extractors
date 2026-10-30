@@ -28,6 +28,7 @@ def _markers(record: dict[str, JsonValue], prefix: str = "") -> list[AuthorshipM
             "promptSource",
             "turnOrigin",
             "userType",
+            "entrypoint",
             "source_uuid",
             "delivery_id",
             "commandMode",
@@ -146,17 +147,31 @@ def _is_human_command_invocation(entry: dict[str, JsonValue]) -> bool:
     )
 
 
-_MODEL_INVOCATION = re.compile(
-    r"\s*<command-name>/model</command-name>\s*"
-    r"<command-message>model</command-message>\s*"
+_LOCAL_CONTROL_INVOCATION = re.compile(
+    r"\s*<command-name>/(?P<command>model|compact)</command-name>\s*"
+    r"<command-message>(?P=command)</command-message>\s*"
     r"<command-args>.*?</command-args>\s*",
     re.DOTALL,
 )
 
 
-def _is_model_invocation(entry: dict[str, JsonValue]) -> bool:
+def _local_control_name(entry: dict[str, JsonValue]) -> str | None:
     content = _native_user_text(entry)
-    return content is not None and _MODEL_INVOCATION.fullmatch(content) is not None
+    match = (
+        _LOCAL_CONTROL_INVOCATION.fullmatch(content) if content is not None else None
+    )
+    return match.group("command") if match is not None else None
+
+
+def _is_model_invocation(entry: dict[str, JsonValue]) -> bool:
+    return _local_control_name(entry) == "model"
+
+
+def _is_compact_invocation(entry: dict[str, JsonValue]) -> bool:
+    return entry.get("entrypoint") == "cli" and (
+        _native_user_text(entry) == "/compact"
+        or _local_control_name(entry) == "compact"
+    )
 
 
 def _user_action_marker(
@@ -169,6 +184,7 @@ def _user_action_marker(
         _is_user_shell_input(entry)
         or _is_human_command_invocation(entry)
         or _is_model_invocation(entry)
+        or _is_compact_invocation(entry)
     ):
         return AuthorshipMarker(field="message.content", value=text)
     return None

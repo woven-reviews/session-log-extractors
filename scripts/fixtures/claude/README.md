@@ -94,6 +94,11 @@ activity through recorded parent-ID links to unique candidate model invocations.
 Model and shell result formats must match the linked input; an unrelated human
 message or another command kind cannot establish attribution. Notice wording
 and model names do not drive recognition. Results remain separate records.
+Both native CLI representations of the manual `/compact` invocation (plain and
+wrapped) retain candidate attribution. Their CLI entrypoint is preserved as
+evidence; an unmarked SDK prompt containing `/compact` remains unknown. The
+generated compaction summary retains harness attribution, and the completion
+notice is a separate record.
 
 A `queued_command` attachment records the original human prompt,
 `source_uuid`, `delivery_id`, its own timestamp, and the longer rendered text;
