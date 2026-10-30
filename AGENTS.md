@@ -166,6 +166,13 @@ they perform. A reader should not need to trace a chain of helpers to discover
 what a test does or why it passes. Prefer a little repetition over abstractions
 that obscure the example.
 
+In Python tests and test helpers, use explicit loops and named intermediate
+values instead of comprehensions or generator expressions. Keep setup, actions,
+and assertions separate; never hide mutations inside assertions. Collect and
+name actual and expected values before comparing them. Names should explain
+their meaning without requiring readers to reconstruct earlier mutations,
+positional indexes, or slices. Give each helper one clear input shape.
+
 Name classes and helpers for the responsibility they perform. Distinguish
 records representing domain facts from objects that build, read, or export
 those records; include lifecycle or scope when it helps explain their role.
