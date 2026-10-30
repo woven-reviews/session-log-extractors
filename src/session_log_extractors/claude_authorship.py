@@ -100,6 +100,34 @@ def _is_user_interruption(entry: dict[str, JsonValue]) -> bool:
     )
 
 
+def _is_user_shell_input(entry: dict[str, JsonValue]) -> bool:
+    """Recognize the captured standalone shell-mode input, including its wrapper."""
+    message = entry.get("message")
+    if not isinstance(message, dict):
+        return False
+    content = message.get("content")
+    if not isinstance(content, str):
+        return False
+    return (
+        entry.get("type") == "user"
+        and message.get("role") == "user"
+        and content.startswith("<bash-input>")
+        and content.endswith("</bash-input>")
+        and bool(content[len("<bash-input>") : -len("</bash-input>")].strip())
+    )
+
+
+def _user_action_marker(
+    entry: dict[str, JsonValue],
+    text: str,
+) -> AuthorshipMarker | None:
+    if _is_user_interruption(entry):
+        return AuthorshipMarker(field="message.content[0].text", value=text)
+    if _is_user_shell_input(entry):
+        return AuthorshipMarker(field="message.content", value=text)
+    return None
+
+
 def _is_human_input(entry: dict[str, JsonValue]) -> bool:
     return (
         _origin(entry).get("kind") == "human"
@@ -112,6 +140,7 @@ def _user_authorship(entry: dict[str, JsonValue], text: str) -> list[AuthorshipR
     """Classify nonempty text using native origins before broad injection flags."""
     markers = _markers(entry)
     origin = _origin(entry)
+    user_action = _user_action_marker(entry, text)
     if origin.get("kind") == "peer":
         return _split_content(
             text,
@@ -127,11 +156,11 @@ def _user_authorship(entry: dict[str, JsonValue], text: str) -> list[AuthorshipR
         or entry.get("turnOrigin") in ("task_notification", "scheduled")
     ):
         source: AuthorshipSource = "harness"
-    elif _is_user_interruption(entry):
-        # Candidate-visible activity includes the user's interruption action,
-        # even though Claude supplies the notice's wording.
+    elif user_action is not None:
+        # Candidate-visible activity includes deliberate user control actions
+        # and shell input, preserving their native notices and wrappers.
         source = "candidate"
-        markers.append(AuthorshipMarker(field="message.content[0].text", value=text))
+        markers.append(user_action)
     elif _is_human_input(entry):
         source = "candidate"
     else:

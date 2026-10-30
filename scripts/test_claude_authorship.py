@@ -439,3 +439,58 @@ def test_explicit_injection_evidence_overrides_control_notice_spelling():
     message = _single_message(entry)
     actual_sources = _sources(message)
     assert actual_sources == ["harness"]
+
+
+def _recorded_shell_input():
+    matches = []
+    for entry in claude.load_entries(TRANSCRIPT):
+        content = entry.get("message", {}).get("content")
+        if isinstance(content, str) and content.startswith("<bash-input>"):
+            matches.append(entry)
+    assert len(matches) == 1, "Expected one native user-run shell command"
+    (entry,) = matches
+    return entry
+
+
+def test_native_user_shell_command_remains_candidate_visible_through_export():
+    entry = _recorded_shell_input()
+    original = deepcopy(entry)
+    session = _interpret([entry])
+    (message,) = session["events"]
+    exported = export_session(session)
+    (actual,) = exported["events"]
+    expected_text = entry["message"]["content"]
+    expected_command = expected_text.removeprefix("<bash-input>").removesuffix(
+        "</bash-input>"
+    )
+    actual_sources = _sources(message)
+    assert actual_sources == ["candidate"]
+    assert message["shell_command"] == expected_command
+    assert message["text"] == actual["text"] == expected_text
+    assert message["ts"] == actual["ts"] == entry["timestamp"]
+    assert message["id"] == entry["uuid"]
+    assert actual["authorship"] == message["authorship"]
+    (span,) = message["authorship"]
+    assert span["start"] == 0 and span["end"] == len(expected_text)
+    assert {"field": "message.content", "value": expected_text} in span["markers"]
+    assert entry == original
+
+
+@pytest.mark.parametrize("shape", ["quoted", "extra_text", "list", "empty", "injected"])
+def test_shell_input_recognition_requires_the_native_standalone_record(shape):
+    entry = _recorded_shell_input()
+    content = entry["message"]["content"]
+    if shape == "quoted":
+        entry["message"]["content"] = "Example: " + content
+    elif shape == "extra_text":
+        entry["message"]["content"] = content + "\nOther unattributed words."
+    elif shape == "list":
+        entry["message"]["content"] = [{"type": "text", "text": content}]
+    elif shape == "empty":
+        entry["message"]["content"] = "<bash-input>  </bash-input>"
+    else:
+        entry["isMeta"] = True
+    message = _single_message(entry)
+    actual_sources = _sources(message)
+    expected_source = "harness" if shape == "injected" else "unknown"
+    assert actual_sources == [expected_source]
