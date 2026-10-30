@@ -81,66 +81,74 @@ def _require_single_match(matches, description):
 
 
 def _content_block(entry, kind):
-    return _require_single_match(
-        [
-            block
-            for block in _content_blocks(entry)
-            if isinstance(block, dict) and block.get("type") == kind
-        ],
-        f"{kind} block",
-    )
+    matches = []
+    for block in _content_blocks(entry):
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == kind:
+            matches.append(block)
+
+    return _require_single_match(matches, f"{kind} block")
 
 
 def _recorded_user_message(marker):
-    return _require_single_match(
-        [
-            entry
-            for entry in _recorded_session_entries()
-            if entry.get("type") == "user"
-            and not entry.get("isMeta")
-            and not entry.get("isCompactSummary")
-            and marker in _human_text(entry)
-        ],
-        f"user message containing {marker!r}",
-    )
+    matches = []
+    for entry in _recorded_session_entries():
+        if entry.get("type") != "user":
+            continue
+        if entry.get("isMeta") or entry.get("isCompactSummary"):
+            continue
+        if marker in _human_text(entry):
+            matches.append(entry)
+
+    return _require_single_match(matches, f"user message containing {marker!r}")
 
 
 def _recorded_result_for_call(entries, call):
-    # IDs from the selected capture connect records; no recorded ID selects a case.
+    matches = []
+    for entry in entries:
+        if entry.get("type") != "user":
+            continue
+
+        for block in _content_blocks(entry):
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") != "tool_result":
+                continue
+            if block.get("tool_use_id") == call["id"]:
+                matches.append(entry)
+                break
+
     return _require_single_match(
-        [
-            entry
-            for entry in entries
-            if entry.get("type") == "user"
-            and any(
-                isinstance(block, dict)
-                and block.get("type") == "tool_result"
-                and block.get("tool_use_id") == call["id"]
-                for block in _content_blocks(entry)
-            )
-        ],
-        f"result for {call['name']} {call['input']!r}",
+        matches, f"result for {call['name']} {call['input']!r}"
     )
 
 
 def _recorded_tool_interactions(name, input_contains="", result_contains=""):
+    """Return native (assistant entry, result entry) pairs matching the filters."""
     entries = _recorded_session_entries()
-    calls = [
-        (entry, block)
-        for entry in entries
-        if entry.get("type") == "assistant"
-        for block in _content_blocks(entry)
-        if isinstance(block, dict)
-        and block.get("type") == "tool_use"
-        and block.get("name") == name
-        and input_contains in json.dumps(block.get("input"), ensure_ascii=False)
-    ]
-    pairs = [(entry, _recorded_result_for_call(entries, call)) for entry, call in calls]
-    matches = [
-        (entry, result)
-        for entry, result in pairs
-        if result_contains in _result_block_text(_content_block(result, "tool_result"))
-    ]
+    matches = []
+    for assistant in entries:
+        if assistant.get("type") != "assistant":
+            continue
+
+        for call in _content_blocks(assistant):
+            if not isinstance(call, dict):
+                continue
+            if call.get("type") != "tool_use":
+                continue
+            if call.get("name") != name:
+                continue
+            input_text = json.dumps(call.get("input"), ensure_ascii=False)
+            if input_contains not in input_text:
+                continue
+
+            result = _recorded_result_for_call(entries, call)
+            result_block = _content_block(result, "tool_result")
+            result_text = _result_block_text(result_block)
+            if result_contains in result_text:
+                matches.append((assistant, result))
+
     assert matches, (
         f"Missing {name} activity matching {input_contains!r} / {result_contains!r}"
     )
@@ -148,16 +156,18 @@ def _recorded_tool_interactions(name, input_contains="", result_contains=""):
 
 
 def _recorded_tool_interaction(name, input_contains="", result_contains=""):
+    matches = _recorded_tool_interactions(name, input_contains, result_contains)
     return _require_single_match(
-        _recorded_tool_interactions(name, input_contains, result_contains),
+        matches,
         f"{name} activity matching {input_contains!r} / {result_contains!r}",
     )
 
 
 def _single_tool_call_in(events):
-    return _require_single_match(
-        [call for event in events for call in event.get("tool_calls", [])], "tool call"
-    )
+    calls = []
+    for event in events:
+        calls.extend(event.get("tool_calls", []))
+    return _require_single_match(calls, "tool call")
 
 
 def _assert_assistant_text(events):
@@ -167,32 +177,36 @@ def _assert_assistant_text(events):
     assert any(text.strip() for text in responses)
 
 
-def _question_in(call, *, multi_select):
-    native = call.get("input", call)
-    question = _require_single_match(
-        [q for q in native["questions"] if bool(q.get("multiSelect")) == multi_select],
-        f"question with multiSelect={multi_select}",
-    )
-    return _require_single_match(
-        [q for q in call["questions"] if q["question"] == question["question"]],
-        "question matching its native input",
-    )
+def _native_question_in(tool_input, *, multi_select):
+    matches = []
+    for question in tool_input["questions"]:
+        if bool(question.get("multiSelect")) == multi_select:
+            matches.append(question)
+    return _require_single_match(matches, f"question with multiSelect={multi_select}")
 
 
-def _interpret_interaction(entries):
-    return eclog.interpret_source(ClaudeSource(Path("session.jsonl"), entries))
+def _answered_question_in(call, *, multi_select):
+    native_question = _native_question_in(call["input"], multi_select=multi_select)
+    matches = []
+    for question in call["questions"]:
+        if question["question"] == native_question["question"]:
+            matches.append(question)
+    return _require_single_match(matches, "question matching its native input")
 
 
 def _tool_calls_in(session):
-    return [call for event in session["events"] for call in event.get("tool_calls", [])]
+    calls = []
+    for event in session["events"]:
+        calls.extend(event.get("tool_calls", []))
+    return calls
 
 
 def _plan_decisions_in(session):
-    return [
-        call["plan_decision"]
-        for call in _tool_calls_in(session)
-        if "plan_decision" in call
-    ]
+    decisions = []
+    for call in _tool_calls_in(session):
+        if "plan_decision" in call:
+            decisions.append(call["plan_decision"])
+    return decisions
 
 
 def _recorded_multiselect_interaction():
@@ -200,8 +214,10 @@ def _recorded_multiselect_interaction():
     for assistant, result in _recorded_tool_interactions("AskUserQuestion"):
         call = _content_block(assistant, "tool_use")
         questions = call["input"]["questions"]
-        if any(question.get("multiSelect") for question in questions):
-            matches.append((assistant, result))
+        for question in questions:
+            if question.get("multiSelect"):
+                matches.append((assistant, result))
+                break
     return _require_single_match(matches, "multiselect activity")
 
 
@@ -210,18 +226,20 @@ def _recorded_overlapping_options_interaction():
     for assistant, result in _recorded_tool_interactions("AskUserQuestion"):
         call = _content_block(assistant, "tool_use")
         questions = call["input"]["questions"]
-        if any(_has_overlapping_labels(question["options"]) for question in questions):
-            matches.append((assistant, result))
+        for question in questions:
+            if _has_overlapping_labels(question["options"]):
+                matches.append((assistant, result))
+                break
     return _require_single_match(matches, "overlapping-option activity")
 
 
 def _has_overlapping_labels(options):
     labels = [option["label"] for option in options]
-    return any(
-        longer != shorter and longer.startswith(shorter)
-        for shorter in labels
-        for longer in labels
-    )
+    for shorter in labels:
+        for longer in labels:
+            if longer != shorter and longer.startswith(shorter):
+                return True
+    return False
 
 
 def _assert_answer_uses_distinct_recorded_options(question):
@@ -236,7 +254,7 @@ def _assert_answer_uses_distinct_recorded_options(question):
 
 def test_native_skill_and_command_invocations_are_retained():
     entries = _recorded_session_entries()
-    session = _interpret_interaction(entries)
+    session = eclog.interpret_source(ClaudeSource(Path("session.jsonl"), entries))
     assert session["skills_used"] == ["capture-leaf"]
     calls = [call for call in _tool_calls_in(session) if call["name"] == "Skill"]
     assert len(calls) >= 2
@@ -273,10 +291,10 @@ def test_single_choice():
 def test_native_multiselect_answer():
     entries = _recorded_multiselect_interaction()
 
-    session = _interpret_interaction(entries)
+    session = eclog.interpret_source(ClaudeSource(Path("session.jsonl"), entries))
 
     call = _single_tool_call_in(session["events"])
-    answer = _question_in(call, multi_select=True)
+    answer = _answered_question_in(call, multi_select=True)
     assert len(answer["chosen_labels"]) >= 2
     _assert_answer_uses_distinct_recorded_options(answer)
 
@@ -331,7 +349,9 @@ def test_native_settings_denial_is_recorded():
     assert isinstance(result, str)
     assert result.strip()
     assert parse_permission_denial(result) == ""
-    interpreted_session = _interpret_interaction(entries)
+    interpreted_session = eclog.interpret_source(
+        ClaudeSource(Path("session.jsonl"), entries)
+    )
     denial = _require_single_match(
         [
             call["permission_denial"]
@@ -365,22 +385,24 @@ def test_custom_answer_matches_no_option():
         "AskUserQuestion", result_contains="CAPTURE_CUSTOM_PLAIN_MOSS"
     )
 
-    session = _interpret_interaction(entries)
+    session = eclog.interpret_source(ClaudeSource(Path("session.jsonl"), entries))
 
     call = _single_tool_call_in(session["events"])
-    question = _question_in(call, multi_select=False)
+    question = _answered_question_in(call, multi_select=False)
     assert question["answer_text"] == "CAPTURE_CUSTOM_PLAIN_MOSS"
     assert question["chosen_labels"] == []
 
 
 def test_multi_question_anchors_on_its_own_text():
     entries = _recorded_multiselect_interaction()
-    interpreted_session = _interpret_interaction(entries)
+    interpreted_session = eclog.interpret_source(
+        ClaudeSource(Path("session.jsonl"), entries)
+    )
     call = _single_tool_call_in(interpreted_session["events"])
-    answer = _question_in(call, multi_select=True)
+    answer = _answered_question_in(call, multi_select=True)
     _assert_answer_uses_distinct_recorded_options(answer)
     assert len(answer["chosen_labels"]) >= 2
-    answer = _question_in(call, multi_select=False)
+    answer = _answered_question_in(call, multi_select=False)
     _assert_answer_uses_distinct_recorded_options(answer)
     assert len(answer["chosen_labels"]) == 1
     assert answer["answer_text"] == answer["chosen_labels"][0]
@@ -475,37 +497,54 @@ def test_large_native_result_reaches_envelope_size_warning():
     assert "session-log uploads are capped" in stderr.getvalue()
 
 
-def test_build_events_keeps_full_tool_input():
+def test_build_events_preserves_long_file_paths():
     entries = _recorded_session_entries()
-    calls = [
-        call for event in build_events(entries) for call in event.get("tool_calls", [])
-    ]
-    paths = {
-        call["input"]["file_path"]
-        for call in calls
-        if "nested space 雪" in call["input"].get("file_path", "")
-    }
+    events = build_events(entries)
+    paths = set()
+    for event in events:
+        for call in event.get("tool_calls", []):
+            path = call["input"].get("file_path", "")
+            if "nested space 雪" in path:
+                paths.add(path)
+
     long_path = _require_single_match(paths, "generated long path")
     assert len(long_path) > 100
     assert long_path.endswith("greeting.py")
-    writes = [
-        call["input"]
-        for call in calls
-        if call["name"] == "Write"
-        and Path(call["input"]["file_path"]).name == "large-input.txt"
-    ]
-    assert writes
-    assert all(len(payload["content"].encode()) > 4096 for payload in writes)
-    assert writes == [
-        block["input"]
-        for entry in entries
-        if entry.get("type") == "assistant"
-        for block in _content_blocks(entry)
-        if isinstance(block, dict)
-        and block.get("type") == "tool_use"
-        and block.get("name") == "Write"
-        and Path(block["input"]["file_path"]).name == "large-input.txt"
-    ]
+
+
+def test_build_events_preserves_large_write_inputs():
+    entries = _recorded_session_entries()
+    recorded_write_inputs = []
+    for entry in entries:
+        if entry.get("type") != "assistant":
+            continue
+        for block in _content_blocks(entry):
+            if (
+                not isinstance(block, dict)
+                or block.get("type") != "tool_use"
+                or block.get("name") != "Write"
+            ):
+                continue
+            file_path = Path(block["input"]["file_path"])
+            if file_path.name == "large-input.txt":
+                recorded_write_inputs.append(block["input"])
+
+    assert recorded_write_inputs, "Capture must include a Write to large-input.txt"
+    for payload in recorded_write_inputs:
+        assert len(payload["content"].encode()) > 4096
+
+    events = build_events(entries)
+
+    extracted_write_inputs = []
+    for event in events:
+        for call in event.get("tool_calls", []):
+            if (
+                call["name"] == "Write"
+                and Path(call["input"]["file_path"]).name == "large-input.txt"
+            ):
+                extracted_write_inputs.append(call["input"])
+
+    assert extracted_write_inputs == recorded_write_inputs
 
 
 def test_messages_skip_sidechain_and_meta():
@@ -514,7 +553,9 @@ def test_messages_skip_sidechain_and_meta():
     assert any(entry.get("isMeta") for entry in entries)
     assert any(entry.get("isSidechain") for entry in sidechain)
     expected = build_events([entry for entry in entries if not entry.get("isMeta")])
-    session = _interpret_interaction(entries + sidechain)
+    session = eclog.interpret_source(
+        ClaudeSource(Path("session.jsonl"), entries + sidechain)
+    )
     assert build_events(entries + sidechain) == expected
     assert session["subagent_count"] == 1
     assert "interactions" not in session
@@ -531,7 +572,9 @@ def test_plan_approved_is_captured():
     entries = _recorded_tool_interaction(
         "ExitPlanMode", result_contains="## Approved Plan:\n"
     )
-    interpreted_session = _interpret_interaction(entries)
+    interpreted_session = eclog.interpret_source(
+        ClaudeSource(Path("session.jsonl"), entries)
+    )
     (plan,) = _plan_decisions_in(interpreted_session)
     assert isinstance(plan["plan"], str)
     assert plan["plan"].strip()
@@ -543,7 +586,9 @@ def test_plan_approved_with_edit_keeps_final_version():
     entries = _recorded_tool_interaction(
         "ExitPlanMode", result_contains="(edited by user):"
     )
-    interpreted_session = _interpret_interaction(entries)
+    interpreted_session = eclog.interpret_source(
+        ClaudeSource(Path("session.jsonl"), entries)
+    )
     (plan,) = _plan_decisions_in(interpreted_session)
     assert plan["decision"] == "approved"
     assert plan["plan"] == (ROOT / "assets/plan-before-editor.md").read_text()
@@ -557,7 +602,9 @@ def test_plan_rejected_keeps_steering_message():
     entries = _recorded_tool_interaction(
         "ExitPlanMode", result_contains="CAPTURE_PLAN_REJECT_1:"
     )
-    interpreted_session = _interpret_interaction(entries)
+    interpreted_session = eclog.interpret_source(
+        ClaudeSource(Path("session.jsonl"), entries)
+    )
     (call,) = _tool_calls_in(interpreted_session)
     plan = call["plan_decision"]
     assert plan["decision"] == "rejected"
@@ -578,7 +625,9 @@ def test_plan_rejection_reason_is_captured():
         "for the rejection:\nwrong table, use line_items\nand keep it in one "
         "migration\n\nNote: The user's next message may contain a correction."
     )
-    interpreted_session = _interpret_interaction(entries)
+    interpreted_session = eclog.interpret_source(
+        ClaudeSource(Path("session.jsonl"), entries)
+    )
     plans = _plan_decisions_in(interpreted_session)
     (plan,) = plans
     assert plan["decision"] == "rejected"
@@ -591,7 +640,9 @@ def test_plan_without_result_is_marked_undecided():
     assistant, _ = _recorded_tool_interaction(
         "ExitPlanMode", result_contains="## Approved Plan:\n"
     )
-    interpreted_session = _interpret_interaction([assistant])
+    interpreted_session = eclog.interpret_source(
+        ClaudeSource(Path("session.jsonl"), [assistant])
+    )
     (plan,) = _plan_decisions_in(interpreted_session)
     assert plan["decision"] == "no decision recorded"
 
@@ -925,7 +976,9 @@ def test_legacy_plan_helper_consumes_native_matches_and_updates_plan_records():
             )
         )
     )
-    interpreted_session = _interpret_interaction(entries)
+    interpreted_session = eclog.interpret_source(
+        ClaudeSource(Path("session.jsonl"), entries)
+    )
     calls = _tool_calls_in(interpreted_session)
     records = [
         {
@@ -960,7 +1013,9 @@ def test_legacy_plan_helper_leaves_unmatched_plans_pending(tool_id):
     result = next(entry for entry in entries if _is_tool_result_entry(entry))
     # Change only the captured result ID to exercise absent/unmatched associations.
     _content_block(result, "tool_result")["tool_use_id"] = tool_id
-    interpreted_session = _interpret_interaction(entries)
+    interpreted_session = eclog.interpret_source(
+        ClaudeSource(Path("session.jsonl"), entries)
+    )
     pending = {
         call["id"]: call["plan_decision"]
         for call in _tool_calls_in(interpreted_session)
@@ -982,7 +1037,9 @@ def test_legacy_plan_helper_leaves_unmatched_plans_pending(tool_id):
 )
 def test_legacy_denial_helper_matches_native_result_blocks(fixture, expected):
     entries = _recorded_tool_interaction(*fixture)
-    interpreted_session = _interpret_interaction(entries)
+    interpreted_session = eclog.interpret_source(
+        ClaudeSource(Path("session.jsonl"), entries)
+    )
     tool_names = {
         call["id"]: call["name"] for call in _tool_calls_in(interpreted_session)
     }
@@ -996,7 +1053,7 @@ def test_legacy_denial_helper_matches_native_result_blocks(fixture, expected):
 
 def test_activity_keeps_commands_shell_subagents_questions_and_files():
     entries = _recorded_session_entries() + load_entries(SUBAGENT)
-    session = _interpret_interaction(entries)
+    session = eclog.interpret_source(ClaudeSource(Path("session.jsonl"), entries))
     assert any(event.get("command") == "/capture-echo" for event in session["events"])
     assert any(
         "CAPTURE_USER_STDOUT_1" in event.get("shell_command", "")
@@ -1014,7 +1071,7 @@ def test_activity_keeps_commands_shell_subagents_questions_and_files():
         ],
         "tree question call",
     )
-    answer = _question_in(question, multi_select=True)
+    answer = _answered_question_in(question, multi_select=True)
     _assert_answer_uses_distinct_recorded_options(answer)
     assert len(answer["chosen_labels"]) >= 2
     assert any(call["name"] == "Write" for call in calls)
@@ -1106,7 +1163,9 @@ def test_native_resumed_session_lists_multiple_models():
     assert len(models) == len(set(models))
     assert any(
         event.get("command") == "/model"
-        for event in _interpret_interaction(entries)["events"]
+        for event in eclog.interpret_source(
+            ClaudeSource(Path("session.jsonl"), entries)
+        )["events"]
     )
 
 
@@ -1115,7 +1174,9 @@ def test_native_continued_conversation_keeps_follow_up_in_one_session():
     assert {entry["sessionId"] for entry in entries if "sessionId" in entry} == {
         TRANSCRIPT.stem
     }
-    events = _interpret_interaction(entries)["events"]
+    events = eclog.interpret_source(ClaudeSource(Path("session.jsonl"), entries))[
+        "events"
+    ]
     prompt = _require_single_match(
         [
             event
@@ -1205,7 +1266,7 @@ def test_native_subagent_summary_retains_evidence_without_guessing_ownership():
     )
     assert subs[0]["start_ts"] == task["timestamp"]
     entries = _recorded_session_entries()
-    session = _interpret_interaction(entries)
+    session = eclog.interpret_source(ClaudeSource(Path("session.jsonl"), entries))
     assert "interactions" not in session
     assert not any("subagents" in event for event in session["events"])
 
@@ -1817,7 +1878,9 @@ def test_recorded_skills_deduplicate_and_ignore_empty_names():
         empty = deepcopy(skill)
         empty["input"] = {"skill": ""}
         assistant["message"]["content"].append(empty)
-    interpreted_session = _interpret_interaction(entries)
+    interpreted_session = eclog.interpret_source(
+        ClaudeSource(Path("session.jsonl"), entries)
+    )
     assert interpreted_session["skills_used"] == ["capture-leaf"]
     calls = [
         call for call in _tool_calls_in(interpreted_session) if call["name"] == "Skill"
@@ -1832,12 +1895,14 @@ def test_question_stays_with_its_call_across_a_later_user_message():
     later = _recorded_user_message("Remember **CAPTURE_CONTEXT_CEDAR_73**")
     # Insert a human message between the recorded call and its result.
 
-    session = _interpret_interaction([assistant, later, result])
+    session = eclog.interpret_source(
+        ClaudeSource(Path("session.jsonl"), [assistant, later, result])
+    )
 
     call = _single_tool_call_in(session["events"])
     assert call["id"] == _content_block(assistant, "tool_use")["id"]
     assert call["result_record"]["tool_call_id"] == call["id"]
-    answer = _question_in(call, multi_select=True)
+    answer = _answered_question_in(call, multi_select=True)
     assert len(answer["chosen_labels"]) >= 2
     _assert_answer_uses_distinct_recorded_options(answer)
     (user_message,) = [event for event in session["events"] if event["role"] == "user"]
@@ -1853,7 +1918,9 @@ def test_plan_stays_with_its_call_across_a_later_user_message():
     later = _recorded_user_message("Remember **CAPTURE_CONTEXT_CEDAR_73**")
     # Insert a human message between the recorded call and its result.
 
-    session = _interpret_interaction([assistant, later, result])
+    session = eclog.interpret_source(
+        ClaudeSource(Path("session.jsonl"), [assistant, later, result])
+    )
 
     call = _single_tool_call_in(session["events"])
     assert call["id"] == _content_block(assistant, "tool_use")["id"]
@@ -1870,7 +1937,9 @@ def test_permission_denial_stays_with_its_call_across_a_later_user_message():
     later = _recorded_user_message("Remember **CAPTURE_CONTEXT_CEDAR_73**")
     # Insert a human message between the recorded call and its result.
 
-    session = _interpret_interaction([assistant, later, result])
+    session = eclog.interpret_source(
+        ClaudeSource(Path("session.jsonl"), [assistant, later, result])
+    )
 
     call = _single_tool_call_in(session["events"])
     assert call["id"] == _content_block(assistant, "tool_use")["id"]
@@ -1884,7 +1953,9 @@ def test_permission_denial_stays_with_its_call_across_a_later_user_message():
 
 def test_native_message_and_result_identities_survive_interpretation():
     assistant, result = _recorded_tool_interaction("Read", "multibyte.txt")
-    session = _interpret_interaction([assistant, result])
+    session = eclog.interpret_source(
+        ClaudeSource(Path("session.jsonl"), [assistant, result])
+    )
     message = _require_single_match(session["events"], "assistant message")
     assert message["id"] == assistant["uuid"]
     assert message["parent_id"] == assistant["parentUuid"]
@@ -1900,7 +1971,9 @@ def test_unmatched_result_retains_content_without_inventing_an_owner():
     # Change only the result ID so the captured result has no matching call.
     block = _content_block(result, "tool_result")
     block["tool_use_id"] = "unknown-call"
-    session = _interpret_interaction([assistant, result])
+    session = eclog.interpret_source(
+        ClaudeSource(Path("session.jsonl"), [assistant, result])
+    )
     assert _single_tool_call_in(session["events"])["result"] is None
     assert "result_record" not in _single_tool_call_in(session["events"])
     (record,) = session["unmatched_tool_results"]
@@ -1915,12 +1988,12 @@ def test_malformed_question_options_preserve_input_and_allow_extraction(options)
     entries = [assistant, result]
     block = _content_block(assistant, "tool_use")
     # Vary only the options container in the audited question fixture.
-    _question_in(block["input"], multi_select=True)["options"] = options
-    session = _interpret_interaction(entries)
+    _native_question_in(block["input"], multi_select=True)["options"] = options
+    session = eclog.interpret_source(ClaudeSource(Path("session.jsonl"), entries))
     call = _single_tool_call_in(session["events"])
     assert call["input"] == block["input"]
-    assert _question_in(call, multi_select=True)["options"] == []
-    answer = _question_in(call, multi_select=True)["answer_text"]
+    assert _answered_question_in(call, multi_select=True)["options"] == []
+    answer = _answered_question_in(call, multi_select=True)["answer_text"]
     assert isinstance(answer, str)
     assert answer.strip()
     exported = session_log_envelope.export_session(session)
@@ -1934,7 +2007,9 @@ def test_top_level_result_preserves_payload_without_inventing_an_owner(payload):
     # top level and removing the block that carries its call ID.
     result["message"]["content"] = []
     result["toolUseResult"] = payload
-    session = _interpret_interaction([assistant, result])
+    session = eclog.interpret_source(
+        ClaudeSource(Path("session.jsonl"), [assistant, result])
+    )
     call = _single_tool_call_in(session["events"])
     assert call["result"] is None
     assert "result_record" not in call
@@ -1950,7 +2025,9 @@ def test_top_level_result_preserves_payload_without_inventing_an_owner(payload):
 def test_top_level_result_does_not_duplicate_a_recorded_result_block():
     assistant, result = _recorded_tool_interaction("Read", "multibyte.txt")
     result["toolUseResult"] = {"stdout": "duplicate output"}
-    session = _interpret_interaction([assistant, result])
+    session = eclog.interpret_source(
+        ClaudeSource(Path("session.jsonl"), [assistant, result])
+    )
     assert session["unmatched_tool_results"] == []
     assert "CAPTURE_MULTIBYTE" in _single_tool_call_in(session["events"])["result"]
 
@@ -1963,7 +2040,9 @@ def test_unknown_tool_payload_is_preserved_and_reported(tmp_path, capsys):
     block["input"]["plugin_options"] = {
         "targets": [None, True, 1.5, {"region": "east"}]
     }
-    session = _interpret_interaction([assistant, result])
+    session = eclog.interpret_source(
+        ClaudeSource(Path("session.jsonl"), [assistant, result])
+    )
     call = _single_tool_call_in(session["events"])
     assert call["input_schema"] == "unsupported"
     assert session["unsupported_tools"] == ["plugin__DeployService"]
@@ -1992,22 +2071,22 @@ def test_question_options_are_checked_without_losing_recorded_payload():
     assistant, result = _recorded_multiselect_interaction()
     entries = [assistant, result]
     block = _content_block(assistant, "tool_use")
-    options = _question_in(block["input"], multi_select=True)["options"]
+    options = _native_question_in(block["input"], multi_select=True)["options"]
     # Extend a recorded option and introduce malformed known fields. Semantic
     # parsing uses checked options while the complete native input survives.
     assert options
     for option in options:
         option["preview"] = {"markdown": "**keep this**"}
     options.extend([{"label": 1}, {"label": "bad", "description": None}])
-    session = _interpret_interaction(entries)
+    session = eclog.interpret_source(ClaudeSource(Path("session.jsonl"), entries))
     call = _single_tool_call_in(session["events"])
     assert call["input"] == block["input"]
-    assert _question_in(call, multi_select=True)["options"] == options[:-2]
+    assert _answered_question_in(call, multi_select=True)["options"] == options[:-2]
     assert all(
         option["preview"] == {"markdown": "**keep this**"}
-        for option in _question_in(call, multi_select=True)["options"]
+        for option in _answered_question_in(call, multi_select=True)["options"]
     )
-    answer = _question_in(call, multi_select=True)
+    answer = _answered_question_in(call, multi_select=True)
     _assert_answer_uses_distinct_recorded_options(answer)
     assert len(answer["chosen_labels"]) >= 2
 
@@ -2018,7 +2097,9 @@ def test_claude_reports_copilot_tool_names_as_unsupported(name):
     # Change only the captured name to the other harness's vocabulary.
     block = _content_block(assistant, "tool_use")
     block["name"] = name
-    session = _interpret_interaction([assistant, result])
+    session = eclog.interpret_source(
+        ClaudeSource(Path("session.jsonl"), [assistant, result])
+    )
     call = _single_tool_call_in(session["events"])
     assert call["input_schema"] == "unsupported"
     assert session["unsupported_tools"] == [name]
@@ -2047,7 +2128,9 @@ def test_legacy_edited_heading_with_unchanged_plan_is_not_an_edit():
     block["content"] = block["content"].replace(
         "## Approved Plan:", "## Approved Plan (edited by user):"
     )
-    interpreted_session = _interpret_interaction([assistant, result])
+    interpreted_session = eclog.interpret_source(
+        ClaudeSource(Path("session.jsonl"), [assistant, result])
+    )
     (plan,) = _plan_decisions_in(interpreted_session)
     assert plan["decision"] == "approved"
     assert plan["edited_plan"] == ""
@@ -2089,17 +2172,21 @@ def test_legacy_dont_ask_denial_without_command_is_recorded():
     _content_block(result, "tool_result")["content"] = (
         "Permission to use Bash has been denied."
     )
-    interpreted_session = _interpret_interaction([assistant, result])
+    interpreted_session = eclog.interpret_source(
+        ClaudeSource(Path("session.jsonl"), [assistant, result])
+    )
     (call,) = _tool_calls_in(interpreted_session)
     assert call["permission_denial"]["by"] == "settings"
     assert call["permission_denial"]["message"] == ""
 
 
-def _reword_generated_questions(entries):
+def _question_text_replacements(entries):
     replacements = {}
     for entry in entries:
         for block in _content_blocks(entry):
-            if not isinstance(block, dict) or block.get("name") != "AskUserQuestion":
+            if not isinstance(block, dict):
+                continue
+            if block.get("name") != "AskUserQuestion":
                 continue
             for question in block["input"]["questions"]:
                 for field in ("question", "header"):
@@ -2109,17 +2196,19 @@ def _reword_generated_questions(entries):
                     for field in ("label", "description"):
                         text = option[field]
                         replacements[text] = f"Alternative {text}"
+    return replacements
+
+
+def _reword_generated_questions(entries):
+    replacements = _question_text_replacements(entries)
     # One non-cascading pass updates calls, rendered results, and answer maps.
-    pattern = "|".join(
-        re.escape(text) for text in sorted(replacements, key=len, reverse=True)
+    longest_first = sorted(replacements, key=len, reverse=True)
+    pattern = "|".join(re.escape(text) for text in longest_first)
+    serialized_entries = json.dumps(entries, ensure_ascii=False)
+    reworded_entries = re.sub(
+        pattern, lambda match: replacements[match[0]], serialized_entries
     )
-    return json.loads(
-        re.sub(
-            pattern,
-            lambda match: replacements[match[0]],
-            json.dumps(entries, ensure_ascii=False),
-        )
-    )
+    return json.loads(reworded_entries)
 
 
 def test_fixture_selection_ignores_order_regenerated_ids_and_prose(monkeypatch):
@@ -2145,20 +2234,26 @@ def test_fixture_selection_ignores_order_regenerated_ids_and_prose(monkeypatch):
     native_entries = entries
     monkeypatch.setattr(__name__ + "._recorded_session_entries", lambda: native_entries)
     entries = _recorded_multiselect_interaction()
-    interpreted_session = _interpret_interaction(entries)
-    answer = _question_in(
+    interpreted_session = eclog.interpret_source(
+        ClaudeSource(Path("session.jsonl"), entries)
+    )
+    answer = _answered_question_in(
         _single_tool_call_in(interpreted_session["events"]), multi_select=True
     )
     _assert_answer_uses_distinct_recorded_options(answer)
     assert len(answer["chosen_labels"]) >= 2
     entries = _recorded_overlapping_options_interaction()
-    overlapping_session = _interpret_interaction(entries)
+    overlapping_session = eclog.interpret_source(
+        ClaudeSource(Path("session.jsonl"), entries)
+    )
     overlap = _single_tool_call_in(overlapping_session["events"])
-    answer = _question_in(overlap, multi_select=False)
+    answer = _answered_question_in(overlap, multi_select=False)
     _assert_answer_uses_distinct_recorded_options(answer)
     assert len(answer["chosen_labels"]) == 1
     assert answer["answer_text"] == answer["chosen_labels"][0]
-    full_session = _interpret_interaction(native_entries)
+    full_session = eclog.interpret_source(
+        ClaudeSource(Path("session.jsonl"), native_entries)
+    )
     _assert_assistant_text(full_session["events"])
     assistant, result = _recorded_tool_interaction("Read", "multibyte.txt")
     call = _content_block(assistant, "tool_use")
