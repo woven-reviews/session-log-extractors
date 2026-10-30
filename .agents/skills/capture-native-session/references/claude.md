@@ -2,6 +2,17 @@
 
 Launch the resolved `claude` executable in the fresh temporary workspace under tmux, without print mode. Observe local startup/trust/auth screens without changing account credentials. If authentication blocks work, record the failure and stop that phase at the common bound.
 
+Disable account-synced skills and plugins with session-only settings on every launch, including retries and exact-session resume:
+
+```sh
+claude --settings '{"syncClaudeAiSkills":false,"syncClaudeAiPlugins":false}'
+claude --settings '{"syncClaudeAiSkills":false,"syncClaudeAiPlugins":false}' --resume <native-session-id>
+```
+
+These settings stop both syncing and loading previously synced material while keeping the disposable workspace skill and custom command available. Do not change global settings. Check that the installed version supports these settings; if it cannot honor them, report the isolation gap before model work. Use a fresh session for a new capture: disabling sync does not remove skill descriptions already recorded in an existing conversation.
+
+Before the first model turn, inspect `/skills` or `/context` for unexpected organizational skills and record the check outside the captured conversation. Verify the persisted skill listing in the main transcript and child sidecars during collection, since skill names and descriptions can be recorded without invoking their bodies. If organizational material appears, stop that capture and report the gap; retain raw evidence privately. These overrides isolate account-synced material, so inspect other installed skills and plugins separately rather than assuming the entire environment is isolated. Record the exact settings with each launch in `run.json`.
+
 ## Native controls
 
 - Use actual `AskUserQuestion` activity for structured clarification. Observe offered controls before selecting, multi-selecting, entering custom text, or cancelling. Check native `answers` and annotations; a rendered summary can conceal quote truncation or notes-only input.
