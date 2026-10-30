@@ -60,15 +60,16 @@ JSON-only uploads must handle invalid logs and valid-but-empty logs explicitly. 
 
 `MessageContent.authorship` is an optional ordered list of `AuthorshipRange`
 records over the message's **unchanged `text`**. This shared-model contract is
-ready for adapter adoption; these examples describe the proposed JSON fields,
-not output currently emitted by the production exporter. Adapter classification,
-production serialization, schema versioning, and runtime validation belong to
-follow-up tickets QUAL-2520/2521/2522 and QUAL-2533.
+adopted by Claude's production user-message interpreter and serialized by the
+shared exporter when supplied. Codex/Copilot classification, schema versioning,
+and runtime validation remain follow-ups (QUAL-2521/2522 and QUAL-2533). The
+examples below illustrate the shared contract, not classifications all harnesses
+can establish from their native recordings.
 
 | Field | Meaning |
 | --- | --- |
 | `start`, `end` | Required half-open Unicode code-point offsets: `text[start:end]` in Python. Not UTF-8 bytes, UTF-16 code units, or grapheme clusters. Require `0 <= start < end <= len(text)`. Ranges are ordered by `start` and must not overlap; adjacent ranges may have different evidence. Do not normalize text, remove wrappers, trim whitespace, or concatenate records to establish offsets. |
-| `source` | Required `candidate`, `harness`, `ide`, `other_agent`, or `unknown`. Candidate means the assessed human's own words; harness means injected CLI/runtime content; IDE means editor-supplied context; other_agent means another agent's contribution. Role alone, including `user`, never establishes source. Ordinary assistant output may remain unknown in this candidate-authorship contract; do not label it other-agent solely because its role is assistant. |
+| `source` | Required `candidate`, `harness`, `ide`, `other_agent`, or `unknown`. Candidate means the assessed human's input and supported native notices of their deliberate control actions, including user interruptions, shell-mode input, human-origin command invocations, native model-selector and CLI compaction invocations, and output explicitly linked to candidate-run shell commands, model selections, or compaction; native notice/wrapper/output wording need not be literally typed. Harness means injected CLI/runtime content; IDE means editor-supplied context; other_agent means another agent's contribution. Role alone, including `user`, never establishes source. Ordinary assistant output may remain unknown in this candidate-authorship contract; do not label it other-agent solely because its role is assistant. |
 | `markers` | Optional list of `AuthorshipMarker` records: `field` identifies the native source/type field path (for example `isMeta` or `payload.type`); `value` preserves its exact recorded JSON value, including null or structured values. Retain multiple relevant fields separately. Markers are evidence, not universal classification rules: a wrapper-looking string alone is insufficient proof. Missing or empty means no such evidence was retained; neither implies candidate authorship. |
 | `ts` | Optional verbatim timestamp recorded for the range's content. Missing means no range timestamp was supplied; null retains an explicitly unavailable timestamp. The owning message's `ts` stays unchanged. A message-level timestamp may be reused only when the record establishes it applies to that content; never infer a range timestamp from a nearby message, text mentioning a time, or chronological proximity. Different ranges may retain different recorded times. |
 
@@ -117,18 +118,22 @@ one range position. All six have user role to demonstrate role independence.
 
 ### Native evidence and limits
 
-The focused model tests project existing native records into the proposed types;
-they do not run new classifiers or claim production adapter conformance. Each
-fixture's linked provenance distinguishes captures from hand-authored cases.
+The focused model tests project native records into the shared types. Claude's
+fixture-backed interpretation and CLI tests additionally exercise its production
+classifier and export path. Each fixture's linked provenance distinguishes
+captures from hand-authored cases.
 
 | Harness | Committed evidence and interpretation inspected | Contract fit and gaps |
 | --- | --- | --- |
-| Claude | [Provenance](claude/README.md): Claude Code 2.1.312/2.1.314, 2026-10-30; the complete versioned native capture has user-role skill expansion with `isMeta: true`, `sourceToolUseID`, UUID, and timestamp. `extract_claude_session_log.py` strips noise wrappers and skips `isMeta` records. | A full-text harness range retains `isMeta` and its timestamp without claiming candidate words. Existing IDs and tool ownership stay separate; the range does not infer tool association. This fixture establishes entirely injected user-role content, not every mixed, IDE, or other-agent variant. |
+| Claude | [Provenance](claude/README.md): complete interactive Claude Code 2.1.312/2.1.314 capture, 2026-10-30. Typed/queued input records carry human origin; injected skill/command records carry `isMeta`; a task notification has an explicit system origin. A queued-command attachment records its original prompt, rendered wrapper, source UUID, and content timestamp. | Production tests establish candidate input and interruption actions, mixed candidate/harness, entirely injected, and unknown cases without changing text, IDs, image/tool ownership, or timestamps. Literal XML in typed input stays candidate text. SDK/human-origin alone does not establish candidate authorship. The compaction completion notice retains candidate attribution through its recorded parent-ID link. All reviewed activity in this pinned capture has resolved attribution; unsupported or ambiguous boundary cases retain unknown. Plain and wrapped native CLI `/compact` invocations count as candidate control activity; unmarked SDK prompts remain unknown. Native standalone `/model` invocations and their ID-linked result notices count as candidate control activity. A native command invocation with human origin and human turn counts as candidate activity, including its arguments. Standalone native shell-mode input and its ID-linked output count as candidate activity; unlinked output stays unknown. Peer origins were observed in separate local main logs; peer precedence/body matching is a controlled boundary test, not native coverage from this capture. IDE attribution remains unestablished. |
 | Codex | [Provenance](codex/README.md): one complete interactive CLI 0.166.0 capture, 2026-10-30, with a separate native child sidecar. Native message/turn IDs and content-kind provenance survive sanitization. | Human text retains literal XML; native skill expansions retain their own identities. Recorded user-role context is not automatically candidate-authored. The child history boundary excludes inherited parent activity. Older absent-provenance cases remain focused compatibility tests. |
 | Copilot | [Provenance](copilot/README.md): CLI 1.0.104-3, 2026-10-30; the versioned interactive capture retains `data.content`, `data.transformedContent`, message IDs, inline child `agentId`, native answers and permission decisions. Interpretation preserves literal human markup and ID-matched tool activity, with DB turns as fallback. | The transformed prompt supports focused mixed-range projection; native user-shell command/output ranges are separate. Child agent identity is recorded explicitly. System and usage records remain in the fixture, while unrelated history is excluded. Native IDE authorship remains unestablished. |
 
-The Unicode, partial-coverage, IDE, other-agent, and per-range timestamp boundary
-checks use explicitly illustrative data. The Codex and Copilot evidence was refreshed interactively;
-these model tests do not establish runtime rejection of malformed ranges. Future
-adapters must retain complete text before assigning offsets and use native
-source evidence, rather than role, tag spelling alone, or timestamp proximity.
+Shared-model examples include illustrative partial coverage and IDE sources.
+Claude's peer-origin cases and missing/ambiguous boundaries are explicitly
+controlled mutations of the current capture; Unicode and timestamp tests also
+retain these boundaries through export. The Codex and Copilot evidence was
+refreshed interactively. Tests do not establish runtime rejection of malformed
+ranges. Adapters must retain complete text before assigning offsets and use
+native source evidence, rather than role, tag spelling alone, or timestamp
+proximity.
