@@ -13,14 +13,94 @@ from generate_claude_fixtures import clean
 from session_log_extractors.claude_sources import read_source
 
 ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312"
-TRANSCRIPT = ROOT / "native/65036844-09ed-4e91-8ed7-8636dfd163db.jsonl"
-SUBAGENT = TRANSCRIPT.with_suffix("") / "subagents/agent-a2923ceb80fc3e3ac.jsonl"
+(TRANSCRIPT,) = (ROOT / "native").glob("*.jsonl")
+(SUBAGENT,) = (TRANSCRIPT.with_suffix("") / "subagents").glob("*.jsonl")
 
 
-def _entries(*lines):
-    # One-based native line references are documented in 2.1.312/coverage.json.
-    entries = read_source(TRANSCRIPT).entries
-    return [entries[line - 1] for line in lines] if lines else entries
+def _entries():
+    return read_source(TRANSCRIPT).entries
+
+
+def _only(matches, description):
+    assert len(matches) == 1, f"Expected one {description}, found {len(matches)}"
+    (match,) = matches
+    return match
+
+
+def _blocks(entry):
+    content = entry.get("message", {}).get("content", [])
+    return content if isinstance(content, list) else [{"type": "text", "text": content}]
+
+
+def _user_entry(marker):
+    return _only(
+        [
+            entry
+            for entry in _entries()
+            if entry.get("type") == "user"
+            and not entry.get("isMeta")
+            and not entry.get("isCompactSummary")
+            and any(
+                isinstance(block, dict)
+                and block.get("type") == "text"
+                and marker in block["text"]
+                for block in _blocks(entry)
+            )
+        ],
+        f"user message containing {marker!r}",
+    )
+
+
+def _tool_entries(name, input_contains):
+    entries = _entries()
+    requests = [
+        (entry, block)
+        for entry in entries
+        if entry.get("type") == "assistant"
+        for block in _blocks(entry)
+        if isinstance(block, dict)
+        and block.get("type") == "tool_use"
+        and block.get("name") == name
+        and input_contains in json.dumps(block.get("input"), ensure_ascii=False)
+    ]
+    assert requests, f"Missing {name} activity matching {input_contains!r}"
+    messages = [entry for entry, _ in requests]
+    call_ids = {block["id"] for _, block in requests}
+    # Associate results using IDs from the already selected native calls.
+    results = [
+        entry
+        for entry in entries
+        if entry.get("type") == "user"
+        and any(
+            isinstance(block, dict)
+            and block.get("type") == "tool_result"
+            and block.get("tool_use_id") in call_ids
+            for block in _blocks(entry)
+        )
+    ]
+    assert len(results) == len(requests), "Missing or ambiguous tool results"
+    return [entry for entry in entries if entry in messages or entry in results]
+
+
+def _greeting_entries():
+    user = _user_entry("Remember **CAPTURE_CONTEXT_CEDAR_73**")
+    # Select the greeting by its content, independent of surrounding messages.
+    reply = _only(
+        [
+            entry
+            for entry in _entries()
+            if entry.get("type") == "assistant"
+            and any(
+                isinstance(block, dict)
+                and block.get("type") == "text"
+                and block["text"].startswith(("Hello", "Hi", "Hey", "Greetings"))
+                and "CAPTURE_CONTEXT_CEDAR_73" in block["text"]
+                for block in _blocks(entry)
+            )
+        ],
+        "greeting reply",
+    )
+    return [user, reply]
 
 
 # The first prompt of each case in main(), so the fake CLI can tell which one runs.
@@ -36,34 +116,29 @@ PROMPT_CASES = {
 
 
 def _fixture_entries(case):
-    # The legacy print-mode generator validates its own prompt-specific markers.
-    # Adapt the current interactive evidence only at those marker boundaries.
-    lines_by_case = {
-        "baseline": (6,),
-        "skill_command": (236, 237, 538, 539),
-        "large_result": (124, 125),
-        "permission_denial": (492, 493),
-        "subagent": (544, 545),
-    }
-    entries = _entries(*lines_by_case[case]) if case in lines_by_case else _entries()
+    # Adapt only the legacy generator's fixed prompt markers on native records.
     if case == "baseline":
-        # Include the captured assistant reply after the opening human prompt.
-        entries = [e for e in _entries() if e.get("type") in ("user", "assistant")][:2]
+        return _greeting_entries()
     if case == "skill_command":
-        entries += _entries(245)
-        entries = _replace(entries, "/capture-echo", "/fixture-command")
+        entries = _tool_entries("Skill", "capture-leaf")
+        entries.append(_user_entry("<command-name>/capture-echo</command-name>"))
+        return _replace(entries, "/capture-echo", "/fixture-command")
     if case == "continued":
-        # These two response markers belong to the generator's hard-coded prompt.
-        answers = [
-            block
-            for entry in entries
-            if entry.get("type") == "assistant"
-            for block in entry["message"]["content"]
-            if isinstance(block, dict) and block.get("type") == "text"
-        ]
-        for block in answers[-2:]:
-            block["text"] = "RED-FOX-23 " + block["text"]
-    return entries
+        # All native assistant text supplies fake responses to this legacy CLI
+        # prompt; adapt every response, rather than choosing messages by position.
+        entries = _entries()
+        for entry in entries:
+            if entry.get("type") == "assistant":
+                for block in _blocks(entry):
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        block["text"] = "RED-FOX-23 " + block["text"]
+        return entries
+    tool_inputs = {
+        "large_result": ("Read", "multibyte.txt"),
+        "permission_denial": ("Bash", "CAPTURE_SETTINGS_REFUSAL"),
+        "subagent": ("Agent", "Read hello.py print marker"),
+    }
+    return _tool_entries(*tool_inputs[case]) if case in tool_inputs else _entries()
 
 
 def _replace(entries, old, new):
@@ -285,14 +360,17 @@ def test_clean_preserves_records_blocks_and_ids():
 
 def test_clean_rejects_unknown_thinking_shape():
     entries = _entries()
-    block = next(
+    blocks = [
         block
         for entry in entries
-        for block in entry.get("message", {}).get("content", [])
+        for block in _blocks(entry)
         if isinstance(block, dict) and block.get("type") == "thinking"
-    )
-    # Replace only the known thinking field with an unsupported upstream shape.
-    block["text"] = block.pop("thinking")
+    ]
+    assert blocks
+    # Introduce the unsupported shape on every thinking block, without choosing
+    # an arbitrary occurrence from the capture.
+    for block in blocks:
+        block["text"] = block.pop("thinking")
     with pytest.raises(
         RuntimeError, match="unexpected thinking block format"
     ) as exc_info:
@@ -313,3 +391,57 @@ def test_clean_rejects_leftover_private_temp_path():
         clean(entries, Path("/tmp/fixture-project"))
 
     assert str(exc_info.value) == "private path remains after sanitizing"
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "baseline",
+        "skill_command",
+        "large_result",
+        "permission_denial",
+        "subagent",
+        "model",
+        "continued",
+    ],
+)
+def test_case_selection_survives_reordered_records_and_regenerated_ids(
+    case, monkeypatch
+):
+    expected = _fixture_entries(case)
+    native = _entries()
+    for entry in native:
+        if "uuid" in entry:
+            entry["uuid"] = "regenerated-" + entry["uuid"]
+        for block in _blocks(entry):
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                block["id"] = "regenerated-" + block["id"]
+            elif isinstance(block, dict) and block.get("type") == "tool_result":
+                block["tool_use_id"] = "regenerated-" + block["tool_use_id"]
+        content = entry.get("message", {}).get("content")
+        if isinstance(content, list):
+            content.reverse()
+    native.reverse()
+    monkeypatch.setattr(__name__ + "._entries", lambda: native)
+    selected = _fixture_entries(case)
+    assert sorted(entry["type"] for entry in selected) == sorted(
+        entry["type"] for entry in expected
+    )
+    assert all(
+        entry["uuid"].startswith("regenerated-")
+        for entry in selected
+        if "uuid" in entry
+    )
+    expected_inputs = sorted(
+        (block["name"], json.dumps(block["input"], sort_keys=True))
+        for entry in expected
+        for block in _blocks(entry)
+        if isinstance(block, dict) and block.get("type") == "tool_use"
+    )
+    actual_inputs = sorted(
+        (block["name"], json.dumps(block["input"], sort_keys=True))
+        for entry in selected
+        for block in _blocks(entry)
+        if isinstance(block, dict) and block.get("type") == "tool_use"
+    )
+    assert actual_inputs == expected_inputs

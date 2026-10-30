@@ -20,7 +20,7 @@ from session_log_extractors.session_log_envelope import raw_filename
 ROOT = (
     Path(__file__).resolve().parents[1] / "scripts" / "fixtures" / "claude" / "2.1.312"
 )
-TRANSCRIPT = ROOT / "native/65036844-09ed-4e91-8ed7-8636dfd163db.jsonl"
+(TRANSCRIPT,) = (ROOT / "native").glob("*.jsonl")
 
 
 def test_package_imports():

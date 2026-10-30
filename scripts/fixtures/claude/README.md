@@ -10,10 +10,14 @@ for launches, sanitization, asset hashes, and the native child sidecar, and
 
 The canonical input is
 [`native/65036844-09ed-4e91-8ed7-8636dfd163db.jsonl`](2.1.312/native/65036844-09ed-4e91-8ed7-8636dfd163db.jsonl).
-Test modules pin this version and its native paths directly. Integration and
-source-free contract tests read the complete transcript; focused tests select
-unchanged records by the native line numbers documented in `coverage.json`.
-Selections retain native tool IDs and results. Filesystem tests copy this input
+Test modules pin this version and discover its main transcript and child file
+without embedding captured session or agent IDs. Integration and source-free
+contract tests read the complete transcript; focused tests select unchanged
+records by tool name and input, message content, or question semantics.
+Missing or ambiguous semantic matches fail explicitly. Recorded IDs connect
+already selected calls with their results; no lookup uses a saved ID, line
+number, timestamp, or occurrence. The coverage ledger remains provenance,
+not an input to the test selectors. Filesystem tests copy this input
 and its child sidecar into temporary directories. No tests invoke paid CLIs.
 
 The current capture supplies ordinary Markdown/Unicode, single-choice and

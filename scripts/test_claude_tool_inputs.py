@@ -9,7 +9,7 @@ from session_log_extractors.claude_sources import read_source
 from session_log_extractors.tool_inputs.claude import input_schema
 
 ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312"
-TRANSCRIPT = ROOT / "native/65036844-09ed-4e91-8ed7-8636dfd163db.jsonl"
+(TRANSCRIPT,) = (ROOT / "native").glob("*.jsonl")
 
 
 @pytest.mark.parametrize(

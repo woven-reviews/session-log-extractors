@@ -24,7 +24,7 @@ from session_log_extractors.session_model import (
 )
 
 ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312"
-TRANSCRIPT = ROOT / "native/65036844-09ed-4e91-8ed7-8636dfd163db.jsonl"
+(TRANSCRIPT,) = (ROOT / "native").glob("*.jsonl")
 
 
 @pytest.mark.parametrize("harness", ["claude", "codex", "copilot"])
@@ -323,27 +323,36 @@ def test_authorship_examples_define_coverage_without_role_inference():
 
 def test_claude_native_injected_message_fits_authorship_contract():
     records = read_source(TRANSCRIPT).entries
-    native = next(r for r in records if r.get("isMeta") and r.get("sourceToolUseID"))
-    text = native["message"]["content"][0]["text"]
-    span = AuthorshipRange(
-        start=0,
-        end=len(text),
-        source="harness",
-        ts=native["timestamp"],
-        markers=[AuthorshipMarker(field="isMeta", value=native["isMeta"])],
-    )
-    event = UserMessage(
-        i=0,
-        role="user",
-        id=native["uuid"],
-        ts=native["timestamp"],
-        text=text,
-        authorship=[span],
-    )
-    assert json.loads(json.dumps(event))["text"] == text
-    assert span["markers"] == [{"field": "isMeta", "value": True}]
-    assert text.startswith("Base directory for this skill:")
-    assert event["id"] == native["uuid"]
+    expansions = [
+        (entry, block["text"])
+        for entry in records
+        if entry.get("type") == "user" and entry.get("isMeta")
+        for block in entry.get("message", {}).get("content", [])
+        if isinstance(block, dict)
+        and block.get("type") == "text"
+        and block["text"].startswith("Base directory for this skill:")
+    ]
+    assert expansions
+    for native, text in expansions:
+        span = AuthorshipRange(
+            start=0,
+            end=len(text),
+            source="harness",
+            ts=native["timestamp"],
+            markers=[AuthorshipMarker(field="isMeta", value=native["isMeta"])],
+        )
+        event = UserMessage(
+            i=0,
+            role="user",
+            id=native["uuid"],
+            ts=native["timestamp"],
+            text=text,
+            authorship=[span],
+        )
+        assert json.loads(json.dumps(event))["text"] == text
+        assert span["markers"] == [{"field": "isMeta", "value": True}]
+        assert text.startswith("Base directory for this skill:")
+        assert event["id"] == native["uuid"]
 
 
 def test_codex_native_prompt_can_remain_unknown_without_evidence():

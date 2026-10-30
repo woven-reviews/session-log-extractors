@@ -17,10 +17,40 @@ from session_log_extractors.claude_sources import ClaudeSource
 from session_log_extractors.session_log_envelope import export_session
 
 ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312"
-TRANSCRIPT = ROOT / "native/65036844-09ed-4e91-8ed7-8636dfd163db.jsonl"
+(TRANSCRIPT,) = (ROOT / "native").glob("*.jsonl")
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "claude"
+
+
+def _claude_read_call():
+    entries = claude.read_source(TRANSCRIPT).entries
+    matches = [
+        (entry, block)
+        for entry in entries
+        if entry.get("type") == "assistant"
+        for block in claude._content_blocks(entry)
+        if isinstance(block, dict)
+        and block.get("type") == "tool_use"
+        and block.get("name") == "Read"
+        and Path(block["input"].get("file_path", "")).name == "multibyte.txt"
+    ]
+    assert len(matches) == 1, "Expected one multibyte.txt Read"
+    ((assistant, call),) = matches
+    results = [
+        entry
+        for entry in entries
+        if entry.get("type") == "user"
+        and any(
+            isinstance(block, dict)
+            and block.get("type") == "tool_result"
+            and block.get("tool_use_id") == call["id"]
+            for block in claude._content_blocks(entry)
+        )
+    ]
+    assert len(results) == 1, "Expected one result for the selected Read"
+    (result,) = results
+    return ClaudeSource(TRANSCRIPT, [assistant, result]), call
 
 
 def test_cli_uses_the_public_extractor_stages(monkeypatch, capsys):
@@ -275,15 +305,7 @@ def test_copilot_public_reader_errors_and_empty_source():
 def test_native_tool_payloads_keep_unknown_fields_through_export(harness, unsupported):
     """Extend a captured call with a future field and optionally a future tool name."""
     if harness == "claude":
-        source = ClaudeSource(
-            TRANSCRIPT, claude.read_source(TRANSCRIPT).entries[123:125]
-        )
-        request = next(
-            block
-            for entry in source.entries
-            for block in claude._content_blocks(entry)
-            if isinstance(block, dict) and block.get("type") == "tool_use"
-        )
+        source, request = _claude_read_call()
         input_key = "input"
         extractor = claude.EXTRACTOR
     else:

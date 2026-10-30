@@ -14,8 +14,8 @@ from session_log_extractors.capture_sanitization import (
 from session_log_extractors.json_types import parse_json
 
 ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312"
-TRANSCRIPT = ROOT / "native/65036844-09ed-4e91-8ed7-8636dfd163db.jsonl"
-SUBAGENT = TRANSCRIPT.with_suffix("") / "subagents/agent-a2923ceb80fc3e3ac.jsonl"
+(TRANSCRIPT,) = (ROOT / "native").glob("*.jsonl")
+(SUBAGENT,) = (TRANSCRIPT.with_suffix("") / "subagents").glob("*.jsonl")
 
 
 def test_literal_replacements_are_longest_first_and_do_not_cascade():
@@ -94,22 +94,24 @@ def test_native_records_keep_structure_identities_and_payloads(transcript):
 def test_image_data_is_not_redacted_even_when_a_literal_matches_base64():
     original = TRANSCRIPT.read_text()
     entries = [json.loads(line) for line in original.splitlines()]
-    image = next(
-        block["source"]
+    image_data = {
+        block["source"]["data"]
         for entry in entries
         for block in entry.get("message", {}).get("content", [])
         if isinstance(block, dict) and block.get("type") == "image"
-    )
+    }
+    assert image_data
     rules = SanitizationRules(
-        literal_replacements=(
-            LiteralReplacement("base64_collision", image["data"], "[REDACTED]"),
+        literal_replacements=tuple(
+            LiteralReplacement(f"base64_collision_{index}", data, "[REDACTED]")
+            for index, data in enumerate(sorted(image_data))
         ),
         redact_emails=False,
         redact_api_keys=False,
     )
     result = sanitize_capture(original, rules, format="jsonl")
     assert [json.loads(line) for line in result.text.splitlines()] == entries
-    assert result.redactions[0].matches == 0
+    assert all(item.matches == 0 for item in result.redactions)
 
 
 def test_json_redaction_handles_escapes_without_changing_keys_or_scalar_types():
