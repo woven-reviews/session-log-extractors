@@ -2,36 +2,43 @@
 
 import json
 from copy import deepcopy
-from pathlib import Path
 
 import pytest
+from copilot_fixture import native_records
 
-from session_log_extractors.copilot_sources import parse_state_records
 from session_log_extractors.tool_inputs.copilot import input_schema
 
-FIXTURES = Path(__file__).parent / "fixtures" / "copilot"
 
-
-@pytest.mark.parametrize("case", ["tool_success", "tool_failure", "skill"])
-def test_captured_tool_inputs_have_copilot_schemas(case):
-    records = parse_state_records(
-        (FIXTURES / case / "events.jsonl").read_text().splitlines()
-    )
-    requests = [
-        request
-        for record in records
-        if record["type"] == "assistant.message"
-        for request in record["data"].get("toolRequests", [])
-    ]
-    assert requests
-    expected = {"bash": "CopilotBash", "skill": "CopilotSkill"}
-    for request in requests:
-        payload = request["arguments"]
+def test_captured_tool_inputs_have_copilot_schemas():
+    expected = {
+        "bash": "CopilotBash",
+        "skill": "CopilotSkill",
+        "view": "CopilotView",
+        "edit": "CopilotEdit",
+        "create": "CopilotCreate",
+        "ask_user": "CopilotAskUser",
+        "exit_plan_mode": "CopilotExitPlan",
+        "glob": "CopilotGlob",
+        "grep": "CopilotGrep",
+        "sql": "CopilotSql",
+        "task": "CopilotTask",
+        "task_complete": "CopilotTaskComplete",
+        "read_bash": "CopilotReadBash",
+    }
+    observed = set()
+    for record in native_records():
+        if record["type"] != "tool.execution_start":
+            continue
+        data = record["data"]
+        payload = data["arguments"]
         payload["future_extension"] = {"items": [None, True, 1.5, {"x": "y"}]}
         original = deepcopy(payload)
-        assert input_schema(request["name"], payload) == expected[request["name"]]
+        actual = input_schema(data["toolName"], payload)
+        assert actual == expected[data["toolName"]]
         assert payload == original
         assert json.loads(json.dumps(payload)) == original
+        observed.add(data["toolName"])
+    assert observed == set(expected)
 
 
 @pytest.mark.parametrize(
@@ -43,7 +50,7 @@ def test_captured_tool_inputs_have_copilot_schemas(case):
     ],
 )
 def test_file_tools_keep_their_harness_specific_fields(name, payload, schema):
-    # Focused schema examples supplement captures without native file-tool calls.
+    # Controlled examples keep exact field/schema expectations independent of prose.
     original = deepcopy(payload)
     assert input_schema(name, payload) == schema
     assert payload == original
@@ -61,7 +68,7 @@ def test_non_object_input_uses_explicit_fallback(payload):
         "Read",
         "Skill",
         "AskUserQuestion",
-        "exit_plan_mode",
+        "ExitPlanMode",
         "plugin__DeployService",
     ],
 )

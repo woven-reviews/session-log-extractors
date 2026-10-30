@@ -67,6 +67,55 @@ Tests assert that current behavior, plus legacy MIME preservation by substitutin
 the captured JPEG/GIF/WebP source assets into native image blocks. Plan tests
 compare proposed and edited versions with the captured editor assets.
 
+## Authorship evidence
+
+Production authorship tests use this interactive capture for typed and queued
+human input (`promptSource`, `turnOrigin`, and `origin.kind`), injected
+`isMeta` expansions, task-notification origins, and compact summaries. The
+operator's typed literal XML demonstrates that wrapper spelling cannot establish
+injection. The five captured standalone interruption notices are classified as
+candidate activity to retain the user's interruption action in candidate-visible
+logs, even though Claude generates their wording. Exact native control-message
+shape recognition excludes incidental quotes and respects explicit injection
+provenance. The standalone `<bash-input>` record retains the user-submitted
+shell command as candidate activity, including its wrapper. Its output remains
+a separate record and inherits candidate attribution through the recorded
+`parentUuid` link to a unique candidate shell-input message. Intervening messages
+and record order do not establish ownership. Missing or ambiguous parents and
+explicit injection provenance prevent inheritance. Quoted or embedded shell-input
+examples are not recognized as native shell-mode actions. The custom
+slash-command invocation has explicit human origin and human turn; its command
+and arguments retain candidate attribution without requiring a typed-input flag.
+This classification does not depend on the fixture command's name, and its
+loaded instructions retain their separate provenance. The two native `/model`
+selector invocations also count as candidate activity using their standalone
+control-record shape. Their result notices retain the selected model as candidate
+activity through recorded parent-ID links to unique candidate model invocations.
+Model and shell result formats must match the linked input; an unrelated human
+message or another command kind cannot establish attribution. Notice wording
+and model names do not drive recognition. Results remain separate records.
+Both native CLI representations of the manual `/compact` invocation (plain and
+wrapped) retain candidate attribution. Their CLI entrypoint is preserved as
+evidence; an unmarked SDK prompt containing `/compact` remains unknown. The
+generated compaction summary retains harness attribution. The separate completion
+notice inherits candidate attribution through its parent ID pointing to a unique
+candidate compaction invocation. All previously unresolved activity records in
+this capture now have evidence-backed classifications; a full-capture regression
+test detects new unresolved activity without relabeling the generated summary.
+
+A `queued_command` attachment records the original human prompt,
+`source_uuid`, `delivery_id`, its own timestamp, and the longer rendered text;
+the extractor retains that attachment at its recorded position with the recorded
+rendered role and mixed candidate/harness ranges. It does not assign it to a
+nearby human message or tool call.
+
+There is no peer-origin delivery or explicit IDE-origin text in this capture.
+The Agent child and its task notification are distinct from peer delivery.
+Peer-origin/body shapes observed in separate local main-session logs are covered
+only by clearly labeled controlled mutations; they are not promoted as native
+peer coverage. Unknown SDK/external input and conflicting or incomplete source
+fields never become candidate speech. No private conversation text is added.
+
 ## Boundary and legacy compatibility tests
 
 No test reads the older unversioned fixtures. Small, documented mutations of the

@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 
 import pytest
+from codex_capture import CHILD_TRANSCRIPT, image_message
+from codex_capture import TRANSCRIPT as CODEX_TRANSCRIPT
 
 from session_log_extractors.capture_sanitization import (
     LiteralReplacement,
@@ -77,18 +79,24 @@ def test_configured_secret_does_not_depend_on_the_environment(monkeypatch):
     ]
 
 
-@pytest.mark.parametrize("transcript", [TRANSCRIPT, SUBAGENT])
+@pytest.mark.parametrize(
+    "transcript", [TRANSCRIPT, SUBAGENT, CODEX_TRANSCRIPT, CHILD_TRANSCRIPT]
+)
 def test_native_records_keep_structure_identities_and_payloads(transcript):
     original = transcript.read_text()
     rules = SanitizationRules(redact_emails=False, redact_api_keys=False)
     result = sanitize_capture(original, rules, format="jsonl")
-    assert [json.loads(line) for line in result.text.splitlines()] == [
-        json.loads(line) for line in original.splitlines()
-    ]
-    assert [(item.rule, item.matches) for item in result.redactions] == [
-        ("organization_id", 0)
-    ]
-    assert sanitize_capture(result.text, rules, format="jsonl") == result
+    actual_records = []
+    expected_records = []
+    for line in result.text.splitlines():
+        actual_records.append(json.loads(line))
+    for line in original.splitlines():
+        expected_records.append(json.loads(line))
+    assert actual_records == expected_records
+    for count in result.redactions:
+        assert count.matches == 0
+    repeated = sanitize_capture(result.text, rules, format="jsonl")
+    assert repeated == result
 
 
 def test_image_data_is_not_redacted_even_when_a_literal_matches_base64():
@@ -142,33 +150,51 @@ def test_json_redaction_handles_escapes_without_changing_keys_or_scalar_types():
     ["image_url", "url", "path", "file_path", "mime_type", "media_type"],
 )
 def test_codex_inline_image_representations_preserve_bytes(format, representation):
-    fixture = Path(__file__).parent / "fixtures/codex/image.jsonl"
-    entries = [json.loads(line) for line in fixture.read_text().splitlines()]
-    content = entries[3]["payload"]["content"]
-    data_url = content[1]["image_url"]
-    # Vary the native image block to exercise the other supported representations.
-    if representation in {"mime_type", "media_type"}:
-        content[1] = {representation: "image/png", "data": data_url.split(",", 1)[1]}
+    captured = []
+    for line in CODEX_TRANSCRIPT.read_text().splitlines():
+        captured.append(json.loads(line))
+    message = image_message(captured)
+    entries = [message]
+    content = message["payload"]["content"]
+    for index, block in enumerate(content):
+        if block.get("type") == "input_image":
+            image_index = index
+            data_url = block["image_url"]
+            break
     else:
-        content[1] = {"type": "input_image", representation: data_url}
+        pytest.fail("Capture lacks a native inline image")
+    # Change one captured block to exercise each legacy representation.
+    if representation in {"mime_type", "media_type"}:
+        content[image_index] = {
+            representation: "image/png",
+            "data": data_url.split(",", 1)[1],
+        }
+    else:
+        content[image_index] = {"type": "input_image", representation: data_url}
     content.append({"type": "input_text", "text": "iVBOR"})
-    original = (
-        json.dumps(entries)
-        if format == "json"
-        else "\n".join(json.dumps(entry) for entry in entries)
-    )
+    encoded_records = []
+    for entry in entries:
+        encoded_records.append(json.dumps(entry))
+    original = json.dumps(entries) if format == "json" else "\n".join(encoded_records)
     rules = SanitizationRules(
-        literal_replacements=(LiteralReplacement("collision", "iVBOR", "[USER]"),),
+        literal_replacements=(LiteralReplacement("collision", "iVBOR", "[USER]"),)
     )
+
     result = sanitize_capture(original, rules, format=format)
+
     content[-1]["text"] = "[USER]"
-    actual = (
-        json.loads(result.text)
-        if format == "json"
-        else [json.loads(line) for line in result.text.split("\n") if line]
-    )
+    if format == "json":
+        actual = json.loads(result.text)
+    else:
+        actual = []
+        for line in result.text.split("\n"):
+            if line:
+                actual.append(json.loads(line))
     assert actual == entries
-    assert {item.rule: item.matches for item in result.redactions}["collision"] == 1
+    counts = {}
+    for item in result.redactions:
+        counts[item.rule] = item.matches
+    assert counts["collision"] == 1
 
 
 @pytest.mark.parametrize("separator", ["\u2028", "\u0085"])

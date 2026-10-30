@@ -21,6 +21,17 @@ ROOT = (
     Path(__file__).resolve().parents[1] / "scripts" / "fixtures" / "claude" / "2.1.312"
 )
 (TRANSCRIPT,) = (ROOT / "native").glob("*.jsonl")
+CODEX_TRANSCRIPT = (
+    ROOT.parent.parent
+    / "codex"
+    / "0.166.0"
+    / "native"
+    / "rollout-2026-10-30T15-49-18-01a18e5c-0900-7111-91f6-195916aa5e3c.jsonl"
+)
+COPILOT_ROOT = ROOT.parent.parent / "copilot" / "1.0.104-3"
+(COPILOT_TRANSCRIPT,) = (COPILOT_ROOT / "native/session-state").glob("*/events.jsonl")
+COPILOT_ID = COPILOT_TRANSCRIPT.parent.name
+COPILOT_DB = COPILOT_ROOT / "native/session-store.db"
 
 
 def test_package_imports():
@@ -52,13 +63,13 @@ def test_help_uses_call_time_output_root(harness, tmp_path, monkeypatch, capsys)
     ("harness", "arguments"),
     [
         ("claude", ["--transcript", str(TRANSCRIPT)]),
-        ("codex", ["--transcript", "scripts/fixtures/codex/tool_patch_large.jsonl"]),
+        ("codex", ["--transcript", str(CODEX_TRANSCRIPT)]),
         (
             "copilot",
             [
-                "7e20450a-af9e-45a5-9aac-be9dcf027221",
+                COPILOT_ID,
                 "--db",
-                "scripts/fixtures/copilot/session-store.db",
+                str(COPILOT_DB),
             ],
         ),
     ],
@@ -66,6 +77,13 @@ def test_help_uses_call_time_output_root(harness, tmp_path, monkeypatch, capsys)
 def test_script_exports_fixture_json(harness, arguments, tmp_path):
     root = Path(__file__).resolve().parents[1]
     output = tmp_path / "session.json"
+    environment = dict(os.environ)
+    if harness == "copilot":
+        home = tmp_path / "home"
+        state = home / ".copilot/session-state" / COPILOT_ID
+        state.mkdir(parents=True)
+        shutil.copyfile(COPILOT_TRANSCRIPT, state / "events.jsonl")
+        environment["HOME"] = str(home)
     subprocess.run(
         [
             sys.executable,
@@ -75,6 +93,7 @@ def test_script_exports_fixture_json(harness, arguments, tmp_path):
             str(output),
         ],
         cwd=root,
+        env=environment,
         check=True,
         capture_output=True,
         text=True,
@@ -155,28 +174,19 @@ def test_copilot_checkout_defaults(subdirectory, selection, tmp_path):
     copilot_home = home / ".copilot"
     copilot_home.mkdir(parents=True)
     db = copilot_home / "session-store.db"
-    shutil.copyfile(root / "scripts/fixtures/copilot/session-store.db", db)
-    session_id = "7e20450a-af9e-45a5-9aac-be9dcf027221"
+    shutil.copyfile(COPILOT_DB, db)
+    session_id = COPILOT_ID
     with closing(sqlite3.connect(db)) as conn:
         conn.execute("DELETE FROM sessions WHERE id != ?", (session_id,))
         conn.execute("UPDATE sessions SET cwd = ?", (str(checkout),))
         conn.commit()
     state = copilot_home / "session-state" / session_id
     state.mkdir(parents=True)
-    (state / "events.jsonl").write_text(
-        json.dumps(
-            {
-                "type": "tool.execution_start",
-                "data": {
-                    "toolCallId": "test-call",
-                    "toolName": "checkout-state-tool",
-                    "arguments": {"command": "echo state"},
-                },
-            }
-        )
-        + "\n"
-    )
-    output = checkout / "copilot_session_log_raw_2026-10-14_7e20450a.json"
+    shutil.copyfile(COPILOT_TRANSCRIPT, state / "events.jsonl")
+    with closing(sqlite3.connect(db)) as conn:
+        conn.row_factory = sqlite3.Row
+        metadata = copilot.copilot_sources.get_session_by_id(conn, session_id)
+    output = checkout / raw_filename("copilot", copilot.output_identifier(metadata))
     arguments = [session_id] if selection == "selected" else []
     if selection == "overrides":
         moved_db = tmp_path / "override.db"
@@ -194,7 +204,7 @@ def test_copilot_checkout_defaults(subdirectory, selection, tmp_path):
     assert list(output.parent.glob("copilot_session_log_raw_*.json")) == [output]
     envelope = json.loads(output.read_text())
     assert envelope["harness"] == "copilot"
-    assert "checkout-state-tool" in json.dumps(envelope)
+    assert "CAPTURE_STDOUT_OK" in json.dumps(envelope)
     assert result.stdout == ""
     assert f"wrote {output}" in result.stderr
     assert not list(scripts.glob("copilot_session_log_raw_*.json"))
@@ -253,12 +263,8 @@ def test_codex_checkout_paths(subdirectory, selection, destination, tmp_path):
     home = tmp_path / "home"
     sessions = home / ".codex" / "sessions"
     sessions.mkdir(parents=True)
-    rows = [
-        {"type": "session_meta", "payload": {"id": "session", "cwd": str(checkout)}},
-        {"type": "event_msg", "payload": {"type": "user_message", "message": "hello"}},
-    ]
     transcript = sessions / "rollout-session.jsonl"
-    transcript.write_text("\n".join(json.dumps(row) for row in rows))
+    expected_text = _copy_codex_capture(transcript, checkout)
     arguments = {
         "transcript": ["--transcript", str(transcript)],
         "prefix": ["sess", "--sessions-root", str(sessions)],
@@ -286,8 +292,30 @@ def test_codex_checkout_paths(subdirectory, selection, destination, tmp_path):
     envelope = json.loads(result.stdout if stdout else output.read_text())
     assert envelope["harness"] == "codex"
     assert envelope["session_id"] == "session"
-    assert envelope["events"][0]["text"] == "hello"
+    recorded_texts = []
+    for event in envelope["events"]:
+        recorded_texts.append(event.get("text"))
+    assert expected_text in recorded_texts
     assert output.exists() is not stdout
     assert not (scripts / output.name).exists()
     if subdirectory:
         assert not (cwd / output.name).exists()
+
+
+def _copy_codex_capture(destination, checkout):
+    rows = []
+    expected_text = None
+    for line in CODEX_TRANSCRIPT.read_text().splitlines():
+        row = json.loads(line)
+        payload = row["payload"]
+        if row["type"] == "session_meta":
+            payload.update(id="session", cwd=str(checkout))
+        metadata = payload.get("internal_chat_message_metadata_passthrough", {})
+        if expected_text is None and metadata.get("content_item_kinds") == [
+            "user.text"
+        ]:
+            expected_text = payload["content"][0]["text"]
+        rows.append(json.dumps(row))
+    assert expected_text, "The current native capture must include human text"
+    destination.write_text("\n".join(rows))
+    return expected_text

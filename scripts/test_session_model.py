@@ -5,8 +5,12 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
+from codex_capture import TRANSCRIPT as CODEX_TRANSCRIPT
+from codex_capture import human_message, question_interaction
+from copilot_fixture import native_records
 
 from session_log_extractors.claude_sources import read_source
+from session_log_extractors.codex_sources import load_entries
 from session_log_extractors.session_log_envelope import (
     build_envelope,
     export_session,
@@ -100,25 +104,29 @@ def test_question_occurrences_and_response_states_are_independent():
 
 
 def _codex_question_contract():
-    records = _native_records("codex/question.jsonl")
-    requests = []
-    results = []
-    for record in records:
-        payload = record["payload"]
-        if payload.get("type") == "function_call":
-            requests.append(payload)
-        elif payload.get("type") == "function_call_output":
-            results.append(payload)
-    (request,) = requests
-    (result,) = results
+    _, request_record, result_record = question_interaction()
+    request = request_record["payload"]
+    result = result_record["payload"]
     assert request["call_id"] == result["call_id"]
-    native = json.loads(request["arguments"])["questions"][0]
+    arguments = json.loads(request["arguments"])
     answers = json.loads(result["output"])["answers"]
+    # Select an explicit whole-label answer, without treating user_note entries
+    # on another question as extra selected options or joining by map order.
+    answered_questions = []
+    for question_index, question in enumerate(arguments["questions"]):
+        recorded_answers = answers[question["id"]]["answers"]
+        labels = []
+        for option in question["options"]:
+            labels.append(option["label"])
+        if len(recorded_answers) == 1 and recorded_answers[0] in labels:
+            answered_questions.append((question_index, question))
+    assert len(answered_questions) == 1, "Expected one whole-label question answer"
+    ((native_index, native),) = answered_questions
     evidence = [
         QuestionEvidence(field="function_call.call_id", value=request["call_id"]),
         QuestionEvidence(field="function_call_output.call_id", value=result["call_id"]),
-        QuestionEvidence(field="questions[0].id", value=native["id"]),
-        QuestionEvidence(field="answers key", value=next(iter(answers))),
+        QuestionEvidence(field=f"questions[{native_index}].id", value=native["id"]),
+        QuestionEvidence(field="answers key", value=native["id"]),
     ]
     options = []
     for index, option in enumerate(native["options"]):
@@ -175,7 +183,7 @@ def test_native_question_facts_survive_export_policy(limit):
     ]
     (selection,) = response["selections"]
     assert recorded_answers == [selection["label"]]
-    assert question["native_id"] == call["input"]["questions"][0]["id"]
+    assert question["native_id"] in json.loads(call["result"])["answers"]
     assert question["activity"]["message_i"] == session["events"][0]["i"]
     assert "interaction_questions" not in exported
     assert "question_responses" not in exported
@@ -450,13 +458,17 @@ def test_claude_native_question_cancellation_has_explicit_refusal_evidence():
 
 
 def test_copilot_shell_failure_does_not_supply_question_response_evidence():
-    records = _native_records("copilot/tool_failure/events.jsonl")
+    records = native_records()
     results = []
     for record in records:
-        if record["type"] == "tool.execution_complete":
-            results.append(record["data"])
+        if record["type"] != "tool.execution_complete":
+            continue
+        data = record["data"]
+        if "CAPTURE_ERROR_7" in data.get("result", {}).get("content", ""):
+            results.append(data)
+    assert len(results) == 1, "Expected one operator-marked shell error"
     (result,) = results
-    assert result["shellExecution"]["exitCode"] == 1
+    assert result["shellExecution"]["exitCode"] == 7
     assert result["success"] is True
     call = ToolCall(
         name="bash",
@@ -762,12 +774,6 @@ def test_export_preserves_payloads_but_leaves_model_semantics_unused():
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-def _native_records(relative_path):
-    return [
-        json.loads(line) for line in (FIXTURES / relative_path).read_text().splitlines()
-    ]
-
-
 @pytest.mark.parametrize(
     "source", ["candidate", "harness", "ide", "other_agent", "unknown"]
 )
@@ -802,11 +808,17 @@ def test_authorship_examples_define_coverage_without_role_inference():
     candidate, mixed, injected, unknown, missing, partial = examples
     assert candidate["text"] == "Hi 🙂"
     assert candidate["authorship"] == [{"start": 0, "end": 4, "source": "candidate"}]
-    assert [mixed["text"][r["start"] : r["end"]] for r in mixed["authorship"]] == [
+    authored_texts = []
+    for record in mixed["authorship"]:
+        authored_texts.append(mixed["text"][record["start"] : record["end"]])
+    assert authored_texts == [
         "Hi 🙂",
         "<notice>context</notice>",
     ]
-    assert [r["source"] for r in mixed["authorship"]] == ["candidate", "harness"]
+    authored_sources = []
+    for record in mixed["authorship"]:
+        authored_sources.append(record["source"])
+    assert authored_sources == ["candidate", "harness"]
     assert injected["authorship"][0]["end"] == len(injected["text"])
     assert injected["authorship"][0]["source"] == "ide"
     assert unknown["authorship"][0]["source"] == "unknown"
@@ -822,15 +834,17 @@ def test_authorship_examples_define_coverage_without_role_inference():
 
 def _recorded_skill_expansions():
     records = read_source(TRANSCRIPT).entries
-    expansions = [
-        (entry, block["text"])
-        for entry in records
-        if entry.get("type") == "user" and entry.get("isMeta")
-        for block in entry.get("message", {}).get("content", [])
-        if isinstance(block, dict)
-        and block.get("type") == "text"
-        and block["text"].startswith("Base directory for this skill:")
-    ]
+    skill_expansions = []
+    for entry in records:
+        if entry.get("type") == "user" and entry.get("isMeta"):
+            for block in entry.get("message", {}).get("content", []):
+                if (
+                    isinstance(block, dict)
+                    and block.get("type") == "text"
+                    and block["text"].startswith("Base directory for this skill:")
+                ):
+                    skill_expansions.append((entry, block["text"]))
+    expansions = skill_expansions
     assert expansions, "Missing native skill expansion messages"
     return expansions
 
@@ -860,23 +874,24 @@ def test_claude_native_injected_message_fits_authorship_contract():
         assert event["id"] == native["uuid"]
 
 
-def test_codex_native_prompt_can_remain_unknown_without_evidence():
-    records = _native_records("codex/slash.jsonl")
-    native = next(
-        r
-        for r in records
-        if r["type"] == "response_item" and r["payload"].get("role") == "user"
-    )
+def test_codex_native_prompt_can_remain_unknown_without_classification():
+    native = human_message(load_entries(CODEX_TRANSCRIPT))
     text = native["payload"]["content"][0]["text"]
     event = UserMessage(i=0, role="user", text=text, ts=native["timestamp"])
-    assert json.loads(json.dumps(event))["text"] == "/review fixture"
+    assert isinstance(text, str) and text
+    assert json.loads(json.dumps(event))["text"] == text
+    # User role alone still does not require consumers to claim authorship.
     assert "authorship" not in event
     assert event["ts"] == native["timestamp"]
 
 
 def test_copilot_native_transformed_prompt_fits_mixed_ranges():
-    records = _native_records("copilot/baseline/events.jsonl")
-    native = next(r for r in records if r["type"] == "user.message")
+    records = native_records()
+    user_records = []
+    for record in records:
+        if record["type"] == "user.message":
+            user_records.append(record)
+    native = next(iter(user_records))
     data = native["data"]
     text = data["transformedContent"]
     boundary = len(text) - len(data["content"])
@@ -906,7 +921,7 @@ def test_copilot_native_transformed_prompt_fits_mixed_ranges():
     assert decoded["message_id"] == data["messageId"]
 
 
-def test_authorship_retains_message_structure_without_changing_export():
+def test_authorship_retains_message_structure_through_export():
     events = [
         Event(
             i=0,
@@ -932,6 +947,56 @@ def test_authorship_retains_message_structure_without_changing_export():
     assert decoded["events"][1]["tool_calls"][0]["id"] == "call-1"
     assert decoded["events"][1]["authorship"][0]["ts"] is None
     exported = export_session(session)
-    assert all("authorship" not in event for event in exported["events"])
-    assert [event["i"] for event in exported["events"]] == [0, 1, 2]
+    actual_authorship = []
+    expected_authorship = []
+    actual_indices = []
+    for event in exported["events"]:
+        actual_authorship.append(event["authorship"])
+        actual_indices.append(event["i"])
+    for event in events:
+        expected_authorship.append(event["authorship"])
+    assert actual_authorship == expected_authorship
+    assert actual_indices == [0, 1, 2]
+    assert session == original
+
+
+@pytest.mark.parametrize(
+    "source", ["candidate", "harness", "ide", "other_agent", "unknown"]
+)
+def test_export_preserves_authorship_ranges_and_copies_nested_markers(source):
+    # Illustrative shared-contract boundary: not a native Claude classification.
+    text = "Hi 🙂<notice>context</notice>"
+    spans = [
+        AuthorshipRange(start=0, end=4, source=source, ts=None),
+        AuthorshipRange(
+            start=4,
+            end=len(text),
+            source="harness",
+            markers=[
+                AuthorshipMarker(field="block.type", value={"kind": ["notice", None]})
+            ],
+        ),
+    ]
+    session = Session(
+        harness="test",
+        session_id="s",
+        events=[
+            UserMessage(
+                i=0, role="user", ts="message-time", text=text, authorship=spans
+            )
+        ],
+    )
+    original = deepcopy(session)
+    exported = export_session(session, 0)
+    message = json.loads(json.dumps(exported))["events"][0]
+    assert message["text"] == text
+    assert message["ts"] == "message-time"
+    assert message["authorship"] == spans
+    actual_text_ranges = []
+    for span in message["authorship"]:
+        actual_text_ranges.append(text[span["start"] : span["end"]])
+    assert actual_text_ranges == ["Hi 🙂", "<notice>context</notice>"]
+    exported["events"][0]["authorship"][1]["markers"][0]["value"]["kind"].append(
+        "changed"
+    )
     assert session == original

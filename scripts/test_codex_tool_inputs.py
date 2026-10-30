@@ -2,23 +2,22 @@
 
 import json
 from copy import deepcopy
-from pathlib import Path
 
 import pytest
+from codex_capture import TRANSCRIPT, question_interaction
 
 from session_log_extractors.codex_sources import read_source
 from session_log_extractors.tool_inputs.codex import input_schema
 
-FIXTURES = Path(__file__).parent / "fixtures" / "codex"
-
 
 def test_native_question_schema_retains_unknown_fields():
-    source = read_source(FIXTURES / "question.jsonl")
-    call = next(
-        entry["payload"]
-        for entry in source.entries
-        if entry["payload"].get("type") == "function_call"
-    )
+    source = read_source(TRANSCRIPT)
+    source.entries = question_interaction()
+    question_calls = []
+    for entry in source.entries:
+        if entry["payload"].get("type") == "function_call":
+            question_calls.append(entry["payload"])
+    (call,) = question_calls
     payload = json.loads(call["arguments"])
     # Add an opaque extension to a captured native request.
     payload["future_extension"] = {"items": [None, True, {"nested": 3}]}

@@ -8,36 +8,42 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from copilot_fixture import (
+    ASSETS,
+    DATABASE,
+    SESSION_ID,
+    TRANSCRIPT,
+    native_source,
+    single_image_source,
+)
 
 from session_log_extractors import copilot_sources as sources
 from session_log_extractors import extract_copilot_session_log as copilot
 from session_log_extractors.session_log_envelope import export_session
 
-FIXTURES = Path(__file__).parent / "fixtures" / "copilot"
-CASES = json.loads((FIXTURES / "manifest.json").read_text())["cases"]
-PNG = (FIXTURES / "pixel.png").read_bytes()
+PNG = (ASSETS / "red.png").read_bytes()
 
 
-def _native_lines(case: str) -> list[str]:
-    return (FIXTURES / case / "events.jsonl").read_text(encoding="utf-8").splitlines()
+def _native_lines() -> list[str]:
+    return TRANSCRIPT.read_text(encoding="utf-8").splitlines()
 
 
 def _native_db():
-    return sources.get_db_connection(FIXTURES / "session-store.db")
+    return sources.get_db_connection(DATABASE)
 
 
 def _native_db_copy(tmp_path: Path, sql: str = "", params=()) -> Path:
     """Copy the native DB into tmp_path, optionally applying one edit."""
     db_path = tmp_path / "session-store.db"
-    shutil.copyfile(FIXTURES / "session-store.db", db_path)
+    shutil.copyfile(DATABASE, db_path)
     if sql:
         with sqlite3.connect(db_path) as conn:
             conn.execute(sql, params)
     return db_path
 
 
-def _install_native_events(case: str) -> None:
-    _write_events_log(CASES[case], _native_lines(case))
+def _install_native_events() -> None:
+    _write_events_log(SESSION_ID, _native_lines())
 
 
 @pytest.fixture(autouse=True)
@@ -55,16 +61,14 @@ def _write_events_log(session_id: str, lines) -> Path:
 
 
 def test_supplied_source_interprets_to_shared_session_without_io(monkeypatch):
-    conn = sources.get_db_connection(FIXTURES / "session-store.db")
+    conn = sources.get_db_connection(DATABASE)
     try:
-        metadata = sources.get_session_by_id(conn, CASES["image"])
+        metadata = sources.get_session_by_id(conn, SESSION_ID)
         turns = sources.get_session_turns(conn, metadata["id"])
         models = sources.get_session_models(conn, metadata["id"])
     finally:
         conn.close()
-    records = sources.parse_state_records(
-        (FIXTURES / "image" / "events.jsonl").read_text().splitlines()
-    )
+    records = native_source().state_records
     source = sources.CopilotSource(
         metadata, turns, state_records=records, models=models
     )
@@ -87,9 +91,12 @@ def test_supplied_source_interprets_to_shared_session_without_io(monkeypatch):
 
 def test_reader_snapshots_optional_assets_once(tmp_path, monkeypatch):
     image = tmp_path / "pixel.png"
-    image.write_bytes((FIXTURES / "pixel.png").read_bytes())
+    image.write_bytes((ASSETS / "red.png").read_bytes())
     missing = tmp_path / "missing.png"
-    refs = [{"path": str(path)} for path in (image, missing, image)]
+    image_references = []
+    for path in (image, missing, image):
+        image_references.append({"path": str(path)})
+    refs = image_references
     refs += [{"path": 123}, {"path": " "}, {}]
     original = Path.read_bytes
     reads = []
@@ -114,9 +121,9 @@ def test_reader_snapshots_optional_assets_once(tmp_path, monkeypatch):
 
 def test_source_reader_keeps_connection_owned_by_caller(tmp_path, monkeypatch):
     monkeypatch.setattr(sources, "COPILOT_STATE_ROOT", tmp_path)
-    conn = sources.get_db_connection(FIXTURES / "session-store.db")
+    conn = sources.get_db_connection(DATABASE)
     try:
-        metadata = sources.get_session_by_id(conn, CASES["baseline"])
+        metadata = sources.get_session_by_id(conn, SESSION_ID)
         source = sources.read_source(conn, metadata)
         assert source.session == metadata
         assert source.session is not metadata
@@ -130,7 +137,7 @@ def test_source_reader_keeps_connection_owned_by_caller(tmp_path, monkeypatch):
 
 
 def test_copilot_prefix_matching():
-    session_id = CASES["baseline"]
+    session_id = SESSION_ID
     with _native_db() as conn:
         assert sources.get_session_by_id(conn, session_id)["id"] == session_id
         assert sources.get_session_by_id(conn, session_id[:8])["id"] == session_id
@@ -168,7 +175,7 @@ def test_copilot_newest_session_falls_back_to_global_newest():
     # Native sessions ran in /workspace, which never overlaps the test cwd.
     with _native_db() as conn:
         session = sources.newest_session(conn, Path.cwd(), strict=False)
-    assert session["id"] == CASES["image"]
+    assert session["id"] == SESSION_ID
 
 
 def test_copilot_newest_session_strict_with_no_match_returns_none():
@@ -182,19 +189,26 @@ def test_copilot_newest_session_returns_none_for_empty_db(tmp_path):
         assert sources.newest_session(conn, Path.cwd(), strict=False) is None
 
 
-def test_copilot_newest_session_picks_most_recently_updated():
-    # The image case was captured last, so it has the latest updated_at.
-    with _native_db() as conn:
+def test_copilot_newest_session_picks_most_recently_updated(tmp_path):
+    # A second controlled identity makes recency selection observable.
+    db_path = _native_db_copy(tmp_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO sessions (id,cwd,created_at,updated_at) SELECT 'older',cwd,created_at,'2000-01-01' FROM sessions WHERE id=?",
+            (SESSION_ID,),
+        )
+    with sources.get_db_connection(db_path) as conn:
         session = sources.newest_session(conn, Path("/workspace"), strict=True)
-    assert session["id"] == CASES["image"]
+    assert session["id"] == SESSION_ID
 
 
 def test_copilot_get_session_models_reads_native_usage_events():
-    # The continued session logs one usage event per turn, both on one model.
+    expected = native_source().models
     with _native_db() as conn:
-        assert sources.get_session_models(conn, CASES["continued"]) == [
-            "claude-sonnet-5"
-        ]
+        actual = sources.get_session_models(conn, SESSION_ID)
+    assert actual == expected
+    assert len(actual) >= 2
+    assert len(actual) == len(set(actual))
 
 
 def test_copilot_get_session_models_falls_back_to_legacy_events_table():
@@ -224,15 +238,11 @@ def test_copilot_reader_missing_image_returns_none():
 
 
 def test_copilot_retained_database_metadata_readers(tmp_path):
-    session_id = CASES["baseline"]
+    session_id = SESSION_ID
     db_path = _native_db_copy(tmp_path)
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             "INSERT INTO session_refs (session_id, ref_type, ref_value, turn_index, created_at) VALUES (?, 'commit', 'abc123', 0, '2026-01-01T00:00:00Z')",
-            (session_id,),
-        )
-        conn.execute(
-            "INSERT INTO checkpoints (session_id, checkpoint_number, title, overview, created_at) VALUES (?, 1, 'Checkpoint one', 'did stuff', '2026-01-01T00:05:00Z')",
             (session_id,),
         )
     with sources.get_db_connection(db_path) as conn:
@@ -244,24 +254,25 @@ def test_copilot_retained_database_metadata_readers(tmp_path):
                 "created_at": "2026-01-01T00:00:00Z",
             }
         ]
-        assert sources.get_session_checkpoints(conn, session_id) == [
-            {
-                "checkpoint_number": 1,
-                "title": "Checkpoint one",
-                "overview": "did stuff",
-                "created_at": "2026-01-01T00:05:00Z",
-            }
-        ]
+        actual_checkpoints = sources.get_session_checkpoints(conn, session_id)
+    captured = json.loads((DATABASE.parent / "session-store.json").read_text())
+    expected_checkpoints = []
+    for row in captured["checkpoints"]:
+        expected = {}
+        for field in ["checkpoint_number", "title", "overview", "created_at"]:
+            expected[field] = row[field]
+        expected_checkpoints.append(expected)
+    assert actual_checkpoints == expected_checkpoints
+    assert actual_checkpoints, "Required compaction checkpoint is missing"
 
 
-@pytest.mark.parametrize("case", CASES)
 @pytest.mark.parametrize("with_state", [False, True])
-def test_copilot_loaded_inputs_interpret_without_io(case, with_state, monkeypatch):
+def test_copilot_loaded_inputs_interpret_without_io(with_state, monkeypatch):
     if with_state:
-        _install_native_events(case)
+        _install_native_events()
     conn = _native_db()
     try:
-        session = sources.get_session_by_id(conn, CASES[case])
+        session = sources.get_session_by_id(conn, SESSION_ID)
         expected = copilot.extract_session(conn, session)
         loaded = copilot.read_source(conn, session)
     finally:
@@ -280,7 +291,7 @@ def test_copilot_loaded_inputs_interpret_without_io(case, with_state, monkeypatc
 
 
 def test_copilot_extraction_reads_and_parses_state_once(monkeypatch):
-    _install_native_events("image")
+    _install_native_events()
     # Count reads on the concrete state path, leaving fixture setup outside.
     original_read = Path.read_text
     reads = []
@@ -293,7 +304,7 @@ def test_copilot_extraction_reads_and_parses_state_once(monkeypatch):
     monkeypatch.setattr(Path, "read_text", read)
     monkeypatch.setattr(json, "loads", loads)
     with _native_db() as conn:
-        session = sources.get_session_by_id(conn, CASES["image"])
+        session = sources.get_session_by_id(conn, SESSION_ID)
         copilot.extract_session(conn, session)
     assert len(reads) == 1
     assert loads.call_count == len(original_read(reads[0]).splitlines())
@@ -301,8 +312,8 @@ def test_copilot_extraction_reads_and_parses_state_once(monkeypatch):
 
 @pytest.mark.parametrize("inline", ["data_url", "data", "invalid", "path"])
 def test_copilot_loaded_path_image_precedence(tmp_path, monkeypatch, inline):
-    session_id = CASES["image"]
-    events = [json.loads(line) for line in _native_lines("image")]
+    session_id = SESSION_ID
+    events = single_image_source().state_records
     # Replace the native asset reference with each legacy encoding. The path
     # exists at loading time and is removed before interpretation.
     path = tmp_path / "pixel.png"
@@ -321,7 +332,10 @@ def test_copilot_loaded_path_image_precedence(tmp_path, monkeypatch, inline):
                     "A" if inline == "invalid" else base64.b64encode(b"inline").decode()
                 )
                 attachment["mediaType"] = "image/png"
-    _write_events_log(session_id, [json.dumps(event) for event in events])
+    event_lines = []
+    for event in events:
+        event_lines.append(json.dumps(event))
+    _write_events_log(session_id, event_lines)
     with _native_db() as conn:
         loaded = copilot.read_source(conn, sources.get_session_by_id(conn, session_id))
     path.unlink()
@@ -331,7 +345,11 @@ def test_copilot_loaded_path_image_precedence(tmp_path, monkeypatch, inline):
 
     monkeypatch.setattr(Path, "open", forbidden)
     envelope = copilot.build_raw_envelope(loaded)
-    image = next(e for e in envelope["events"] if e["role"] == "user")["images"][0]
+    image_messages = []
+    for event in envelope["events"]:
+        if event.get("images"):
+            image_messages.append(event)
+    image = next(iter(image_messages))["images"][0]
     if inline == "invalid":
         assert image["unavailable"] is True
     else:
@@ -341,6 +359,12 @@ def test_copilot_loaded_path_image_precedence(tmp_path, monkeypatch, inline):
 
 
 def test_copilot_preloaded_image_extension_is_per_reference():
-    refs = [{"path": "/noext", "type": mime} for mime in ("image/png", "image/jpeg")]
+    image_references = []
+    for mime in ("image/png", "image/jpeg"):
+        image_references.append({"path": "/noext", "type": mime})
+    refs = image_references
     images = copilot.envelope_images(refs, {"/noext": PNG})
-    assert [image["media_type"] for image in images] == ["image/png", "image/jpeg"]
+    actual_media_types = []
+    for image in images:
+        actual_media_types.append(image["media_type"])
+    assert actual_media_types == ["image/png", "image/jpeg"]
