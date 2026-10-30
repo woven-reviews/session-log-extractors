@@ -32,6 +32,8 @@ class QuestionAnswer(TypedDict):
     options: list[QuestionOption]
     chosen_labels: NotRequired[list[str]]
     answer_text: NotRequired[str]
+    field_name: NotRequired[str]
+    recorded_answer: NotRequired[str | list[str]]
 
 
 class PlanDecision(TypedDict):
@@ -76,6 +78,7 @@ class NativeIdentity(TypedDict, total=False):
     originating_message_id: str
     interaction_id: str
     turn_id: str
+    agent_id: str
 
 
 class ToolResult(NativeIdentity):
@@ -133,11 +136,21 @@ class PlanUpdate(TypedDict):
     steps: list[PlanStep]
 
 
+class FileChange(TypedDict):
+    """A recorded file change, preserving content and diff as distinct facts."""
+
+    path: str
+    change_type: str | None
+    content: NotRequired[str]
+    unified_diff: NotRequired[str]
+    move_path: NotRequired[str | None]
+
+
 class PatchResult(NativeIdentity):
     """A native patch completion, without guessed tool ownership."""
 
     ts: str | None
-    paths: list[str]
+    file_changes: list[FileChange]
     stdout: JsonValue
     stderr: JsonValue
 
@@ -146,6 +159,8 @@ class ToolCall(TypedDict, total=False):
     """A complete call and the decisions/results belonging to that call."""
 
     name: Required[str]
+    native_success: bool
+    shell_exit_code: int
     native_id: str
     plan_update: PlanUpdate
     id: str
@@ -157,6 +172,7 @@ class ToolCall(TypedDict, total=False):
     is_error: bool
     error: JsonValue
     result_record: ToolResult
+    result_images: list[Image]
     execution: ToolExecution
     questions: list[QuestionAnswer]
     plan_decision: PlanDecision
@@ -203,6 +219,13 @@ class MessageContent(NativeIdentity, total=False):
     permission_denial: PermissionDenial
 
 
+class SkillInvocation(TypedDict):
+    """A recorded expansion of an explicitly selected native skill."""
+
+    name: str
+    path: str
+
+
 class UserMessage(MessageContent):
     """A recorded user input, with command actions recognized explicitly."""
 
@@ -211,6 +234,8 @@ class UserMessage(MessageContent):
     command: NotRequired[str]
     command_args: NotRequired[str | None]
     shell_command: NotRequired[str]
+    skill_invocation: NotRequired[SkillInvocation]
+    shell_result: NotRequired[ToolResult]
 
 
 class AssistantMessage(MessageContent):
@@ -261,6 +286,7 @@ class Session(TypedDict):
 
     harness: str
     session_id: str
+    parent_session_id: NotRequired[str]
     events: list[Message]
     cwd: NotRequired[str | None]
     started_at: NotRequired[str | None]

@@ -25,6 +25,8 @@ class CodexSource:
     session_id: Optional[str] = None
     cwd: Optional[str] = None
     image_inputs: ImageInputs = field(default_factory=dict)
+    parent_session_id: str | None = None
+    history_start_ordinal: int | None = None
 
     @property
     def identifier(self) -> str:
@@ -257,6 +259,11 @@ def read_source(path: Path) -> CodexSource:
         if line <= 50 and entry.get("type") == "session_meta" and not id_seen:
             sid = payload.get("id")
             source.session_id = sid if isinstance(sid, str) else None
+            parent = payload.get("parent_thread_id")
+            source.parent_session_id = parent if isinstance(parent, str) else None
+            boundary = payload.get("subagent_history_start_ordinal")
+            if isinstance(boundary, int) and not isinstance(boundary, bool):
+                source.history_start_ordinal = boundary
             id_seen = True
         if line <= 80 and entry.get("type") in ("session_meta", "turn_context"):
             cwd = payload.get("cwd")

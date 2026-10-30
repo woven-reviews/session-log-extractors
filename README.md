@@ -287,14 +287,25 @@ native identities, collaboration mode, commands, plan updates, skill names,
 changed files, and patch completion records in named model fields. Tool results
 match calls by recorded call ID, including across later human messages; unmatched
 results remain explicit. Denial prose without a call ID stays on its recorded
-message without a guessed tool association. No question-association or authorship
-correction is included. `ToolCall.result_record.content` retains complete native
+message without a guessed tool association. Native answer arrays select whole
+labels by question ID; notes and substring overlap do not invent selections.
+Recorded human text retains literal markup; role alone does not classify authorship.
+`ToolCall.result_record.content` retains complete native
 results, while `ToolCall.result` retains the existing uncapped textual
 interpretation for JSON compatibility. Missing, null, and empty results stay
 distinct. The exporter alone caps that textual view, without mutating either
 representation. Unsupported tool inputs are retained and reported on stderr.
 The duplicate `Turn`, `build_turns`, and `build_events` paths are removed; callers
 use `interpret_source(CodexSource(...))` and `export_session` instead.
+
+The current interactive Codex capture also retains native skill expansions as
+`UserMessage.skill_invocation` records with their own message/turn identities.
+`PatchResult.file_changes` replaces its paths-only `paths` field with typed
+`FileChange` records containing recorded content, unified diffs, and move targets.
+Child sources retain the recorded parent ID and history boundary; interpretation
+excludes inherited parent activity and exposes `Session.parent_session_id`.
+These model semantics remain available to consumers while the existing JSON
+schema intentionally omits invocation details, patch records, and parent links.
 
 Copilot also implements the public contract and returns uncapped sessions.
 
@@ -430,14 +441,7 @@ Algorithms and interfaces are preserved in this tooling change.
 | File (relative to `scripts/` unless shown) | Function | Rules | Removal ticket |
 | --- | --- | --- | --- |
 | `generate_claude_fixtures.py` | `run_case` | C901, PLR0912, PLR0915 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
-| `generate_codex_fixtures.py` | `capture_interactive` | C901, PLR0915 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
-| `generate_codex_fixtures.py` | `clean` | C901, PLR0912 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
-| `generate_codex_fixtures.py` | `validate` | C901, PLR0912 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
-| `generate_codex_fixtures.py` | `wait_for` | C901 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
-| `generate_copilot_fixtures.py` | `main` | C901, PLR0912, PLR0915 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
 | `test_generate_claude_fixtures.py` | `_fake_claude` | PLR0913 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
-| `test_generate_codex_fixtures.py` | `_fake_cli` | PLR0913 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
-| `test_generate_codex_fixtures.py` | `test_interactive_main_drives_requests_and_stages_native_rollouts` | C901 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
 
 **Agents must never add new lint exceptions or broaden existing ones.** Do not
 add suppressions, disable rules, exclude files or directories, or raise thresholds
