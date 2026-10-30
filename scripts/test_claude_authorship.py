@@ -373,3 +373,69 @@ def test_queued_empty_activity_and_malformed_attachment_do_not_create_messages()
     source = ClaudeSource(TRANSCRIPT, [empty, malformed])
     session = claude.interpret_source(source)
     assert session is None
+
+
+def _recorded_interruptions():
+    interruptions = []
+    for entry in claude.load_entries(TRANSCRIPT):
+        content = entry.get("message", {}).get("content")
+        if content == [
+            {"type": "text", "text": "[Request interrupted by user for tool use]"}
+        ]:
+            interruptions.append(entry)
+    assert interruptions, "Missing captured user-interruption notices"
+    return interruptions
+
+
+def test_native_user_interruptions_remain_candidate_visible_through_export():
+    entries = _recorded_interruptions()
+    original = deepcopy(entries)
+    session = _interpret(entries)
+    exported = export_session(session)
+    for native, message, actual in zip(
+        entries, session["events"], exported["events"], strict=True
+    ):
+        (block,) = native["message"]["content"]
+        expected_text = block["text"]
+        actual_sources = _sources(message)
+        assert actual_sources == ["candidate"]
+        assert message["text"] == actual["text"] == expected_text
+        assert message["ts"] == actual["ts"] == native["timestamp"]
+        assert message["id"] == native["uuid"]
+        assert actual["authorship"] == message["authorship"]
+        (span,) = message["authorship"]
+        assert span["start"] == 0 and span["end"] == len(expected_text)
+        assert {"field": "message.content[0].text", "value": expected_text} in span[
+            "markers"
+        ]
+    assert entries == original
+
+
+@pytest.mark.parametrize("shape", ["quoted", "extra_block", "string", "assistant_role"])
+def test_interruption_recognition_does_not_label_other_text_as_user_action(shape):
+    entries = _recorded_interruptions()
+    entry = entries[0]
+    # Mutate only the captured control-message shape. An incidental mention or
+    # different container must not be mistaken for the recorded user action.
+    if shape == "quoted":
+        entry["message"]["content"][0]["text"] += " is an example notice."
+    elif shape == "extra_block":
+        entry["message"]["content"].append(
+            {"type": "text", "text": "unattributed words"}
+        )
+    elif shape == "string":
+        entry["message"]["content"] = entry["message"]["content"][0]["text"]
+    else:
+        entry["message"]["role"] = "assistant"
+    message = _single_message(entry)
+    actual_sources = _sources(message)
+    assert actual_sources == ["unknown"]
+
+
+def test_explicit_injection_evidence_overrides_control_notice_spelling():
+    entries = _recorded_interruptions()
+    entry = entries[0]
+    entry["isMeta"] = True
+    message = _single_message(entry)
+    actual_sources = _sources(message)
+    assert actual_sources == ["harness"]

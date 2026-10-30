@@ -87,6 +87,27 @@ def _split_content(
     return spans
 
 
+def _is_user_interruption(entry: dict[str, JsonValue]) -> bool:
+    """Recognize the captured notice of a deliberate user control action."""
+    message = entry.get("message")
+    if not isinstance(message, dict):
+        return False
+    return (
+        entry.get("type") == "user"
+        and message.get("role") == "user"
+        and message.get("content")
+        == [{"type": "text", "text": "[Request interrupted by user for tool use]"}]
+    )
+
+
+def _is_human_input(entry: dict[str, JsonValue]) -> bool:
+    return (
+        _origin(entry).get("kind") == "human"
+        and entry.get("promptSource") in ("typed", "queued")
+        and entry.get("turnOrigin") == "human"
+    )
+
+
 def _user_authorship(entry: dict[str, JsonValue], text: str) -> list[AuthorshipRange]:
     """Classify nonempty text using native origins before broad injection flags."""
     markers = _markers(entry)
@@ -106,11 +127,12 @@ def _user_authorship(entry: dict[str, JsonValue], text: str) -> list[AuthorshipR
         or entry.get("turnOrigin") in ("task_notification", "scheduled")
     ):
         source: AuthorshipSource = "harness"
-    elif (
-        origin.get("kind") == "human"
-        and entry.get("promptSource") in ("typed", "queued")
-        and entry.get("turnOrigin") == "human"
-    ):
+    elif _is_user_interruption(entry):
+        # Candidate-visible activity includes the user's interruption action,
+        # even though Claude supplies the notice's wording.
+        source = "candidate"
+        markers.append(AuthorshipMarker(field="message.content[0].text", value=text))
+    elif _is_human_input(entry):
         source = "candidate"
     else:
         source = "unknown"

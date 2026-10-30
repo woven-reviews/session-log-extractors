@@ -73,7 +73,11 @@ Production authorship tests use this interactive capture for typed and queued
 human input (`promptSource`, `turnOrigin`, and `origin.kind`), injected
 `isMeta` expansions, task-notification origins, and compact summaries. The
 operator's typed literal XML demonstrates that wrapper spelling cannot establish
-injection. A `queued_command` attachment records the original human prompt,
+injection. The five captured standalone interruption notices are classified as
+candidate activity to retain the user's interruption action in candidate-visible
+logs, even though Claude generates their wording. Exact native control-message
+shape recognition excludes incidental quotes and respects explicit injection
+provenance. A `queued_command` attachment records the original human prompt,
 `source_uuid`, `delivery_id`, its own timestamp, and the longer rendered text;
 the extractor retains that attachment at its recorded position with the recorded
 rendered role and mixed candidate/harness ranges. It does not assign it to a
