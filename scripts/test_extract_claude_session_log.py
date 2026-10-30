@@ -11,6 +11,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import shutil
 import tempfile
 from copy import deepcopy
@@ -220,12 +221,35 @@ def _overlapping_options_pair():
             pair
             for pair in _tool_pairs("AskUserQuestion")
             if any(
-                {o["label"] for o in q["options"]} == {"Leaf", "Leaflet"}
+                _has_overlapping_labels(q["options"])
                 for q in _block(pair[0], "tool_use")["input"]["questions"]
             )
         ],
         "overlapping-option activity",
     )
+
+
+def _has_overlapping_labels(options):
+    labels = [option["label"] for option in options]
+    return any(
+        longer != shorter and longer.startswith(shorter)
+        for shorter in labels
+        for longer in labels
+    )
+
+
+def _assert_selected_answer(question, *, minimum_choices=1):
+    assert isinstance(question["answer_text"], str)
+    assert question["answer_text"].strip()
+    labels = question["chosen_labels"]
+    assert isinstance(labels, list)
+    assert all(isinstance(label, str) and label for label in labels)
+    assert len(labels) >= minimum_choices
+    assert len(labels) == len(set(labels))
+    assert set(labels) <= {option["label"] for option in question["options"]}
+    if minimum_choices == 1:
+        assert len(labels) == 1
+        assert question["answer_text"] == labels[0]
 
 
 def test_native_skill_and_command_invocations_are_retained():
@@ -257,14 +281,37 @@ def test_single_choice():
         question["options"],
         _block(result, "tool_result")["content"],
     )
-    assert value == "Leaflet"
-    assert [option["label"] for option in chosen] == ["Leaflet"]
+    assert isinstance(value, str)
+    assert value.strip()
+    assert len(chosen) == 1
+    assert chosen[0] in question["options"]
+    assert value == chosen[0]["label"]
 
 
-def test_multiselect_comma():
+def test_native_multiselect_answer():
     qa = _question(_question_calls(), multi_select=True)
-    assert qa["answer_text"] == "Green, Red"
-    assert qa["chosen_labels"] == ["Green", "Red"]
+    _assert_selected_answer(qa, minimum_choices=2)
+
+
+def test_parse_chosen_comma_separated_labels():
+    # Controlled parser primitive: native captures may use any option labels.
+    options = [{"label": label} for label in ("First", "Second", "Third")]
+    value, chosen = _parse_chosen(
+        "Choose items", options, '"Choose items"="First, Third"'
+    )
+    assert value == "First, Third"
+    assert [option["label"] for option in chosen] == ["First", "Third"]
+
+
+@pytest.mark.parametrize("labels", [("Plan", "Planet"), ("North", "Northwest")])
+def test_parse_chosen_overlapping_labels_selects_only_the_complete_label(labels):
+    # Supply the overlap and answer explicitly instead of pinning native wording.
+    shorter, longer = labels
+    options = [{"label": label} for label in labels]
+    value, chosen = _parse_chosen("Choose one", options, f'"Choose one"="{longer}"')
+    assert shorter in longer
+    assert value == longer
+    assert [option["label"] for option in chosen] == [longer]
 
 
 def test_permission_denial_bare():
@@ -291,10 +338,8 @@ def test_native_settings_denial_is_recorded():
     entries = _tool_pair("Bash", "CAPTURE_SETTINGS_REFUSAL")
     _, result_entry = entries
     result = _block(result_entry, "tool_result")["content"]
-    assert (
-        result
-        == "Permission to use Bash with command printf CAPTURE_SETTINGS_REFUSAL has been denied."
-    )
+    assert isinstance(result, str)
+    assert result.strip()
     assert parse_permission_denial(result) == ""
     denial = _only(
         [
@@ -342,9 +387,8 @@ def test_custom_answer_matches_no_option():
 
 def test_multi_question_anchors_on_its_own_text():
     call = _question_calls()
-    assert _question(call, multi_select=True)["answer_text"] == "Green, Red"
-    assert _question(call, multi_select=False)["answer_text"] == "Deciduous"
-    assert _question(call, multi_select=False)["chosen_labels"] == ["Deciduous"]
+    _assert_selected_answer(_question(call, multi_select=True), minimum_choices=2)
+    _assert_selected_answer(_question(call, multi_select=False))
 
 
 def test_task_notification_is_stripped_to_empty():
@@ -415,7 +459,7 @@ def test_build_events_attaches_tool_results_to_their_call():
     assert call["input"]["file_path"] == "/tmp/CAPTURE_ROOT/workspace/multibyte.txt"
     assert call["result_bytes"] > 10_000
     assert call["result_truncated"] is True
-    assert len(call["result"].encode()) == 100
+    assert 0 < len(call["result"].encode()) <= 100
 
 
 def test_large_native_result_reaches_envelope_size_warning():
@@ -740,7 +784,9 @@ def test_content_blocks_handles_none_and_non_list_content():
 def test_tool_descriptor_shell_search_and_fallback():
     assistant, _ = _tool_pair("Bash", "CAPTURE_BASH_OK")
     call = _block(assistant, "tool_use")
-    assert tool_descriptor(call["name"], call["input"]) == "printf CAPTURE_BASH_OK"
+    descriptor = tool_descriptor(call["name"], call["input"])
+    assert isinstance(descriptor, str)
+    assert descriptor.strip()
     # The current CLI has no Grep tool; retain its legacy descriptor boundary.
     assert tool_descriptor("Grep", {"pattern": "foo"}) == "foo"
     assert tool_descriptor("X", {"odd": 1}) == '{"odd": 1}'
@@ -766,8 +812,9 @@ def test_option_qa_from_result_builds_record():
     call = _block(assistant, "tool_use")
     out = option_qa_from_result(result, {call["id"]: call["input"]["questions"]})
     answer = _only(out, "choice answer")
-    assert answer["chosen_labels"] == ["Leaflet"]
-    assert answer["header"] == "Choice"
+    _assert_selected_answer(answer)
+    native = _only(call["input"]["questions"], "native question")
+    assert answer["header"] == native["header"]
 
 
 def test_option_qa_from_result_ignores_untracked_tool():
@@ -828,8 +875,11 @@ def test_parse_chosen_single_question_fallback_when_text_mismatches():
     value, chosen = _parse_chosen(
         "Nomatch", question["options"], _block(result, "tool_result")["content"]
     )
-    assert value == "Leaflet"
-    assert [option["label"] for option in chosen] == ["Leaflet"]
+    assert isinstance(value, str)
+    assert value.strip()
+    assert len(chosen) == 1
+    assert chosen[0] in question["options"]
+    assert value == chosen[0]["label"]
 
 
 def test_apply_plan_decisions_ignores_non_tool_result_blocks():
@@ -927,7 +977,7 @@ def test_activity_keeps_commands_shell_subagents_questions_and_files():
         ],
         "tree question call",
     )
-    assert _question(question, multi_select=True)["chosen_labels"] == ["Green", "Red"]
+    _assert_selected_answer(_question(question, multi_select=True), minimum_choices=2)
     assert any(call["name"] == "Write" for call in calls)
     denial = _only(
         [
@@ -975,7 +1025,10 @@ def test_first_timestamp_session_models_and_cwd():
     assert first_timestamp(entries) in {
         entry["timestamp"] for entry in entries if entry.get("timestamp")
     }
-    assert session_models(entries) == ["claude-opus-5-5", "claude-sonnet-5-5"]
+    models = session_models(entries)
+    assert len(models) >= 2
+    assert all(isinstance(model, str) and model for model in models)
+    assert len(models) == len(set(models))
     assert session_cwd(entries) == "/tmp/CAPTURE_ROOT/workspace"
     assistant, _ = _tool_pair("Read", "multibyte.txt")
     # The edge is controlled explicitly, independent of capture dates or ordering.
@@ -992,9 +1045,12 @@ def test_first_timestamp_session_models_and_cwd():
     assert session_cwd([]) is None
 
 
-def test_native_resumed_session_lists_both_models():
+def test_native_resumed_session_lists_multiple_models():
     entries = _entries()
-    assert session_models(entries) == ["claude-opus-5-5", "claude-sonnet-5-5"]
+    models = session_models(entries)
+    assert len(models) >= 2
+    assert all(isinstance(model, str) and model for model in models)
+    assert len(models) == len(set(models))
     assert any(
         event.get("command") == "/model" for event in _session(entries)["events"]
     )
@@ -1043,11 +1099,14 @@ def test_summarize_subagent_reads_meta_task_and_result(tmp_path):
     shutil.copyfile(SUBAGENT, sub)
     shutil.copyfile(SUBAGENT.with_suffix(".meta.json"), sub.with_suffix(".meta.json"))
     summary = summarize_subagent(sub)
-    assert summary["agent_type"] == "Explore"
+    metadata = json.loads(SUBAGENT.with_suffix(".meta.json").read_text())
+    assert summary["agent_type"] == metadata["agentType"]
     assert isinstance(summary["task"], str)
     assert summary["task"].strip()
-    assert summary["tool_count"] == 1
-    assert summary["tool_names"] == ["Read"]
+    assert summary["tool_count"] >= 1
+    assert summary["tool_names"]
+    assert all(isinstance(name, str) and name for name in summary["tool_names"])
+    assert len(summary["tool_names"]) <= summary["tool_count"]
     assert isinstance(summary["result"], str)
     assert summary["result"].strip()
 
@@ -1717,7 +1776,7 @@ def test_decisions_follow_native_calls_across_later_user_messages(selection):
     assert call["id"] == _block(assistant, "tool_use")["id"]
     assert call["result_record"]["tool_call_id"] == call["id"]
     if call["name"] == "AskUserQuestion":
-        assert _question(call, multi_select=True)["chosen_labels"] == ["Green", "Red"]
+        _assert_selected_answer(_question(call, multi_select=True), minimum_choices=2)
     elif call["name"] == "ExitPlanMode":
         assert call["plan_decision"]["decision"] == "approved"
     else:
@@ -1776,7 +1835,9 @@ def test_malformed_question_options_preserve_input_and_allow_extraction(options)
     call = _event_call(session["events"])
     assert call["input"] == block["input"]
     assert _question(call, multi_select=True)["options"] == []
-    assert _question(call, multi_select=True)["answer_text"] == "Green, Red"
+    answer = _question(call, multi_select=True)["answer_text"]
+    assert isinstance(answer, str)
+    assert answer.strip()
     exported = session_log_envelope.export_session(session)
     assert _event_call(exported["events"])["input"] == block["input"]
 
@@ -1851,24 +1912,19 @@ def test_question_options_are_checked_without_losing_recorded_payload():
     options = _question(block["input"], multi_select=True)["options"]
     # Extend a recorded option and introduce malformed known fields. Semantic
     # parsing uses checked options while the complete native input survives.
-    option = _only(
-        [option for option in options if option["label"] == "Green"], "Green option"
-    )
-    option["preview"] = {"markdown": "**keep this**"}
+    assert options
+    for option in options:
+        option["preview"] = {"markdown": "**keep this**"}
     options.extend([{"label": 1}, {"label": "bad", "description": None}])
     session = _session(entries)
     call = _event_call(session["events"])
     assert call["input"] == block["input"]
     assert _question(call, multi_select=True)["options"] == options[:-2]
-    assert _only(
-        [
-            option
-            for option in _question(call, multi_select=True)["options"]
-            if option["label"] == "Green"
-        ],
-        "Green option",
-    )["preview"] == {"markdown": "**keep this**"}
-    assert _question(call, multi_select=True)["chosen_labels"] == ["Green", "Red"]
+    assert all(
+        option["preview"] == {"markdown": "**keep this**"}
+        for option in _question(call, multi_select=True)["options"]
+    )
+    _assert_selected_answer(_question(call, multi_select=True), minimum_choices=2)
 
 
 @pytest.mark.parametrize("name", ["bash", "view", "edit", "create", "skill"])
@@ -1943,24 +1999,35 @@ def test_legacy_dont_ask_denial_without_command_is_recorded():
     assert call["permission_denial"]["message"] == ""
 
 
-def test_fixture_selection_ignores_order_regenerated_ids_and_prose(
-    monkeypatch,
-):
-    entries = _entries()
-    # Rephrase generated questions consistently in calls and native answers.
-    # Labels and operator-entered answers stay fixed for the selection boundaries.
-    replacements = {
-        question[field]: f"Reworded: {question[field]}"
-        for entry in entries
-        for block in _content_blocks(entry)
-        if isinstance(block, dict) and block.get("name") == "AskUserQuestion"
-        for question in block["input"]["questions"]
-        for field in ("question", "header")
-    }
-    serialized = json.dumps(entries, ensure_ascii=False)
-    for original, replacement in replacements.items():
-        serialized = serialized.replace(original, replacement)
-    entries = json.loads(serialized)
+def _reword_generated_questions(entries):
+    replacements = {}
+    for entry in entries:
+        for block in _content_blocks(entry):
+            if not isinstance(block, dict) or block.get("name") != "AskUserQuestion":
+                continue
+            for question in block["input"]["questions"]:
+                for field in ("question", "header"):
+                    text = question[field]
+                    replacements[text] = f"Reworded: {text}"
+                for option in question["options"]:
+                    for field in ("label", "description"):
+                        text = option[field]
+                        replacements[text] = f"Alternative {text}"
+    # One non-cascading pass updates calls, rendered results, and answer maps.
+    pattern = "|".join(
+        re.escape(text) for text in sorted(replacements, key=len, reverse=True)
+    )
+    return json.loads(
+        re.sub(
+            pattern,
+            lambda match: replacements[match[0]],
+            json.dumps(entries, ensure_ascii=False),
+        )
+    )
+
+
+def test_fixture_selection_ignores_order_regenerated_ids_and_prose(monkeypatch):
+    entries = _reword_generated_questions(_entries())
     for entry in entries:
         if "uuid" in entry:
             entry["uuid"] = "regenerated-" + entry["uuid"]
@@ -1980,12 +2047,11 @@ def test_fixture_selection_ignores_order_regenerated_ids_and_prose(
             content.reverse()
     entries.reverse()
     monkeypatch.setattr(__name__ + "._entries", lambda: entries)
-    assert _question(_question_calls(), multi_select=True)["chosen_labels"] == [
-        "Green",
-        "Red",
-    ]
+    _assert_selected_answer(
+        _question(_question_calls(), multi_select=True), minimum_choices=2
+    )
     overlap = _event_call(_session(_overlapping_options_pair())["events"])
-    assert _question(overlap, multi_select=False)["chosen_labels"] == ["Leaflet"]
+    _assert_selected_answer(_question(overlap, multi_select=False))
     _assert_assistant_text(_session(entries)["events"])
     assistant, result = _tool_pair("Read", "multibyte.txt")
     call = _block(assistant, "tool_use")

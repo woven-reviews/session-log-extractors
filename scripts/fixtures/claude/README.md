@@ -24,11 +24,16 @@ Generated assistant responses and subagent prose are checked for string type and
 nonempty content, without requiring particular words or a successful recall by
 the model. Question selectors use multi-select structure or the overlapping
 option labels under test, rather than generated question wording or headers.
-Plan selectors use recorded approval/rejection evidence rather than proposed
-plan wording. Exact assertions remain for structured decisions, operator input,
-edited-plan assets, and focused parsing or sanitization boundaries. Selection
-tests vary generated prose, question wording, IDs, and record order to check
-that new captures can use different wording.
+Native answers are checked for nonempty text, single or multiple selections,
+and membership in recorded options, without pinning option labels or headers.
+Comma-separated answers and overlapping labels have separate, explicitly
+controlled parser tests. Plan selectors use recorded approval/rejection evidence
+rather than proposed plan wording. Exact assertions remain for structured
+decisions, operator input, edited-plan assets, and focused parsing or sanitization
+boundaries. Selection
+tests vary generated prose, question wording, option labels/descriptions and
+their recorded answers, IDs, and record order to check that new captures can use
+different wording.
 
 The current capture supplies ordinary Markdown/Unicode, single-choice and
 multi-question/multi-select answers, free text, previews and notes, question
