@@ -171,10 +171,17 @@ def _single_tool_call_in(events):
 
 
 def _assert_assistant_text(events):
-    responses = [event["text"] for event in events if event["role"] == "assistant"]
+    responses = []
+    for event in events:
+        if event["role"] == "assistant":
+            responses.append(event["text"])
     assert responses
-    assert all(isinstance(text, str) for text in responses)
-    assert any(text.strip() for text in responses)
+    nonempty_responses = []
+    for text in responses:
+        assert isinstance(text, str)
+        if text.strip():
+            nonempty_responses.append(text)
+    assert nonempty_responses
 
 
 def _native_question_in(tool_input, *, multi_select):
@@ -234,7 +241,9 @@ def _recorded_overlapping_options_interaction():
 
 
 def _has_overlapping_labels(options):
-    labels = [option["label"] for option in options]
+    labels = []
+    for option in options:
+        labels.append(option["label"])
     for shorter in labels:
         for longer in labels:
             if longer != shorter and longer.startswith(shorter):
@@ -247,28 +256,40 @@ def _assert_answer_uses_distinct_recorded_options(question):
     assert question["answer_text"].strip()
     labels = question["chosen_labels"]
     assert isinstance(labels, list)
-    assert all(isinstance(label, str) and label for label in labels)
+    for label in labels:
+        assert isinstance(label, str)
+        assert label
     assert len(labels) == len(set(labels))
-    assert set(labels) <= {option["label"] for option in question["options"]}
+    recorded_labels = set()
+    for option in question["options"]:
+        recorded_labels.add(option["label"])
+    assert set(labels) <= recorded_labels
 
 
 def test_native_skill_and_command_invocations_are_retained():
     entries = _recorded_session_entries()
     session = eclog.interpret_source(ClaudeSource(Path("session.jsonl"), entries))
     assert session["skills_used"] == ["capture-leaf"]
-    calls = [call for call in _tool_calls_in(session) if call["name"] == "Skill"]
+    calls = []
+    for call in _tool_calls_in(session):
+        if call["name"] == "Skill":
+            calls.append(call)
     assert len(calls) >= 2
-    assert {call["skill"] for call in calls} == {"capture-leaf"}
-    command = _require_single_match(
-        [
-            event
-            for event in session["events"]
-            if event.get("command") == "/capture-echo"
-        ],
-        "capture-echo command",
-    )
+    skills = set()
+    for call in calls:
+        skills.add(call["skill"])
+    assert skills == {"capture-leaf"}
+    commands = []
+    for event in session["events"]:
+        if event.get("command") == "/capture-echo":
+            commands.append(event)
+    command = _require_single_match(commands, "capture-echo command")
     assert command["command_args"] == 'CAPTURE_ARGS hello, "café 雪" — two words!'
-    assert any("/capture-echo" in event["text"] for event in build_events(entries))
+    command_events = []
+    for event in build_events(entries):
+        if "/capture-echo" in event["text"]:
+            command_events.append(event)
+    assert command_events
 
 
 def test_single_choice():
@@ -301,23 +322,29 @@ def test_native_multiselect_answer():
 
 def test_parse_chosen_comma_separated_labels():
     # Controlled parser primitive: native captures may use any option labels.
-    options = [{"label": label} for label in ("First", "Second", "Third")]
+    options = [{"label": "First"}, {"label": "Second"}, {"label": "Third"}]
     value, chosen = _parse_chosen(
         "Choose items", options, '"Choose items"="First, Third"'
     )
     assert value == "First, Third"
-    assert [option["label"] for option in chosen] == ["First", "Third"]
+    chosen_labels = []
+    for option in chosen:
+        chosen_labels.append(option["label"])
+    assert chosen_labels == ["First", "Third"]
 
 
 @pytest.mark.parametrize("labels", [("Plan", "Planet"), ("North", "Northwest")])
 def test_parse_chosen_overlapping_labels_selects_only_the_complete_label(labels):
     # Supply the overlap and answer explicitly instead of pinning native wording.
     shorter, longer = labels
-    options = [{"label": label} for label in labels]
+    options = [{"label": shorter}, {"label": longer}]
     value, chosen = _parse_chosen("Choose one", options, f'"Choose one"="{longer}"')
     assert shorter in longer
     assert value == longer
-    assert [option["label"] for option in chosen] == [longer]
+    chosen_labels = []
+    for option in chosen:
+        chosen_labels.append(option["label"])
+    assert chosen_labels == [longer]
 
 
 def test_permission_denial_bare():
@@ -352,14 +379,11 @@ def test_native_settings_denial_is_recorded():
     interpreted_session = eclog.interpret_source(
         ClaudeSource(Path("session.jsonl"), entries)
     )
-    denial = _require_single_match(
-        [
-            call["permission_denial"]
-            for call in _tool_calls_in(interpreted_session)
-            if "permission_denial" in call
-        ],
-        "settings denial",
-    )
+    denials = []
+    for call in _tool_calls_in(interpreted_session):
+        if "permission_denial" in call:
+            denials.append(call["permission_denial"])
+    denial = _require_single_match(denials, "settings denial")
     assert denial["tool"].split(" — ")[0] == "Bash"
     assert denial["by"] == "settings"
 
@@ -443,14 +467,13 @@ def test_encode_project_path_does_not_collapse_runs():
 
 
 def test_build_events_inlines_pasted_images_as_base64():
-    entries = [
-        _recorded_user_message(marker)
-        for marker in (
-            "CAPTURE_IMAGES_SAME:",
-            "CAPTURE_IMAGES_LATER_GIF:",
-            "CAPTURE_IMAGES_LATER_WEBP:",
-        )
-    ]
+    entries = []
+    for marker in (
+        "CAPTURE_IMAGES_SAME:",
+        "CAPTURE_IMAGES_LATER_GIF:",
+        "CAPTURE_IMAGES_LATER_WEBP:",
+    ):
+        entries.append(_recorded_user_message(marker))
     recorded_image_data = []
     for entry in entries:
         for block in entry["message"]["content"]:
@@ -459,16 +482,23 @@ def test_build_events_inlines_pasted_images_as_base64():
 
     events = build_events(entries)
 
-    assert [event["role"] for event in events] == ["user"] * 3
-    assert [len(event["images"]) for event in events] == [2, 1, 1]
-    assert any("CAPTURE_IMAGES_SAME" in event["text"] for event in events)
-    # Claude 2.1.312/314 converts all four source formats to PNG on attachment.
+    roles = []
+    image_counts = []
+    marked_image_events = []
     extracted_image_data = []
     extracted_media_types = []
     for event in events:
+        roles.append(event["role"])
+        image_counts.append(len(event["images"]))
+        if "CAPTURE_IMAGES_SAME" in event["text"]:
+            marked_image_events.append(event)
         for image in event["images"]:
             extracted_image_data.append(image["data"])
             extracted_media_types.append(image["media_type"])
+    assert roles == ["user"] * 3
+    assert image_counts == [2, 1, 1]
+    assert marked_image_events
+    # Claude 2.1.312/314 converts all four source formats to PNG on attachment.
     assert extracted_media_types == ["image/png"] * 4
     assert extracted_image_data == recorded_image_data
 
@@ -556,9 +586,20 @@ def test_build_events_preserves_large_write_inputs():
 def test_messages_skip_sidechain_and_meta():
     entries = _recorded_session_entries()
     sidechain = load_entries(SUBAGENT)
-    assert any(entry.get("isMeta") for entry in entries)
-    assert any(entry.get("isSidechain") for entry in sidechain)
-    expected = build_events([entry for entry in entries if not entry.get("isMeta")])
+    meta_entries = []
+    conversation_entries = []
+    for entry in entries:
+        if entry.get("isMeta"):
+            meta_entries.append(entry)
+        else:
+            conversation_entries.append(entry)
+    assert meta_entries
+    sidechain_entries = []
+    for entry in sidechain:
+        if entry.get("isSidechain"):
+            sidechain_entries.append(entry)
+    assert sidechain_entries
+    expected = build_events(conversation_entries)
     session = eclog.interpret_source(
         ClaudeSource(Path("session.jsonl"), entries + sidechain)
     )
@@ -818,7 +859,10 @@ def test_load_entries_counts_non_dict_and_skips_blank_lines():
     buf = io.StringIO()
     with contextlib.redirect_stderr(buf):
         entries = load_entries(tmp)
-    assert [e["type"] for e in entries] == ["user"]
+    entry_types = []
+    for entry in entries:
+        entry_types.append(entry["type"])
+    assert entry_types == ["user"]
     assert "skipped 6 malformed/blank lines total" in buf.getvalue()
 
 
@@ -926,10 +970,11 @@ def test_clean_user_text_empty_input_is_empty():
 def test_result_block_text_flattens_list_content():
     _, result = _recorded_tool_interaction("Agent")
     block = _content_block(result, "tool_result")
-    original = _require_single_match(
-        [part["text"] for part in block["content"] if part.get("type") == "text"],
-        "result text",
-    )
+    recorded_texts = []
+    for part in block["content"]:
+        if part.get("type") == "text":
+            recorded_texts.append(part["text"])
+    original = _require_single_match(recorded_texts, "result text")
     assert _result_block_text(block) == original
     # Repeat the captured text block to exercise multi-block flattening.
     block["content"].append(
@@ -979,17 +1024,20 @@ def test_legacy_plan_helper_consumes_native_matches_and_updates_plan_records():
         ClaudeSource(Path("session.jsonl"), entries)
     )
     calls = _tool_calls_in(interpreted_session)
-    records = [
-        {
-            "plan": call["input"]["plan"],
-            "decision": "no decision recorded",
-            "edited_plan": "",
-            "message": "",
-        }
-        for call in calls
-    ]
+    records = []
+    for call in calls:
+        records.append(
+            {
+                "plan": call["input"]["plan"],
+                "decision": "no decision recorded",
+                "edited_plan": "",
+                "message": "",
+            }
+        )
     rejected_plan, approved_plan, edited_plan = records
-    pending = {call["id"]: record for call, record in zip(calls, records, strict=True)}
+    pending = {}
+    for call, record in zip(calls, records, strict=True):
+        pending[call["id"]] = record
 
     updated_count = 0
     for entry in entries:
@@ -1011,19 +1059,18 @@ def test_legacy_plan_helper_consumes_native_matches_and_updates_plan_records():
 
 @pytest.mark.parametrize("tool_id", [None, "unknown-call"])
 def test_legacy_plan_helper_leaves_unmatched_plans_pending(tool_id):
-    entries = _recorded_tool_interaction(
+    assistant, result = _recorded_tool_interaction(
         "ExitPlanMode", result_contains="## Approved Plan:\n"
     )
-    result = next(entry for entry in entries if _is_tool_result_entry(entry))
+    entries = [assistant, result]
     # Change only the captured result ID to exercise absent/unmatched associations.
     _content_block(result, "tool_result")["tool_use_id"] = tool_id
     interpreted_session = eclog.interpret_source(
         ClaudeSource(Path("session.jsonl"), entries)
     )
-    pending = {
-        call["id"]: call["plan_decision"]
-        for call in _tool_calls_in(interpreted_session)
-    }
+    pending = {}
+    for call in _tool_calls_in(interpreted_session):
+        pending[call["id"]] = call["plan_decision"]
     original = deepcopy(pending)
     assert apply_plan_decisions(result, pending) is False
     assert pending == original
@@ -1044,26 +1091,35 @@ def test_legacy_denial_helper_matches_native_result_blocks(fixture, expected):
     interpreted_session = eclog.interpret_source(
         ClaudeSource(Path("session.jsonl"), entries)
     )
-    tool_names = {
-        call["id"]: call["name"] for call in _tool_calls_in(interpreted_session)
-    }
-    denials = [
-        denial
-        for entry in entries
-        for denial in permission_denials_from_result(entry, tool_names)
-    ]
+    tool_names = {}
+    for call in _tool_calls_in(interpreted_session):
+        tool_names[call["id"]] = call["name"]
+    denials = []
+    for entry in entries:
+        denials.extend(permission_denials_from_result(entry, tool_names))
     assert denials == expected
 
 
 def test_native_session_keeps_commands_shell_subagents_and_files():
     entries = _recorded_session_entries() + load_entries(SUBAGENT)
     session = eclog.interpret_source(ClaudeSource(Path("session.jsonl"), entries))
-    commands = [event.get("command") for event in session["events"]]
-    shell_commands = [event.get("shell_command", "") for event in session["events"]]
+    commands = []
+    shell_commands = []
+    for event in session["events"]:
+        commands.append(event.get("command"))
+        shell_commands.append(event.get("shell_command", ""))
     assert "/capture-echo" in commands
-    assert any("CAPTURE_USER_STDOUT_1" in command for command in shell_commands)
+    marked_shell_commands = []
+    for command in shell_commands:
+        if "CAPTURE_USER_STDOUT_1" in command:
+            marked_shell_commands.append(command)
+    assert marked_shell_commands
     assert session["subagent_count"] > 0
-    assert any(path.endswith("greeting.py") for path in session["files_changed"])
+    greeting_paths = []
+    for path in session["files_changed"]:
+        if path.endswith("greeting.py"):
+            greeting_paths.append(path)
+    assert greeting_paths
 
 
 def test_native_session_keeps_multiselect_answers():
@@ -1088,7 +1144,10 @@ def test_native_session_keeps_user_write_denial():
     entries = _recorded_session_entries() + load_entries(SUBAGENT)
     session = eclog.interpret_source(ClaudeSource(Path("session.jsonl"), entries))
 
-    write_calls = [call for call in _tool_calls_in(session) if call["name"] == "Write"]
+    write_calls = []
+    for call in _tool_calls_in(session):
+        if call["name"] == "Write":
+            write_calls.append(call)
     assert write_calls
     denied_writes = []
     for call in write_calls:
@@ -1130,9 +1189,11 @@ def test_build_events_skips_non_dict_assistant_blocks_and_unmatched_calls():
 
 def test_first_timestamp_comes_from_the_native_capture():
     entries = _recorded_session_entries()
-    assert first_timestamp(entries) in {
-        entry["timestamp"] for entry in entries if entry.get("timestamp")
-    }
+    recorded_timestamps = set()
+    for entry in entries:
+        if entry.get("timestamp"):
+            recorded_timestamps.add(entry["timestamp"])
+    assert first_timestamp(entries) in recorded_timestamps
 
 
 def test_session_cwd_comes_from_the_native_capture():
@@ -1171,33 +1232,35 @@ def test_native_resumed_session_lists_multiple_models():
     entries = _recorded_session_entries()
     models = session_models(entries)
     assert len(models) >= 2
-    assert all(isinstance(model, str) and model for model in models)
+    for model in models:
+        assert isinstance(model, str)
+        assert model
     assert len(models) == len(set(models))
-    assert any(
-        event.get("command") == "/model"
-        for event in eclog.interpret_source(
-            ClaudeSource(Path("session.jsonl"), entries)
-        )["events"]
-    )
+    session = eclog.interpret_source(ClaudeSource(Path("session.jsonl"), entries))
+    model_commands = []
+    for event in session["events"]:
+        if event.get("command") == "/model":
+            model_commands.append(event)
+    assert model_commands
 
 
 def test_native_continued_conversation_keeps_follow_up_in_one_session():
     entries = _recorded_session_entries()
-    assert {entry["sessionId"] for entry in entries if "sessionId" in entry} == {
-        TRANSCRIPT.stem
-    }
+    session_ids = set()
+    for entry in entries:
+        if "sessionId" in entry:
+            session_ids.add(entry["sessionId"])
+    assert session_ids == {TRANSCRIPT.stem}
     events = eclog.interpret_source(ClaudeSource(Path("session.jsonl"), entries))[
         "events"
     ]
-    prompt = _require_single_match(
-        [
-            event
-            for event in events
-            if event["role"] == "user"
-            and event["text"].startswith("CAPTURE_POST_COMPACT_RECALL:")
-        ],
-        "post-compaction recall prompt",
-    )
+    recall_prompts = []
+    for event in events:
+        if event["role"] != "user":
+            continue
+        if event["text"].startswith("CAPTURE_POST_COMPACT_RECALL:"):
+            recall_prompts.append(event)
+    prompt = _require_single_match(recall_prompts, "post-compaction recall prompt")
     assert "without tools" in prompt["text"]
     _assert_assistant_text(events[prompt["i"] + 1 :])
 
@@ -1232,7 +1295,9 @@ def test_summarize_subagent_reads_meta_task_and_result(tmp_path):
     assert summary["task"].strip()
     assert summary["tool_count"] >= 1
     assert summary["tool_names"]
-    assert all(isinstance(name, str) and name for name in summary["tool_names"])
+    for name in summary["tool_names"]:
+        assert isinstance(name, str)
+        assert name
     assert len(summary["tool_names"]) <= summary["tool_count"]
     assert isinstance(summary["result"], str)
     assert summary["result"].strip()
@@ -1266,21 +1331,21 @@ def test_native_subagent_summary_retains_evidence_without_guessing_ownership():
     assert subs[0]["result"].strip()
     meta = json.loads(SUBAGENT.with_suffix(".meta.json").read_text())
     assert subs[0]["agent_type"] == meta["agentType"]
-    task = _require_single_match(
-        [
-            entry
-            for entry in load_entries(SUBAGENT)
-            if entry.get("type") == "user"
-            and not _is_tool_result_entry(entry)
-            and _human_text(entry).strip()
-        ],
-        "read-only child task",
-    )
+    task_entries = []
+    for entry in load_entries(SUBAGENT):
+        if entry.get("type") != "user":
+            continue
+        if _is_tool_result_entry(entry):
+            continue
+        if _human_text(entry).strip():
+            task_entries.append(entry)
+    task = _require_single_match(task_entries, "read-only child task")
     assert subs[0]["start_ts"] == task["timestamp"]
     entries = _recorded_session_entries()
     session = eclog.interpret_source(ClaudeSource(Path("session.jsonl"), entries))
     assert "interactions" not in session
-    assert not any("subagents" in event for event in session["events"])
+    for event in session["events"]:
+        assert "subagents" not in event
 
 
 # --------------------------------------------------------------------------- #
@@ -1289,7 +1354,10 @@ def test_native_subagent_summary_retains_evidence_without_guessing_ownership():
 
 
 def _write_jsonl(path, entries):
-    path.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+    lines = []
+    for entry in entries:
+        lines.append(json.dumps(entry))
+    path.write_text("\n".join(lines) + "\n")
 
 
 def test_extract_transcript_raises_for_empty_file(tmp_path):
@@ -1302,15 +1370,13 @@ def test_extract_transcript_raises_for_empty_file(tmp_path):
 def test_extract_transcript_preserves_native_conversation():
     envelope = extract_transcript(TRANSCRIPT)
     assert envelope["session_id"] == TRANSCRIPT.stem
-    prompt = _require_single_match(
-        [
-            event
-            for event in envelope["events"]
-            if event["role"] == "user"
-            and event["text"].startswith("Remember **CAPTURE_CONTEXT_CEDAR_73**")
-        ],
-        "context prompt",
-    )
+    context_prompts = []
+    for event in envelope["events"]:
+        if event["role"] != "user":
+            continue
+        if event["text"].startswith("Remember **CAPTURE_CONTEXT_CEDAR_73**"):
+            context_prompts.append(event)
+    prompt = _require_single_match(context_prompts, "context prompt")
     assert "café 雪" in prompt["text"]
     _assert_assistant_text(envelope["events"])
 
@@ -1476,7 +1542,10 @@ def test_cli_file_preserves_markdown_and_images(
     assert captured.out == ""
     assert "wrote" in captured.err
     assert "using transcript:" in captured.err
-    assert [path.name for path in output.iterdir()] == [filename]
+    output_names = []
+    for path in output.iterdir():
+        output_names.append(path.name)
+    assert output_names == [filename]
     envelope = json.loads((output / filename).read_text())
     assert envelope["schema"] == "raw-session-log/1"
     assert envelope["session_id"] == "session"
@@ -1506,7 +1575,10 @@ def test_cli_batch_emits_only_json(
         )
         == 0
     )
-    assert sorted(p.name for p in output.iterdir()) == [
+    output_names = []
+    for path in output.iterdir():
+        output_names.append(path.name)
+    assert sorted(output_names) == [
         "claude_session_log_raw_a.json",
         "claude_session_log_raw_b.json",
     ]
@@ -1638,14 +1710,11 @@ def test_cli_stdout_keeps_size_warning(monkeypatch, capsys):
 @pytest.mark.parametrize("mode", ["single", "batch"])
 def test_cli_no_event_input_keeps_existing_envelope_omission(mode, tmp_path, capsys):
     transcript = tmp_path / "session.jsonl"
-    _write_jsonl(
-        transcript,
-        [
-            entry
-            for entry in _recorded_session_entries()
-            if entry.get("type") == "system"
-        ],
-    )
+    system_entries = []
+    for entry in _recorded_session_entries():
+        if entry.get("type") == "system":
+            system_entries.append(entry)
+    _write_jsonl(transcript, system_entries)
     output = tmp_path / "output"
     if mode == "single":
         args = ["--transcript", str(transcript), "--output", "-"]
@@ -1775,9 +1844,13 @@ def test_source_reader_discovers_sidecars_in_filename_order(tmp_path):
     (directory / "ignored.txt").touch()
     (directory / "directory.jsonl").mkdir()
     sources = read_subagent_sources(transcript)
-    assert [source.path.name for source in sources] == ["a.jsonl", "b.jsonl"]
-    assert all(source.path.parent == directory for source in sources)
-    assert all(source.entries == load_entries(SUBAGENT) for source in sources)
+    source_names = []
+    recorded_entries = load_entries(SUBAGENT)
+    for source in sources:
+        source_names.append(source.path.name)
+        assert source.path.parent == directory
+        assert source.entries == recorded_entries
+    assert source_names == ["a.jsonl", "b.jsonl"]
 
 
 def test_subagent_reader_skips_empty_metadata_and_preserves_summary_order(tmp_path):
@@ -1801,12 +1874,10 @@ def test_subagent_reader_skips_empty_metadata_and_preserves_summary_order(tmp_pa
     (directory / "empty.jsonl").touch()
     # A directory at the metadata path must not be read for an empty sidecar.
     (directory / "empty.meta.json").mkdir()
-    assert [summary["task"] for summary in load_subagents(transcript)] == [
-        "d",
-        "b",
-        "c",
-        "a",
-    ]
+    ordered_tasks = []
+    for summary in load_subagents(transcript):
+        ordered_tasks.append(summary["task"])
+    assert ordered_tasks == ["d", "b", "c", "a"]
 
 
 def test_main_source_does_not_read_sidecars_or_metadata(monkeypatch):
@@ -1867,9 +1938,16 @@ def test_repeated_calls_keep_order_and_native_result_associations(same_id):
     else:
         entries = [assistant, again, again_result, result]
     session = eclog.interpret_source(ClaudeSource(Path("s.jsonl"), entries))
-    assert [e["i"] for e in session["events"]] == [0, 1]
-    calls = [e["tool_calls"][0] for e in session["events"]]
-    assert [c["name"] for c in calls] == ["Read", "Read"]
+    event_indices = []
+    calls = []
+    for event in session["events"]:
+        event_indices.append(event["i"])
+        calls.append(event["tool_calls"][0])
+    assert event_indices == [0, 1]
+    call_names = []
+    for call in calls:
+        call_names.append(call["name"])
+    assert call_names == ["Read", "Read"]
     assert calls[0]["input"] == first_call["input"]
     assert "CAPTURE_MULTIBYTE" in calls[0]["result"]
     assert calls[1]["result"] == "second output"
@@ -1902,14 +1980,22 @@ def test_images_remain_owned_by_their_recorded_user_event():
     assistant, result = _recorded_tool_interaction("Read", "multibyte.txt")
     # Put captured image blocks on result/assistant records: the existing Claude
     # JSON contract includes only human message images; expansion is deferred.
-    images = [b for b in image_entries[0]["message"]["content"] if b["type"] == "image"]
+    images = []
+    for block in image_entries[0]["message"]["content"]:
+        if block["type"] == "image":
+            images.append(block)
     assistant["message"]["content"].extend(deepcopy(images))
     result["message"]["content"].extend(deepcopy(images))
     entries = [image_entries[0], assistant, result, deepcopy(image_entries[0])]
     session = eclog.interpret_source(ClaudeSource(Path("s.jsonl"), entries))
     events = session["events"]
-    assert [e["role"] for e in events] == ["user", "assistant", "user"]
-    assert [len(e.get("images", [])) for e in events] == [2, 0, 2]
+    roles = []
+    image_counts = []
+    for event in events:
+        roles.append(event["role"])
+        image_counts.append(len(event.get("images", [])))
+    assert roles == ["user", "assistant", "user"]
+    assert image_counts == [2, 0, 2]
     assert events[0]["images"] == events[2]["images"]
     assert "CAPTURE_MULTIBYTE" in events[1]["tool_calls"][0]["result"]
 
@@ -1917,7 +2003,9 @@ def test_images_remain_owned_by_their_recorded_user_event():
 def test_recorded_skills_deduplicate_and_ignore_empty_names():
     pairs = _recorded_tool_interactions("Skill", "capture-leaf")
     assert len(pairs) >= 2
-    entries = [entry for pair in pairs for entry in pair]
+    entries = []
+    for pair in pairs:
+        entries.extend(pair)
     # Add the same empty-name boundary to each native invocation; none is chosen
     # by occurrence, timestamp, or ID when the invocations are semantically equal.
     for assistant, _ in pairs:
@@ -1929,12 +2017,20 @@ def test_recorded_skills_deduplicate_and_ignore_empty_names():
         ClaudeSource(Path("session.jsonl"), entries)
     )
     assert interpreted_session["skills_used"] == ["capture-leaf"]
-    calls = [
-        call for call in _tool_calls_in(interpreted_session) if call["name"] == "Skill"
-    ]
+    calls = []
+    for call in _tool_calls_in(interpreted_session):
+        if call["name"] == "Skill":
+            calls.append(call)
     assert len(calls) == 2 * len(pairs)
-    assert sum(call.get("skill") == "capture-leaf" for call in calls) == len(pairs)
-    assert sum(call.get("skill") is None for call in calls) == len(pairs)
+    named_skill_count = 0
+    unnamed_skill_count = 0
+    for call in calls:
+        if call.get("skill") == "capture-leaf":
+            named_skill_count += 1
+        if call.get("skill") is None:
+            unnamed_skill_count += 1
+    assert named_skill_count == len(pairs)
+    assert unnamed_skill_count == len(pairs)
 
 
 def test_question_stays_with_its_call_across_a_later_user_message():
@@ -1952,7 +2048,11 @@ def test_question_stays_with_its_call_across_a_later_user_message():
     answer = _answered_question_in(call, multi_select=True)
     assert len(answer["chosen_labels"]) >= 2
     _assert_answer_uses_distinct_recorded_options(answer)
-    (user_message,) = [event for event in session["events"] if event["role"] == "user"]
+    user_messages = []
+    for event in session["events"]:
+        if event["role"] == "user":
+            user_messages.append(event)
+    user_message = _require_single_match(user_messages, "user message")
     assert "CAPTURE_CONTEXT_CEDAR_73" in user_message["text"]
     assert "interactions" not in session
     assert "interpretation" not in session
@@ -1973,7 +2073,11 @@ def test_plan_stays_with_its_call_across_a_later_user_message():
     assert call["id"] == _content_block(assistant, "tool_use")["id"]
     assert call["result_record"]["tool_call_id"] == call["id"]
     assert call["plan_decision"]["decision"] == "approved"
-    (user_message,) = [event for event in session["events"] if event["role"] == "user"]
+    user_messages = []
+    for event in session["events"]:
+        if event["role"] == "user":
+            user_messages.append(event)
+    user_message = _require_single_match(user_messages, "user message")
     assert "CAPTURE_CONTEXT_CEDAR_73" in user_message["text"]
     assert "interactions" not in session
     assert "interpretation" not in session
@@ -1992,7 +2096,11 @@ def test_permission_denial_stays_with_its_call_across_a_later_user_message():
     assert call["id"] == _content_block(assistant, "tool_use")["id"]
     assert call["result_record"]["tool_call_id"] == call["id"]
     assert call["permission_denial"]["by"] == "settings"
-    (user_message,) = [event for event in session["events"] if event["role"] == "user"]
+    user_messages = []
+    for event in session["events"]:
+        if event["role"] == "user":
+            user_messages.append(event)
+    user_message = _require_single_match(user_messages, "user message")
     assert "CAPTURE_CONTEXT_CEDAR_73" in user_message["text"]
     assert "interactions" not in session
     assert "interpretation" not in session
@@ -2101,14 +2209,13 @@ def test_unknown_tool_payload_is_preserved_and_reported(tmp_path, capsys):
     transcript = tmp_path / "s.jsonl"
     _write_jsonl(transcript, [assistant, result, deepcopy(assistant)])
     envelope = extract_transcript(transcript, -1)
-    exported_calls = [
-        call for event in envelope["events"] for call in event.get("tool_calls", [])
-    ]
+    exported_calls = []
+    for event in envelope["events"]:
+        exported_calls.extend(event.get("tool_calls", []))
     assert len(exported_calls) == 2
-    assert all(
-        call["input"] == block["input"] and "input_schema" not in call
-        for call in exported_calls
-    )
+    for call in exported_calls:
+        assert call["input"] == block["input"]
+        assert "input_schema" not in call
     diagnostic = capsys.readouterr().err
     assert "unsupported tool input schemas" in diagnostic
     assert diagnostic.count("plugin__DeployService") == 1
@@ -2198,21 +2305,19 @@ def test_legacy_image_media_types_are_preserved(media_type):
     data = base64.b64encode(
         (ROOT / "assets/before" / filenames[media_type]).read_bytes()
     ).decode()
-    sources = [
-        block["source"]
-        for block in _content_blocks(entry)
-        if isinstance(block, dict) and block.get("type") == "image"
-    ]
+    sources = []
+    for block in _content_blocks(entry):
+        if isinstance(block, dict) and block.get("type") == "image":
+            sources.append(block["source"])
     assert sources
     for source in sources:
         source["media_type"] = media_type
         source["data"] = data
     user = _require_single_match(build_events([entry]), "image event")
     assert len(user["images"]) == len(sources)
-    assert all(
-        image["media_type"] == media_type and image["data"] == data
-        for image in user["images"]
-    )
+    for image in user["images"]:
+        assert image["media_type"] == media_type
+        assert image["data"] == data
 
 
 def test_legacy_dont_ask_denial_without_command_is_recorded():
@@ -2252,7 +2357,10 @@ def _reword_generated_questions(entries):
     replacements = _question_text_replacements(entries)
     # One non-cascading pass updates calls, rendered results, and answer maps.
     longest_first = sorted(replacements, key=len, reverse=True)
-    pattern = "|".join(re.escape(text) for text in longest_first)
+    escaped_texts = []
+    for text in longest_first:
+        escaped_texts.append(re.escape(text))
+    pattern = "|".join(escaped_texts)
     serialized_entries = json.dumps(entries, ensure_ascii=False)
     reworded_entries = re.sub(
         pattern, lambda match: replacements[match[0]], serialized_entries
