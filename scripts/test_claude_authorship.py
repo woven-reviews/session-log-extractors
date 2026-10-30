@@ -657,3 +657,57 @@ def test_command_authorship_is_independent_of_fixture_command_name():
     actual_sources = _sources(message)
     assert actual_sources == ["candidate"]
     assert message["command"] == "/other-command"
+
+
+def _recorded_model_invocations():
+    matches = []
+    for entry in claude.load_entries(TRANSCRIPT):
+        content = entry.get("message", {}).get("content")
+        if entry.get("type") == "user" and isinstance(content, str):
+            if "<command-name>/model</command-name>" in content:
+                matches.append(entry)
+    assert matches, "Missing native model-selector invocations"
+    return matches
+
+
+def test_native_model_selector_invocations_remain_candidate_visible():
+    entries = _recorded_model_invocations()
+    original = deepcopy(entries)
+    session = _interpret(entries)
+    exported = export_session(session)
+    for native, message, actual in zip(
+        entries, session["events"], exported["events"], strict=True
+    ):
+        actual_sources = _sources(message)
+        expected_text = native["message"]["content"]
+        assert actual_sources == ["candidate"]
+        assert message["command"] == "/model"
+        assert message["command_args"] is None
+        assert message["text"] == actual["text"] == expected_text
+        assert message["ts"] == actual["ts"] == native["timestamp"]
+        assert message["id"] == native["uuid"]
+        assert actual["authorship"] == message["authorship"]
+    assert entries == original
+
+
+@pytest.mark.parametrize(
+    "shape", ["quoted", "list", "wrong_command", "extra_text", "injected"]
+)
+def test_model_selector_recognition_requires_its_native_control_record(shape):
+    entries = _recorded_model_invocations()
+    entry = entries[0]
+    content = entry["message"]["content"]
+    if shape == "quoted":
+        entry["message"]["content"] = "Example: " + content
+    elif shape == "list":
+        entry["message"]["content"] = [{"type": "text", "text": content}]
+    elif shape == "wrong_command":
+        entry["message"]["content"] = content.replace("model", "compact")
+    elif shape == "extra_text":
+        entry["message"]["content"] += "\nAdditional unattributed text."
+    else:
+        entry["isMeta"] = True
+    message = _single_message(entry)
+    actual_sources = _sources(message)
+    expected_source = "harness" if shape == "injected" else "unknown"
+    assert actual_sources == [expected_source]

@@ -87,7 +87,9 @@ examples are not recognized as native shell-mode actions. The custom
 slash-command invocation has explicit human origin and human turn; its command
 and arguments retain candidate attribution without requiring a typed-input flag.
 This classification does not depend on the fixture command's name, and its
-loaded instructions retain their separate provenance.
+loaded instructions retain their separate provenance. The two native `/model`
+selector invocations also count as candidate activity using their standalone
+control-record shape. Their subsequent result notices remain separate records.
 
 A `queued_command` attachment records the original human prompt,
 `source_uuid`, `delivery_id`, its own timestamp, and the longer rendered text;

@@ -103,17 +103,24 @@ def _is_user_interruption(entry: dict[str, JsonValue]) -> bool:
     )
 
 
+def _native_user_text(entry: dict[str, JsonValue]) -> str | None:
+    """Read standalone string content from a native user-message record."""
+    message = entry.get("message")
+    if (
+        entry.get("type") != "user"
+        or not isinstance(message, dict)
+        or message.get("role") != "user"
+    ):
+        return None
+    content = message.get("content")
+    return content if isinstance(content, str) else None
+
+
 def _is_user_shell_input(entry: dict[str, JsonValue]) -> bool:
     """Recognize the captured standalone shell-mode input, including its wrapper."""
-    message = entry.get("message")
-    if not isinstance(message, dict):
-        return False
-    content = message.get("content")
-    if not isinstance(content, str):
-        return False
+    content = _native_user_text(entry)
     return (
-        entry.get("type") == "user"
-        and message.get("role") == "user"
+        content is not None
         and content.startswith("<bash-input>")
         and content.endswith("</bash-input>")
         and bool(content[len("<bash-input>") : -len("</bash-input>")].strip())
@@ -129,18 +136,26 @@ _COMMAND_INVOCATION = re.compile(
 
 
 def _is_human_command_invocation(entry: dict[str, JsonValue]) -> bool:
-    message = entry.get("message")
-    if not isinstance(message, dict):
-        return False
-    content = message.get("content")
+    content = _native_user_text(entry)
     return (
-        entry.get("type") == "user"
-        and message.get("role") == "user"
+        content is not None
         and _origin(entry).get("kind") == "human"
         and entry.get("turnOrigin") == "human"
-        and isinstance(content, str)
         and _COMMAND_INVOCATION.fullmatch(content) is not None
     )
+
+
+_MODEL_INVOCATION = re.compile(
+    r"\s*<command-name>/model</command-name>\s*"
+    r"<command-message>model</command-message>\s*"
+    r"<command-args>.*?</command-args>\s*",
+    re.DOTALL,
+)
+
+
+def _is_model_invocation(entry: dict[str, JsonValue]) -> bool:
+    content = _native_user_text(entry)
+    return content is not None and _MODEL_INVOCATION.fullmatch(content) is not None
 
 
 def _user_action_marker(
@@ -149,7 +164,11 @@ def _user_action_marker(
 ) -> AuthorshipMarker | None:
     if _is_user_interruption(entry):
         return AuthorshipMarker(field="message.content[0].text", value=text)
-    if _is_user_shell_input(entry) or _is_human_command_invocation(entry):
+    if (
+        _is_user_shell_input(entry)
+        or _is_human_command_invocation(entry)
+        or _is_model_invocation(entry)
+    ):
         return AuthorshipMarker(field="message.content", value=text)
     return None
 
@@ -222,16 +241,8 @@ _SHELL_OUTPUT = re.compile(
 
 
 def _is_user_shell_output(entry: dict[str, JsonValue]) -> bool:
-    message = entry.get("message")
-    if not isinstance(message, dict):
-        return False
-    content = message.get("content")
-    return (
-        entry.get("type") == "user"
-        and message.get("role") == "user"
-        and isinstance(content, str)
-        and _SHELL_OUTPUT.fullmatch(content) is not None
-    )
+    content = _native_user_text(entry)
+    return content is not None and _SHELL_OUTPUT.fullmatch(content) is not None
 
 
 def _unique_messages_by_id(messages: list[Message]) -> dict[str, Message | None]:
