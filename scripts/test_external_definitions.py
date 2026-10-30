@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 from codex_capture import TRANSCRIPT as CODEX_TRANSCRIPT
+from copilot_fixture import native_source
 
-from session_log_extractors import copilot_sources
 from session_log_extractors import extract_claude_session_log as claude
 from session_log_extractors import extract_codex_session_log as codex
 from session_log_extractors import extract_copilot_session_log as copilot
@@ -61,9 +61,6 @@ def test_legacy_codex_commands_do_not_load_definitions(arguments, monkeypatch):
     assert (user["command"], user["command_args"]) == ("/review", arguments)
 
 
-FIXTURES = Path(__file__).parent / "fixtures" / "claude"
-
-
 def test_local_definitions_are_not_read_or_added_to_the_envelope(tmp_path, monkeypatch):
     project = (tmp_path / "project").resolve()
     project.mkdir()
@@ -87,7 +84,11 @@ def test_local_definitions_are_not_read_or_added_to_the_envelope(tmp_path, monke
     transcript = TRANSCRIPT
     session = claude.interpret_source(claude.read_source(transcript))
     assert session["skills_used"] == ["capture-leaf"]
-    assert any(event.get("command") == "/capture-echo" for event in session["events"])
+    commands = []
+    for event in session["events"]:
+        if event.get("command"):
+            commands.append(event["command"])
+    assert "/capture-echo" in commands
     envelope = claude.extract_transcript(transcript)
     assert envelope is not None
     output = json.dumps(envelope)
@@ -99,16 +100,9 @@ def test_local_definitions_are_not_read_or_added_to_the_envelope(tmp_path, monke
 
 
 def test_copilot_skill_invocations_do_not_load_definitions(monkeypatch):
-    fixtures = FIXTURES.parent / "copilot"
-    records = copilot_sources.parse_state_records(
-        (fixtures / "skill" / "events.jsonl").read_text().splitlines()
-    )
-    # A repeated invocation and an empty name must preserve deduplication.
-    invoked = next(record for record in records if record["type"] == "skill.invoked")
-    records.extend([invoked, {"type": "skill.invoked", "data": {"name": ""}}])
-    source = copilot_sources.CopilotSource(
-        {"id": "recorded-skill"}, [], state_records=records
-    )
+    source = native_source()
+    # Repeated invocations are native; add only the malformed empty-name boundary.
+    source.state_records.append({"type": "skill.invoked", "data": {"name": ""}})
 
     def forbidden(*args, **kwargs):
         pytest.fail("Extraction must not load external skill definitions")
@@ -116,4 +110,4 @@ def test_copilot_skill_invocations_do_not_load_definitions(monkeypatch):
     with monkeypatch.context() as guard:
         guard.setattr(Path, "open", forbidden)
         session = copilot.interpret_source(source)
-    assert session["skills_used"] == ["fixture-skill"]
+    assert session["skills_used"] == ["capture-greeting", "capture-command"]

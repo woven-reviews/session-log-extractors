@@ -388,7 +388,6 @@ Algorithms and interfaces are preserved in this tooling change.
 | File (relative to `scripts/` unless shown) | Function | Rules | Removal ticket |
 | --- | --- | --- | --- |
 | `generate_claude_fixtures.py` | `run_case` | C901, PLR0912, PLR0915 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
-| `generate_copilot_fixtures.py` | `main` | C901, PLR0912, PLR0915 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
 | `test_generate_claude_fixtures.py` | `_fake_claude` | PLR0913 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
 
 **Agents must never add new lint exceptions or broaden existing ones.** Do not

@@ -48,6 +48,13 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from session_log_extractors import copilot_sources
+from session_log_extractors.copilot_interactions import (
+    apply_configured_refusal,
+    apply_human_response,
+    apply_permission_refusal,
+    questions_from_schema,
+    subagent_summaries,
+)
 from session_log_extractors.copilot_sources import CopilotSource, ImageInputs
 from session_log_extractors.extractor_contract import Extractor
 from session_log_extractors.json_types import JsonValue
@@ -58,6 +65,7 @@ from session_log_extractors.session_log_envelope import (
     Envelope,
     assistant_event,
     export_session,
+    image_from_base64,
     image_from_bytes,
     media_type_for_ext,
     raw_filename,
@@ -206,6 +214,28 @@ def _binary_assets(
         ):
             assets[str(asset["assetId"])] = (str(asset["data"]), asset.get("mimeType"))
     return assets
+
+
+def _tool_result_images(
+    result: JsonValue, records: list[dict[str, JsonValue]]
+) -> list[Image]:
+    if not isinstance(result, dict):
+        return []
+    blocks = result.get("binaryResultsForLlm")
+    if not isinstance(blocks, list):
+        return []
+    assets = _binary_assets(records)
+    images = []
+    for block in blocks:
+        if not isinstance(block, dict) or block.get("type") != "image":
+            continue
+        asset_id = _string(block.get("assetId"))
+        if asset_id is not None and asset_id in assets:
+            data, media_type = assets[asset_id]
+            images.append(image_from_base64(data, _string(media_type)))
+        else:
+            images.append(unavailable_image(asset_id or "missing image asset ID"))
+    return images
 
 
 def _state_attachment(
@@ -542,11 +572,16 @@ def _identity(
         identity["interaction_id"] = str(data["interactionId"])
     if isinstance(data.get("turnId"), str):
         identity["turn_id"] = str(data["turnId"])
+    agent_id = _string(record.get("agentId"))
+    if agent_id is not None:
+        identity["agent_id"] = agent_id
     return identity
 
 
-def _apply_identity(message: Message, identity: NativeIdentity) -> None:
+def _apply_identity(message: Message | ToolResult, identity: NativeIdentity) -> None:
     """Copy only the named identity fields into the typed message union."""
+    if "agent_id" in identity:
+        message["agent_id"] = identity["agent_id"]
     if "id" in identity:
         message["id"] = identity["id"]
     if "parent_id" in identity:
@@ -638,15 +673,24 @@ class _CopilotSessionBuilder:
         self.calls: dict[str, ToolCall] = {}
         self.messages: dict[str, AssistantMessage] = {}
         self.unmatched: list[ToolResult] = []
+        self.user_shells: dict[str, UserMessage] = {}
 
     def user_message(
         self, record: dict[str, JsonValue], data: dict[str, JsonValue]
     ) -> None:
         text = _string(data.get("content")) or ""
         refs = self.user_image_refs(record, data)
-        message = _user_message(
-            text, _string(record.get("timestamp")), refs, self.source
+        # Native content is human input; only the DB fallback needs legacy cleanup.
+        message = user_event(
+            0,
+            _string(record.get("timestamp")),
+            text,
+            envelope_images(refs, self.source.image_inputs),
         )
+        if text.startswith("/"):
+            command, _, arguments = text.partition(" ")
+            message["command"] = command
+            message["command_args"] = arguments or None
         _apply_identity(message, _identity(record, data))
         self.events.append(message)
 
@@ -687,6 +731,8 @@ class _CopilotSessionBuilder:
         call = _new_call(
             _string(data.get("name")) or "tool", _json_value(data.get("arguments"))
         )
+        if call["name"] == "ask_user":
+            call["questions"] = questions_from_schema(call.get("input"))
         call_id = _string(data.get("toolCallId"))
         if call_id:
             call["id"] = call_id
@@ -726,25 +772,101 @@ class _CopilotSessionBuilder:
         self, record: dict[str, JsonValue], data: dict[str, JsonValue]
     ) -> None:
         call_id = _string(data.get("toolCallId"))
-        result = ToolResult(
-            **_identity(record, data),
-            tool_call_id=call_id,
-            ts=_string(record.get("timestamp")),
-            content=_json_value(data.get("result")),
-            is_error=data.get("success") is False,
-        )
+        result: ToolResult = {
+            "tool_call_id": call_id,
+            "ts": _string(record.get("timestamp")),
+            "content": _json_value(data.get("result")),
+            "is_error": data.get("success") is False,
+        }
+        _apply_identity(result, _identity(record, data))
+        success = data.get("success")
+        shell = data.get("shellExecution")
+        exit_code = shell.get("exitCode") if isinstance(shell, dict) else None
+        if isinstance(exit_code, int) and not isinstance(exit_code, bool):
+            result["is_error"] |= exit_code != 0
+        if call_id in self.user_shells:
+            self.complete_user_shell(self.user_shells[call_id], result, data)
+            return
         call = self.calls.get(call_id) if call_id else None
         if call is None or "result_record" in call:
             self.unmatched.append(result)
             return
+        if isinstance(success, bool):
+            call["native_success"] = success
+        if isinstance(exit_code, int) and not isinstance(exit_code, bool):
+            call["shell_exit_code"] = exit_code
+        images = _tool_result_images(data.get("result"), self.source.state_records)
+        if images:
+            call["result_images"] = images
         call["result_record"] = result
         call["result"] = _result_text(data.get("result"))
+        if "error" in data:
+            call["error"] = data["error"]
+        apply_configured_refusal(call)
         if result["is_error"]:
             call["is_error"] = True
+
+    def complete_user_shell(
+        self, message: UserMessage, result: ToolResult, data: dict[str, JsonValue]
+    ) -> None:
+        if "shell_result" in message:
+            self.unmatched.append(result)
+            return
+        message["shell_result"] = result
+        command = message["shell_command"]
+        output = _result_text(data.get("result"))
+        message["text"] = command
+        message["authorship"] = []
+        if command:
+            message["authorship"].append(
+                {"start": 0, "end": len(command), "source": "candidate"}
+            )
+        if output:
+            message["text"] = command + "\n" + output
+            message["authorship"].append(
+                {
+                    "start": len(command) + 1,
+                    "end": len(command) + 1 + len(output),
+                    "source": "harness",
+                }
+            )
+
+    def human_response(
+        self, record: dict[str, JsonValue], data: dict[str, JsonValue]
+    ) -> None:
+        call = self.calls.get(str(data.get("toolCallId")))
+        if call is not None:
+            apply_human_response(call, data)
+
+    def permission_completion(
+        self, record: dict[str, JsonValue], data: dict[str, JsonValue]
+    ) -> None:
+        call = self.calls.get(str(data.get("toolCallId")))
+        if call is not None:
+            apply_permission_refusal(call, data)
+
+    def user_shell(
+        self, record: dict[str, JsonValue], data: dict[str, JsonValue]
+    ) -> None:
+        arguments = data.get("arguments")
+        if not isinstance(arguments, dict):
+            return
+        command = _string(arguments.get("command"))
+        call_id = _string(data.get("toolCallId"))
+        if command is None or call_id is None:
+            return
+        message = user_event(0, _string(record.get("timestamp")), command)
+        message["shell_command"] = command
+        _apply_identity(message, _identity(record, data))
+        self.user_shells[call_id] = message
+        self.events.append(message)
 
     def build(self) -> list[Message]:
         handlers = {
             "user.message": self.user_message,
+            "tool.user_requested": self.user_shell,
+            "human_response.recorded": self.human_response,
+            "permission.completed": self.permission_completion,
             "assistant.message": self.assistant_message,
             "tool.execution_start": self.start,
             "tool.execution_complete": self.complete,
@@ -883,6 +1005,7 @@ def interpret_source(source: CopilotSource) -> Session | None:
         started_at=_string(source.session.get("created_at")),
         models=source.models,
         skills_used=_session_skills(source, calls),
+        subagent_count=len(subagent_summaries(source.state_records)),
         unmatched_tool_results=builder.unmatched,
         file_activity=_file_activity(source),
         unsupported_tools=sorted(unsupported_tools),
