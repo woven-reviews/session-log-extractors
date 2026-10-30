@@ -76,6 +76,9 @@ from session_log_extractors.session_log_envelope import (
 )
 from session_log_extractors.session_model import (
     AssistantMessage,
+    AuthorshipMarker,
+    AuthorshipRange,
+    AuthorshipSource,
     FileActivity,
     FileActivityProvenance,
     Image,
@@ -718,6 +721,22 @@ class _CopilotSessionBuilder:
     ) -> None:
         text = _string(data.get("content")) or ""
         message = assistant_event(0, _string(record.get("timestamp")), text)
+        markers = [AuthorshipMarker(field="type", value=record.get("type"))]
+        source: AuthorshipSource = "harness"
+        agent_id = _string(record.get("agentId"))
+        if agent_id:
+            source = "other_agent"
+            markers.append(AuthorshipMarker(field="agentId", value=agent_id))
+        if text:
+            message["authorship"] = [
+                AuthorshipRange(
+                    start=0,
+                    end=len(text),
+                    source=source,
+                    markers=markers,
+                    ts=_string(record.get("timestamp")),
+                )
+            ]
         requests = data.get("toolRequests")
         if isinstance(requests, list):
             for request in requests:
@@ -827,7 +846,7 @@ class _CopilotSessionBuilder:
                 {
                     "start": len(command) + 1,
                     "end": len(command) + 1 + len(output),
-                    "source": "harness",
+                    "source": "candidate",
                 }
             )
 
@@ -857,6 +876,16 @@ class _CopilotSessionBuilder:
             return
         message = user_event(0, _string(record.get("timestamp")), command)
         message["shell_command"] = command
+        if command:
+            message["authorship"] = [
+                AuthorshipRange(
+                    start=0,
+                    end=len(command),
+                    source="candidate",
+                    markers=[AuthorshipMarker(field="type", value=record.get("type"))],
+                    ts=_string(record.get("timestamp")),
+                )
+            ]
         _apply_identity(message, _identity(record, data))
         self.user_shells[call_id] = message
         self.events.append(message)

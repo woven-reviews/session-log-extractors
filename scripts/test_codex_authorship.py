@@ -143,7 +143,7 @@ def test_native_images_keep_candidate_prompt_and_image_ownership():
         message = _message(session, native)
         sources = _sources(message)
         image_count = len(message["images"])
-        assert sources == ["unknown"] * (image_count * 2) + ["candidate"]
+        assert sources == ["candidate"] * (image_count * 2 + 1)
         prompt = message["authorship"][-1]
         assert (
             message["text"][prompt["start"] : prompt["end"]]
@@ -176,18 +176,17 @@ def test_native_skill_expansion_is_harness_but_its_selection_is_candidate():
     assert len(expansions) == len(selections) == 2
 
 
-def test_native_user_shell_command_separates_candidate_command_from_output():
+def test_native_user_shell_command_and_outcome_remain_candidate_activity():
     source = _source()
     native = _native_kind(source, "shell.user_command")
     session = codex.interpret_source(source)
     message = _message(session, native)
     assert message["text"] == native["payload"]["content"][0]["text"]
-    assert _sources(message) == ["harness", "candidate", "harness"]
-    command = message["authorship"][1]
-    assert (
-        message["text"][command["start"] : command["end"]] == message["shell_command"]
-    )
-    assert command["ts"] == native["timestamp"]
+    assert _sources(message) == ["candidate"]
+    span = message["authorship"][0]
+    assert (span["start"], span["end"]) == (0, len(message["text"]))
+    assert message["shell_command"] in message["text"]
+    assert span["ts"] == native["timestamp"]
     exported = export_session(session)
     assert exported["events"][message["i"]]["authorship"] == message["authorship"]
 
@@ -361,3 +360,58 @@ def test_incomplete_agent_evidence_remains_unknown(change):
     message = codex.interpret_source(source)["events"][0]
     assert message["text"] == payload["content"][0]["text"]
     assert _sources(message) == ["unknown"]
+
+
+@pytest.mark.parametrize("child", [False, True])
+def test_complete_native_capture_has_no_unresolved_text_activity(child):
+    path = capture.CHILD_TRANSCRIPT if child else capture.TRANSCRIPT
+    source = codex.read_source(path)
+    session = codex.interpret_source(source)
+    exported = export_session(session)
+    unresolved = []
+    for message in session["events"]:
+        text = message.get("text") or ""
+        if not text:
+            continue
+        spans = message.get("authorship", [])
+        if not spans:
+            unresolved.append((message.get("id"), "missing ranges"))
+            continue
+        offset = 0
+        for span in spans:
+            if span["source"] == "unknown":
+                unresolved.append((message.get("id"), span["start"], span["end"]))
+            # Only serialization whitespace may remain outside native ranges.
+            assert not text[offset : span["start"]].strip()
+            offset = span["end"]
+        assert not text[offset:].strip()
+        assert exported["events"][message["i"]]["authorship"] == spans
+    assert unresolved == []
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["unknown_kind", "conflicting_provenance", "wrong_record_kind", "input_block"],
+)
+def test_primary_response_recognition_does_not_hide_conflicting_evidence(change):
+    source = _source()
+    for entry in capture.response_items(source.entries, "message"):
+        if entry["payload"].get("role") == "assistant":
+            payload = entry["payload"]
+            break
+    else:
+        pytest.fail("Capture must supply a primary-assistant response")
+    text = payload["content"][0]["text"]
+    if change == "unknown_kind":
+        payload[META]["content_item_kinds"] = ["future.output"]
+    elif change == "conflicting_provenance":
+        payload[META]["content_item_kinds"] = ["user.text"]
+        payload[META]["content_item_metadata"] = [{"provenance": {"type": "harness"}}]
+    elif change == "wrong_record_kind":
+        payload["type"] = "future-message"
+    else:
+        payload["content"][0]["type"] = "input_text"
+    spans = message_authorship(payload, text, entry["timestamp"], "response_item")
+    assert len(spans) == 1
+    assert spans[0]["source"] == "unknown"
+    assert spans[0]["end"] == len(text)

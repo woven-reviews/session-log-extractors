@@ -118,28 +118,28 @@ def _source(kind: JsonValue, provenance: JsonValue) -> AuthorshipSource:
     return kind_source or provenance_source or "unknown"
 
 
-def _image_delimiters(content: list[JsonValue]) -> set[int]:
-    """Native image blocks establish framing context, not human-typed words."""
-    delimiters: set[int] = set()
-    for index in range(len(content) - 2):
-        opening, image, closing = content[index : index + 3]
-        text = _text(opening)
-        if (
-            text is not None
-            and text.startswith("<image ")
-            and isinstance(image, dict)
-            and image.get("type") == "input_image"
-            and _text(closing) == "</image>"
-        ):
-            delimiters.update((index, index + 2))
-    return delimiters
-
-
 def _block_source(
-    payload: dict[str, JsonValue], kind: JsonValue, provenance: JsonValue
+    payload: dict[str, JsonValue],
+    block: JsonValue,
+    kind: JsonValue,
+    provenance: JsonValue,
 ) -> AuthorshipSource:
     if payload.get("type") != "agent_message":
-        return _source(kind, provenance)
+        source = _source(kind, provenance)
+        if source != "unknown":
+            return source
+        # The recorded assistant/output_text pair identifies a runtime response.
+        # Codex's content-kind label "unknown" does not erase that actor evidence.
+        if (
+            payload.get("type") == "message"
+            and payload.get("role") == "assistant"
+            and isinstance(block, dict)
+            and block.get("type") == "output_text"
+            and kind in (None, "unknown")
+            and provenance is None
+        ):
+            return "harness"
+        return "unknown"
     author, recipient = payload.get("author"), payload.get("recipient")
     if (
         isinstance(author, str)
@@ -155,12 +155,12 @@ def _block_source(
     return "unknown"
 
 
-def _shell_ranges(
+def _shell_activity_range(
     span: AuthorshipRange, text: str, kind: JsonValue
-) -> list[AuthorshipRange]:
-    """Split the recorded shell-command schema, never user-authored lookalikes."""
+) -> AuthorshipRange:
+    """Attribute command and outcome only from the native shell-activity schema."""
     if kind != "shell.user_command" or span["source"] != "harness":
-        return [span]
+        return span
     match = re.match(
         r"\A<user_shell_command>\s*<command>\n(.*?)\n</command>\s*<result>",
         text,
@@ -168,25 +168,11 @@ def _shell_ranges(
     )
     if match is None:
         span["source"] = "unknown"
-        return [span]
-    ranges: list[AuthorshipRange] = []
-    sections: list[tuple[int, int, AuthorshipSource]] = [
-        (0, match.start(1), "harness"),
-        (match.start(1), match.end(1), "candidate"),
-        (match.end(1), len(text), "harness"),
-    ]
-    for start, end, source in sections:
-        if start < end:
-            ranges.append(
-                _authored_range(
-                    span["start"] + start,
-                    text[start:end],
-                    source,
-                    span.get("markers", []),
-                    span.get("ts"),
-                )
-            )
-    return ranges
+        return span
+    # Command and result are parts of the same native candidate-run activity.
+    # Preserve the complete record so filtering does not hide its outcome.
+    span["source"] = "candidate"
+    return span
 
 
 def message_authorship(
@@ -215,7 +201,6 @@ def message_authorship(
     ):
         return [_authored_range(0, text, "unknown", base, timestamp)]
     metadata = _metadata(payload)
-    delimiters = _image_delimiters(content)
     ranges: list[AuthorshipRange] = []
     offset = 0
     for index, block, part in parts:
@@ -223,13 +208,9 @@ def message_authorship(
         if isinstance(block, dict):
             markers = _source_markers(block, f"payload.content[{index}]") + markers
         if part:
-            source = (
-                "unknown"
-                if index in delimiters
-                else _block_source(payload, kind, provenance)
-            )
+            source = _block_source(payload, block, kind, provenance)
             span = _authored_range(offset, part, source, base + markers, timestamp)
-            ranges.extend(_shell_ranges(span, part, kind))
+            ranges.append(_shell_activity_range(span, part, kind))
         # Existing text serialization joins blocks with newlines. Those inserted
         # separators stay uncovered (unknown), never attributed to a speaker.
         offset += len(part) + 1

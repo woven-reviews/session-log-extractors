@@ -957,7 +957,7 @@ def test_full_capture_resolves_reviewed_activity_and_keeps_generated_summary_har
     unresolved_activity = []
     retained_summaries = []
     for message in session["events"]:
-        if message["role"] != "assistant" and message.get("text"):
+        if message.get("text"):
             assert message.get("authorship"), "Missing activity provenance"
             if "unknown" in _sources(message):
                 unresolved_activity.append(message["id"])

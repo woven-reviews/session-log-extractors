@@ -296,20 +296,21 @@ Nonempty text carries shared `authorship` ranges into JSON, with exact native
 record, payload, block, and per-content provenance markers. The harness-owned
 `codex_authorship` module uses aligned `content_item_kinds` and
 `content_item_metadata[].provenance` from
-`internal_chat_message_metadata_passthrough`. Recorded human input is
-`candidate`; recorded workspace/environment context and selected-skill expansion
-are `harness`. Either understood kind or provenance can supply evidence; missing,
+`internal_chat_message_metadata_passthrough`. Recorded human input and supported candidate control activity are `candidate`;
+recorded primary-assistant responses, workspace/environment context, and
+selected-skill expansion are `harness`. Either understood kind or provenance can supply evidence; native primary-assistant
+response records separately identify harness activity. Missing,
 unsupported, misaligned, or conflicting evidence stays `unknown`. Role and
 wrapper-looking text alone never establish source. The original text is
 unchanged, and offsets count Unicode code points. Newlines inserted by the
 existing block serialization stay uncovered (unknown).
 
-Native image delimiters around an image block remain unknown even when Codex
-labels them `user.text`; the human prompt and image ownership remain separate.
+Native image-attachment records, including their framing, remain candidate
+activity under their recorded user provenance; image ownership stays unchanged.
 For exact duplicate views, response ranges and their timestamps survive alongside
 the event timestamp and both views' markers. Recorded message and turn IDs stay
-on the model. Native user-shell records split candidate command text from the
-harness wrapper/output using the recorded shell kind. Native agent deliveries
+on the model. Native user-shell records retain the complete candidate control activity,
+including the recorded command and outcome, using the native shell kind. Native agent deliveries
 retain sender/recipient markers and are exported as assistant contributions with
 `other_agent` authorship; child interpretation honors the recorded history
 boundary. Developer/system instructions remain outside the conversation. Native

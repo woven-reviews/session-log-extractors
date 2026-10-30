@@ -92,8 +92,11 @@ Paid capture remains bounded and outside ordinary tests and CI.
 
 `test_codex_authorship.py` uses this complete capture and child sidecar directly.
 It checks candidate text, environment/skill injection, literal markup, both image
-attachment groups, native shell command/output ranges, and agent deliveries.
-Child output is checked after the recorded history boundary, without attributing
+attachment groups, candidate shell command/outcome activity, and agent deliveries.
+A full-capture guard checks that all reviewed text activity has resolved attribution.
+Primary-assistant responses are harness activity, and candidate image framing
+and candidate-run shell outcomes remain candidate activity. Child output is
+checked after the recorded history boundary, without attributing
 inherited human inputs to the child. Production JSON and non-mutating export
 retain the ranges, markers, timestamps, image ownership, and tool ownership.
 Controlled mutations cover Unicode/mixed blocks, malformed or conflicting
