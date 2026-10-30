@@ -1,6 +1,7 @@
 """Claude-native provenance and exact text boundaries, independent of role."""
 
 import re
+from typing import Literal, TypeAlias
 
 from session_log_extractors.json_types import JsonValue, string_value
 from session_log_extractors.session_model import (
@@ -238,11 +239,29 @@ def _queued_authorship(
 _SHELL_OUTPUT = re.compile(
     r"<bash-stdout>.*?</bash-stdout><bash-stderr>.*?</bash-stderr>", re.DOTALL
 )
+_LOCAL_COMMAND_OUTPUT = re.compile(
+    r"<local-command-stdout>.*?</local-command-stdout>", re.DOTALL
+)
+_OutputKind: TypeAlias = Literal["shell", "local"]
 
 
-def _is_user_shell_output(entry: dict[str, JsonValue]) -> bool:
+def _input_output_kind(entry: dict[str, JsonValue]) -> _OutputKind | None:
+    if _is_user_shell_input(entry):
+        return "shell"
+    if _is_model_invocation(entry):
+        return "local"
+    return None
+
+
+def _output_kind(entry: dict[str, JsonValue]) -> _OutputKind | None:
     content = _native_user_text(entry)
-    return content is not None and _SHELL_OUTPUT.fullmatch(content) is not None
+    if content is None:
+        return None
+    if _SHELL_OUTPUT.fullmatch(content) is not None:
+        return "shell"
+    if _LOCAL_COMMAND_OUTPUT.fullmatch(content) is not None:
+        return "local"
+    return None
 
 
 def _unique_messages_by_id(messages: list[Message]) -> dict[str, Message | None]:
@@ -259,7 +278,7 @@ def _has_single_source(message: Message, source: AuthorshipSource) -> bool:
     return len(spans) == 1 and spans[0]["source"] == source
 
 
-def _link_candidate_shell_output(
+def _link_candidate_output(
     entry: dict[str, JsonValue],
     output: Message,
     parent: Message,
@@ -276,22 +295,25 @@ def _link_candidate_shell_output(
         output["authorship"] = [_span(entry, text, "candidate", markers)]
 
 
-def _attribute_shell_outputs(
+def _attribute_command_outputs(
     entries: list[dict[str, JsonValue]],
     messages: list[Message],
 ) -> None:
-    """Join user-shell output to its recorded candidate input, preserving order."""
+    """Join supported command results to candidate inputs by recorded parent ID."""
     indexed = _unique_messages_by_id(messages)
-    shell_ids = set()
+    command_ids: dict[str, _OutputKind] = {}
     for entry in entries:
         record_id = entry.get("uuid")
-        if _is_user_shell_input(entry) and isinstance(record_id, str):
-            shell_ids.add(record_id)
+        kind = _input_output_kind(entry)
+        if kind is not None and isinstance(record_id, str):
+            command_ids[record_id] = kind
     for entry in entries:
-        if _is_user_shell_output(entry):
-            output_id = string_value(entry.get("uuid")) or ""
-            parent_id = string_value(entry.get("parentUuid")) or ""
-            output = indexed.get(output_id)
-            parent = indexed.get(parent_id) if parent_id in shell_ids else None
-            if output is not None and parent is not None:
-                _link_candidate_shell_output(entry, output, parent)
+        kind = _output_kind(entry)
+        if kind is None:
+            continue
+        output_id = string_value(entry.get("uuid")) or ""
+        parent_id = string_value(entry.get("parentUuid")) or ""
+        output = indexed.get(output_id)
+        parent = indexed.get(parent_id) if command_ids.get(parent_id) == kind else None
+        if output is not None and parent is not None:
+            _link_candidate_output(entry, output, parent)

@@ -43,10 +43,11 @@ counts as candidate activity, preserving the submitted command and its wrapper.
 Native slash-command invocations with recorded human origin and human turn also
 retain candidate attribution for the invocation and supplied arguments.
 Captured standalone `/model` control invocations also count as candidate activity,
-retaining the user's decision to open the model selector.
-Shell output remains a separate record and inherits candidate activity only
-through its recorded parent ID pointing to a unique candidate shell input.
-Unlinked or ambiguous output stays unknown. Explicit injections, task notifications,
+retaining the user's decision to open the model selector. Its result notices
+retain the chosen model as candidate activity through the recorded parent ID.
+Shell output likewise inherits candidate activity only through its recorded
+parent ID pointing to a unique candidate shell input. Output and input formats
+must match; unlinked or ambiguous output stays unknown. Explicit injections, task notifications,
 and compact summaries retain harness ranges. Queued-command
 attachments retain their recorded rendered role and text, with candidate ranges
 located by an exact, unique match to the separately recorded original prompt;

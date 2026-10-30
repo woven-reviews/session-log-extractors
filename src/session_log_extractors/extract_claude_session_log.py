@@ -29,7 +29,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from session_log_extractors import session_log_envelope
 from session_log_extractors.claude_authorship import (
-    _attribute_shell_outputs,
+    _attribute_command_outputs,
     _queued_authorship,
     _user_authorship,
 )
@@ -943,7 +943,7 @@ def interpret_source(
         adapter.consume(entry)
     if not adapter.events:
         return None
-    _attribute_shell_outputs(source.entries, adapter.events)
+    _attribute_command_outputs(source.entries, adapter.events)
     return Session(
         harness="claude",
         session_id=source.path.stem,

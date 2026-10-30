@@ -711,3 +711,110 @@ def test_model_selector_recognition_requires_its_native_control_record(shape):
     actual_sources = _sources(message)
     expected_source = "harness" if shape == "injected" else "unknown"
     assert actual_sources == [expected_source]
+
+
+def _recorded_model_selections():
+    selections = []
+    entries = claude.load_entries(TRANSCRIPT)
+    for invocation in _recorded_model_invocations():
+        results = []
+        for entry in entries:
+            content = entry.get("message", {}).get("content")
+            if entry.get("parentUuid") == invocation["uuid"]:
+                if isinstance(content, str) and content.startswith(
+                    "<local-command-stdout>"
+                ):
+                    results.append(entry)
+        assert len(results) == 1, "Expected one ID-linked model-selection result"
+        (result,) = results
+        selections.append((invocation, result))
+    return selections
+
+
+@pytest.mark.parametrize("order", ["native", "intervening_human", "result_first"])
+def test_model_selection_results_remain_candidate_activity_by_recorded_id(order):
+    for invocation, result in _recorded_model_selections():
+        if order == "intervening_human":
+            human = _recorded_user("CAPTURE_LITERAL_MARKUP")
+            entries = [invocation, human, result]
+        elif order == "result_first":
+            entries = [result, invocation]
+        else:
+            entries = [invocation, result]
+        original = deepcopy(entries)
+        session = _interpret(entries)
+        exported = export_session(session, 0)
+        matched_results = []
+        for message, actual in zip(session["events"], exported["events"], strict=True):
+            if message["id"] == result["uuid"]:
+                matched_results.append(message)
+                actual_sources = _sources(message)
+                assert actual_sources == ["candidate"]
+                assert message["text"] == actual["text"] == result["message"]["content"]
+                assert message["ts"] == actual["ts"] == result["timestamp"]
+                assert message["parent_id"] == invocation["uuid"]
+                assert actual["authorship"] == message["authorship"]
+        assert len(matched_results) == 1
+        assert entries == original
+
+
+@pytest.mark.parametrize(
+    "parent",
+    ["missing", "unrelated_human", "shell_input", "injected_input", "duplicate_id"],
+)
+def test_model_result_needs_a_unique_candidate_model_invocation(parent):
+    selections = _recorded_model_selections()
+    invocation, result = selections[0]
+    entries = [invocation, result]
+    if parent == "missing":
+        entries = [result]
+    elif parent == "unrelated_human":
+        human = _recorded_user("CAPTURE_LITERAL_MARKUP")
+        result["parentUuid"] = human["uuid"]
+        entries = [invocation, human, result]
+    elif parent == "shell_input":
+        shell_input = _recorded_shell_input()
+        result["parentUuid"] = shell_input["uuid"]
+        entries = [invocation, shell_input, result]
+    elif parent == "injected_input":
+        invocation["isMeta"] = True
+    else:
+        entries = [invocation, deepcopy(invocation), result]
+    session = _interpret(entries)
+    output = session["events"][-1]
+    actual_sources = _sources(output)
+    assert output["id"] == result["uuid"]
+    assert actual_sources == ["unknown"]
+
+
+def test_model_result_classification_does_not_depend_on_notice_wording_or_model_name():
+    selections = _recorded_model_selections()
+    invocation, result = selections[0]
+    # Keep the native output wrapper and recorded association while varying the
+    # informational wording, so a renamed model does not change attribution.
+    result["message"]["content"] = (
+        "<local-command-stdout>Another model is now selected.</local-command-stdout>"
+    )
+    session = _interpret([invocation, result])
+    output = session["events"][-1]
+    actual_sources = _sources(output)
+    assert actual_sources == ["candidate"]
+    assert output["text"] == result["message"]["content"]
+
+
+@pytest.mark.parametrize("shape", ["quoted", "list", "injected"])
+def test_model_result_link_respects_native_shape_and_injection_provenance(shape):
+    selections = _recorded_model_selections()
+    invocation, result = selections[0]
+    content = result["message"]["content"]
+    if shape == "quoted":
+        result["message"]["content"] = "Example: " + content
+    elif shape == "list":
+        result["message"]["content"] = [{"type": "text", "text": content}]
+    else:
+        result["isMeta"] = True
+    session = _interpret([invocation, result])
+    output = session["events"][-1]
+    actual_sources = _sources(output)
+    expected_source = "harness" if shape == "injected" else "unknown"
+    assert actual_sources == [expected_source]

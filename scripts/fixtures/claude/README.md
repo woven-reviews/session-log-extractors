@@ -89,7 +89,11 @@ and arguments retain candidate attribution without requiring a typed-input flag.
 This classification does not depend on the fixture command's name, and its
 loaded instructions retain their separate provenance. The two native `/model`
 selector invocations also count as candidate activity using their standalone
-control-record shape. Their subsequent result notices remain separate records.
+control-record shape. Their result notices retain the selected model as candidate
+activity through recorded parent-ID links to unique candidate model invocations.
+Model and shell result formats must match the linked input; an unrelated human
+message or another command kind cannot establish attribution. Notice wording
+and model names do not drive recognition. Results remain separate records.
 
 A `queued_command` attachment records the original human prompt,
 `source_uuid`, `delivery_id`, its own timestamp, and the longer rendered text;
