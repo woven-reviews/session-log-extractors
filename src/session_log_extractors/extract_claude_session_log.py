@@ -134,7 +134,9 @@ _PERMISSION_DENIAL_PREFIXES = (
 )
 # Settings-driven denials (e.g. don't-ask mode) name the tool instead. Anchored on
 # "has been denied" so reading an ISC LICENSE ("Permission to use, copy…") can't match.
-_PERMISSION_DENIED_TOOL = re.compile(r"Permission to use \S+ has been denied\b")
+_PERMISSION_DENIED_TOOL = re.compile(
+    r"Permission to use \S+(?: with command [^\r\n]+)? has been denied\b"
+)
 # Optional steering message the human typed when denying, e.g.
 # "…the user said:\nWe need a new branch for this". A plan sent back in plan mode
 # uses a different lead-in ("…reason for the rejection: …") for the same thing.
@@ -498,7 +500,8 @@ def _parse_chosen(
     ``Your questions have been answered: "<question>"="<label>", "<q2>"="<l2>".``
     For multiSelect the value is comma-joined labels; for an "Other" answer the
     value is free text matching no option. We locate the value by anchoring on
-    the exact question text, then mark every option whose label appears in it.
+    the exact question text, then match complete labels, including comma-separated
+    multiSelect values.
     """
     val = ""
     if question_text and result_text:
@@ -515,7 +518,10 @@ def _parse_chosen(
             tail = parts[1]
             end = tail.find('"')
             val = tail[:end] if end != -1 else tail
-    chosen = [o for o in options if (label := o.get("label")) and label in val]
+    selected = (
+        {val} if any(o.get("label") == val for o in options) else set(val.split(", "))
+    )
+    chosen = [o for o in options if (label := o.get("label")) and label in selected]
     return val, chosen
 
 

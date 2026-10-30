@@ -1,7 +1,6 @@
 """Extraction must use recorded evidence without reading local definitions."""
 
 import json
-import shutil
 from pathlib import Path
 
 import pytest
@@ -10,6 +9,9 @@ from session_log_extractors import copilot_sources
 from session_log_extractors import extract_claude_session_log as claude
 from session_log_extractors import extract_codex_session_log as codex
 from session_log_extractors import extract_copilot_session_log as copilot
+
+ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312"
+(TRANSCRIPT,) = (ROOT / "native").glob("*.jsonl")
 
 
 @pytest.mark.parametrize("command_args", ["fixture", None])
@@ -52,13 +54,14 @@ FIXTURES = Path(__file__).parent / "fixtures" / "claude"
 
 def test_local_definitions_are_not_read_or_added_to_the_envelope(tmp_path, monkeypatch):
     project = (tmp_path / "project").resolve()
-    shutil.copytree(FIXTURES / "project", project)
+    project.mkdir()
     definitions = {
-        project / ".claude/skills/fixture-skill/SKILL.md": "LOCAL_SKILL_ONLY_MARKER",
-        project / ".claude/commands/fixture-command.md": "LOCAL_COMMAND_ONLY_MARKER",
+        project / ".claude/skills/capture-leaf/SKILL.md": "LOCAL_SKILL_ONLY_MARKER",
+        project / ".claude/commands/capture-echo.md": "LOCAL_COMMAND_ONLY_MARKER",
     }
     for path, marker in definitions.items():
-        path.write_text(path.read_text(encoding="utf-8") + marker, encoding="utf-8")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(marker, encoding="utf-8")
 
     monkeypatch.chdir(project)
     original_open = Path.open
@@ -69,20 +72,18 @@ def test_local_definitions_are_not_read_or_added_to_the_envelope(tmp_path, monke
         return original_open(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "open", guarded_open)
-    transcript = FIXTURES / "skill_command.jsonl"
+    transcript = TRANSCRIPT
     session = claude.interpret_source(claude.read_source(transcript))
-    assert session["skills_used"] == ["fixture-skill"]
-    assert any(
-        event.get("command") == "/fixture-command" for event in session["events"]
-    )
+    assert session["skills_used"] == ["capture-leaf"]
+    assert any(event.get("command") == "/capture-echo" for event in session["events"])
     envelope = claude.extract_transcript(transcript)
     assert envelope is not None
     output = json.dumps(envelope)
     for marker in definitions.values():
         assert marker not in output
     # These markers belong to recorded assistant replies and must remain.
-    assert "SKILL_FIXTURE_MARKER" in output
-    assert "COMMAND_FIXTURE_MARKER" in output
+    assert "CAPTURE_SKILL_LEAF" in output
+    assert "CAPTURE_COMMAND_ECHO" in output
 
 
 def test_copilot_skill_invocations_do_not_load_definitions(monkeypatch):

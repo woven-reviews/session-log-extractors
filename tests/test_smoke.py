@@ -17,6 +17,11 @@ from session_log_extractors import extract_copilot_session_log as copilot
 from session_log_extractors.extract_claude_session_log import encode_project_path
 from session_log_extractors.session_log_envelope import raw_filename
 
+ROOT = (
+    Path(__file__).resolve().parents[1] / "scripts" / "fixtures" / "claude" / "2.1.312"
+)
+(TRANSCRIPT,) = (ROOT / "native").glob("*.jsonl")
+
 
 def test_package_imports():
     assert session_log_extractors is not None
@@ -46,7 +51,7 @@ def test_help_uses_call_time_output_root(harness, tmp_path, monkeypatch, capsys)
 @pytest.mark.parametrize(
     ("harness", "arguments"),
     [
-        ("claude", ["--transcript", "scripts/fixtures/claude/baseline.jsonl"]),
+        ("claude", ["--transcript", str(TRANSCRIPT)]),
         ("codex", ["--transcript", "scripts/fixtures/codex/tool_patch_large.jsonl"]),
         (
             "copilot",
@@ -95,7 +100,7 @@ def test_claude_checkout_defaults(subdirectory, selection, tmp_path):
     project = home / ".claude" / "projects" / encode_project_path(checkout)
     project.mkdir(parents=True)
     transcript = project / "session.jsonl"
-    shutil.copyfile(root / "scripts/fixtures/claude/baseline.jsonl", transcript)
+    shutil.copyfile(TRANSCRIPT, transcript)
     arguments = {
         "transcript": ["--transcript", str(transcript)],
         "all": ["--all", "--project-dir", str(project)],

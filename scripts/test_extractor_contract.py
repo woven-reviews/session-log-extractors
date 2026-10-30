@@ -16,7 +16,41 @@ from session_log_extractors import extract_copilot_session_log as copilot
 from session_log_extractors.claude_sources import ClaudeSource
 from session_log_extractors.session_log_envelope import export_session
 
+ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312"
+(TRANSCRIPT,) = (ROOT / "native").glob("*.jsonl")
+
+
 FIXTURES = Path(__file__).parent / "fixtures" / "claude"
+
+
+def _recorded_claude_read_interaction():
+    entries = claude.read_source(TRANSCRIPT).entries
+    matches = [
+        (entry, block)
+        for entry in entries
+        if entry.get("type") == "assistant"
+        for block in claude._content_blocks(entry)
+        if isinstance(block, dict)
+        and block.get("type") == "tool_use"
+        and block.get("name") == "Read"
+        and Path(block["input"].get("file_path", "")).name == "multibyte.txt"
+    ]
+    assert len(matches) == 1, "Expected one multibyte.txt Read"
+    ((assistant, call),) = matches
+    results = [
+        entry
+        for entry in entries
+        if entry.get("type") == "user"
+        and any(
+            isinstance(block, dict)
+            and block.get("type") == "tool_result"
+            and block.get("tool_use_id") == call["id"]
+            for block in claude._content_blocks(entry)
+        )
+    ]
+    assert len(results) == 1, "Expected one result for the selected Read"
+    (result,) = results
+    return ClaudeSource(TRANSCRIPT, [assistant, result]), call
 
 
 def test_cli_uses_the_public_extractor_stages(monkeypatch, capsys):
@@ -32,10 +66,7 @@ def test_cli_uses_the_public_extractor_stages(monkeypatch, capsys):
             return claude.interpret_source(source)
 
     monkeypatch.setattr(claude, "EXTRACTOR", RecordingExtractor(), raising=False)
-    assert (
-        claude.main(["--transcript", str(FIXTURES / "baseline.jsonl"), "--output", "-"])
-        == 0
-    )
+    assert claude.main(["--transcript", str(TRANSCRIPT), "--output", "-"]) == 0
     assert json.loads(capsys.readouterr().out)["events"]
     assert stages == ["read", "interpret"]
 
@@ -80,15 +111,7 @@ def _read_contract_source(extractor, selection, harness, full_result, monkeypatc
 # Extend this native-fixture matrix as other harnesses adopt Extractor.
 @pytest.mark.parametrize(
     ("extractor", "selection", "harness", "full_result"),
-    [
-        (claude.EXTRACTOR, FIXTURES / name, "claude", name == "large_result.jsonl")
-        for name in [
-            "baseline.jsonl",
-            "images.jsonl",
-            "large_result.jsonl",
-            "questions.jsonl",
-        ]
-    ]
+    [(claude.EXTRACTOR, TRANSCRIPT, "claude", True)]
     + [
         (copilot.EXTRACTOR, case, "copilot", case == "tool_success")
         for case in ["baseline", "image", "tool_success", "continued", "skill"]
@@ -159,7 +182,14 @@ def test_public_stage_propagates_reader_errors_and_handles_no_events(tmp_path):
     assert extractor.interpret_source(ClaudeSource(tmp_path / "s.jsonl", [])) is None
     assert (
         extractor.interpret_source(
-            ClaudeSource(tmp_path / "s.jsonl", [{"type": "system"}])
+            ClaudeSource(
+                tmp_path / "s.jsonl",
+                [
+                    entry
+                    for entry in claude.read_source(TRANSCRIPT).entries
+                    if entry.get("type") == "system"
+                ],
+            )
         )
         is None
     )
@@ -275,13 +305,7 @@ def test_copilot_public_reader_errors_and_empty_source():
 def test_native_tool_payloads_keep_unknown_fields_through_export(harness, unsupported):
     """Extend a captured call with a future field and optionally a future tool name."""
     if harness == "claude":
-        source = claude.read_source(FIXTURES / "large_result.jsonl")
-        request = next(
-            block
-            for entry in source.entries
-            for block in claude._content_blocks(entry)
-            if isinstance(block, dict) and block.get("type") == "tool_use"
-        )
+        source, request = _recorded_claude_read_interaction()
         input_key = "input"
         extractor = claude.EXTRACTOR
     else:
