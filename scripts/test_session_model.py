@@ -36,8 +36,8 @@ ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312"
 
 
 def test_question_occurrences_and_response_states_are_independent():
-    # Illustrative boundaries absent from native captures: repeated identical
-    # questions, a recommendation, a refusal, and an ambiguous orphan response.
+    # Illustrative boundaries: repeated identical questions, a recommendation,
+    # an unassociated refusal, and an ambiguous orphan response.
     option = QuestionChoice(
         ref="o1",
         label="A (Recommended)",
@@ -46,10 +46,9 @@ def test_question_occurrences_and_response_states_are_independent():
             QuestionEvidence(field="label", value="A (Recommended)")
         ],
     )
-    questions = [
-        Question(ref=ref, text="Choose?", options=[option])
-        for ref in ("q1", "q2", "q3")
-    ]
+    questions = []
+    for ref in ("q1", "q2", "q3"):
+        questions.append(Question(ref=ref, text="Choose?", options=[option]))
     questions[0]["native_id"] = "native-q1"
     responses = [
         QuestionResponse(
@@ -82,29 +81,37 @@ def test_question_occurrences_and_response_states_are_independent():
         question_responses=responses,
     )
     decoded = json.loads(json.dumps(session))
-    assert len({q["ref"] for q in decoded["interaction_questions"]}) == 3
-    assert all(q["text"] == "Choose?" for q in questions)
+    question_refs = set()
+    for question in decoded["interaction_questions"]:
+        question_refs.add(question["ref"])
+        assert question["text"] == "Choose?"
+    assert len(question_refs) == 3
     assert responses[0]["selections"] == [{"label": "B"}, {"label": "C"}]
     assert responses[0]["free_text"] == "Also keep this exact text"
     assert "selections" not in responses[1]
     assert responses[1]["candidate_feedback"] != responses[1]["refusal"]["explanation"]
     assert responses[1]["question"] is None and responses[2]["question"] is None
-    assert {
-        r["question"]["question_ref"] for r in responses if r["question"] is not None
-    } == {"q1"}
+    associated_refs = set()
+    for response in responses:
+        if response["question"] is not None:
+            associated_refs.add(response["question"]["question_ref"])
+    assert associated_refs == {"q1"}
     assert "selected" not in option and "native_id" not in questions[1]
 
 
 def _codex_question_contract():
     records = _native_records("codex/question.jsonl")
-    request = next(
-        r["payload"] for r in records if r["payload"].get("type") == "function_call"
-    )
-    result = next(
-        r["payload"]
-        for r in records
-        if r["payload"].get("type") == "function_call_output"
-    )
+    requests = []
+    results = []
+    for record in records:
+        payload = record["payload"]
+        if payload.get("type") == "function_call":
+            requests.append(payload)
+        elif payload.get("type") == "function_call_output":
+            results.append(payload)
+    (request,) = requests
+    (result,) = results
+    assert request["call_id"] == result["call_id"]
     native = json.loads(request["arguments"])["questions"][0]
     answers = json.loads(result["output"])["answers"]
     evidence = [
@@ -113,14 +120,18 @@ def _codex_question_contract():
         QuestionEvidence(field="questions[0].id", value=native["id"]),
         QuestionEvidence(field="answers key", value=next(iter(answers))),
     ]
+    options = []
+    for index, option in enumerate(native["options"]):
+        options.append(QuestionChoice(ref=f"o{index}", **option))
+    selections = []
+    for answer in answers[native["id"]]["answers"]:
+        selections.append(QuestionSelection(label=answer))
     question = Question(
         ref="q1",
         native_id=native["id"],
         text=native["question"],
         header=native["header"],
-        options=[
-            QuestionChoice(ref=f"o{i}", **o) for i, o in enumerate(native["options"])
-        ],
+        options=options,
         activity=QuestionActivityReference(
             message_i=0, tool_call_index=0, evidence=evidence[:1]
         ),
@@ -129,9 +140,7 @@ def _codex_question_contract():
         ref="r1",
         outcome="answered",
         question=QuestionAssociation(question_ref=question["ref"], evidence=evidence),
-        selections=[
-            QuestionSelection(label=a) for a in answers[native["id"]]["answers"]
-        ],
+        selections=selections,
         activity=QuestionActivityReference(
             message_i=0, tool_call_index=0, evidence=evidence[:2]
         ),
@@ -161,8 +170,12 @@ def test_native_question_facts_survive_export_policy(limit):
     assert actual["input"] == call["input"]
     assert actual["result_truncated"] is (limit >= 0)
     assert actual["result"] == (call["result"] if limit < 0 else call["result"][:limit])
-    assert response["selections"] == [{"label": "QUAL"}]
-    assert question["native_id"] == "fixture_owner"
+    recorded_answers = json.loads(call["result"])["answers"][question["native_id"]][
+        "answers"
+    ]
+    (selection,) = response["selections"]
+    assert recorded_answers == [selection["label"]]
+    assert question["native_id"] == call["input"]["questions"][0]["id"]
     assert question["activity"]["message_i"] == session["events"][0]["i"]
     assert "interaction_questions" not in exported
     assert "question_responses" not in exported
@@ -171,52 +184,278 @@ def test_native_question_facts_survive_export_policy(limit):
     assert session == original
 
 
-def test_claude_fixture_supports_call_and_explicit_question_text_relationship():
-    records = _native_records("claude/questions.jsonl")
-    request = records[1]["message"]["content"][0]
-    result = records[2]["message"]["content"][0]
-    native = request["input"]["questions"][0]
-    assert result["tool_use_id"] == request["id"]
-    assert (
-        f'"{native["question"]}"="section, manufacturer_part_no"' in result["content"]
-    )
-    question = Question(
+def _claude_question_interaction(marker):
+    """Find an operator-controlled result and its ID-matched native question call."""
+    records = read_source(TRANSCRIPT).entries
+    results = []
+    for record in records:
+        native_result = record.get("toolUseResult")
+        if (
+            record.get("type") == "user"
+            and isinstance(native_result, dict)
+            and marker in json.dumps(native_result)
+        ):
+            results.append(record)
+    assert len(results) == 1, f"Expected one question result for {marker}"
+    (result,) = results
+    call, result_block = _claude_call_for_result(records, result)
+    return call, result, result_block
+
+
+def _claude_call_for_result(records, result):
+    (result_block,) = result["message"]["content"]
+    calls = []
+    for record in records:
+        if record.get("type") != "assistant":
+            continue
+        for block in record["message"]["content"]:
+            if block.get("name") == "AskUserQuestion":
+                if block["id"] == result_block["tool_use_id"]:
+                    calls.append(block)
+    assert len(calls) == 1, "Expected one ID-matched AskUserQuestion call"
+    (call,) = calls
+    return call, result_block
+
+
+def _claude_question_record(native):
+    options = []
+    for index, option in enumerate(native["options"]):
+        choice = QuestionChoice(
+            ref=f"o{index}", label=option["label"], description=option["description"]
+        )
+        if "preview" in option:
+            choice["preview"] = option["preview"]
+        options.append(choice)
+    return Question(
         ref="q1",
         text=native["question"],
         header=native["header"],
         multiple_selections=native["multiSelect"],
-        options=[
-            QuestionChoice(ref=f"o{i}", **o) for i, o in enumerate(native["options"])
+        options=options,
+    )
+
+
+def _claude_question_link(call, result_block, question):
+    return QuestionAssociation(
+        question_ref=question["ref"],
+        evidence=[
+            QuestionEvidence(field="tool_use.id", value=call["id"]),
+            QuestionEvidence(
+                field="tool_result.tool_use_id", value=result_block["tool_use_id"]
+            ),
+            QuestionEvidence(
+                field="tool_use.input.questions", value=call["input"]["questions"]
+            ),
+            QuestionEvidence(field="toolUseResult.answers key", value=question["text"]),
+        ],
+    )
+
+
+@pytest.mark.parametrize("marker", ["CAPTURE_NOTES_ONLY", "CAPTURE_SELECTION_NOTE"])
+@pytest.mark.parametrize("limit", [0, 8, -1])
+def test_claude_native_notes_and_previews_survive_export(marker, limit):
+    call, result, result_block = _claude_question_interaction(marker)
+    (native_question,) = call["input"]["questions"]
+    question = _claude_question_record(native_question)
+    annotation = result["toolUseResult"]["annotations"][question["text"]]
+    response = QuestionResponse(
+        ref="r1",
+        outcome="answered",
+        selections=[],
+        question=_claude_question_link(call, result_block, question),
+        candidate_feedback=annotation["notes"],
+    )
+    if marker == "CAPTURE_SELECTION_NOTE":
+        recorded_label = result["toolUseResult"]["answers"][question["text"]]
+        response["selections"] = [QuestionSelection(label=recorded_label)]
+        response["selected_preview"] = annotation["preview"]
+    raw_call = ToolCall(
+        name=call["name"],
+        id=call["id"],
+        input=call["input"],
+        result=result_block["content"],
+        result_record={
+            "tool_call_id": call["id"],
+            "ts": result["timestamp"],
+            "content": result,
+            "is_error": False,
+        },
+    )
+    session = Session(
+        harness="claude",
+        session_id="s",
+        events=[Event(i=0, role="assistant", tool_calls=[raw_call])],
+        interaction_questions=[question],
+        question_responses=[response],
+    )
+    original = deepcopy(session)
+
+    exported = export_session(session, limit)
+
+    exported_call = exported["events"][0]["tool_calls"][0]
+    assert exported_call["input"] == call["input"]
+    assert exported_call["result_truncated"] is (limit >= 0)
+    assert session == original
+    assert response["candidate_feedback"] == annotation["notes"]
+    assert "free_text" not in response and "refusal" not in response
+    assert "native_id" not in question
+    for choice, native_option in zip(
+        question["options"], native_question["options"], strict=True
+    ):
+        assert choice["preview"] == native_option["preview"]
+    if marker == "CAPTURE_NOTES_ONLY":
+        assert response["selections"] == []
+        assert "selected_preview" not in response
+    else:
+        (selection,) = response["selections"]
+        offered_labels = []
+        for choice in question["options"]:
+            offered_labels.append(choice["label"])
+        assert selection["label"] in offered_labels
+        assert response["selected_preview"] == annotation["preview"]
+    assert json.loads(json.dumps(session)) == original
+
+
+def test_claude_native_custom_answer_remains_free_text():
+    call, result, result_block = _claude_question_interaction(
+        "CAPTURE_CUSTOM_PLAIN_MOSS"
+    )
+    (native_question,) = call["input"]["questions"]
+    question = _claude_question_record(native_question)
+    recorded_answer = result["toolUseResult"]["answers"][question["text"]]
+    response = QuestionResponse(
+        ref="r1",
+        outcome="answered",
+        selections=[],
+        free_text=recorded_answer,
+        question=_claude_question_link(call, result_block, question),
+    )
+
+    decoded = json.loads(json.dumps(response))
+
+    assert decoded["free_text"] == recorded_answer
+    assert decoded["selections"] == []
+    assert "candidate_feedback" not in decoded
+
+
+def test_claude_native_multiselect_preserves_question_scope():
+    records = read_source(TRANSCRIPT).entries
+    results = []
+    for record in records:
+        native_result = record.get("toolUseResult")
+        if record.get("type") != "user" or not isinstance(native_result, dict):
+            continue
+        for native_question in native_result.get("questions", []):
+            if native_question.get("multiSelect"):
+                results.append(record)
+                break
+    assert len(results) == 1, "Expected one native multiselect interaction"
+    (result,) = results
+    call, result_block = _claude_call_for_result(records, result)
+    questions = []
+    responses = []
+    for index, native_question in enumerate(call["input"]["questions"]):
+        question = _claude_question_record(native_question)
+        question["ref"] = f"q{index}"
+        recorded_answer = result["toolUseResult"]["answers"][question["text"]]
+        # This capture records comma-separated labels; this is a model projection,
+        # not a parser for arbitrary native answer formats or label punctuation.
+        recorded_labels = recorded_answer.split(", ")
+        selections = []
+        for label in recorded_labels:
+            selections.append(QuestionSelection(label=label))
+        response = QuestionResponse(
+            ref=f"r{index}",
+            outcome="answered",
+            selections=selections,
+            question=_claude_question_link(call, result_block, question),
+        )
+        questions.append(question)
+        responses.append(response)
+        offered_labels = set()
+        for option in question["options"]:
+            offered_labels.add(option["label"])
+        assert set(recorded_labels) <= offered_labels
+        assert len(recorded_labels) == len(set(recorded_labels))
+        if question["multiple_selections"]:
+            assert len(selections) >= 2
+        else:
+            assert len(selections) == 1
+    session = Session(
+        harness="claude",
+        session_id="s",
+        events=[],
+        interaction_questions=questions,
+        question_responses=responses,
+    )
+
+    decoded = json.loads(json.dumps(session))
+
+    assert len(decoded["interaction_questions"]) >= 2
+    for index, response in enumerate(decoded["question_responses"]):
+        assert response["question"]["question_ref"] == questions[index]["ref"]
+        assert response["question"]["evidence"]
+
+
+def test_claude_native_question_cancellation_has_explicit_refusal_evidence():
+    records = read_source(TRANSCRIPT).entries
+    question_calls = {}
+    for record in records:
+        if record.get("type") == "assistant":
+            for block in record["message"]["content"]:
+                if block.get("name") == "AskUserQuestion":
+                    question_calls[block["id"]] = block
+    cancellations = []
+    for record in records:
+        if (
+            record.get("type") == "user"
+            and record.get("toolDenialKind") == "user-rejected"
+        ):
+            for block in record["message"]["content"]:
+                if block.get("tool_use_id") in question_calls:
+                    cancellations.append((record, block))
+    assert len(cancellations) == 1, "Expected one explicitly rejected question call"
+    result, result_block = cancellations[0]
+    call = question_calls[result_block["tool_use_id"]]
+    (native_question,) = call["input"]["questions"]
+    question = _claude_question_record(native_question)
+    # A single question in this ID-matched call establishes the refusal's scope.
+    association = QuestionAssociation(
+        question_ref=question["ref"],
+        evidence=[
+            QuestionEvidence(field="tool_use.id", value=call["id"]),
+            QuestionEvidence(
+                field="tool_result.tool_use_id", value=result_block["tool_use_id"]
+            ),
+            QuestionEvidence(
+                field="tool_use.input.questions", value=call["input"]["questions"]
+            ),
+            QuestionEvidence(field="toolDenialKind", value=result["toolDenialKind"]),
         ],
     )
     response = QuestionResponse(
         ref="r1",
-        outcome="answered",
-        question=QuestionAssociation(
-            question_ref="q1",
-            evidence=[
-                QuestionEvidence(
-                    field="tool_result.tool_use_id", value=result["tool_use_id"]
-                ),
-                QuestionEvidence(field="tool_use.id", value=request["id"]),
-                QuestionEvidence(
-                    field="result question text", value=native["question"]
-                ),
-            ],
-        ),
-        selections=[
-            QuestionSelection(option_ref=o["ref"], label=o["label"])
-            for o in question["options"]
-        ],
+        question=association,
+        outcome="refused",
+        refusal=QuestionRefusal(by="candidate", explanation=result_block["content"]),
     )
-    assert len(response["selections"]) == 2
-    assert "native_id" not in question
-    assert json.loads(json.dumps(response)) == response
+
+    decoded = json.loads(json.dumps(response))
+
+    assert result_block["is_error"] is True
+    assert decoded["outcome"] == "refused"
+    assert decoded["refusal"]["by"] == "candidate"
+    assert decoded["refusal"]["explanation"] == result_block["content"]
+    assert "candidate_feedback" not in decoded and "free_text" not in decoded
 
 
 def test_copilot_shell_failure_does_not_supply_question_response_evidence():
     records = _native_records("copilot/tool_failure/events.jsonl")
-    result = next(r["data"] for r in records if r["type"] == "tool.execution_complete")
+    results = []
+    for record in records:
+        if record["type"] == "tool.execution_complete":
+            results.append(record["data"])
+    (result,) = results
     assert result["shellExecution"]["exitCode"] == 1
     assert result["success"] is True
     call = ToolCall(
@@ -244,7 +483,7 @@ def test_copilot_shell_failure_does_not_supply_question_response_evidence():
 
 @pytest.mark.parametrize("by", ["candidate", "settings", "harness", "unknown"])
 def test_question_refusal_preserves_source_without_fabricating_feedback(by):
-    # Illustrative only: committed fixtures do not capture question refusals.
+    # Illustrative source variants beyond the captured candidate cancellation.
     response = QuestionResponse(
         ref="r1",
         question=None,
@@ -266,18 +505,24 @@ def test_documented_question_examples_preserve_distinct_states():
     assert (
         first["options"][0]["recommendation_markers"][0]["value"] == "A (Recommended)"
     )
-    assert [s["label"] for s in answer["selections"]] == ["B", "C"]
+    selected_labels = []
+    for selection in answer["selections"]:
+        selected_labels.append(selection["label"])
+    assert selected_labels == ["B", "C"]
     assert answer["free_text"] == "Also keep this text"
     assert refusal["outcome"] == "refused"
     assert refusal["refusal"]["by"] == "candidate"
     assert refusal["candidate_feedback"] != refusal["refusal"]["explanation"]
     assert orphan["question"] is None and orphan["selections"] == []
     assert unknown == {"ref": "r4", "outcome": "unknown", "question": None}
-    associated = [r["question"] for r in example["question_responses"] if r["question"]]
-    assert all(a["evidence"] for a in associated)
-    assert unanswered["ref"] not in [a["question_ref"] for a in associated]
+    associated_refs = []
+    for response in example["question_responses"]:
+        if response["question"] is not None:
+            assert response["question"]["evidence"]
+            associated_refs.append(response["question"]["question_ref"])
+        assert "activity" not in response
+    assert unanswered["ref"] not in associated_refs
     assert example["events"][0]["tool_calls"][0]["is_error"] is True
-    assert all("activity" not in r for r in example["question_responses"])
     assert json.loads(json.dumps(example)) == example
 
 

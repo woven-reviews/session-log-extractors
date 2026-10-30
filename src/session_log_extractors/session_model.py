@@ -61,6 +61,7 @@ class QuestionChoice(TypedDict):
     native_id: NotRequired[str]
     label: str
     description: NotRequired[str]
+    preview: NotRequired[str]
     recommendation_markers: NotRequired[list[QuestionEvidence]]
 
 
@@ -116,6 +117,7 @@ class QuestionResponse(TypedDict):
     question: QuestionAssociation | None
     outcome: Literal["answered", "refused", "unknown"]
     selections: NotRequired[list[QuestionSelection]]
+    selected_preview: NotRequired[str]
     free_text: NotRequired[str]
     refusal: NotRequired[QuestionRefusal]
     candidate_feedback: NotRequired[str]
