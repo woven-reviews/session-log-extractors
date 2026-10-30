@@ -77,6 +77,8 @@ Use the repository's existing Python sanitizer, documented in the root README un
 4. Preserve native IDs, timestamps, ordering, structured maps, tool payloads, and image data unless an explicitly justified sensitive value requires redaction. Check binary/screenshotted assets visually; the text sanitizer does not sanitize pixels. Exclude unsafe artifacts and record the gap rather than claiming they are safe.
 5. Repeat from the same raw bytes and explicit rules and compare resulting bytes/reports. Validate JSON/JSONL and native associations afterward. Re-run interpretation/exports on sanitized copies to detect semantic changes. Record sanitizer revision and hashes; keep private mapping values outside the repo.
 
+JSON-mode sanitization leaves object keys unchanged; native file-history maps can contain personal paths as keys. Check these before delivery. If needed, use the existing sanitizer's text mode for a narrowly scoped second pass with JSON-safe literal replacements and unrelated patterns disabled. Record both passes and recheck JSON validity, image payloads, native identities, and interpretation.
+
 ## Interpretation and export checks
 
 Use the existing extractor's public reader/interpreter/exporter interfaces. Consult interface documentation and CLI help only as needed; do not ask the captured assistant to inspect the extractor, tests, or outputs. Do not add validation scripts by default. Use existing interfaces and ordinary operator commands; if a reusable helper is genuinely necessary, explain the need before expanding scope.
@@ -92,9 +94,24 @@ Validate against native evidence independently of parser-produced summaries:
 - Export all budgets from the same shared Session and compare a deep representation before/after. Full input retention is independent of result budgets.
 - CLI file output versus stdout for the exact selected transcript/session and same settings; parse JSON and compare semantically. Capture diagnostics separately so they cannot contaminate JSON. Document unavailable explicit-source selection rather than validating a different session discovered by default.
 - Subagent summaries through the existing sidecar reader, separately from main-session export. Do not mistake the parent's task summary for the child's conversation.
+- Repeated skill invocations by their distinct native call/result IDs, retaining both calls while checking deduplication of the session skill list. Validate human permission denials and settings-driven refusals separately against the recorded controls/configuration and result text.
+- Image attachments by owning native message ID, block order, payload/asset content and persisted media type through interpretation and export. Keep source-format conversion separate from missing or altered persisted content.
+- Native notebook edits against the before/after cell assets and complete recorded path/cell inputs/results. Command arguments against the exact invocation, command definition, native argument fields and expanded content; identify interpretation loss separately from absent native fields.
+- Running-tool interruption and pending-approval cancellation against observed UI state and native IDs, including any error/result or unanswered call. Check subsequent continuation records and result ownership without manufacturing missing or unmatched records.
+- Concurrent/batched reads and queued follow-up input against actual native message/call/result order and distinct asset markers. Preserve serialized execution or deferred input explicitly when that is what the CLI records.
+- Empty-success and successful stdout/stderr results against native exit status, streams and complete blocks. Tool-returned images against the owning call and full result payload, separately from user attachments and textual export.
+- User-shell input and both stdout/stderr markers against actual user-shell records, separately from assistant tool output. Literal harness-like markup in a human's fenced code block against the exact typed message, checking that noise cleanup does not remove human-authored content.
+- Notes-only, selection-plus-note and overlapping-label answers against native answer maps/annotations. Long generated paths against complete tool inputs and file-change records. Repeated native local searches against retained payloads, schema recognition and deduplicated diagnostics.
+- Manual compaction against the private pre/post source snapshots, session identity, persisted summary/boundary records and recall response. Record any history rewrite/loss and distinguish replayed context from newly recorded activity.
 - Native identities and semantic fields omitted by the export schema. Attribute those omissions to export policy/support, not failed capture. Distinguish fields lost during interpretation from fields retained in the shared model but omitted in JSON.
 
 If a test audit is requested, do it only after capture, outside the captured session. Compare the new native evidence with existing tests and fixtures; report capabilities the logs cannot establish. Do not manufacture malformed JSONL, missing IDs, unknown tools, out-of-order results, platform paths, or filesystem failures to expand this interactive capture. Keep those controlled boundary tests separate. Do not inflate the conversation to trigger the 8 MiB warning.
+
+Treat additional tests using the existing transcript as reuse opportunities, not substitutes for uncaptured supported interactions. In `coverage.json`, give genuine edited-plan approval, repeated skill invocation, settings-driven denial, same-message/later-message attachments, each attempted image format, native notebook editing, command arguments, running-tool interruption, and pending-approval cancellation separate outcomes with stage-specific evidence or an observed reason for the gap. Branch coverage alone does not establish fidelity to a changing native format.
+
+Also report independent reads, queued input, empty-success results, successful stdout/stderr, tool-returned images, notes-only and selection-plus-note submissions, overlapping labels, repeated local searches, long paths, and manual compaction/recall individually. Record pre/post-compaction source provenance in `run.json`; do not publish private originals or claim a rewritten final source contains discarded history.
+
+Give literal human-authored markup and user-shell stdout/stderr separate coverage entries with native message IDs and stage-specific outcomes. Do not count assistant Bash streams as evidence for user-shell output retention.
 
 ## Review and promotion
 
