@@ -280,6 +280,7 @@ def _export_event(event: Message, limit: int) -> Event:
         exported["authorship"] = event["authorship"]
     if "images" in event:
         exported["images"] = event["images"]
+    _export_provenance(event, exported)
     if "tool_calls" in event:
         calls = event["tool_calls"]
         exported["tool_calls"] = (
@@ -288,8 +289,24 @@ def _export_event(event: Message, limit: int) -> Event:
     return exported
 
 
+def _export_provenance(event: Message, exported: Event) -> None:
+    """Copy optional recorded context without deriving new policy."""
+    if "agent_id" in event:
+        exported["agent_id"] = event["agent_id"]
+    if "parent_agent_task_id" in event:
+        exported["parent_agent_task_id"] = event["parent_agent_task_id"]
+    if "source_markers" in event:
+        exported["source_markers"] = event["source_markers"]
+    if "context_attachments" in event:
+        exported["context_attachments"] = event["context_attachments"]
+    if "submitted" in event:
+        exported["submitted"] = event["submitted"]
+
+
 def _export_call(call: ToolCall, limit: int) -> ToolCall:
     exported = ToolCall(name=call["name"])
+    if "agent_id" in call:
+        exported["agent_id"] = call["agent_id"]
     if "input" in call:
         exported["input"] = call["input"]
     if "result" in call:
