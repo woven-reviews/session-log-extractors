@@ -83,7 +83,13 @@ a separate record and inherits candidate attribution through the recorded
 `parentUuid` link to a unique candidate shell-input message. Intervening messages
 and record order do not establish ownership. Missing or ambiguous parents and
 explicit injection provenance prevent inheritance. Quoted or embedded shell-input
-examples are not recognized as native shell-mode actions. A `queued_command` attachment records the original human prompt,
+examples are not recognized as native shell-mode actions. The custom
+slash-command invocation has explicit human origin and human turn; its command
+and arguments retain candidate attribution without requiring a typed-input flag.
+This classification does not depend on the fixture command's name, and its
+loaded instructions retain their separate provenance.
+
+A `queued_command` attachment records the original human prompt,
 `source_uuid`, `delivery_id`, its own timestamp, and the longer rendered text;
 the extractor retains that attachment at its recorded position with the recorded
 rendered role and mixed candidate/harness ranges. It does not assign it to a

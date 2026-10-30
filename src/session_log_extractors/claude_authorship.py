@@ -120,13 +120,36 @@ def _is_user_shell_input(entry: dict[str, JsonValue]) -> bool:
     )
 
 
+_COMMAND_INVOCATION = re.compile(
+    r"\s*<command-message>[^<]*</command-message>\s*"
+    r"<command-name>/[^<\s]+</command-name>"
+    r"(?:\s*<command-args>.*?</command-args>)?\s*",
+    re.DOTALL,
+)
+
+
+def _is_human_command_invocation(entry: dict[str, JsonValue]) -> bool:
+    message = entry.get("message")
+    if not isinstance(message, dict):
+        return False
+    content = message.get("content")
+    return (
+        entry.get("type") == "user"
+        and message.get("role") == "user"
+        and _origin(entry).get("kind") == "human"
+        and entry.get("turnOrigin") == "human"
+        and isinstance(content, str)
+        and _COMMAND_INVOCATION.fullmatch(content) is not None
+    )
+
+
 def _user_action_marker(
     entry: dict[str, JsonValue],
     text: str,
 ) -> AuthorshipMarker | None:
     if _is_user_interruption(entry):
         return AuthorshipMarker(field="message.content[0].text", value=text)
-    if _is_user_shell_input(entry):
+    if _is_user_shell_input(entry) or _is_human_command_invocation(entry):
         return AuthorshipMarker(field="message.content", value=text)
     return None
 
@@ -161,7 +184,7 @@ def _user_authorship(entry: dict[str, JsonValue], text: str) -> list[AuthorshipR
         source: AuthorshipSource = "harness"
     elif user_action is not None:
         # Candidate-visible activity includes deliberate user control actions
-        # and shell input, preserving their native notices and wrappers.
+        # and command input, preserving their native notices and wrappers.
         source = "candidate"
         markers.append(user_action)
     elif _is_human_input(entry):

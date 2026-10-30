@@ -599,3 +599,61 @@ def test_shell_output_link_does_not_override_recorded_content_or_provenance(shap
     actual_sources = _sources(output)
     expected_source = "harness" if shape == "injected" else "unknown"
     assert actual_sources == [expected_source]
+
+
+def _recorded_custom_command():
+    return _recorded_user("<command-name>/capture-echo</command-name>")
+
+
+def test_native_human_command_invocation_and_arguments_are_candidate_activity():
+    entry = _recorded_custom_command()
+    original = deepcopy(entry)
+    session = _interpret([entry])
+    (message,) = session["events"]
+    exported = export_session(session)
+    (actual,) = exported["events"]
+    expected_text = entry["message"]["content"]
+    actual_sources = _sources(message)
+    assert actual_sources == ["candidate"]
+    assert message["command"] == "/capture-echo"
+    assert message["command_args"] == 'CAPTURE_ARGS hello, "café 雪" — two words!'
+    assert message["text"] == actual["text"] == expected_text
+    assert message["ts"] == actual["ts"] == entry["timestamp"]
+    assert message["id"] == entry["uuid"]
+    assert actual["authorship"] == message["authorship"]
+    assert entry == original
+
+
+@pytest.mark.parametrize(
+    "boundary", ["missing_origin", "missing_turn_origin", "quoted", "list", "injected"]
+)
+def test_command_invocation_needs_recorded_human_provenance_and_native_shape(boundary):
+    entry = _recorded_custom_command()
+    content = entry["message"]["content"]
+    if boundary == "missing_origin":
+        entry.pop("origin")
+    elif boundary == "missing_turn_origin":
+        entry.pop("turnOrigin")
+    elif boundary == "quoted":
+        entry["message"]["content"] = "Example: " + content
+    elif boundary == "list":
+        entry["message"]["content"] = [{"type": "text", "text": content}]
+    else:
+        entry["isMeta"] = True
+    message = _single_message(entry)
+    actual_sources = _sources(message)
+    expected_source = "harness" if boundary == "injected" else "unknown"
+    assert actual_sources == [expected_source]
+
+
+def test_command_authorship_is_independent_of_fixture_command_name():
+    entry = _recorded_custom_command()
+    # Keep native provenance and command structure; rename only the disposable
+    # fixture command so the rule cannot depend on its capture-specific name.
+    entry["message"]["content"] = entry["message"]["content"].replace(
+        "capture-echo", "other-command"
+    )
+    message = _single_message(entry)
+    actual_sources = _sources(message)
+    assert actual_sources == ["candidate"]
+    assert message["command"] == "/other-command"
