@@ -8,6 +8,7 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
+from claude_fixture import TRANSCRIPT, native_entries
 
 from session_log_extractors import copilot_sources
 from session_log_extractors import extract_claude_session_log as claude
@@ -32,10 +33,7 @@ def test_cli_uses_the_public_extractor_stages(monkeypatch, capsys):
             return claude.interpret_source(source)
 
     monkeypatch.setattr(claude, "EXTRACTOR", RecordingExtractor(), raising=False)
-    assert (
-        claude.main(["--transcript", str(FIXTURES / "baseline.jsonl"), "--output", "-"])
-        == 0
-    )
+    assert claude.main(["--transcript", str(TRANSCRIPT), "--output", "-"]) == 0
     assert json.loads(capsys.readouterr().out)["events"]
     assert stages == ["read", "interpret"]
 
@@ -80,15 +78,7 @@ def _read_contract_source(extractor, selection, harness, full_result, monkeypatc
 # Extend this native-fixture matrix as other harnesses adopt Extractor.
 @pytest.mark.parametrize(
     ("extractor", "selection", "harness", "full_result"),
-    [
-        (claude.EXTRACTOR, FIXTURES / name, "claude", name == "large_result.jsonl")
-        for name in [
-            "baseline.jsonl",
-            "images.jsonl",
-            "large_result.jsonl",
-            "questions.jsonl",
-        ]
-    ]
+    [(claude.EXTRACTOR, TRANSCRIPT, "claude", True)]
     + [
         (copilot.EXTRACTOR, case, "copilot", case == "tool_success")
         for case in ["baseline", "image", "tool_success", "continued", "skill"]
@@ -159,7 +149,10 @@ def test_public_stage_propagates_reader_errors_and_handles_no_events(tmp_path):
     assert extractor.interpret_source(ClaudeSource(tmp_path / "s.jsonl", [])) is None
     assert (
         extractor.interpret_source(
-            ClaudeSource(tmp_path / "s.jsonl", [{"type": "system"}])
+            ClaudeSource(
+                tmp_path / "s.jsonl",
+                [entry for entry in native_entries() if entry.get("type") == "system"],
+            )
         )
         is None
     )
@@ -275,7 +268,7 @@ def test_copilot_public_reader_errors_and_empty_source():
 def test_native_tool_payloads_keep_unknown_fields_through_export(harness, unsupported):
     """Extend a captured call with a future field and optionally a future tool name."""
     if harness == "claude":
-        source = claude.read_source(FIXTURES / "large_result.jsonl")
+        source = ClaudeSource(TRANSCRIPT, native_entries("multibyte_result_over_10kb"))
         request = next(
             block
             for entry in source.entries

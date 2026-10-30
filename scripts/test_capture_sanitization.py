@@ -1,9 +1,9 @@
 """Deterministic redaction of captured text and native JSON records."""
 
 import json
-from pathlib import Path
 
 import pytest
+from claude_fixture import SUBAGENT, TRANSCRIPT
 
 from session_log_extractors.capture_sanitization import (
     LiteralReplacement,
@@ -12,8 +12,6 @@ from session_log_extractors.capture_sanitization import (
     sanitize_capture,
 )
 from session_log_extractors.json_types import parse_json
-
-FIXTURES = Path(__file__).parent / "fixtures" / "claude"
 
 
 def test_literal_replacements_are_longest_first_and_do_not_cascade():
@@ -75,22 +73,29 @@ def test_configured_secret_does_not_depend_on_the_environment(monkeypatch):
     ]
 
 
-@pytest.mark.parametrize("filename", ["continued.jsonl", "skill_command.jsonl"])
-def test_native_records_keep_structure_identities_and_payloads(filename):
-    original = (FIXTURES / filename).read_text()
+@pytest.mark.parametrize("transcript", [TRANSCRIPT, SUBAGENT])
+def test_native_records_keep_structure_identities_and_payloads(transcript):
+    original = transcript.read_text()
     rules = SanitizationRules(redact_emails=False, redact_api_keys=False)
     result = sanitize_capture(original, rules, format="jsonl")
     assert [json.loads(line) for line in result.text.splitlines()] == [
         json.loads(line) for line in original.splitlines()
     ]
-    assert result.redactions == ()
+    assert [(item.rule, item.matches) for item in result.redactions] == [
+        ("organization_id", 0)
+    ]
     assert sanitize_capture(result.text, rules, format="jsonl") == result
 
 
 def test_image_data_is_not_redacted_even_when_a_literal_matches_base64():
-    original = (FIXTURES / "images.jsonl").read_text()
+    original = TRANSCRIPT.read_text()
     entries = [json.loads(line) for line in original.splitlines()]
-    image = entries[0]["message"]["content"][1]["source"]
+    image = next(
+        block["source"]
+        for entry in entries
+        for block in entry.get("message", {}).get("content", [])
+        if isinstance(block, dict) and block.get("type") == "image"
+    )
     rules = SanitizationRules(
         literal_replacements=(
             LiteralReplacement("base64_collision", image["data"], "[REDACTED]"),

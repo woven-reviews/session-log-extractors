@@ -15,6 +15,13 @@ and reason, and add an assertion for current behavior. Run the main suite agains
 the current capture rather than every version; retain older captures while legacy
 cases need them. Extractor bugs still require fixes, not changed expectations.
 
+Claude tests select the complete interactive 2.1.312 capture (including 2.1.314
+resumes) through `scripts/claude_fixture.py`. Focused tests select ID-checked
+records from its coverage ledger; integration tests read the full transcript.
+No test reads the older unversioned Claude captures. See the
+[Claude fixture provenance](scripts/fixtures/claude/README.md) for boundary
+mutations and legacy compatibility cases.
+
 Claude extraction produces JSON. Run
 `uv run --locked python scripts/extract_claude_session_log.py` to export every session in the
 resolved project directory to `claude_session_log_raw_<session-id>.json` in the

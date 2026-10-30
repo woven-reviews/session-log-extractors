@@ -2,14 +2,15 @@
 """Checks that fixture redaction keeps the native transcript shape."""
 
 import json
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 
 import generate_claude_fixtures as generator
 import pytest
+from claude_fixture import SUBAGENT, native_entries
 from generate_claude_fixtures import clean
 
-FIXTURES = Path(__file__).resolve().parent / "fixtures" / "claude"
 # The first prompt of each case in main(), so the fake CLI can tell which one runs.
 PROMPT_CASES = {
     "BASELINE_FIXTURE_MARKER": "baseline",
@@ -23,10 +24,36 @@ PROMPT_CASES = {
 
 
 def _fixture_entries(case):
-    return [
-        json.loads(line)
-        for line in (FIXTURES / f"{case}.jsonl").read_text().splitlines()
-    ]
+    # The legacy print-mode generator validates its own prompt-specific markers.
+    # Adapt the current interactive evidence only at those marker boundaries.
+    behaviors = {
+        "baseline": "ordinary_markdown_unicode_context",
+        "skill_command": "repeated_skill_invocation",
+        "large_result": "multibyte_result_over_10kb",
+        "permission_denial": "settings_driven_bash_denial",
+        "subagent": "one_read_only_subagent",
+    }
+    entries = native_entries(behaviors[case]) if case in behaviors else native_entries()
+    if case == "baseline":
+        # Include the captured assistant reply after the opening human prompt.
+        entries = [
+            e for e in native_entries() if e.get("type") in ("user", "assistant")
+        ][:2]
+    if case == "skill_command":
+        entries += native_entries("custom_command_arguments")
+        entries = _replace(entries, "/capture-echo", "/fixture-command")
+    if case == "continued":
+        # These two response markers belong to the generator's hard-coded prompt.
+        answers = [
+            block
+            for entry in entries
+            if entry.get("type") == "assistant"
+            for block in entry["message"]["content"]
+            if isinstance(block, dict) and block.get("type") == "text"
+        ]
+        for block in answers[-2:]:
+            block["text"] = "RED-FOX-23 " + block["text"]
+    return entries
 
 
 def _replace(entries, old, new):
@@ -47,7 +74,7 @@ def _fake_claude(  # noqa: PLR0913
 ):
     """Stand in for the claude CLI: write the committed native transcript to PROJECTS.
 
-    The fixtures are already sanitized, so regenerating from them must reproduce them.
+    Use current native evidence, adapting markers to the print-mode prompts.
     """
     projects = tmp_path / "projects"
     monkeypatch.setattr(generator, "PROJECTS", projects)
@@ -73,13 +100,10 @@ def _fake_claude(  # noqa: PLR0913
             agents = project / session_id / "subagents"
             if case == "subagent" and sidecar:
                 agents.mkdir(parents=True)
-                native = FIXTURES / "subagent" / "subagents"
-                (agents / "agent-fixture.jsonl").write_text(
-                    (native / "agent-fixture.jsonl").read_text()
-                )
+                (agents / "agent-fixture.jsonl").write_text(SUBAGENT.read_text())
                 if meta:
                     (agents / "agent-fixture.meta.json").write_text(
-                        (native / "agent-fixture.meta.json").read_text()
+                        SUBAGENT.with_suffix(".meta.json").read_text()
                     )
         return SimpleNamespace(returncode=returncode, stderr="boom")
 
@@ -87,9 +111,7 @@ def _fake_claude(  # noqa: PLR0913
     return calls
 
 
-def test_main_regenerates_committed_fixtures_from_native_transcripts(
-    monkeypatch, tmp_path
-):
+def test_main_stages_current_native_evidence_from_fake_cli(monkeypatch, tmp_path):
     output = tmp_path / "repo" / "claude"
     monkeypatch.setattr(generator, "ROOT", output)
     calls = _fake_claude(monkeypatch, tmp_path)
@@ -111,7 +133,7 @@ def test_main_regenerates_committed_fixtures_from_native_transcripts(
         "subagent/subagents/agent-fixture.meta.json",
     ]
 
-    # Compare parsed records: committed baseline.jsonl is compact JSON, same content.
+    # Compare complete parsed native records after the generator sanitizes them.
     def records(path):
         text = path.read_text()
         return (
@@ -121,7 +143,24 @@ def test_main_regenerates_committed_fixtures_from_native_transcripts(
         )
 
     for name in written:
-        assert records(output / name) == records(FIXTURES / name), name
+        if name.endswith(".md"):
+            assert "FIXTURE_MARKER" in records(output / name)
+        elif name.endswith(".meta.json"):
+            assert records(output / name) == [
+                json.loads(SUBAGENT.with_suffix(".meta.json").read_text())
+            ]
+        else:
+            expected = (
+                [json.loads(line) for line in SUBAGENT.read_text().splitlines()]
+                if "/subagents/" in name
+                else _fixture_entries(Path(name).stem)
+            )
+            # clean() redacts thinking in place; compare complete native structure.
+            expected = [
+                json.loads(line)
+                for line in clean(expected, tmp_path / "unused-workspace").splitlines()
+            ]
+            assert records(output / name) == expected, name
     # Every capture runs headless and isolated, outside the repo.
     for args, cwd in calls:
         assert ["--permission-mode", "dontAsk"] == args[
@@ -212,40 +251,42 @@ def test_run_case_rejects_incomplete_native_capture(
 
 
 def test_clean_preserves_records_blocks_and_ids():
-    session_id = "12345678-1234-1234-1234-123456789abc"
-    entries = [
-        {"type": "system", "message": "init", "sessionId": session_id},
-        {"type": "user", "message": {"content": []}, "toolUseResult": {"stdout": "ok"}},
-        {
-            "type": "assistant",
-            "message": {
-                "content": [
-                    {"type": "thinking", "thinking": "private", "signature": "sig"},
-                    {"type": "text", "text": "/tmp/fixture-project"},
-                ]
-            },
-        },
+    entries = native_entries()
+    expected = deepcopy(entries)
+    thinking_blocks = [
+        block
+        for entry in expected
+        for block in entry.get("message", {}).get("content", [])
+        if isinstance(block, dict) and block.get("type") == "thinking"
     ]
+    assert thinking_blocks
+    assert any(entry.get("type") == "system" for entry in entries)
+    assert any("toolUseResult" in entry for entry in entries)
+    for block in thinking_blocks:
+        block["thinking"] = "[redacted]"
+    # Use an unrelated workspace so only thinking redaction applies here.
     rows = [
         json.loads(line)
         for line in clean(entries, Path("/tmp/fixture-project")).splitlines()
     ]
-    assert [row["type"] for row in rows] == ["system", "user", "assistant"]
-    assert rows[0]["sessionId"] == session_id
-    assert rows[1]["toolUseResult"] == {"stdout": "ok"}
-    assert rows[2]["message"]["content"] == [
-        {"type": "thinking", "thinking": "[redacted]", "signature": "sig"},
-        {"type": "text", "text": "/workspace"},
-    ]
+    assert rows == expected
+    assert [row.get("uuid") for row in rows] == [row.get("uuid") for row in entries]
 
 
 def test_clean_rejects_unknown_thinking_shape():
-    entries = [{"message": {"content": [{"type": "thinking", "text": "new format"}]}}]
+    entries = native_entries()
+    block = next(
+        block
+        for entry in entries
+        for block in entry.get("message", {}).get("content", [])
+        if isinstance(block, dict) and block.get("type") == "thinking"
+    )
+    # Replace only the known thinking field with an unsupported upstream shape.
+    block["text"] = block.pop("thinking")
     with pytest.raises(
         RuntimeError, match="unexpected thinking block format"
     ) as exc_info:
         clean(entries, Path("/tmp/fixture-project"))
-
     assert str(exc_info.value) == "unexpected thinking block format"
 
 

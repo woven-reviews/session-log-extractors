@@ -1,31 +1,31 @@
 """Input schema recognition preserves native payloads and unknown fields."""
 
 from copy import deepcopy
-from pathlib import Path
 
 import pytest
+from claude_fixture import native_entries
 
-from session_log_extractors.claude_sources import read_source
 from session_log_extractors.tool_inputs.claude import input_schema
-
-FIXTURES = Path(__file__).parent / "fixtures" / "claude"
 
 
 @pytest.mark.parametrize(
     "fixture",
     [
-        "continued.jsonl",
-        "permission_denial.jsonl",
-        "questions.jsonl",
-        "plan_modes.jsonl",
-        "skill_command.jsonl",
-        "subagent.jsonl",
+        "multibyte_result_over_10kb",
+        "settings_driven_bash_denial",
+        "multiple_questions_and_multiselect",
+        "genuine_editor_edited_plan_approval",
+        "repeated_skill_invocation",
+        "one_read_only_subagent",
+        "native_write_read_edit_read",
+        "native_notebook_edit",
+        "successful_shell",
     ],
 )
 def test_captured_tool_inputs_have_explicit_schemas(fixture):
     calls = [
         block
-        for entry in read_source(FIXTURES / fixture).entries
+        for entry in native_entries(fixture)
         for block in entry.get("message", {}).get("content", [])
         if isinstance(block, dict) and block.get("type") == "tool_use"
     ]

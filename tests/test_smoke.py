@@ -10,6 +10,7 @@ from contextlib import closing
 from pathlib import Path
 
 import pytest
+from claude_fixture import TRANSCRIPT
 
 import session_log_extractors
 from session_log_extractors import extract_claude_session_log as claude
@@ -46,7 +47,7 @@ def test_help_uses_call_time_output_root(harness, tmp_path, monkeypatch, capsys)
 @pytest.mark.parametrize(
     ("harness", "arguments"),
     [
-        ("claude", ["--transcript", "scripts/fixtures/claude/baseline.jsonl"]),
+        ("claude", ["--transcript", str(TRANSCRIPT)]),
         ("codex", ["--transcript", "scripts/fixtures/codex/tool_patch_large.jsonl"]),
         (
             "copilot",
@@ -95,7 +96,7 @@ def test_claude_checkout_defaults(subdirectory, selection, tmp_path):
     project = home / ".claude" / "projects" / encode_project_path(checkout)
     project.mkdir(parents=True)
     transcript = project / "session.jsonl"
-    shutil.copyfile(root / "scripts/fixtures/claude/baseline.jsonl", transcript)
+    shutil.copyfile(TRANSCRIPT, transcript)
     arguments = {
         "transcript": ["--transcript", str(transcript)],
         "all": ["--all", "--project-dir", str(project)],

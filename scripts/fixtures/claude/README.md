@@ -1,23 +1,59 @@
 # Claude Code fixture provenance
 
-These fixtures exercise the log shapes listed in [QUAL-2399](https://linear.app/andela/issue/QUAL-2399/claude-code-test-coverage). Native captures were regenerated with Claude Code 2.1.292 (`claude --version` on 2026-10-09). Tests read only files here and never invoke Claude Code or require `~/.claude`.
+## Current test capture
 
-Regenerate the seven native captures manually with `python3 scripts/generate_claude_fixtures.py` from the repository root. The script runs `claude --print <prompt> --output-format json --model <model> --session-id <uuid> --max-budget-usd 0.25 --permission-mode dontAsk --permission-prompts none --setting-sources project --strict-mcp-config --no-chrome`, adding `--tools <name>` for tool cases and replacing `--session-id` with `--resume` for second turns. It prints the exact commands it executes. It uses a temporary project and the operator's existing Claude login, then sanitizes and stages the resulting files before replacement. Regeneration makes paid model calls and is never part of the test run.
+Tests explicitly select **2.1.312**, captured interactively on 2026-10-30.
+The process auto-updated to 2.1.314 for exact-session resumes; both versions
+contributed to this one complete session. See [manifest.json](2.1.312/manifest.json)
+for launches, sanitization, asset hashes, and the native child sidecar, and
+[coverage.json](2.1.312/coverage.json) for recorded behavior references.
 
-| QUAL-2399 case | Classification | Capture or construction and reason |
-| --- | --- | --- |
-| 1. Session directory with subagents and metadata | Headless-generatable | `subagent.jsonl` plus `subagent/subagents/agent-fixture.jsonl` and `.meta.json` came from one Agent run. The checked-in sibling directory matches the extractor's lookup path. |
-| 2. Permission denial wording | Headless-generatable | `permission_denial.jsonl` came from a Bash request under `dontAsk`. Claude Code 2.1.292 says `Permission to use Bash has been denied...`; the parser records it as a permission denial for Bash. |
-| 3. Plan approve, edited approval, and rejection | Fixture-only for unattended CLI | `plan_modes.jsonl` is hand-authored from the previously audited result strings because these decisions require an interactive approval handler. It preserves the edited-plan heading and whitespace. A future SDK or interactive capture could replace it. |
-| 4. AskUserQuestion multiSelect, Other, multiple questions | Fixture-only for unattended CLI | `questions.jsonl` is hand-authored from the audited result shapes because bare `claude -p` cannot answer its own prompt. An SDK `canUseTool` callback could produce a native replacement. |
-| 5. Multiple pasted images and jpeg/gif/webp | Fixture-only for text CLI | `images.jsonl` is hand-authored. Four valid one-pixel payloads were made with ImageMagick (`magick -size 1x1 xc:white pixel.png`, then `magick pixel.png pixel.jpeg`, `pixel.gif`, and `pixel.webp`) and embedded as base64. A text `claude -p` prompt cannot paste them. |
-| 6. Skill and command metadata | Headless-generatable | `skill_command.jsonl` contains a Skill tool call and a resumed direct `/fixture-command` invocation. The captured project definitions are in `project/.claude/skills/fixture-skill/SKILL.md` and `project/.claude/commands/fixture-command.md`. |
-| 7. Partial trailing line | Fixture-only | `truncated.jsonl` is hand-authored with two valid entries and a third line ending after `"partial`. A completed headless run should not intentionally produce corrupt JSONL. |
-| 8. Large tool result | Headless-generatable | `large_result.jsonl` contains a native Read result over 10 KB. The test checks truncation and repeats that captured event in memory to reach the 8 MiB envelope warning without committing an oversized file. |
-| 9. Mid-session model switch | Headless-generatable | `model.jsonl` contains a recorded direct `/model sonnet` command and both Haiku and Sonnet assistant entries in one resumed session. In Claude Code 2.1.292 print mode, the slash command alone does not persist the choice; the following resumed `--model sonnet` flag caused the switch. |
-| 10. Windows encoded project path | Unsupported on this macOS host | Native `C--Users-...` project encoding requires a Windows Claude Code run. Capture there and copy the native project directory, or use an explicitly hand-authored path fixture if Windows is unavailable; a macOS headless run cannot establish Windows path provenance. |
-| Continued conversation | Headless-generatable | `continued.jsonl` records a Read call and a later prompt that asks about the previous answer. Both turns share one resumed session; the second answer depends on the first. |
+The canonical input is
+[`native/65036844-09ed-4e91-8ed7-8636dfd163db.jsonl`](2.1.312/native/65036844-09ed-4e91-8ed7-8636dfd163db.jsonl).
+Tests use `scripts/claude_fixture.py` to select this version. Integration and
+source-free contract tests read the complete transcript; focused tests select
+unchanged records using coverage-ledger line numbers checked against message IDs.
+Selections retain native tool IDs and results. Filesystem tests copy this input
+and its child sidecar into temporary directories. No tests invoke paid CLIs.
 
-The classification concerns native transcript generation through this host's bare print-mode CLI. The generator preserves every JSONL record, content block, and identifier. It redacts thinking text, private workspace and home paths, and email addresses without removing their containing records; the subagent metadata receives the same path and email redaction. Review regenerated output for other secrets before committing. Capture content and model IDs can change with CLI release and account.
+The current capture supplies ordinary Markdown/Unicode, single-choice and
+multi-question/multi-select answers, free text, previews and notes, question
+cancellation, plan rejection/revision/editor approval, permissions, file and
+notebook edits, large inputs and multibyte results, shell success/errors,
+attachments, repeated skills, command arguments, subagent activity, model changes,
+exact resume, and compaction. The coverage ledger also records failed capture
+attempts; these must not be treated as successful evidence.
 
-CLI reference: <https://code.claude.com/docs/en/cli-reference>. Print-mode behavior: <https://code.claude.com/docs/en/headless>. SDK user input: <https://code.claude.com/docs/en/agent-sdk/user-input>.
+Claude converted all four original image formats to PNG in the native transcript.
+Tests assert that current behavior, plus legacy MIME preservation by substituting
+the captured JPEG/GIF/WebP source assets into native image blocks. Plan tests
+compare proposed and edited versions with the captured editor assets.
+
+## Boundary and legacy compatibility tests
+
+No test reads the older unversioned fixtures. Small, documented mutations of the
+current input exercise missing/empty/null results, repeated or unmatched IDs,
+unknown tools/fields, malformed options, corrupt trailing JSONL, ordering ties,
+missing metadata, and large aggregate output. Handwritten inputs remain for
+malformed containers, filesystem errors, and focused parser primitives where
+native data cannot express the edge.
+
+Legacy wording remains covered without loading old captures: the Claude 2.1.292
+settings denial without a command, inline user feedback, the audited rejection
+reason wording, and the unchanged-plan echo under an edited-plan heading.
+These tests retain the prior semantic assertions with targeted native mutations
+or the exact parser input. Older image media types remain explicit legacy cases.
+
+The print-mode generator tests also use the current native input and child
+sidecar as fake CLI output. They adapt only command/response markers required by
+the generator's fixed prompts and compare complete sanitized records. The generator
+itself retains its existing manual workflow; it does not regenerate the interactive
+capture.
+
+## Historical inputs
+
+The unversioned files came from Claude Code 2.1.292 on 2026-10-09, except the
+hand-authored `plan_modes.jsonl`, `questions.jsonl`, `images.jsonl`, and
+`truncated.jsonl`. They remain historical artifacts, outside the active test
+inputs. `scripts/generate_claude_fixtures.py` manually regenerates the old print-mode
+cases and makes paid calls using the operator's login. It must never run in tests.
