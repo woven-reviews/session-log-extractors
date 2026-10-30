@@ -877,3 +877,94 @@ def test_compact_control_recognition_excludes_other_text_and_unmarked_sdk_prompt
         actual_sources = _sources(message)
         expected_source = "harness" if shape == "injected" else "unknown"
         assert actual_sources == [expected_source]
+
+
+def _recorded_compact_completion():
+    matches = []
+    entries = claude.load_entries(TRANSCRIPT)
+    for invocation in _recorded_compact_invocations():
+        content = invocation["message"]["content"]
+        if not content.startswith("<command-name>"):
+            continue
+        for entry in entries:
+            result = entry.get("message", {}).get("content")
+            if entry.get("parentUuid") == invocation["uuid"]:
+                if isinstance(result, str) and result.startswith(
+                    "<local-command-stdout>"
+                ):
+                    matches.append((invocation, entry))
+    assert len(matches) == 1, "Expected one ID-linked compaction-completion notice"
+    (activity,) = matches
+    return activity
+
+
+@pytest.mark.parametrize("order", ["native", "intervening_human", "result_first"])
+def test_compaction_completion_retains_candidate_activity_through_its_parent_id(order):
+    invocation, completion = _recorded_compact_completion()
+    if order == "intervening_human":
+        human = _recorded_user("CAPTURE_LITERAL_MARKUP")
+        entries = [invocation, human, completion]
+    elif order == "result_first":
+        entries = [completion, invocation]
+    else:
+        entries = [invocation, completion]
+    original = deepcopy(entries)
+    session = _interpret(entries)
+    exported = export_session(session, 0)
+    matched_completions = []
+    for message, actual in zip(session["events"], exported["events"], strict=True):
+        if message["id"] == completion["uuid"]:
+            matched_completions.append(message)
+            actual_sources = _sources(message)
+            assert actual_sources == ["candidate"]
+            assert message["text"] == actual["text"] == completion["message"]["content"]
+            assert message["ts"] == actual["ts"] == completion["timestamp"]
+            assert message["parent_id"] == invocation["uuid"]
+            assert actual["authorship"] == message["authorship"]
+    assert len(matched_completions) == 1
+    assert entries == original
+
+
+@pytest.mark.parametrize(
+    "parent", ["missing", "sdk_input", "injected_input", "duplicate_id"]
+)
+def test_compaction_completion_needs_a_unique_candidate_cli_invocation(parent):
+    invocation, completion = _recorded_compact_completion()
+    entries = [invocation, completion]
+    if parent == "missing":
+        entries = [completion]
+    elif parent == "sdk_input":
+        invocation["entrypoint"] = "sdk-cli"
+    elif parent == "injected_input":
+        invocation["isMeta"] = True
+    else:
+        entries = [invocation, deepcopy(invocation), completion]
+    session = _interpret(entries)
+    output = session["events"][-1]
+    actual_sources = _sources(output)
+    assert output["id"] == completion["uuid"]
+    assert actual_sources == ["unknown"]
+
+
+def test_full_capture_resolves_reviewed_activity_and_keeps_generated_summary_harness():
+    entries = claude.load_entries(TRANSCRIPT)
+    summaries = {}
+    for entry in entries:
+        if entry.get("isCompactSummary") is True:
+            summaries[entry["uuid"]] = entry["message"]["content"]
+    assert summaries, "Missing native generated compaction summary"
+    session = _interpret(entries)
+    unresolved_activity = []
+    retained_summaries = []
+    for message in session["events"]:
+        if message["role"] != "assistant" and message.get("text"):
+            assert message.get("authorship"), "Missing activity provenance"
+            if "unknown" in _sources(message):
+                unresolved_activity.append(message["id"])
+        if message["id"] in summaries:
+            retained_summaries.append(message["id"])
+            actual_sources = _sources(message)
+            assert actual_sources == ["harness"]
+            assert message["text"] == summaries[message["id"]]
+    assert retained_summaries
+    assert unresolved_activity == []

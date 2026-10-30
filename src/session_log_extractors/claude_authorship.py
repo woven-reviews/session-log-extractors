@@ -264,7 +264,7 @@ _OutputKind: TypeAlias = Literal["shell", "local"]
 def _input_output_kind(entry: dict[str, JsonValue]) -> _OutputKind | None:
     if _is_user_shell_input(entry):
         return "shell"
-    if _is_model_invocation(entry):
+    if _is_model_invocation(entry) or _is_compact_invocation(entry):
         return "local"
     return None
 

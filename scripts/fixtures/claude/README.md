@@ -97,8 +97,11 @@ and model names do not drive recognition. Results remain separate records.
 Both native CLI representations of the manual `/compact` invocation (plain and
 wrapped) retain candidate attribution. Their CLI entrypoint is preserved as
 evidence; an unmarked SDK prompt containing `/compact` remains unknown. The
-generated compaction summary retains harness attribution, and the completion
-notice is a separate record.
+generated compaction summary retains harness attribution. The separate completion
+notice inherits candidate attribution through its parent ID pointing to a unique
+candidate compaction invocation. All previously unresolved activity records in
+this capture now have evidence-backed classifications; a full-capture regression
+test detects new unresolved activity without relabeling the generated summary.
 
 A `queued_command` attachment records the original human prompt,
 `source_uuid`, `delivery_id`, its own timestamp, and the longer rendered text;
