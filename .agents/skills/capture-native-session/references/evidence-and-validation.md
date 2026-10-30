@@ -23,6 +23,7 @@ captures/                              # untracked; sanitized evidence only
     <cli-version>/
       <run-id>/
         run.json
+        manifest.json                 # optional audit inventory
         findings.md
         coverage.json
         actions.jsonl
@@ -38,9 +39,9 @@ captures/                              # untracked; sanitized evidence only
           result-budget-unlimited.json
 scripts/fixtures/                      # reviewed committed material
   <harness>/
+    README.md                         # concise fixture provenance
     <cli-version>/
-      manifest.json
-      coverage.json
+      assets/                         # required test inputs only
       native/
         <original-native-filenames-and-sidecar-layout>
 ```
@@ -56,6 +57,7 @@ Do not move existing fixtures, rewrite tests, or promote captures merely because
 ## Evidence records
 
 - `run.json`: harness; run ID; exact native main/retry/child identities and recorded relationships; UTC start/end and interactive duration; resolved executable and version; per-launch arguments, configuration and workspace; models that actually handled turns; resume attempts; version changes; available token/cost usage with source references. Use stable sanitized workspace placeholders. Never invent missing IDs or usage.
+- `manifest.json` (optional): audit inventory of selected files, hashes, and source relationships. Keep it in the untracked evidence bundle.
 - `actions.jsonl`: ordered action IDs, timestamps, target session/pane, exact sanitized input or navigation, before/after snapshot paths, observed effect, and native message/tool IDs when established. Snapshot before/after significant actions, including failures. Do not associate records merely by nearby timestamps.
 - `assets/`: sanitized local inputs, skill/command contents, images and provenance. Record original sizes/hashes privately and publish non-sensitive provenance. Keep sanitized text/image assets consistent with native references.
 - `native/`: sanitized copies of just these sessions' transcripts, relevant sidecars and dependencies, retaining native relative layout and filenames. Retain the immutable originals outside the repo.
@@ -115,6 +117,8 @@ Give literal human-authored markup and user-shell stdout/stderr separate coverag
 
 ## Review and promotion
 
-Choose the successful complete main session, retain provenance to its untracked evidence bundle, and propose copying its sanitized native records and required sidecars/assets to the single harness/version fixture directory. The committed manifest should identify the source run, exact native identities, versions, sanitization provenance, and file hashes; coverage should map requested scenarios to recorded IDs and report remaining gaps.
+Choose the successful complete main session, retain provenance to its untracked evidence bundle, and propose copying its sanitized native records and required sidecars/assets to the single harness/version fixture directory. Add concise provenance to the harness fixture README: source run, CLI versions and any version changes, main transcript and required sidecars/assets, sanitization method/revision, and material capture limitations. Keep detailed file hashes, native-ID coverage maps, failures/retries, and audit inventories in the untracked evidence bundle.
+
+Do not commit capture `coverage.json` or audit `manifest.json` files; versioned fixture paths for these files are ignored. Existing test-consumed manifests, such as the unversioned Copilot case-to-session map, remain required test inputs and must be preserved. Before promotion, check the staged file list for audit artifacts and ensure README links point to committed inputs rather than untracked reports.
 
 Keep terminal snapshots, journals, interpreted models, and budget experiments in untracked `captures/`; they are evidence rather than additional fixtures. Follow established baseline conventions if approved output baselines are requested separately. Never commit raw/private data, `captures/`, or explicitly excluded historical artifacts such as `/pilots`. Do not retire headless generators or replace existing fixture tests until separately authorized and equivalent coverage has been reviewed.

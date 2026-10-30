@@ -4,9 +4,29 @@
 
 Tests explicitly select **2.1.312**, captured interactively on 2026-10-30.
 The process auto-updated to 2.1.314 for exact-session resumes; both versions
-contributed to this one complete session. See [manifest.json](2.1.312/manifest.json)
-for launches, sanitization, asset hashes, and the native child sidecar, and
-[coverage.json](2.1.312/coverage.json) for recorded behavior references.
+contributed to this one complete session.
+
+### Capture provenance
+
+The source run is `20261030T143456Z`. Detailed coverage, launch records, file
+hashes, and sanitization reports belong to the untracked evidence bundle at
+`captures/claude/2.1.312/20261030T143456Z/`; they are not fixture inputs and must
+not be promoted with future captures.
+
+Sanitization used the existing `sanitize_capture` public API at revision
+`e10eb43c202030db1af05408ac94c3e39387a833` with explicit private rules retained
+outside the repository. A narrow text-mode second pass redacted home prefixes
+in file-history JSON keys. Repeated sanitization produced identical outputs
+and match counts; native image payloads were preserved.
+
+The required child transcript and metadata are in the main session's
+[`subagents/` directory](2.1.312/native/65036844-09ed-4e91-8ed7-8636dfd163db/subagents/).
+Required source images, before/after notebook inputs, plan-editor assets, and
+skill/command definitions are retained under [`assets/`](2.1.312/assets/).
+The selected main session is the successful retry; the failed initial attempt
+had no durable native ID and was not merged into it.
+
+### Test inputs
 
 The canonical input is
 [`native/65036844-09ed-4e91-8ed7-8636dfd163db.jsonl`](2.1.312/native/65036844-09ed-4e91-8ed7-8636dfd163db.jsonl).
@@ -16,8 +36,7 @@ contract tests read the complete transcript; focused tests select unchanged
 records by tool name and input, operator-authored markers, or question structure.
 Missing or ambiguous semantic matches fail explicitly. Recorded IDs connect
 already selected calls with their results; no lookup uses a saved ID, line
-number, timestamp, or occurrence. The coverage ledger remains provenance,
-not an input to the test selectors. Filesystem tests copy this input
+number, timestamp, or occurrence. Filesystem tests copy this input
 and its child sidecar into temporary directories. No tests invoke paid CLIs.
 
 Generated assistant responses and subagent prose are checked for string type and
@@ -40,8 +59,8 @@ multi-question/multi-select answers, free text, previews and notes, question
 cancellation, plan rejection/revision/editor approval, permissions, file and
 notebook edits, large inputs and multibyte results, shell success/errors,
 attachments, repeated skills, command arguments, subagent activity, model changes,
-exact resume, and compaction. The coverage ledger also records failed capture
-attempts; these must not be treated as successful evidence.
+exact resume, and compaction. Failed capture attempts remain documented in the
+untracked evidence bundle; they must not be treated as successful evidence.
 
 Claude converted all four original image formats to PNG in the native transcript.
 Tests assert that current behavior, plus legacy MIME preservation by substituting
