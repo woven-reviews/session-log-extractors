@@ -1,5 +1,0 @@
-{"type": "permission.requested", "timestamp": "2026-07-01T22:03:50Z", "data": {"requestId": "r1", "permissionRequest": {"kind": "shell", "fullCommandText": "pytest"}}}
-{"type": "permission.completed", "timestamp": "2026-07-01T22:04:04Z", "data": {"requestId": "r1", "result": {"kind": "approved"}}}
-{"type": "permission.requested", "timestamp": "2026-07-01T22:05:00Z", "data": {"requestId": "r2", "permissionRequest": {"kind": "write", "intention": "edit crud.py"}}}
-{"type": "permission.completed", "timestamp": "2026-07-01T22:05:30Z", "data": {"requestId": "r2", "result": {"kind": "denied-interactively-by-user", "feedback": "not like that"}}}
-{"type": "permission.requested", "timestamp": "2026-07-01T22:06:00Z", "data": {"requestId": "r3", "permissionRequest": {"kind": "shell", "fullCommandText": "rm x"}}}

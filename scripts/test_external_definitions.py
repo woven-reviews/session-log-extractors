@@ -4,8 +4,8 @@ import json
 from pathlib import Path
 
 import pytest
+from copilot_fixture import native_source
 
-from session_log_extractors import copilot_sources
 from session_log_extractors import extract_claude_session_log as claude
 from session_log_extractors import extract_codex_session_log as codex
 from session_log_extractors import extract_copilot_session_log as copilot
@@ -20,9 +20,10 @@ def test_codex_invocations_do_not_load_definitions(command_args, monkeypatch):
     source = codex.read_source(fixture_root / "slash.jsonl")
     if command_args is None:
         # Remove only the captured command arguments to exercise their absence.
-        next(
-            e["payload"] for e in source.entries if e["payload"].get("role") == "user"
-        )["content"][0]["text"] = "/review"
+        for entry in source.entries:
+            if entry["payload"].get("role") == "user":
+                entry["payload"]["content"][0]["text"] = "/review"
+                break
     # The fixture has no explicit skill call. Add a narrow structured call,
     # repeated to retain the existing de-duplication assertion.
     call = {
@@ -49,9 +50,6 @@ def test_codex_invocations_do_not_load_definitions(command_args, monkeypatch):
     assert (user["command"], user["command_args"]) == ("/review", command_args)
 
 
-FIXTURES = Path(__file__).parent / "fixtures" / "claude"
-
-
 def test_local_definitions_are_not_read_or_added_to_the_envelope(tmp_path, monkeypatch):
     project = (tmp_path / "project").resolve()
     project.mkdir()
@@ -75,7 +73,11 @@ def test_local_definitions_are_not_read_or_added_to_the_envelope(tmp_path, monke
     transcript = TRANSCRIPT
     session = claude.interpret_source(claude.read_source(transcript))
     assert session["skills_used"] == ["capture-leaf"]
-    assert any(event.get("command") == "/capture-echo" for event in session["events"])
+    commands = []
+    for event in session["events"]:
+        if event.get("command"):
+            commands.append(event["command"])
+    assert "/capture-echo" in commands
     envelope = claude.extract_transcript(transcript)
     assert envelope is not None
     output = json.dumps(envelope)
@@ -87,16 +89,9 @@ def test_local_definitions_are_not_read_or_added_to_the_envelope(tmp_path, monke
 
 
 def test_copilot_skill_invocations_do_not_load_definitions(monkeypatch):
-    fixtures = FIXTURES.parent / "copilot"
-    records = copilot_sources.parse_state_records(
-        (fixtures / "skill" / "events.jsonl").read_text().splitlines()
-    )
-    # A repeated invocation and an empty name must preserve deduplication.
-    invoked = next(record for record in records if record["type"] == "skill.invoked")
-    records.extend([invoked, {"type": "skill.invoked", "data": {"name": ""}}])
-    source = copilot_sources.CopilotSource(
-        {"id": "recorded-skill"}, [], state_records=records
-    )
+    source = native_source()
+    # Repeated invocations are native; add only the malformed empty-name boundary.
+    source.state_records.append({"type": "skill.invoked", "data": {"name": ""}})
 
     def forbidden(*args, **kwargs):
         pytest.fail("Extraction must not load external skill definitions")
@@ -104,4 +99,4 @@ def test_copilot_skill_invocations_do_not_load_definitions(monkeypatch):
     with monkeypatch.context() as guard:
         guard.setattr(Path, "open", forbidden)
         session = copilot.interpret_source(source)
-    assert session["skills_used"] == ["fixture-skill"]
+    assert session["skills_used"] == ["capture-greeting", "capture-command"]

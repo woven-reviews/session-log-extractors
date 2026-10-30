@@ -93,12 +93,12 @@ legacy permission lifecycle, and legacy inline/data-URL attachment encodings
 which this successful capture cannot produce. The attachment variants use the
 current red PNG bytes. Tests retain controlled missing files, filesystem errors,
 malformed types, unknown tools, unmatched results, missing IDs, legacy database
-schemas, and collision cases. No test reads the old unversioned fixtures.
+schemas, and collision cases.
 
-## Historical inputs
+## Capture workflow
 
-The unversioned six-case map, database and event logs are historical Copilot
-1.0.90-5 headless captures from 2026-10-14. The map is preserved as historical
-provenance. The scripted headless generator and its fake-CLI tests have been
-retired; use the repository's capture-native-session skill for future captures.
-Paid capture is explicit, bounded, and excluded from tests and CI.
+The obsolete unversioned captures, case manifest, database, and generator assets
+have been removed, together with the scripted headless generator and its fake-CLI
+tests. Only the selected interactive capture and test-consumed focused boundary
+inputs remain. Use the repository's capture-native-session skill for future
+captures. Paid capture is explicit, bounded, and excluded from tests and CI.
