@@ -78,9 +78,12 @@ candidate activity to retain the user's interruption action in candidate-visible
 logs, even though Claude generates their wording. Exact native control-message
 shape recognition excludes incidental quotes and respects explicit injection
 provenance. The standalone `<bash-input>` record retains the user-submitted
-shell command as candidate activity, including its wrapper. Shell output remains
-a separate record; quoted or embedded shell-input examples are not recognized as
-native shell-mode actions. A `queued_command` attachment records the original human prompt,
+shell command as candidate activity, including its wrapper. Its output remains
+a separate record and inherits candidate attribution through the recorded
+`parentUuid` link to a unique candidate shell-input message. Intervening messages
+and record order do not establish ownership. Missing or ambiguous parents and
+explicit injection provenance prevent inheritance. Quoted or embedded shell-input
+examples are not recognized as native shell-mode actions. A `queued_command` attachment records the original human prompt,
 `source_uuid`, `delivery_id`, its own timestamp, and the longer rendered text;
 the extractor retains that attachment at its recorded position with the recorded
 rendered role and mixed candidate/harness ranges. It does not assign it to a

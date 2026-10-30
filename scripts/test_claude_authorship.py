@@ -494,3 +494,108 @@ def test_shell_input_recognition_requires_the_native_standalone_record(shape):
     actual_sources = _sources(message)
     expected_source = "harness" if shape == "injected" else "unknown"
     assert actual_sources == [expected_source]
+
+
+def _recorded_user_shell_activity():
+    shell_input = _recorded_shell_input()
+    matches = []
+    for entry in claude.load_entries(TRANSCRIPT):
+        content = entry.get("message", {}).get("content")
+        if entry.get("parentUuid") == shell_input["uuid"]:
+            if isinstance(content, str) and content.startswith("<bash-stdout>"):
+                matches.append(entry)
+    assert len(matches) == 1, "Expected one ID-linked user-shell output"
+    (shell_output,) = matches
+    return shell_input, shell_output
+
+
+@pytest.mark.parametrize("order", ["native", "intervening_human", "output_first"])
+def test_shell_output_follows_recorded_candidate_input_id(order):
+    shell_input, shell_output = _recorded_user_shell_activity()
+    if order == "intervening_human":
+        later = _recorded_user("CAPTURE_LITERAL_MARKUP")
+        entries = [shell_input, later, shell_output]
+    elif order == "output_first":
+        entries = [shell_output, shell_input]
+    else:
+        entries = [shell_input, shell_output]
+    original = deepcopy(entries)
+    session = _interpret(entries)
+    exported = export_session(session, 0)
+    actual_ids = []
+    expected_ids = []
+    matched_output = []
+    for entry in entries:
+        expected_ids.append(entry["uuid"])
+    for message, actual in zip(session["events"], exported["events"], strict=True):
+        actual_ids.append(message["id"])
+        if message["id"] == shell_output["uuid"]:
+            matched_output.append(message)
+            actual_sources = _sources(message)
+            assert actual_sources == ["candidate"]
+            assert (
+                message["text"] == actual["text"] == shell_output["message"]["content"]
+            )
+            assert message["ts"] == actual["ts"] == shell_output["timestamp"]
+            assert message["parent_id"] == shell_input["uuid"]
+            assert actual["authorship"] == message["authorship"]
+            (span,) = message["authorship"]
+            assert {"field": "parentUuid", "value": shell_input["uuid"]} in span[
+                "markers"
+            ]
+    assert len(matched_output) == 1
+    assert actual_ids == expected_ids
+    assert entries == original
+
+
+@pytest.mark.parametrize(
+    "parent",
+    [
+        "missing",
+        "missing_id",
+        "empty_id",
+        "unrelated_human",
+        "injected_input",
+        "duplicate_id",
+    ],
+)
+def test_shell_output_needs_a_unique_candidate_shell_parent(parent):
+    shell_input, shell_output = _recorded_user_shell_activity()
+    entries = [shell_input, shell_output]
+    if parent == "missing":
+        entries = [shell_output]
+    elif parent == "missing_id":
+        shell_output.pop("parentUuid")
+    elif parent == "empty_id":
+        shell_input["uuid"] = ""
+        shell_output.pop("parentUuid")
+    elif parent == "unrelated_human":
+        human = _recorded_user("CAPTURE_LITERAL_MARKUP")
+        shell_output["parentUuid"] = human["uuid"]
+        entries = [shell_input, human, shell_output]
+    elif parent == "injected_input":
+        shell_input["isMeta"] = True
+    else:
+        entries = [shell_input, deepcopy(shell_input), shell_output]
+    session = _interpret(entries)
+    output = session["events"][-1]
+    actual_sources = _sources(output)
+    assert output["id"] == shell_output["uuid"]
+    assert actual_sources == ["unknown"]
+
+
+@pytest.mark.parametrize("shape", ["quoted", "list", "injected"])
+def test_shell_output_link_does_not_override_recorded_content_or_provenance(shape):
+    shell_input, shell_output = _recorded_user_shell_activity()
+    content = shell_output["message"]["content"]
+    if shape == "quoted":
+        shell_output["message"]["content"] = "Example: " + content
+    elif shape == "list":
+        shell_output["message"]["content"] = [{"type": "text", "text": content}]
+    else:
+        shell_output["isMeta"] = True
+    session = _interpret([shell_input, shell_output])
+    output = session["events"][-1]
+    actual_sources = _sources(output)
+    expected_source = "harness" if shape == "injected" else "unknown"
+    assert actual_sources == [expected_source]

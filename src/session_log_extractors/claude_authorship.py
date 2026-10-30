@@ -1,10 +1,13 @@
 """Claude-native provenance and exact text boundaries, independent of role."""
 
+import re
+
 from session_log_extractors.json_types import JsonValue, string_value
 from session_log_extractors.session_model import (
     AuthorshipMarker,
     AuthorshipRange,
     AuthorshipSource,
+    Message,
 )
 
 
@@ -188,3 +191,73 @@ def _queued_authorship(
         )
     wrapper["source"] = "unknown"
     return [wrapper]
+
+
+_SHELL_OUTPUT = re.compile(
+    r"<bash-stdout>.*?</bash-stdout><bash-stderr>.*?</bash-stderr>", re.DOTALL
+)
+
+
+def _is_user_shell_output(entry: dict[str, JsonValue]) -> bool:
+    message = entry.get("message")
+    if not isinstance(message, dict):
+        return False
+    content = message.get("content")
+    return (
+        entry.get("type") == "user"
+        and message.get("role") == "user"
+        and isinstance(content, str)
+        and _SHELL_OUTPUT.fullmatch(content) is not None
+    )
+
+
+def _unique_messages_by_id(messages: list[Message]) -> dict[str, Message | None]:
+    indexed: dict[str, Message | None] = {}
+    for message in messages:
+        record_id = message.get("id")
+        if isinstance(record_id, str) and record_id:
+            indexed[record_id] = None if record_id in indexed else message
+    return indexed
+
+
+def _has_single_source(message: Message, source: AuthorshipSource) -> bool:
+    spans = message.get("authorship", [])
+    return len(spans) == 1 and spans[0]["source"] == source
+
+
+def _link_candidate_shell_output(
+    entry: dict[str, JsonValue],
+    output: Message,
+    parent: Message,
+) -> None:
+    if not _has_single_source(parent, "candidate") or not _has_single_source(
+        output, "unknown"
+    ):
+        return
+    text = output.get("text")
+    if isinstance(text, str):
+        markers = _markers(entry) + [
+            AuthorshipMarker(field="parentUuid", value=entry["parentUuid"])
+        ]
+        output["authorship"] = [_span(entry, text, "candidate", markers)]
+
+
+def _attribute_shell_outputs(
+    entries: list[dict[str, JsonValue]],
+    messages: list[Message],
+) -> None:
+    """Join user-shell output to its recorded candidate input, preserving order."""
+    indexed = _unique_messages_by_id(messages)
+    shell_ids = set()
+    for entry in entries:
+        record_id = entry.get("uuid")
+        if _is_user_shell_input(entry) and isinstance(record_id, str):
+            shell_ids.add(record_id)
+    for entry in entries:
+        if _is_user_shell_output(entry):
+            output_id = string_value(entry.get("uuid")) or ""
+            parent_id = string_value(entry.get("parentUuid")) or ""
+            output = indexed.get(output_id)
+            parent = indexed.get(parent_id) if parent_id in shell_ids else None
+            if output is not None and parent is not None:
+                _link_candidate_shell_output(entry, output, parent)
