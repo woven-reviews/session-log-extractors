@@ -8,8 +8,20 @@ from types import SimpleNamespace
 
 import generate_claude_fixtures as generator
 import pytest
-from claude_fixture import SUBAGENT, native_entries
 from generate_claude_fixtures import clean
+
+from session_log_extractors.claude_sources import read_source
+
+ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312"
+TRANSCRIPT = ROOT / "native/65036844-09ed-4e91-8ed7-8636dfd163db.jsonl"
+SUBAGENT = TRANSCRIPT.with_suffix("") / "subagents/agent-a2923ceb80fc3e3ac.jsonl"
+
+
+def _entries(*lines):
+    # One-based native line references are documented in 2.1.312/coverage.json.
+    entries = read_source(TRANSCRIPT).entries
+    return [entries[line - 1] for line in lines] if lines else entries
+
 
 # The first prompt of each case in main(), so the fake CLI can tell which one runs.
 PROMPT_CASES = {
@@ -26,21 +38,19 @@ PROMPT_CASES = {
 def _fixture_entries(case):
     # The legacy print-mode generator validates its own prompt-specific markers.
     # Adapt the current interactive evidence only at those marker boundaries.
-    behaviors = {
-        "baseline": "ordinary_markdown_unicode_context",
-        "skill_command": "repeated_skill_invocation",
-        "large_result": "multibyte_result_over_10kb",
-        "permission_denial": "settings_driven_bash_denial",
-        "subagent": "one_read_only_subagent",
+    lines_by_case = {
+        "baseline": (6,),
+        "skill_command": (236, 237, 538, 539),
+        "large_result": (124, 125),
+        "permission_denial": (492, 493),
+        "subagent": (544, 545),
     }
-    entries = native_entries(behaviors[case]) if case in behaviors else native_entries()
+    entries = _entries(*lines_by_case[case]) if case in lines_by_case else _entries()
     if case == "baseline":
         # Include the captured assistant reply after the opening human prompt.
-        entries = [
-            e for e in native_entries() if e.get("type") in ("user", "assistant")
-        ][:2]
+        entries = [e for e in _entries() if e.get("type") in ("user", "assistant")][:2]
     if case == "skill_command":
-        entries += native_entries("custom_command_arguments")
+        entries += _entries(245)
         entries = _replace(entries, "/capture-echo", "/fixture-command")
     if case == "continued":
         # These two response markers belong to the generator's hard-coded prompt.
@@ -251,7 +261,7 @@ def test_run_case_rejects_incomplete_native_capture(
 
 
 def test_clean_preserves_records_blocks_and_ids():
-    entries = native_entries()
+    entries = _entries()
     expected = deepcopy(entries)
     thinking_blocks = [
         block
@@ -274,7 +284,7 @@ def test_clean_preserves_records_blocks_and_ids():
 
 
 def test_clean_rejects_unknown_thinking_shape():
-    entries = native_entries()
+    entries = _entries()
     block = next(
         block
         for entry in entries

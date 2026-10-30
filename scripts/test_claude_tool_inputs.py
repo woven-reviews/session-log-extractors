@@ -1,33 +1,39 @@
 """Input schema recognition preserves native payloads and unknown fields."""
 
 from copy import deepcopy
+from pathlib import Path
 
 import pytest
-from claude_fixture import native_entries
 
+from session_log_extractors.claude_sources import read_source
 from session_log_extractors.tool_inputs.claude import input_schema
+
+ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312"
+TRANSCRIPT = ROOT / "native/65036844-09ed-4e91-8ed7-8636dfd163db.jsonl"
 
 
 @pytest.mark.parametrize(
-    "fixture",
+    "tool_name",
     [
-        "multibyte_result_over_10kb",
-        "settings_driven_bash_denial",
-        "multiple_questions_and_multiselect",
-        "genuine_editor_edited_plan_approval",
-        "repeated_skill_invocation",
-        "one_read_only_subagent",
-        "native_write_read_edit_read",
-        "native_notebook_edit",
-        "successful_shell",
+        "Read",
+        "Bash",
+        "AskUserQuestion",
+        "ExitPlanMode",
+        "Skill",
+        "Agent",
+        "Write",
+        "Edit",
+        "NotebookEdit",
     ],
 )
-def test_captured_tool_inputs_have_explicit_schemas(fixture):
+def test_captured_tool_inputs_have_explicit_schemas(tool_name):
     calls = [
         block
-        for entry in native_entries(fixture)
+        for entry in read_source(TRANSCRIPT).entries
         for block in entry.get("message", {}).get("content", [])
-        if isinstance(block, dict) and block.get("type") == "tool_use"
+        if isinstance(block, dict)
+        and block.get("type") == "tool_use"
+        and block.get("name") == tool_name
     ]
     assert calls
     for call in calls:

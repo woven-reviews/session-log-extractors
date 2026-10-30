@@ -4,12 +4,14 @@ import json
 from pathlib import Path
 
 import pytest
-from claude_fixture import TRANSCRIPT
 
 from session_log_extractors import copilot_sources
 from session_log_extractors import extract_claude_session_log as claude
 from session_log_extractors import extract_codex_session_log as codex
 from session_log_extractors import extract_copilot_session_log as copilot
+
+ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312"
+TRANSCRIPT = ROOT / "native/65036844-09ed-4e91-8ed7-8636dfd163db.jsonl"
 
 
 @pytest.mark.parametrize("command_args", ["fixture", None])

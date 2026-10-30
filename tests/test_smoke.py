@@ -10,13 +10,17 @@ from contextlib import closing
 from pathlib import Path
 
 import pytest
-from claude_fixture import TRANSCRIPT
 
 import session_log_extractors
 from session_log_extractors import extract_claude_session_log as claude
 from session_log_extractors import extract_copilot_session_log as copilot
 from session_log_extractors.extract_claude_session_log import encode_project_path
 from session_log_extractors.session_log_envelope import raw_filename
+
+ROOT = (
+    Path(__file__).resolve().parents[1] / "scripts" / "fixtures" / "claude" / "2.1.312"
+)
+TRANSCRIPT = ROOT / "native/65036844-09ed-4e91-8ed7-8636dfd163db.jsonl"
 
 
 def test_package_imports():

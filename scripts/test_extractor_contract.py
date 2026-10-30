@@ -8,7 +8,6 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
-from claude_fixture import TRANSCRIPT, native_entries
 
 from session_log_extractors import copilot_sources
 from session_log_extractors import extract_claude_session_log as claude
@@ -16,6 +15,10 @@ from session_log_extractors import extract_codex_session_log as codex
 from session_log_extractors import extract_copilot_session_log as copilot
 from session_log_extractors.claude_sources import ClaudeSource
 from session_log_extractors.session_log_envelope import export_session
+
+ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312"
+TRANSCRIPT = ROOT / "native/65036844-09ed-4e91-8ed7-8636dfd163db.jsonl"
+
 
 FIXTURES = Path(__file__).parent / "fixtures" / "claude"
 
@@ -151,7 +154,11 @@ def test_public_stage_propagates_reader_errors_and_handles_no_events(tmp_path):
         extractor.interpret_source(
             ClaudeSource(
                 tmp_path / "s.jsonl",
-                [entry for entry in native_entries() if entry.get("type") == "system"],
+                [
+                    entry
+                    for entry in claude.read_source(TRANSCRIPT).entries
+                    if entry.get("type") == "system"
+                ],
             )
         )
         is None
@@ -268,7 +275,9 @@ def test_copilot_public_reader_errors_and_empty_source():
 def test_native_tool_payloads_keep_unknown_fields_through_export(harness, unsupported):
     """Extend a captured call with a future field and optionally a future tool name."""
     if harness == "claude":
-        source = ClaudeSource(TRANSCRIPT, native_entries("multibyte_result_over_10kb"))
+        source = ClaudeSource(
+            TRANSCRIPT, claude.read_source(TRANSCRIPT).entries[123:125]
+        )
         request = next(
             block
             for entry in source.entries

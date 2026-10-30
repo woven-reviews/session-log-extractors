@@ -5,8 +5,8 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
-from claude_fixture import native_entries
 
+from session_log_extractors.claude_sources import read_source
 from session_log_extractors.session_log_envelope import (
     build_envelope,
     export_session,
@@ -22,6 +22,9 @@ from session_log_extractors.session_model import (
     ToolCall,
     UserMessage,
 )
+
+ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312"
+TRANSCRIPT = ROOT / "native/65036844-09ed-4e91-8ed7-8636dfd163db.jsonl"
 
 
 @pytest.mark.parametrize("harness", ["claude", "codex", "copilot"])
@@ -319,7 +322,7 @@ def test_authorship_examples_define_coverage_without_role_inference():
 
 
 def test_claude_native_injected_message_fits_authorship_contract():
-    records = native_entries()
+    records = read_source(TRANSCRIPT).entries
     native = next(r for r in records if r.get("isMeta") and r.get("sourceToolUseID"))
     text = native["message"]["content"][0]["text"]
     span = AuthorshipRange(

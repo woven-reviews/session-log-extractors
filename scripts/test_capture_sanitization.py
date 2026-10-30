@@ -1,9 +1,9 @@
 """Deterministic redaction of captured text and native JSON records."""
 
 import json
+from pathlib import Path
 
 import pytest
-from claude_fixture import SUBAGENT, TRANSCRIPT
 
 from session_log_extractors.capture_sanitization import (
     LiteralReplacement,
@@ -12,6 +12,10 @@ from session_log_extractors.capture_sanitization import (
     sanitize_capture,
 )
 from session_log_extractors.json_types import parse_json
+
+ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312"
+TRANSCRIPT = ROOT / "native/65036844-09ed-4e91-8ed7-8636dfd163db.jsonl"
+SUBAGENT = TRANSCRIPT.with_suffix("") / "subagents/agent-a2923ceb80fc3e3ac.jsonl"
 
 
 def test_literal_replacements_are_longest_first_and_do_not_cascade():

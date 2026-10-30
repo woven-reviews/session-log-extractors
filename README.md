@@ -16,8 +16,9 @@ the current capture rather than every version; retain older captures while legac
 cases need them. Extractor bugs still require fixes, not changed expectations.
 
 Claude tests select the complete interactive 2.1.312 capture (including 2.1.314
-resumes) through `scripts/claude_fixture.py`. Focused tests select ID-checked
-records from its coverage ledger; integration tests read the full transcript.
+resumes). Test modules pin its native paths directly. Focused tests select
+records by the line references documented in its coverage ledger; integration
+tests read the full transcript.
 No test reads the older unversioned Claude captures. See the
 [Claude fixture provenance](scripts/fixtures/claude/README.md) for boundary
 mutations and legacy compatibility cases.

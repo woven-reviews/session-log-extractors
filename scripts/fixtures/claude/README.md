@@ -10,9 +10,9 @@ for launches, sanitization, asset hashes, and the native child sidecar, and
 
 The canonical input is
 [`native/65036844-09ed-4e91-8ed7-8636dfd163db.jsonl`](2.1.312/native/65036844-09ed-4e91-8ed7-8636dfd163db.jsonl).
-Tests use `scripts/claude_fixture.py` to select this version. Integration and
+Test modules pin this version and its native paths directly. Integration and
 source-free contract tests read the complete transcript; focused tests select
-unchanged records using coverage-ledger line numbers checked against message IDs.
+unchanged records by the native line numbers documented in `coverage.json`.
 Selections retain native tool IDs and results. Filesystem tests copy this input
 and its child sidecar into temporary directories. No tests invoke paid CLIs.
 
