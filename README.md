@@ -34,10 +34,17 @@ project root. Use a session id or `--transcript PATH` for one session, with
 Recorded Markdown, inline images, and tool results remain in the JSON.
 Claude user-message text now retains wrappers, whitespace, and injected skill
 and command expansions verbatim. Nonempty user text carries Unicode code-point
-`authorship` ranges: recorded `isMeta: true` establishes `harness`; other input
-stays `unknown`. Role, `userType: external`, and tag spelling do not establish
-candidate authorship. Ranges retain recorded provenance fields and timestamps;
-command actions and native identities remain available on the interpreted model.
+`authorship` ranges. Consistent `promptSource: typed/queued`, `turnOrigin: human`,
+and `origin.kind: human` establish candidate input. Explicit injections, task
+notifications, and compact summaries retain harness ranges. Queued-command
+attachments retain their recorded rendered role and text, with candidate ranges
+located by an exact, unique match to the separately recorded original prompt;
+wrapper text has harness ranges. A peer origin with a separately recorded body
+similarly identifies other-agent words before broad `isMeta` classification.
+Missing or ambiguous evidence stays unknown. Role, `userType: external`,
+`turnOrigin: human` alone, and tag spelling do not establish candidate authorship.
+Ranges retain recorded provenance fields and their own timestamps; command
+actions and native identities remain available on the interpreted model.
 The exporter copies supplied authorship ranges without applying the tool-result
 cap to message text. Missing ranges still mean unknown, including on other
 harnesses. See the [authorship contract](scripts/fixtures/README.md#shared-text-authorship-contract)

@@ -28,6 +28,10 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from session_log_extractors import session_log_envelope
+from session_log_extractors.claude_authorship import (
+    _queued_authorship,
+    _user_authorship,
+)
 from session_log_extractors.claude_sources import (
     ClaudeSource,
     read_source,
@@ -50,8 +54,7 @@ from session_log_extractors.session_log_envelope import (
     write_envelope,
 )
 from session_log_extractors.session_model import (
-    AuthorshipMarker,
-    AuthorshipRange,
+    Event,
     Message,
     MessageContent,
     NativeIdentity,
@@ -670,29 +673,6 @@ def _questions(tool_input: object) -> List[QuestionAnswer]:
     return _question_records(questions) if isinstance(questions, list) else []
 
 
-def _user_authorship(entry: Dict[str, JsonValue], text: str) -> AuthorshipRange:
-    """Only recorded isMeta establishes injection; external input stays unknown."""
-    span = AuthorshipRange(
-        start=0,
-        end=len(text),
-        source="harness" if entry.get("isMeta") is True else "unknown",
-        markers=[
-            AuthorshipMarker(field=field, value=entry[field])
-            for field in (
-                "isMeta",
-                "sourceToolUseID",
-                "promptSource",
-                "turnOrigin",
-                "userType",
-            )
-            if field in entry
-        ],
-    )
-    if "timestamp" in entry:
-        span["ts"] = string_value(entry["timestamp"])
-    return span
-
-
 class _ClaudeInterpreter:
     """Interpret ordered messages and associate tool activity by native call ID."""
 
@@ -720,6 +700,8 @@ class _ClaudeInterpreter:
                 self.user(entry)
         elif etype == "assistant":
             self.assistant(entry)
+        elif etype == "attachment":
+            self.queued_message(entry)
 
     def user(self, entry: Dict[str, JsonValue]) -> None:
         text = _human_text(entry)
@@ -737,7 +719,7 @@ class _ClaudeInterpreter:
         )
         _attach_identity(message, _message_identity(entry))
         if text:
-            message["authorship"] = [_user_authorship(entry, text)]
+            message["authorship"] = _user_authorship(entry, text)
         if command:
             args = _COMMAND_ARGS.search(text)
             message["command"] = command
@@ -745,6 +727,33 @@ class _ClaudeInterpreter:
         commands = [c.strip() for c in _BASH_INPUT.findall(text) if c.strip()]
         if commands:
             message["shell_command"] = "\n".join(commands)
+        self.events.append(message)
+
+    def queued_message(self, entry: Dict[str, JsonValue]) -> None:
+        attachment = entry.get("attachment")
+        if (
+            not isinstance(attachment, dict)
+            or attachment.get("type") != "queued_command"
+        ):
+            return
+        rendered = entry.get("rendered")
+        parts: List[str] = []
+        for block in rendered if isinstance(rendered, list) else []:
+            if isinstance(block, dict):
+                content = block.get("content")
+                if isinstance(content, str):
+                    parts.append(content)
+        text = "\n".join(parts) or string_value(attachment.get("prompt")) or ""
+        if not text:
+            return
+        message = Event(
+            i=len(self.events),
+            ts=string_value(entry.get("timestamp")),
+            role=string_value(entry.get("renderedRole")) or "unknown",
+            text=text,
+            authorship=_queued_authorship(entry, text, attachment),
+        )
+        _attach_identity(message, _message_identity(entry))
         self.events.append(message)
 
     def assistant(self, entry: Dict[str, JsonValue]) -> None:

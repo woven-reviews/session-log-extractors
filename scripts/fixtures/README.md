@@ -125,12 +125,14 @@ captures from hand-authored cases.
 
 | Harness | Committed evidence and interpretation inspected | Contract fit and gaps |
 | --- | --- | --- |
-| Claude | [Provenance](claude/README.md): Claude Code 2.1.312/2.1.314, 2026-10-30; the complete versioned native capture has user-role skill expansion with `isMeta: true`, `sourceToolUseID`, UUID, and timestamp. `extract_claude_session_log.py` strips noise wrappers and skips `isMeta` records. | A full-text harness range retains `isMeta` and its timestamp without claiming candidate words. Existing IDs and tool ownership stay separate; the range does not infer tool association. This fixture establishes entirely injected user-role content, not every mixed, IDE, or other-agent variant. |
+| Claude | [Provenance](claude/README.md): complete interactive Claude Code 2.1.312/2.1.314 capture, 2026-10-30. Typed/queued input records carry human origin; injected skill/command records carry `isMeta`; a task notification has an explicit system origin. A queued-command attachment records its original prompt, rendered wrapper, source UUID, and content timestamp. | Production tests establish candidate-only, mixed candidate/harness, entirely injected, and unknown cases without changing text, IDs, image/tool ownership, or timestamps. Literal XML in typed input stays candidate text. SDK/human-origin alone and unmarked shell/command records remain unknown. Peer origins were observed in separate local main logs; peer precedence/body matching is a controlled boundary test, not native coverage from this capture. IDE attribution remains unestablished. |
 | Codex | [Provenance](codex/README.md): CLI 0.162.1, 2026-10-15; `slash.jsonl` contains user `response_item` / `input_text` and recorded timestamp. `extract_codex_session_log.py` now assembles canonical messages and ID-matched tools from native records, cleans user wrappers, and ignores developer/system context. | Original text and timestamp fit unchanged; absent authorship remains unknown despite user role. The generator removes startup/mode instructions, so these fixtures cannot establish complete injected-context coverage or native mixed/IDE/other-agent classifications. |
 | Copilot | [Provenance](copilot/README.md): CLI 1.0.90-5, 2026-10-14; `baseline/events.jsonl` has `data.content` and `data.transformedContent`, with a `<current_datetime>` prefix, message ID, and timestamp. `extract_copilot_session_log.py` now assembles canonical messages and ID-matched tools from native activity, uses DB turns as a fallback, and cleans wrapper text. | The transformed text's exact content suffix supports a mixed-range projection using the known capture prompt; preserve the prefix verbatim, never parse its displayed time as the range timestamp. Captures omit `system.message` and usage checkpoints. A shared `parentAgentTaskId` is not alone evidence of other-agent authorship. Native IDE/other-agent coverage remains unestablished. |
 
-The Unicode, partial-coverage, IDE, other-agent, and per-range timestamp boundary
-checks use explicitly illustrative data. No new captures were generated, and
-these tests do not establish runtime rejection of malformed ranges. Adapters
+Shared-model examples include illustrative partial coverage and IDE sources.
+Claude's peer-origin cases and missing/ambiguous boundaries are explicitly
+controlled mutations of the current capture; Unicode and timestamp tests also
+retain these boundaries through export. No additional capture was generated for
+this change. Tests do not establish runtime rejection of malformed ranges. Adapters
 must retain complete text before assigning offsets and use native source
 evidence, rather than role, tag spelling alone, or timestamp proximity.
