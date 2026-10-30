@@ -1,94 +1,98 @@
-"""Codex authorship uses recorded block evidence, independently of role."""
+"""Authorship contracts against the complete interactive Codex capture."""
 
 import json
 from copy import deepcopy
-from pathlib import Path
 
+import codex_capture as capture
 import pytest
 
 from session_log_extractors import extract_codex_session_log as codex
 from session_log_extractors.codex_authorship import message_authorship
 from session_log_extractors.session_log_envelope import export_session
 
-FIXTURES = Path(__file__).parent / "fixtures" / "codex"
 META = "internal_chat_message_metadata_passthrough"
 
 
-def _source(name="slash.jsonl"):
-    return codex.read_source(FIXTURES / name)
-
-
-def _typed_input(source):
-    return next(
-        e
-        for e in source.entries
-        if "user.text"
-        in e.get("payload", {}).get(META, {}).get("content_item_kinds", [])
-    )
+def _source():
+    return codex.read_source(capture.TRANSCRIPT)
 
 
 def _message(session, native):
-    return next(e for e in session["events"] if e.get("id") == native["payload"]["id"])
+    for message in session["events"]:
+        if message.get("id") == native["payload"]["id"]:
+            return message
+    raise AssertionError("Native message was lost during interpretation")
+
+
+def _sources(message):
+    sources = []
+    for span in message["authorship"]:
+        sources.append(span["source"])
+    return sources
+
+
+def _native_kind(source, kind):
+    for entry in capture.response_items(source.entries, "message"):
+        metadata = entry["payload"].get(META, {})
+        if metadata.get("content_item_kinds") == [kind]:
+            return entry
+    raise AssertionError(f"Capture lacks required native content kind: {kind}")
 
 
 def test_native_candidate_and_injected_blocks_reach_production_json(capsys):
     source = _source()
-    native = _typed_input(source)
+    native = capture.human_message(source.entries)
+    context = _native_kind(source, "environments.environment_context")
     session = codex.interpret_source(source)
     candidate = _message(session, native)
-    assert candidate["text"] == "/review fixture"
+    injected = _message(session, context)
+    assert candidate["text"] == native["payload"]["content"][0]["text"]
     assert candidate["turn_id"] == native["payload"][META]["turn_id"]
-    assert [r["source"] for r in candidate["authorship"]] == ["candidate"]
-    injected = next(
-        e for e in session["events"] if e["role"] == "user" and e != candidate
-    )
-    assert [r["source"] for r in injected["authorship"]] == ["harness", "harness"]
-    assert injected["text"].startswith("# AGENTS.md instructions")
-    assert injected["ts"]
-    assert all(
-        r["ts"] == injected["ts"] and r["markers"] for r in injected["authorship"]
-    )
+    assert _sources(candidate) == ["candidate"]
+    assert injected["text"] == context["payload"]["content"][0]["text"]
+    assert _sources(injected) == ["harness"]
+    span = injected["authorship"][0]
+    assert span["ts"] == context["timestamp"]
+    assert span["markers"]
     original = deepcopy(session)
-    assert (
-        codex.main(["--transcript", str(FIXTURES / "slash.jsonl"), "--output", "-"])
-        == 0
-    )
-    import_output = capsys.readouterr().out
-    assert '"candidate"' in import_output and '"harness"' in import_output
-    assert export_session(session)["events"] == json.loads(import_output)["events"]
+    result = codex.main(["--transcript", str(capture.TRANSCRIPT), "--output", "-"])
+    assert result == 0
+    cli_events = json.loads(capsys.readouterr().out)["events"]
+    exported = export_session(session)
+    assert exported["events"] == cli_events
+    assert cli_events[candidate["i"]]["authorship"] == candidate["authorship"]
+    assert cli_events[injected["i"]]["authorship"] == injected["authorship"]
     assert session == original
 
 
 def test_mixed_native_blocks_keep_codepoint_offsets_and_recorded_markers():
     source = _source()
-    native = _typed_input(source)
-    context = next(
-        e
-        for e in source.entries
-        if "environments.environment_context"
-        in e.get("payload", {}).get(META, {}).get("content_item_kinds", [])
-    )
-    # Combine captured blocks into one message, retaining their aligned native evidence.
+    native = capture.human_message(source.entries)
+    context = _native_kind(source, "environments.environment_context")
+    # Combine captured blocks, changing only candidate text for the Unicode edge.
     payload = native["payload"]
     payload["content"][0]["text"] = "Hi 🙂"
-    payload["content"].append(deepcopy(context["payload"]["content"][1]))
+    payload["content"].append(deepcopy(context["payload"]["content"][0]))
     for key in ["content_item_kinds", "content_item_metadata"]:
-        payload[META][key].append(deepcopy(context["payload"][META][key][1]))
-    message = _message(codex.interpret_source(source), native)
+        payload[META][key].append(deepcopy(context["payload"][META][key][0]))
+    session = codex.interpret_source(source)
+    message = _message(session, native)
     first, second = message["authorship"]
     assert (first["start"], first["end"], first["source"]) == (0, 4, "candidate")
     assert second["start"] == 5 and second["end"] == len(message["text"])
     assert second["source"] == "harness"
     assert message["text"][:4] == "Hi 🙂"
     assert message["text"][5:] == payload["content"][1]["text"]
-    assert {
+    expected_kind = {
         "field": f"payload.{META}.content_item_kinds[1]",
         "value": "environments.environment_context",
-    } in second["markers"]
-    assert {
+    }
+    expected_provenance = {
         "field": f"payload.{META}.content_item_metadata[1].provenance",
         "value": {"type": "harness", "hook": False},
-    } in second["markers"]
+    }
+    assert expected_kind in second["markers"]
+    assert expected_provenance in second["markers"]
 
 
 @pytest.mark.parametrize(
@@ -96,7 +100,7 @@ def test_mixed_native_blocks_keep_codepoint_offsets_and_recorded_markers():
 )
 def test_unsupported_evidence_stays_unknown_and_preserved(change):
     source = _source()
-    native = _typed_input(source)
+    native = capture.human_message(source.entries)
     meta = native["payload"][META]
     if change == "missing":
         native["payload"].pop(META)
@@ -115,47 +119,114 @@ def test_unsupported_evidence_stays_unknown_and_preserved(change):
             "hook": False,
         }
     before = deepcopy(source.entries)
-    message = _message(codex.interpret_source(source), native)
-    assert message["text"] == "/review fixture"
-    assert message["authorship"][0]["source"] == "unknown"
-    assert source.entries == before
-    if change == "unknown_source":
-        assert any(
-            m["value"] == {"type": "future", "detail": [None, 1]}
-            for m in message["authorship"][0]["markers"]
-        )
-
-
-def test_native_image_delimiters_are_not_candidate_words():
-    source = _source("image.jsonl")
-    native = _typed_input(source)
     session = codex.interpret_source(source)
     message = _message(session, native)
-    assert [r["source"] for r in message["authorship"]] == [
-        "unknown",
-        "unknown",
-        "candidate",
-    ]
-    assert [message["text"][r["start"] : r["end"]] for r in message["authorship"]][
-        -1
-    ] == "Describe the attached 64-by-64 test image briefly."
-    assert message["images"]
+    assert message["text"] == native["payload"]["content"][0]["text"]
+    assert _sources(message) == ["unknown"]
+    assert source.entries == before
+    if change == "unknown_source":
+        values = []
+        for marker in message["authorship"][0]["markers"]:
+            values.append(marker["value"])
+        assert {"type": "future", "detail": [None, 1]} in values
+
+
+def test_native_images_keep_candidate_prompt_and_image_ownership():
+    source = _source()
+    checked = 0
+    session = codex.interpret_source(source)
+    exported = export_session(session)
+    for native in capture.response_items(source.entries, "message"):
+        payload = native["payload"]
+        if "user.image" not in payload.get(META, {}).get("content_item_kinds", []):
+            continue
+        message = _message(session, native)
+        sources = _sources(message)
+        image_count = len(message["images"])
+        assert sources == ["unknown"] * (image_count * 2) + ["candidate"]
+        prompt = message["authorship"][-1]
+        assert (
+            message["text"][prompt["start"] : prompt["end"]]
+            == payload["content"][-1]["text"]
+        )
+        assert exported["events"][message["i"]]["images"] == message["images"]
+        checked += 1
+    assert checked == 2
+
+
+def test_native_skill_expansion_is_harness_but_its_selection_is_candidate():
+    source = _source()
+    session = codex.interpret_source(source)
+    selections = []
+    expansions = []
+    for native in capture.response_items(source.entries, "message"):
+        payload = native["payload"]
+        kinds = payload.get(META, {}).get("content_item_kinds", [])
+        if kinds == ["skills.selected_skill_instructions"]:
+            message = _message(session, native)
+            assert _sources(message) == ["harness"]
+            assert message["skill_invocation"]["name"]
+            expansions.append(message)
+        elif kinds == ["user.text"] and payload["content"][0]["text"].startswith(
+            "$capture-greeting"
+        ):
+            message = _message(session, native)
+            assert _sources(message) == ["candidate"]
+            selections.append(message)
+    assert len(expansions) == len(selections) == 2
+
+
+def test_native_user_shell_command_separates_candidate_command_from_output():
+    source = _source()
+    native = _native_kind(source, "shell.user_command")
+    session = codex.interpret_source(source)
+    message = _message(session, native)
+    assert message["text"] == native["payload"]["content"][0]["text"]
+    assert _sources(message) == ["harness", "candidate", "harness"]
+    command = message["authorship"][1]
     assert (
-        export_session(session)["events"][message["i"]]["images"] == message["images"]
+        message["text"][command["start"] : command["end"]] == message["shell_command"]
     )
+    assert command["ts"] == native["timestamp"]
+    exported = export_session(session)
+    assert exported["events"][message["i"]]["authorship"] == message["authorship"]
+
+
+@pytest.mark.parametrize("child", [False, True])
+def test_native_agent_deliveries_are_other_agent_without_inherited_human_inputs(child):
+    path = capture.CHILD_TRANSCRIPT if child else capture.TRANSCRIPT
+    source = codex.read_source(path)
+    session = codex.interpret_source(source)
+    messages = capture.response_items(source.entries, "agent_message")
+    native = messages[-1]
+    message = _message(session, native)
+    assert _sources(message) == ["other_agent"]
+    assert message["text"] == native["payload"]["content"][0]["text"]
+    assert message["ts"] == native["timestamp"]
+    markers = message["authorship"][0]["markers"]
+    assert {"field": "payload.author", "value": native["payload"]["author"]} in markers
+    assert {
+        "field": "payload.recipient",
+        "value": native["payload"]["recipient"],
+    } in markers
+    if child:
+        assert session["parent_session_id"]
+        for event in session["events"]:
+            if "authorship" in event:
+                assert "candidate" not in _sources(event)
 
 
 @pytest.mark.parametrize("evidence", ["kind_only", "provenance_only"])
 def test_recorded_evidence_supplies_authorship_independently_of_role(evidence):
     source = _source()
-    native = _typed_input(source)
-    # Older captures supply kinds only. Explicit provenance can also stand alone.
+    native = capture.human_message(source.entries)
     key = "content_item_metadata" if evidence == "kind_only" else "content_item_kinds"
     native["payload"][META].pop(key)
     native["payload"]["role"] = "assistant"
-    message = _message(codex.interpret_source(source), native)
+    session = codex.interpret_source(source)
+    message = _message(session, native)
     assert message["role"] == "assistant"
-    assert message["authorship"][0]["source"] == "candidate"
+    assert _sources(message) == ["candidate"]
 
 
 @pytest.mark.parametrize(
@@ -168,15 +239,16 @@ def test_recorded_evidence_supplies_authorship_independently_of_role(evidence):
     ],
 )
 def test_text_representation_boundaries_preserve_ranges_without_evidence(content):
-    # These non-native content representations exercise compatibility/malformed
-    # input boundaries, not additional claims about the captured schema.
+    # Controlled compatibility boundaries; these do not claim new captured shapes.
     text = (
         "\nplain text"
         if isinstance(content, list) and len(content) == 2
         else "plain text"
     )
     spans = message_authorship({"content": content}, text, None, "response_item")
-    assert all(r["source"] == "unknown" and "ts" not in r for r in spans)
+    for span in spans:
+        assert span["source"] == "unknown"
+        assert "ts" not in span
     assert spans[0]["start"] == (1 if text.startswith("\n") else 0)
     assert spans[-1]["end"] == len(text)
 
@@ -184,7 +256,108 @@ def test_text_representation_boundaries_preserve_ranges_without_evidence(content
 @pytest.mark.parametrize("value", [[], [False], [{"future": None}], "invalid"])
 def test_malformed_provenance_never_becomes_candidate(value):
     source = _source()
-    native = _typed_input(source)
+    native = capture.human_message(source.entries)
     native["payload"][META]["content_item_metadata"] = value
-    message = _message(codex.interpret_source(source), native)
-    assert message["authorship"][0]["source"] == "unknown"
+    session = codex.interpret_source(source)
+    message = _message(session, native)
+    assert _sources(message) == ["unknown"]
+
+
+def test_all_native_human_text_preserves_words_and_candidate_authorship():
+    source = _source()
+    session = codex.interpret_source(source)
+    checked = 0
+    literal_xml_seen = False
+    for native in capture.response_items(source.entries, "message"):
+        payload = native["payload"]
+        if payload.get(META, {}).get("content_item_kinds") != ["user.text"]:
+            continue
+        message = _message(session, native)
+        native_text = payload["content"][0]["text"]
+        assert message["text"] == native_text
+        assert _sources(message) == ["candidate"]
+        if "<bash-stdout>" in native_text:
+            literal_xml_seen = True
+        checked += 1
+    assert checked > 0
+    assert literal_xml_seen, "Native literal-markup input is required"
+
+
+@pytest.mark.parametrize("same_input", [True, False])
+def test_legacy_image_views_preserve_ownership_and_content_timestamps(same_input):
+    source = _source()
+    native = capture.image_message(source.entries)
+    source.entries = [native]
+    original = codex.interpret_source(source)["events"][0]
+    event_text = original["text"] if same_input else "A distinct input"
+    source.entries.append(
+        {
+            "type": "event_msg",
+            "timestamp": "event-time",
+            "payload": {"type": "user_message", "message": event_text},
+        }
+    )
+    actual = codex.interpret_source(source)["events"]
+    assert actual[0]["images"] == original["images"]
+    assert actual[0]["text"] == original["text"]
+    assert _sources(actual[0]) == _sources(original)
+    for span in actual[0]["authorship"]:
+        assert span["ts"] == native["timestamp"]
+    if same_input:
+        assert len(actual) == 1
+        assert actual[0]["ts"] == "event-time"
+        assert actual[0]["id"] == native["payload"]["id"]
+    else:
+        assert len(actual) == 2
+        assert actual[0]["ts"] == native["timestamp"]
+        assert actual[1]["ts"] == "event-time"
+        assert "images" not in actual[1]
+        assert actual[1]["text"] == event_text
+        assert _sources(actual[1]) == ["unknown"]
+
+
+def test_missing_shell_structure_preserves_unknown_text():
+    source = _source()
+    native = _native_kind(source, "shell.user_command")
+    # Deliberately break only the native command delimiter.
+    payload = native["payload"]
+    text = payload["content"][0]["text"].replace("<command>", "<future_command>")
+    payload["content"][0]["text"] = text
+    source.entries = [native]
+    message = codex.interpret_source(source)["events"][0]
+    assert message["text"] == text
+    assert _sources(message) == ["unknown"]
+
+
+def test_shell_lookalike_in_recorded_human_input_stays_candidate():
+    source = _source()
+    shell = _native_kind(source, "shell.user_command")
+    human = capture.human_message(source.entries)
+    # The human can paste a shell transcript literally. Keep human provenance.
+    text = shell["payload"]["content"][0]["text"]
+    human["payload"]["content"][0]["text"] = text
+    source.entries = [human]
+    message = codex.interpret_source(source)["events"][0]
+    assert message["text"] == text
+    assert _sources(message) == ["candidate"]
+
+
+@pytest.mark.parametrize(
+    "change", ["missing_author", "empty_recipient", "same_actor", "unknown_namespace"]
+)
+def test_incomplete_agent_evidence_remains_unknown(change):
+    source = _source()
+    native = capture.response_items(source.entries, "agent_message")[0]
+    payload = native["payload"]
+    if change == "missing_author":
+        payload.pop("author")
+    elif change == "empty_recipient":
+        payload["recipient"] = ""
+    elif change == "same_actor":
+        payload["recipient"] = payload["author"]
+    else:
+        payload[META]["content_item_metadata"][0]["provenance"]["namespace"] = "future"
+    source.entries = [native]
+    message = codex.interpret_source(source)["events"][0]
+    assert message["text"] == payload["content"][0]["text"]
+    assert _sources(message) == ["unknown"]

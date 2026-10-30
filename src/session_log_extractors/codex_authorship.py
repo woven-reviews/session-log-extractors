@@ -1,5 +1,7 @@
 """Project recorded Codex content provenance onto unchanged message text."""
 
+import re
+
 from session_log_extractors.json_types import JsonValue
 from session_log_extractors.session_model import (
     AuthorshipMarker,
@@ -17,6 +19,7 @@ _KIND_SOURCES: dict[str, AuthorshipSource] = {
     "generic.turn_aborted": "harness",
     "images.preparation_error": "harness",
     "daemon_recovery.internal_context": "harness",
+    "shell.user_command": "harness",
 }
 _PROVENANCE_SOURCES: dict[str, AuthorshipSource] = {
     "user": "candidate",
@@ -132,6 +135,60 @@ def _image_delimiters(content: list[JsonValue]) -> set[int]:
     return delimiters
 
 
+def _block_source(
+    payload: dict[str, JsonValue], kind: JsonValue, provenance: JsonValue
+) -> AuthorshipSource:
+    if payload.get("type") != "agent_message":
+        return _source(kind, provenance)
+    author, recipient = payload.get("author"), payload.get("recipient")
+    if (
+        isinstance(author, str)
+        and author
+        and isinstance(recipient, str)
+        and recipient
+        and recipient != author
+        and isinstance(provenance, dict)
+        and provenance.get("type") == "tool"
+        and provenance.get("namespace") == "collaboration"
+    ):
+        return "other_agent"
+    return "unknown"
+
+
+def _shell_ranges(
+    span: AuthorshipRange, text: str, kind: JsonValue
+) -> list[AuthorshipRange]:
+    """Split the recorded shell-command schema, never user-authored lookalikes."""
+    if kind != "shell.user_command" or span["source"] != "harness":
+        return [span]
+    match = re.match(
+        r"\A<user_shell_command>\s*<command>\n(.*?)\n</command>\s*<result>",
+        text,
+        re.DOTALL,
+    )
+    if match is None:
+        span["source"] = "unknown"
+        return [span]
+    ranges: list[AuthorshipRange] = []
+    sections: list[tuple[int, int, AuthorshipSource]] = [
+        (0, match.start(1), "harness"),
+        (match.start(1), match.end(1), "candidate"),
+        (match.end(1), len(text), "harness"),
+    ]
+    for start, end, source in sections:
+        if start < end:
+            ranges.append(
+                _authored_range(
+                    span["start"] + start,
+                    text[start:end],
+                    source,
+                    span.get("markers", []),
+                    span.get("ts"),
+                )
+            )
+    return ranges
+
+
 def message_authorship(
     payload: dict[str, JsonValue],
     text: str,
@@ -143,6 +200,12 @@ def message_authorship(
         return []
     base = [AuthorshipMarker(field="type", value=record_type)]
     base.extend(_source_markers(payload, "payload"))
+    if payload.get("type") == "agent_message":
+        for key in ("author", "recipient"):
+            if key in payload:
+                base.append(
+                    AuthorshipMarker(field=f"payload.{key}", value=payload[key])
+                )
     content = payload.get("content")
     parts = _text_parts(content) if isinstance(content, list) else []
     if (
@@ -160,10 +223,13 @@ def message_authorship(
         if isinstance(block, dict):
             markers = _source_markers(block, f"payload.content[{index}]") + markers
         if part:
-            source = "unknown" if index in delimiters else _source(kind, provenance)
-            ranges.append(
-                _authored_range(offset, part, source, base + markers, timestamp)
+            source = (
+                "unknown"
+                if index in delimiters
+                else _block_source(payload, kind, provenance)
             )
+            span = _authored_range(offset, part, source, base + markers, timestamp)
+            ranges.extend(_shell_ranges(span, part, kind))
         # Existing text serialization joins blocks with newlines. Those inserted
         # separators stay uncovered (unknown), never attributed to a speaker.
         offset += len(part) + 1

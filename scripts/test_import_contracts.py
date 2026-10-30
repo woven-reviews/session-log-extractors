@@ -12,14 +12,15 @@ from importlinter.contracts.protected import ProtectedContract
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = "session_log_extractors"
 CONFIG = tomllib.loads((ROOT / "pyproject.toml").read_text())["tool"]["importlinter"]
-CONTRACTS = {item["id"]: item for item in CONFIG["contracts"]}
+CONTRACTS = {}
+for item in CONFIG["contracts"]:
+    CONTRACTS[item["id"]] = item
 
 
 def _check(contract_id, graph):
-    options = {
-        key: str(value) if isinstance(value, bool) else value
-        for key, value in CONTRACTS[contract_id].items()
-    }
+    options = {}
+    for key, value in CONTRACTS[contract_id].items():
+        options[key] = str(value) if isinstance(value, bool) else value
     contract_type = (
         ForbiddenContract if options["type"] == "forbidden" else ProtectedContract
     )
@@ -40,34 +41,30 @@ def test_current_dependencies_satisfy_contracts(contract_id, graph):
     assert _check(contract_id, graph).kept
 
 
-@pytest.mark.parametrize(
-    ("contract_id", "importer", "imported"),
+_PROHIBITED_IMPORTS = []
+for target in [
+    "session_log_envelope",
+    "claude_sources",
+    "codex_sources",
+    "codex_authorship",
+    "copilot_sources",
+    "extract_claude_session_log",
+    "extract_codex_session_log",
+    "extract_copilot_session_log",
+]:
+    _PROHIBITED_IMPORTS.append(("model-boundary", "session_model", target))
+for target in [
+    "claude_sources",
+    "codex_sources",
+    "codex_authorship",
+    "copilot_sources",
+    "extract_claude_session_log",
+    "extract_codex_session_log",
+    "extract_copilot_session_log",
+]:
+    _PROHIBITED_IMPORTS.append(("export-boundary", "session_log_envelope", target))
+_PROHIBITED_IMPORTS.extend(
     [
-        ("model-boundary", "session_model", target)
-        for target in [
-            "session_log_envelope",
-            "claude_sources",
-            "codex_sources",
-            "codex_authorship",
-            "copilot_sources",
-            "extract_claude_session_log",
-            "extract_codex_session_log",
-            "extract_copilot_session_log",
-        ]
-    ]
-    + [
-        ("export-boundary", "session_log_envelope", target)
-        for target in [
-            "claude_sources",
-            "codex_sources",
-            "codex_authorship",
-            "copilot_sources",
-            "extract_claude_session_log",
-            "extract_codex_session_log",
-            "extract_copilot_session_log",
-        ]
-    ]
-    + [
         ("claude-schemas", "extract_copilot_session_log", "tool_inputs.claude"),
         ("copilot-schemas", "extract_claude_session_log", "tool_inputs.copilot"),
         ("claude-schemas", "session_model", "tool_inputs.claude"),
@@ -75,8 +72,11 @@ def test_current_dependencies_satisfy_contracts(contract_id, graph):
         ("codex-schemas", "extract_copilot_session_log", "tool_inputs.codex"),
         ("codex-schemas", "session_model", "tool_inputs.codex"),
         ("copilot-schemas", "session_log_envelope", "tool_inputs.copilot"),
-    ],
+    ]
 )
+
+
+@pytest.mark.parametrize(("contract_id", "importer", "imported"), _PROHIBITED_IMPORTS)
 def test_prohibited_dependency_breaks_contract(contract_id, importer, imported, graph):
     graph.add_import(importer=f"{PACKAGE}.{importer}", imported=f"{PACKAGE}.{imported}")
     assert not _check(contract_id, graph).kept

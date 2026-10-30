@@ -113,6 +113,40 @@ filesystem errors, and other cases that existing fixtures cannot meaningfully
 exercise. Do not replace a focused edge-case test with a fixture that no longer
 tests that edge case, or invoke paid fixture generators as part of tests.
 
+### Tests backed by generated native captures
+
+Treat LLM-generated wording as variable fixture data. Native-capture tests must
+not require particular assistant prose, question wording, option labels,
+headers, free-text answers, generated shell syntax, or model version names
+unless that exact value is explicitly controlled by the test. Regenerating a
+capture should not require rewriting prose expectations or approving a new
+output baseline merely because the model chose different words.
+
+Assert the feature's observable contract. For ordinary generated text, check
+string type and nonempty content where a response is required. For selected
+answers, check single/multiple selection counts, uniqueness, and membership in
+the recorded options. Keep precise checks for tool/result ownership, ordering,
+complete payload retention, images, decision states, and export byte limits.
+Missing required feature evidence must fail explicitly; a nonempty session
+alone does not establish coverage of its individual features.
+
+Select native evidence by tool names, structured properties, or deliberately
+prepared assets and operator markers, rather than incidental generated text.
+For example, find a multi-select question by its native flag and overlapping
+options by the relationship between their labels, not particular label words.
+Use recorded IDs to associate selected calls and results. Direct comparisons
+with recorded fields or assets are appropriate when testing their preservation;
+do not build a second extractor or derive expected output through the same
+production logic merely to obtain an oracle for generated prose.
+
+Keep exact parsing expectations in focused, explicitly controlled cases. For
+example, supply comma-separated answers or overlapping labels deliberately and
+assert their exact parsed values there, while native-capture tests check the
+feature independently of those words. When changing fixture selectors or
+wording-dependent assertions, verify that the tests tolerate reworded questions,
+labels, corresponding answers, and assistant prose while retaining checks for
+the behavior under test.
+
 ## Readability review
 
 Review changed functions for readability even when lint passes. For functions
@@ -123,6 +157,21 @@ they name a meaningful operation and make the caller easier to follow; do not
 split code merely to reduce line counts. Long declarative structures, test
 setup, and expected data can remain together when that improves understanding.
 Apply the same judgment to shorter functions with dense or mixed logic.
+
+Tests should read as specifications: make the scenario, action, and expected
+outcome easy to follow. Use shared fixtures and expressive helpers to hide
+incidental setup, while keeping the behavior under test and its expected result
+explicit. Name helpers for the domain concept they provide or the operation
+they perform. A reader should not need to trace a chain of helpers to discover
+what a test does or why it passes. Prefer a little repetition over abstractions
+that obscure the example.
+
+In Python tests and test helpers, use explicit loops and named intermediate
+values instead of comprehensions or generator expressions. Keep setup, actions,
+and assertions separate; never hide mutations inside assertions. Collect and
+name actual and expected values before comparing them. Names should explain
+their meaning without requiring readers to reconstruct earlier mutations,
+positional indexes, or slices. Give each helper one clear input shape.
 
 Name classes and helpers for the responsibility they perform. Distinguish
 records representing domain facts from objects that build, read, or export

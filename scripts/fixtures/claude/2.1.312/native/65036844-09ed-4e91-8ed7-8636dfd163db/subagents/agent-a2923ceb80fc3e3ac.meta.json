@@ -1,0 +1,11 @@
+{
+  "agentType": "Explore",
+  "isBuiltIn": true,
+  "launchedWithDefaults": true,
+  "description": "Read hello.py print marker",
+  "toolUseId": "toolu_0113uhGuJ9GmLZszMTSUUk1W",
+  "spawnDepth": 1,
+  "requestShape": "background",
+  "requestNonInteractive": true,
+  "finished": true
+}

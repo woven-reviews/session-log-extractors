@@ -5,7 +5,12 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
+from codex_capture import TRANSCRIPT as CODEX_TRANSCRIPT
+from codex_capture import human_message
+from copilot_fixture import native_records
 
+from session_log_extractors.claude_sources import read_source
+from session_log_extractors.codex_sources import load_entries
 from session_log_extractors.session_log_envelope import (
     build_envelope,
     export_session,
@@ -21,6 +26,9 @@ from session_log_extractors.session_model import (
     ToolCall,
     UserMessage,
 )
+
+ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312"
+(TRANSCRIPT,) = (ROOT / "native").glob("*.jsonl")
 
 
 @pytest.mark.parametrize("harness", ["claude", "codex", "copilot"])
@@ -260,9 +268,10 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def _native_records(relative_path):
-    return [
-        json.loads(line) for line in (FIXTURES / relative_path).read_text().splitlines()
-    ]
+    records = []
+    for line in (FIXTURES / relative_path).read_text().splitlines():
+        records.append(json.loads(line))
+    return records
 
 
 @pytest.mark.parametrize(
@@ -299,11 +308,17 @@ def test_authorship_examples_define_coverage_without_role_inference():
     candidate, mixed, injected, unknown, missing, partial = examples
     assert candidate["text"] == "Hi 🙂"
     assert candidate["authorship"] == [{"start": 0, "end": 4, "source": "candidate"}]
-    assert [mixed["text"][r["start"] : r["end"]] for r in mixed["authorship"]] == [
+    authored_texts = []
+    for record in mixed["authorship"]:
+        authored_texts.append(mixed["text"][record["start"] : record["end"]])
+    assert authored_texts == [
         "Hi 🙂",
         "<notice>context</notice>",
     ]
-    assert [r["source"] for r in mixed["authorship"]] == ["candidate", "harness"]
+    authored_sources = []
+    for record in mixed["authorship"]:
+        authored_sources.append(record["source"])
+    assert authored_sources == ["candidate", "harness"]
     assert injected["authorship"][0]["end"] == len(injected["text"])
     assert injected["authorship"][0]["source"] == "ide"
     assert unknown["authorship"][0]["source"] == "unknown"
@@ -317,51 +332,66 @@ def test_authorship_examples_define_coverage_without_role_inference():
         assert json.loads(json.dumps(event)) == event
 
 
+def _recorded_skill_expansions():
+    records = read_source(TRANSCRIPT).entries
+    skill_expansions = []
+    for entry in records:
+        if entry.get("type") == "user" and entry.get("isMeta"):
+            for block in entry.get("message", {}).get("content", []):
+                if (
+                    isinstance(block, dict)
+                    and block.get("type") == "text"
+                    and block["text"].startswith("Base directory for this skill:")
+                ):
+                    skill_expansions.append((entry, block["text"]))
+    expansions = skill_expansions
+    assert expansions, "Missing native skill expansion messages"
+    return expansions
+
+
 def test_claude_native_injected_message_fits_authorship_contract():
-    records = _native_records("claude/skill_command.jsonl")
-    native = next(r for r in records if r.get("isMeta") and r.get("sourceToolUseID"))
-    text = native["message"]["content"][0]["text"]
-    span = AuthorshipRange(
-        start=0,
-        end=len(text),
-        source="harness",
-        ts=native["timestamp"],
-        markers=[AuthorshipMarker(field="isMeta", value=native["isMeta"])],
-    )
-    event = UserMessage(
-        i=0,
-        role="user",
-        id=native["uuid"],
-        ts=native["timestamp"],
-        text=text,
-        authorship=[span],
-    )
-    assert json.loads(json.dumps(event))["text"] == text
-    assert span["markers"] == [{"field": "isMeta", "value": True}]
-    assert text.startswith("Base directory for this skill:")
-    assert event["id"] == native["uuid"]
+    expansions = _recorded_skill_expansions()
+    assert expansions
+    for native, text in expansions:
+        span = AuthorshipRange(
+            start=0,
+            end=len(text),
+            source="harness",
+            ts=native["timestamp"],
+            markers=[AuthorshipMarker(field="isMeta", value=native["isMeta"])],
+        )
+        event = UserMessage(
+            i=0,
+            role="user",
+            id=native["uuid"],
+            ts=native["timestamp"],
+            text=text,
+            authorship=[span],
+        )
+        assert json.loads(json.dumps(event))["text"] == text
+        assert span["markers"] == [{"field": "isMeta", "value": True}]
+        assert text.startswith("Base directory for this skill:")
+        assert event["id"] == native["uuid"]
 
 
-def test_codex_native_prompt_can_omit_authorship_in_shared_model():
-    records = _native_records("codex/slash.jsonl")
-    native = next(
-        r
-        for r in records
-        if "user.text"
-        in r.get("payload", {})
-        .get("internal_chat_message_metadata_passthrough", {})
-        .get("content_item_kinds", [])
-    )
+def test_codex_native_prompt_can_remain_unknown_without_classification():
+    native = human_message(load_entries(CODEX_TRANSCRIPT))
     text = native["payload"]["content"][0]["text"]
     event = UserMessage(i=0, role="user", text=text, ts=native["timestamp"])
-    assert json.loads(json.dumps(event))["text"] == "/review fixture"
+    assert isinstance(text, str) and text
+    assert json.loads(json.dumps(event))["text"] == text
+    # User role alone still does not require consumers to claim authorship.
     assert "authorship" not in event
     assert event["ts"] == native["timestamp"]
 
 
 def test_copilot_native_transformed_prompt_fits_mixed_ranges():
-    records = _native_records("copilot/baseline/events.jsonl")
-    native = next(r for r in records if r["type"] == "user.message")
+    records = native_records()
+    user_records = []
+    for record in records:
+        if record["type"] == "user.message":
+            user_records.append(record)
+    native = next(iter(user_records))
     data = native["data"]
     text = data["transformedContent"]
     boundary = len(text) - len(data["content"])
@@ -417,8 +447,56 @@ def test_authorship_retains_message_structure_through_export():
     assert decoded["events"][1]["tool_calls"][0]["id"] == "call-1"
     assert decoded["events"][1]["authorship"][0]["ts"] is None
     exported = export_session(session)
-    assert [event.get("authorship") for event in exported["events"]] == [
-        event.get("authorship") for event in session["events"]
+    actual_authorship = []
+    expected_authorship = []
+    actual_indices = []
+    for event in exported["events"]:
+        actual_authorship.append(event["authorship"])
+        actual_indices.append(event["i"])
+    for event in events:
+        expected_authorship.append(event["authorship"])
+    assert actual_authorship == expected_authorship
+    assert actual_indices == [0, 1, 2]
+    assert session == original
+
+
+@pytest.mark.parametrize(
+    "source", ["candidate", "harness", "ide", "other_agent", "unknown"]
+)
+def test_export_preserves_authorship_ranges_and_copies_nested_markers(source):
+    # Illustrative shared-contract boundary: not a native Claude classification.
+    text = "Hi 🙂<notice>context</notice>"
+    spans = [
+        AuthorshipRange(start=0, end=4, source=source, ts=None),
+        AuthorshipRange(
+            start=4,
+            end=len(text),
+            source="harness",
+            markers=[
+                AuthorshipMarker(field="block.type", value={"kind": ["notice", None]})
+            ],
+        ),
     ]
-    assert [event["i"] for event in exported["events"]] == [0, 1, 2]
+    session = Session(
+        harness="test",
+        session_id="s",
+        events=[
+            UserMessage(
+                i=0, role="user", ts="message-time", text=text, authorship=spans
+            )
+        ],
+    )
+    original = deepcopy(session)
+    exported = export_session(session, 0)
+    message = json.loads(json.dumps(exported))["events"][0]
+    assert message["text"] == text
+    assert message["ts"] == "message-time"
+    assert message["authorship"] == spans
+    actual_text_ranges = []
+    for span in message["authorship"]:
+        actual_text_ranges.append(text[span["start"] : span["end"]])
+    assert actual_text_ranges == ["Hi 🙂", "<notice>context</notice>"]
+    exported["events"][0]["authorship"][1]["markers"][0]["value"]["kind"].append(
+        "changed"
+    )
     assert session == original

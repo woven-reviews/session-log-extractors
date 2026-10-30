@@ -28,6 +28,11 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from session_log_extractors import session_log_envelope
+from session_log_extractors.claude_authorship import (
+    _attribute_command_outputs,
+    _queued_authorship,
+    _user_authorship,
+)
 from session_log_extractors.claude_sources import (
     ClaudeSource,
     read_source,
@@ -50,6 +55,7 @@ from session_log_extractors.session_log_envelope import (
     write_envelope,
 )
 from session_log_extractors.session_model import (
+    Event,
     Message,
     MessageContent,
     NativeIdentity,
@@ -88,9 +94,8 @@ FILE_PATH_KEYS = ("file_path", "path", "notebook_path", "filePath")
 # Max length for a condensed tool descriptor before it gets an ellipsis.
 TOOL_DESC_MAX = 100
 
-# Patterns for harness noise embedded in user-message text. These wrappers are
-# injected by the CLI, not typed by the human, so we strip them while keeping
-# the surrounding human prose.
+# Legacy sidecar-summary cleaning only. Main conversation text is preserved;
+# wrapper spelling alone does not establish authorship.
 _NOISE_TAG_BLOCK = re.compile(
     r"<(system-reminder|local-command-stdout|local-command-stderr|command-stdout|"
     r"command-stderr|command-name|command-message|command-args|task-notification|"
@@ -108,14 +113,12 @@ _NOISE_TAG_LOOSE = re.compile(
 
 # A `!`-prefixed shell command the human ran in-session is recorded as a user
 # message wrapped in <bash-input>…</bash-input>. We surface it as a shell command
-# rather than as prose. (The matching <bash-stdout>/<bash-stderr> output arrives
-# as a separate user message and is stripped as noise above.)
+# alongside its unchanged prose. Output wrappers also remain in the conversation.
 _BASH_INPUT = re.compile(r"<bash-input>(.*?)</bash-input>", re.DOTALL | re.IGNORECASE)
 
 # A slash-command invocation (e.g. `/extract-claude-session-logs`) is recorded as
 # a user message wrapping <command-name>…</command-name> (plus command-message and
-# command-args). clean_user_text strips those tags to nothing, so we pull the
-# command name from the raw text *before* cleaning and surface it as its own turn.
+# command-args). Retain these action fields alongside the original text.
 _COMMAND_NAME = re.compile(
     r"<command-name>\s*(.*?)\s*</command-name>", re.DOTALL | re.IGNORECASE
 )
@@ -134,7 +137,9 @@ _PERMISSION_DENIAL_PREFIXES = (
 )
 # Settings-driven denials (e.g. don't-ask mode) name the tool instead. Anchored on
 # "has been denied" so reading an ISC LICENSE ("Permission to use, copy…") can't match.
-_PERMISSION_DENIED_TOOL = re.compile(r"Permission to use \S+ has been denied\b")
+_PERMISSION_DENIED_TOOL = re.compile(
+    r"Permission to use \S+(?: with command [^\r\n]+)? has been denied\b"
+)
 # Optional steering message the human typed when denying, e.g.
 # "…the user said:\nWe need a new branch for this". A plan sent back in plan mode
 # uses a different lead-in ("…reason for the rejection: …") for the same thing.
@@ -498,7 +503,8 @@ def _parse_chosen(
     ``Your questions have been answered: "<question>"="<label>", "<q2>"="<l2>".``
     For multiSelect the value is comma-joined labels; for an "Other" answer the
     value is free text matching no option. We locate the value by anchoring on
-    the exact question text, then mark every option whose label appears in it.
+    the exact question text, then match complete labels, including comma-separated
+    multiSelect values.
     """
     val = ""
     if question_text and result_text:
@@ -515,7 +521,10 @@ def _parse_chosen(
             tail = parts[1]
             end = tail.find('"')
             val = tail[:end] if end != -1 else tail
-    chosen = [o for o in options if (label := o.get("label")) and label in val]
+    selected = (
+        {val} if any(o.get("label") == val for o in options) else set(val.split(", "))
+    )
+    chosen = [o for o in options if (label := o.get("label")) and label in selected]
     return val, chosen
 
 
@@ -679,7 +688,7 @@ class _ClaudeInterpreter:
 
     def consume(self, entry: Dict[str, JsonValue]) -> None:
         etype = entry.get("type")
-        if entry.get("isMeta") is True or etype in ("summary", "system"):
+        if etype in ("summary", "system"):
             return
         if entry.get("isSidechain") is True:
             if etype == "user" and not _is_tool_result_entry(entry):
@@ -692,15 +701,16 @@ class _ClaudeInterpreter:
                 self.user(entry)
         elif etype == "assistant":
             self.assistant(entry)
+        elif etype == "attachment":
+            self.queued_message(entry)
 
     def user(self, entry: Dict[str, JsonValue]) -> None:
-        raw = _human_text(entry)
-        text = clean_user_text(raw)
+        text = _human_text(entry)
         images = [
             image_from_base64(str(src["data"]), string_value(src.get("media_type")))
             for src in _image_sources(entry)
         ]
-        match = _COMMAND_NAME.search(raw)
+        match = _COMMAND_NAME.search(text)
         command = match.group(1).strip() if match else ""
         command = command if command.startswith("/") else ""
         if not text and not images and not command:
@@ -709,15 +719,42 @@ class _ClaudeInterpreter:
             len(self.events), string_value(entry.get("timestamp")), text, images
         )
         _attach_identity(message, _message_identity(entry))
+        if text:
+            message["authorship"] = _user_authorship(entry, text)
         if command:
-            args = _COMMAND_ARGS.search(raw)
+            args = _COMMAND_ARGS.search(text)
             message["command"] = command
             message["command_args"] = (args.group(1).strip() if args else "") or None
-            if not text:
-                message["text"] = f"{command} {message['command_args'] or ''}".strip()
         commands = [c.strip() for c in _BASH_INPUT.findall(text) if c.strip()]
         if commands:
             message["shell_command"] = "\n".join(commands)
+        self.events.append(message)
+
+    def queued_message(self, entry: Dict[str, JsonValue]) -> None:
+        attachment = entry.get("attachment")
+        if (
+            not isinstance(attachment, dict)
+            or attachment.get("type") != "queued_command"
+        ):
+            return
+        rendered = entry.get("rendered")
+        parts: List[str] = []
+        for block in rendered if isinstance(rendered, list) else []:
+            if isinstance(block, dict):
+                content = block.get("content")
+                if isinstance(content, str):
+                    parts.append(content)
+        text = "\n".join(parts) or string_value(attachment.get("prompt")) or ""
+        if not text:
+            return
+        message = Event(
+            i=len(self.events),
+            ts=string_value(entry.get("timestamp")),
+            role=string_value(entry.get("renderedRole")) or "unknown",
+            text=text,
+            authorship=_queued_authorship(entry, text, attachment),
+        )
+        _attach_identity(message, _message_identity(entry))
         self.events.append(message)
 
     def assistant(self, entry: Dict[str, JsonValue]) -> None:
@@ -906,6 +943,7 @@ def interpret_source(
         adapter.consume(entry)
     if not adapter.events:
         return None
+    _attribute_command_outputs(source.entries, adapter.events)
     return Session(
         harness="claude",
         session_id=source.path.stem,

@@ -1,23 +1,146 @@
 # Claude Code fixture provenance
 
-These fixtures exercise the log shapes listed in [QUAL-2399](https://linear.app/andela/issue/QUAL-2399/claude-code-test-coverage). Native captures were regenerated with Claude Code 2.1.292 (`claude --version` on 2026-10-09). Tests read only files here and never invoke Claude Code or require `~/.claude`.
+## Current test capture
 
-Regenerate the seven native captures manually with `python3 scripts/generate_claude_fixtures.py` from the repository root. The script runs `claude --print <prompt> --output-format json --model <model> --session-id <uuid> --max-budget-usd 0.25 --permission-mode dontAsk --permission-prompts none --setting-sources project --strict-mcp-config --no-chrome`, adding `--tools <name>` for tool cases and replacing `--session-id` with `--resume` for second turns. It prints the exact commands it executes. It uses a temporary project and the operator's existing Claude login, then sanitizes and stages the resulting files before replacement. Regeneration makes paid model calls and is never part of the test run.
+Tests explicitly select **2.1.312**, captured interactively on 2026-10-30.
+The process auto-updated to 2.1.314 for exact-session resumes; both versions
+contributed to this one complete session.
 
-| QUAL-2399 case | Classification | Capture or construction and reason |
-| --- | --- | --- |
-| 1. Session directory with subagents and metadata | Headless-generatable | `subagent.jsonl` plus `subagent/subagents/agent-fixture.jsonl` and `.meta.json` came from one Agent run. The checked-in sibling directory matches the extractor's lookup path. |
-| 2. Permission denial wording | Headless-generatable | `permission_denial.jsonl` came from a Bash request under `dontAsk`. Claude Code 2.1.292 says `Permission to use Bash has been denied...`; the parser records it as a permission denial for Bash. |
-| 3. Plan approve, edited approval, and rejection | Fixture-only for unattended CLI | `plan_modes.jsonl` is hand-authored from the previously audited result strings because these decisions require an interactive approval handler. It preserves the edited-plan heading and whitespace. A future SDK or interactive capture could replace it. |
-| 4. AskUserQuestion multiSelect, Other, multiple questions | Fixture-only for unattended CLI | `questions.jsonl` is hand-authored from the audited result shapes because bare `claude -p` cannot answer its own prompt. An SDK `canUseTool` callback could produce a native replacement. |
-| 5. Multiple pasted images and jpeg/gif/webp | Fixture-only for text CLI | `images.jsonl` is hand-authored. Four valid one-pixel payloads were made with ImageMagick (`magick -size 1x1 xc:white pixel.png`, then `magick pixel.png pixel.jpeg`, `pixel.gif`, and `pixel.webp`) and embedded as base64. A text `claude -p` prompt cannot paste them. |
-| 6. Skill and command metadata | Headless-generatable | `skill_command.jsonl` contains a Skill tool call and a resumed direct `/fixture-command` invocation. The captured project definitions are in `project/.claude/skills/fixture-skill/SKILL.md` and `project/.claude/commands/fixture-command.md`. |
-| 7. Partial trailing line | Fixture-only | `truncated.jsonl` is hand-authored with two valid entries and a third line ending after `"partial`. A completed headless run should not intentionally produce corrupt JSONL. |
-| 8. Large tool result | Headless-generatable | `large_result.jsonl` contains a native Read result over 10 KB. The test checks truncation and repeats that captured event in memory to reach the 8 MiB envelope warning without committing an oversized file. |
-| 9. Mid-session model switch | Headless-generatable | `model.jsonl` contains a recorded direct `/model sonnet` command and both Haiku and Sonnet assistant entries in one resumed session. In Claude Code 2.1.292 print mode, the slash command alone does not persist the choice; the following resumed `--model sonnet` flag caused the switch. |
-| 10. Windows encoded project path | Unsupported on this macOS host | Native `C--Users-...` project encoding requires a Windows Claude Code run. Capture there and copy the native project directory, or use an explicitly hand-authored path fixture if Windows is unavailable; a macOS headless run cannot establish Windows path provenance. |
-| Continued conversation | Headless-generatable | `continued.jsonl` records a Read call and a later prompt that asks about the previous answer. Both turns share one resumed session; the second answer depends on the first. |
+### Capture provenance
 
-The classification concerns native transcript generation through this host's bare print-mode CLI. The generator preserves every JSONL record, content block, and identifier. It redacts thinking text, private workspace and home paths, and email addresses without removing their containing records; the subagent metadata receives the same path and email redaction. Review regenerated output for other secrets before committing. Capture content and model IDs can change with CLI release and account.
+The source run is `20261030T143456Z`. Detailed coverage, launch records, file
+hashes, and sanitization reports belong to the untracked evidence bundle at
+`captures/claude/2.1.312/20261030T143456Z/`; they are not fixture inputs and must
+not be promoted with future captures.
 
-CLI reference: <https://code.claude.com/docs/en/cli-reference>. Print-mode behavior: <https://code.claude.com/docs/en/headless>. SDK user input: <https://code.claude.com/docs/en/agent-sdk/user-input>.
+Sanitization used the existing `sanitize_capture` public API at revision
+`e10eb43c202030db1af05408ac94c3e39387a833` with explicit private rules retained
+outside the repository. A narrow text-mode second pass redacted home prefixes
+in file-history JSON keys. Repeated sanitization produced identical outputs
+and match counts; native image payloads were preserved.
+
+The required child transcript and metadata are in the main session's
+[`subagents/` directory](2.1.312/native/65036844-09ed-4e91-8ed7-8636dfd163db/subagents/).
+Required source images, before/after notebook inputs, plan-editor assets, and
+skill/command definitions are retained under [`assets/`](2.1.312/assets/).
+The selected main session is the successful retry; the failed initial attempt
+had no durable native ID and was not merged into it.
+
+### Test inputs
+
+The canonical input is
+[`native/65036844-09ed-4e91-8ed7-8636dfd163db.jsonl`](2.1.312/native/65036844-09ed-4e91-8ed7-8636dfd163db.jsonl).
+Test modules pin this version and discover its main transcript and child file
+without embedding captured session or agent IDs. Integration and source-free
+contract tests read the complete transcript; focused tests select unchanged
+records by tool name and input, operator-authored markers, or question structure.
+Missing or ambiguous semantic matches fail explicitly. Recorded IDs connect
+already selected calls with their results; no lookup uses a saved ID, line
+number, timestamp, or occurrence. Filesystem tests copy this input
+and its child sidecar into temporary directories. No tests invoke paid CLIs.
+
+Generated assistant responses and subagent prose are checked for string type and
+nonempty content, without requiring particular words or a successful recall by
+the model. Question selectors use multi-select structure or the overlapping
+option labels under test, rather than generated question wording or headers.
+Native answers are checked for nonempty text, single or multiple selections,
+and membership in recorded options, without pinning option labels or headers.
+Comma-separated answers and overlapping labels have separate, explicitly
+controlled parser tests. Plan selectors use recorded approval/rejection evidence
+rather than proposed plan wording. Exact assertions remain for structured
+decisions, operator input, edited-plan assets, and focused parsing or sanitization
+boundaries. Selection
+tests vary generated prose, question wording, option labels/descriptions and
+their recorded answers, IDs, and record order to check that new captures can use
+different wording.
+
+The current capture supplies ordinary Markdown/Unicode, single-choice and
+multi-question/multi-select answers, free text, previews and notes, question
+cancellation, plan rejection/revision/editor approval, permissions, file and
+notebook edits, large inputs and multibyte results, shell success/errors,
+attachments, repeated skills, command arguments, subagent activity, model changes,
+exact resume, and compaction. Failed capture attempts remain documented in the
+untracked evidence bundle; they must not be treated as successful evidence.
+
+Claude converted all four original image formats to PNG in the native transcript.
+Tests assert that current behavior, plus legacy MIME preservation by substituting
+the captured JPEG/GIF/WebP source assets into native image blocks. Plan tests
+compare proposed and edited versions with the captured editor assets.
+
+## Authorship evidence
+
+Production authorship tests use this interactive capture for typed and queued
+human input (`promptSource`, `turnOrigin`, and `origin.kind`), injected
+`isMeta` expansions, task-notification origins, and compact summaries. The
+operator's typed literal XML demonstrates that wrapper spelling cannot establish
+injection. The five captured standalone interruption notices are classified as
+candidate activity to retain the user's interruption action in candidate-visible
+logs, even though Claude generates their wording. Exact native control-message
+shape recognition excludes incidental quotes and respects explicit injection
+provenance. The standalone `<bash-input>` record retains the user-submitted
+shell command as candidate activity, including its wrapper. Its output remains
+a separate record and inherits candidate attribution through the recorded
+`parentUuid` link to a unique candidate shell-input message. Intervening messages
+and record order do not establish ownership. Missing or ambiguous parents and
+explicit injection provenance prevent inheritance. Quoted or embedded shell-input
+examples are not recognized as native shell-mode actions. The custom
+slash-command invocation has explicit human origin and human turn; its command
+and arguments retain candidate attribution without requiring a typed-input flag.
+This classification does not depend on the fixture command's name, and its
+loaded instructions retain their separate provenance. The two native `/model`
+selector invocations also count as candidate activity using their standalone
+control-record shape. Their result notices retain the selected model as candidate
+activity through recorded parent-ID links to unique candidate model invocations.
+Model and shell result formats must match the linked input; an unrelated human
+message or another command kind cannot establish attribution. Notice wording
+and model names do not drive recognition. Results remain separate records.
+Both native CLI representations of the manual `/compact` invocation (plain and
+wrapped) retain candidate attribution. Their CLI entrypoint is preserved as
+evidence; an unmarked SDK prompt containing `/compact` remains unknown. The
+generated compaction summary retains harness attribution. The separate completion
+notice inherits candidate attribution through its parent ID pointing to a unique
+candidate compaction invocation. All previously unresolved activity records in
+this capture now have evidence-backed classifications; a full-capture regression
+test detects new unresolved activity without relabeling the generated summary.
+
+A `queued_command` attachment records the original human prompt,
+`source_uuid`, `delivery_id`, its own timestamp, and the longer rendered text;
+the extractor retains that attachment at its recorded position with the recorded
+rendered role and mixed candidate/harness ranges. It does not assign it to a
+nearby human message or tool call.
+
+There is no peer-origin delivery or explicit IDE-origin text in this capture.
+The Agent child and its task notification are distinct from peer delivery.
+Peer-origin/body shapes observed in separate local main-session logs are covered
+only by clearly labeled controlled mutations; they are not promoted as native
+peer coverage. Unknown SDK/external input and conflicting or incomplete source
+fields never become candidate speech. No private conversation text is added.
+
+## Boundary and legacy compatibility tests
+
+No test reads the older unversioned fixtures. Small, documented mutations of the
+current input exercise missing/empty/null results, repeated or unmatched IDs,
+unknown tools/fields, malformed options, corrupt trailing JSONL, ordering ties,
+missing metadata, and large aggregate output. Handwritten inputs remain for
+malformed containers, filesystem errors, and focused parser primitives where
+native data cannot express the edge.
+
+Legacy wording remains covered without loading old captures: the Claude 2.1.292
+settings denial without a command, inline user feedback, the audited rejection
+reason wording, and the unchanged-plan echo under an edited-plan heading.
+These tests retain the prior semantic assertions with targeted native mutations
+or the exact parser input. Older image media types remain explicit legacy cases.
+
+The print-mode generator tests also use the current native input and child
+sidecar as fake CLI output. They adapt only command/response markers required by
+the generator's fixed prompts and compare complete sanitized records. The generator
+itself retains its existing manual workflow; it does not regenerate the interactive
+capture.
+
+## Historical inputs
+
+The unversioned files came from Claude Code 2.1.292 on 2026-10-09, except the
+hand-authored `plan_modes.jsonl`, `questions.jsonl`, `images.jsonl`, and
+`truncated.jsonl`. They remain historical artifacts, outside the active test
+inputs. `scripts/generate_claude_fixtures.py` manually regenerates the old print-mode
+cases and makes paid calls using the operator's login. It must never run in tests.

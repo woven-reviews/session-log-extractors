@@ -15,6 +15,15 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from codex_capture import (
+    ASSETS,
+    TRANSCRIPT,
+    exec_interactions,
+    human_message,
+    image_message,
+    question_interaction,
+    response_items,
+)
 
 from session_log_extractors import extract_codex_session_log as mod
 from session_log_extractors import session_log_envelope
@@ -42,10 +51,12 @@ from session_log_extractors.extract_codex_session_log import (
     append_unique_path,
     assistant_text_from_payload,
     build_raw_envelope,
+    clean_user_text,
     extract_transcript,
     first_timestamp,
     image_refs_from_event,
     image_refs_from_user_message_payload,
+    is_startup_context,
     main,
     option_qa_from_output,
     parse_permission_denial,
@@ -53,6 +64,8 @@ from session_log_extractors.extract_codex_session_log import (
     session_models,
     skill_names_from_call,
     skill_refs_from_call,
+    user_text_from_event,
+    user_text_from_response_item,
 )
 
 # 1x1 transparent PNG.
@@ -60,173 +73,6 @@ _PNG_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9"
     "awAAAABJRU5ErkJggg=="
 )
-
-
-FIXTURES = Path(__file__).resolve().parent / "fixtures" / "codex"
-
-
-def _native_inputs(entries):
-    """Select recorded inputs explicitly, keeping startup activity in other tests."""
-    return [
-        entry
-        for entry in entries
-        if "user.text"
-        in entry.get("payload", {})
-        .get("internal_chat_message_metadata_passthrough", {})
-        .get("content_item_kinds", [])
-    ]
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        "/review fixture",
-        "  Hi 🙂\n<system-reminder>context</system-reminder>\n\n\n",
-        "<task-notification>agent result</task-notification>",
-        "<recommended_plugins>x</recommended_plugins>\n# AGENTS.md instructions\n"
-        "<environment_context>y</environment_context>",
-    ],
-)
-def test_codex_preserves_text_and_unknown_authorship_through_cli(
-    text, tmp_path, capsys
-):
-    entries = load_entries(FIXTURES / "slash.jsonl")
-    native = _native_inputs(entries)[0]
-    # Remove recorded evidence to exercise the fallback, then vary only text.
-    native["payload"].pop("internal_chat_message_metadata_passthrough")
-    native["payload"]["content"][0]["text"] = text
-    session = _interpret(entries)
-    message = next(
-        e for e in session["events"] if e.get("id") == native["payload"]["id"]
-    )
-    expected = [
-        {
-            "start": 0,
-            "end": len(text),
-            "source": "unknown",
-            "markers": [
-                {"field": "type", "value": "response_item"},
-                {"field": "payload.type", "value": "message"},
-                {"field": "payload.content[0].type", "value": "input_text"},
-            ],
-            "ts": native["timestamp"],
-        }
-    ]
-    assert message["text"] == text
-    assert message["ts"] == native["timestamp"]
-    assert message["authorship"] == expected
-    transcript = tmp_path / "session.jsonl"
-    transcript.write_text("\n".join(json.dumps(e) for e in entries))
-    assert main(["--transcript", str(transcript), "--output", "-"]) == 0
-    exported = json.loads(capsys.readouterr().out)["events"]
-    assert exported[message["i"]]["text"] == text
-    assert exported[message["i"]]["authorship"] == expected
-    assert [e["ts"] for e in exported] == [e["ts"] for e in session["events"]]
-
-
-@pytest.mark.parametrize("startup", [False, True])
-def test_codex_distinct_response_and_event_keep_text_and_image_owner(startup):
-    entries = load_entries(FIXTURES / "image.jsonl")
-    native = _native_inputs(entries)[0]
-    if startup:
-        # Replace one captured text block with the formerly skipped startup shape.
-        native["payload"]["content"][0]["text"] = (
-            "<recommended_plugins>x</recommended_plugins>\n# AGENTS.md instructions\n"
-            "<environment_context>y</environment_context>"
-        )
-    # Insert a distinct event after the image-bearing response, not a duplicate.
-    entries.insert(
-        entries.index(native) + 1,
-        {
-            "type": "event_msg",
-            "timestamp": "later",
-            "payload": {"type": "user_message", "message": "Different input"},
-        },
-    )
-    users = _users(entries)
-    assert len(users) == 3
-    users = users[1:]
-    assert users[0]["text"] == "\n".join(
-        block["text"] for block in native["payload"]["content"] if "text" in block
-    )
-    assert users[0]["images"]
-    assert users[1]["text"] == "Different input"
-    assert users[1]["ts"] == "later"
-    assert "images" not in users[1]
-
-
-@pytest.mark.parametrize("text", ["", "  keep whitespace 🙂  "])
-def test_codex_image_only_and_unfamiliar_source_remain_on_recorded_input(text):
-    entries = load_entries(FIXTURES / "image.jsonl")
-    native = _native_inputs(entries)[0]
-    # Keep the captured image block, replacing text blocks to exercise no-text input.
-    native["payload"]["content"] = [
-        {"type": "input_text", "text": text, "source": {"future": [None, "ide"]}},
-        *[b for b in native["payload"]["content"] if b["type"] == "input_image"],
-    ]
-    # Deliberately remove classification evidence for this unknown-source boundary.
-    native["payload"].pop("internal_chat_message_metadata_passthrough")
-    native["payload"]["source"] = None
-    native.pop("timestamp")
-    message = next(e for e in _events(entries) if e.get("images"))
-    assert message["text"] == text
-    assert message["ts"] is None
-    assert message["images"]
-    if text:
-        span = message["authorship"][0]
-        assert span["source"] == "unknown"
-        assert "ts" not in span
-        assert {"field": "payload.source", "value": None} in span["markers"]
-        assert span["markers"][-1] == {
-            "field": "payload.content[0].source",
-            "value": {"future": [None, "ide"]},
-        }
-    else:
-        assert message["authorship"] == []
-
-
-def test_codex_exact_duplicate_view_keeps_images_identity_and_tools():
-    entries = load_entries(FIXTURES / "image.jsonl")
-    native = _native_inputs(entries)[0]
-    text = "\n".join(b["text"] for b in native["payload"]["content"] if "text" in b)
-    native["payload"]["id"] = "response-id"
-    native["payload"]["source"] = "unfamiliar-origin"
-    original = _interpret(entries)
-    expected = next(e for e in original["events"] if e.get("id") == "response-id")
-    # Add an exact event view with a different recorded timestamp. Its message
-    # time survives while response ranges retain their own recorded content time.
-    entries.insert(
-        entries.index(native) + 1,
-        {
-            "type": "event_msg",
-            "timestamp": "event-time",
-            "payload": {"type": "user_message", "message": text},
-        },
-    )
-    session = _interpret(entries)
-    message = next(e for e in session["events"] if e.get("id") == "response-id")
-    assert len(session["events"]) == len(original["events"])
-    assert message["images"] == expected["images"]
-    assert message["ts"] == "event-time"
-    assert [r["source"] for r in message["authorship"]] == [
-        "unknown",
-        "unknown",
-        "candidate",
-    ]
-    for span, prior in zip(message["authorship"], expected["authorship"], strict=True):
-        assert (span["start"], span["end"], span["ts"]) == (
-            prior["start"],
-            prior["end"],
-            native["timestamp"],
-        )
-        assert {"field": "type", "value": "event_msg"} in span["markers"]
-        assert {"field": "type", "value": "response_item"} in span["markers"]
-        assert {"field": "payload.source", "value": "unfamiliar-origin"} in span[
-            "markers"
-        ]
-    index = message["i"]
-    assert session["events"][:index] == original["events"][:index]
-    assert session["events"][index + 1 :] == original["events"][index + 1 :]
 
 
 QUESTIONS = [
@@ -257,11 +103,19 @@ def _events(entries, tool_result_max_bytes=4096, *, image_inputs=None):
 
 
 def _users(entries):
-    return [e for e in _interpret(entries)["events"] if e["role"] == "user"]
+    matching_entries = []
+    for e in _interpret(entries)["events"]:
+        if e["role"] == "user":
+            matching_entries.append(e)
+    return matching_entries
 
 
 def _calls(entries):
-    return [c for e in _interpret(entries)["events"] for c in e.get("tool_calls", [])]
+    tool_calls = []
+    for e in _interpret(entries)["events"]:
+        for c in e.get("tool_calls", []):
+            tool_calls.append(c)
+    return tool_calls
 
 
 def test_codex_structured_skill_call_is_recorded():
@@ -286,37 +140,37 @@ def test_codex_structured_skill_call_is_recorded():
 
 
 def test_codex_initial_response_item_user_message_is_exported_once():
-    entries = load_entries(FIXTURES / "model.jsonl")
-    users = _native_inputs(entries)
-    # Add the event_msg view of the second captured input to test deduplication.
-    second = users[1]
-    entries.insert(
-        entries.index(second) + 1,
-        {
-            "type": "event_msg",
-            "timestamp": second["timestamp"],
-            "payload": {
-                "type": "user_message",
-                "message": second["payload"]["content"][0]["text"],
-            },
-        },
-    )
-    assert [
-        e["text"]
-        for e in _users(entries)
-        if any(r["source"] == "candidate" for r in e["authorship"])
-    ] == [
-        "Reply with FIRST_MODEL_FIXTURE_MARKER.",
-        "Reply with SECOND_MODEL_FIXTURE_MARKER.",
+    user = human_message(load_entries(TRANSCRIPT))
+    text = user["payload"]["content"][0]["text"]
+    # Add the legacy event view of the same captured input to test deduplication.
+    duplicate = {
+        "type": "event_msg",
+        "timestamp": user["timestamp"],
+        "payload": {"type": "user_message", "message": text},
+    }
+    users = _users([user, duplicate])
+    assert len(users) == 1
+    assert users[0]["text"] == text
+    expected_turn = user["payload"]["internal_chat_message_metadata_passthrough"][
+        "turn_id"
     ]
+    assert users[0]["turn_id"] == expected_turn
 
 
-def test_codex_slash_command_is_recorded():
-    entries = load_entries(FIXTURES / "slash.jsonl")
+def test_legacy_bare_slash_command_is_recorded():
+    # Custom slash commands are rejected by the current interactive CLI.
+    entries = [
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "/review fixture"}],
+            },
+        }
+    ]
     users = _users(entries)
-    assert len(users) == 2
-    assert all(r["source"] == "harness" for r in users[0]["authorship"])
-    users = users[1:]
+    assert len(users) == 1
     assert users[0]["text"] == "/review fixture"
     assert users[0]["command"] == "/review"
     assert users[0]["command_args"] == "fixture"
@@ -422,9 +276,14 @@ def test_codex_handwritten_assistant_denial_branch():
     assert "not like that" in messages[-1]["text"]
 
 
-def test_codex_native_denial_fixture_records_declined_command():
-    entries = load_entries(FIXTURES / "denial.jsonl")
-    call = _calls(entries)[0]
+def test_legacy_process_rejection_records_user_denial():
+    # Current cancellation says "aborted by user"; retain the older CreateProcess
+    # rejection as a focused, controlled compatibility boundary.
+    user, first, second, first_result, second_result = exec_interactions()
+    first_result["payload"]["output"] = (
+        "exec_command failed: CreateProcess rejected by user"
+    )
+    call = _calls([user, first, first_result])[0]
     assert call["permission_denial"] == {"tool": "exec", "message": "", "by": "user"}
     assert "rejected by user" in call["result"].lower()
 
@@ -497,11 +356,17 @@ def test_codex_handwritten_plan_mode_update_plan_branch():
 
 
 def test_codex_native_plan_fixture_records_plan_mode():
-    entries = load_entries(FIXTURES / "plan.jsonl")
-    session = _interpret(entries)
-    assert len(_users(entries)) == 2
-    assert session["events"][0]["collaboration_mode"] == "plan"
-    assert "<proposed_plan>" in "\n".join(e.get("text", "") for e in session["events"])
+    session = _interpret(load_entries(TRANSCRIPT))
+    plans = []
+    for event in session["events"]:
+        if event["role"] == "assistant" and "<proposed_plan>" in (
+            event.get("text") or ""
+        ):
+            plans.append(event)
+    assert len(plans) >= 2, "The original and revised native plans are required"
+    for plan in plans:
+        assert plan["collaboration_mode"] == "plan"
+        assert isinstance(plan["text"], str) and plan["text"]
 
 
 def test_codex_default_mode_update_plan_remains_execution_tool():
@@ -535,6 +400,14 @@ def test_codex_default_mode_update_plan_remains_execution_tool():
     call = _calls(entries)[0]
     assert "plan_update" not in call
     assert call["name"] == "update_plan"
+
+
+def test_codex_noise_cleaning():
+    assert clean_user_text("<bash-stdout>output</bash-stdout>") == ""
+    assert (
+        clean_user_text("<bash-input>ls -la</bash-input>")
+        == "<bash-input>ls -la</bash-input>"
+    )
 
 
 def test_codex_summary_options_and_shell_command():
@@ -589,31 +462,46 @@ def test_codex_summary_options_and_shell_command():
 
 
 def test_codex_native_question_fixture_marks_answered_option():
-    entries = load_entries(FIXTURES / "question.jsonl")
-    assert _calls(entries)[0]["questions"][0]["chosen_labels"] == ["QUAL"]
+    user, request, result = question_interaction()
+    recorded_questions = json.loads(request["payload"]["arguments"])["questions"]
+    recorded_answers = json.loads(result["payload"]["output"])["answers"]
+    call = _calls([user, request, result])[0]
+    assert len(call["questions"]) == len(recorded_questions)
+    for question, recorded in zip(call["questions"], recorded_questions, strict=True):
+        answers = recorded_answers[recorded["id"]]["answers"]
+        selected = question["chosen_labels"]
+        assert len(selected) == 1
+        assert len(set(selected)) == len(selected)
+        assert selected[0] in answers
+        labels = []
+        for option in recorded["options"]:
+            labels.append(option["label"])
+        assert selected[0] in labels
+        assert question["question"] == recorded["question"]
+        for answer in answers:
+            assert answer in question["answer_text"]
 
 
 def _write_jsonl(path: Path, entries):
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        "\n".join(json.dumps(entry) for entry in entries) + "\n",
-        encoding="utf-8",
-    )
+    encoded_records = []
+    for entry in entries:
+        encoded_records.append(json.dumps(entry))
+    path.write_text("\n".join(encoded_records) + "\n", encoding="utf-8")
 
 
 def _session_entries(session_id: str, cwd: Path, message: str):
-    return [
-        {
-            "type": "session_meta",
-            "timestamp": "2026-01-01T00:00:00Z",
-            "payload": {"id": session_id, "cwd": str(cwd)},
-        },
-        {
-            "type": "event_msg",
-            "timestamp": "2026-01-01T00:00:01Z",
-            "payload": {"type": "user_message", "message": message},
-        },
-    ]
+    """Use native metadata/input for controlled filesystem-selection boundaries.
+
+    Only session identity, cwd, and the operator-controlled input differ; tool
+    history is irrelevant to these small selection/error scenarios.
+    """
+    captured = load_entries(TRANSCRIPT)
+    metadata = captured[0]
+    user = human_message(captured)
+    metadata["payload"].update(id=session_id, cwd=str(cwd))
+    user["payload"]["content"][0]["text"] = message
+    return [metadata, user]
 
 
 def test_codex_all_extracts_matching_sessions_to_unique_files():
@@ -655,7 +543,10 @@ def test_codex_all_extracts_matching_sessions_to_unique_files():
             os.chdir(old_cwd)
 
         assert rc == 0
-        written = sorted(path.name for path in out.glob("codex_session_log_raw_*.json"))
+        output_names = []
+        for path in out.glob("codex_session_log_raw_*.json"):
+            output_names.append(path.name)
+        written = sorted(output_names)
         assert written == [
             "codex_session_log_raw_session-one.json",
             "codex_session_log_raw_session-two.json",
@@ -698,7 +589,10 @@ def test_codex_no_selector_extracts_all_by_default():
             os.chdir(old_cwd)
 
         assert rc == 0
-        written = sorted(path.name for path in out.glob("codex_session_log_raw_*.json"))
+        output_names = []
+        for path in out.glob("codex_session_log_raw_*.json"):
+            output_names.append(path.name)
+        written = sorted(output_names)
         assert written == [
             "codex_session_log_raw_session-one.json",
             "codex_session_log_raw_session-two.json",
@@ -741,7 +635,10 @@ def test_codex_strict_requires_exact_cwd():
 
         assert rc == 0
         # Strict drops the descendant; only the exact-cwd session survives.
-        written = sorted(path.name for path in out.glob("codex_session_log_raw_*.json"))
+        output_names = []
+        for path in out.glob("codex_session_log_raw_*.json"):
+            output_names.append(path.name)
+        written = sorted(output_names)
         assert written == ["codex_session_log_raw_session-one.json"]
 
 
@@ -763,7 +660,7 @@ def _codex_entries(image_path, missing_path="/gone/missing.png"):
 def test_interpret_events_keeps_local_and_unresolvable_images():
     # Codex keeps images out of band, so the envelope is where they become
     # portable.
-    img = FIXTURES / "pixel.png"
+    img = ASSETS / "red.png"
     user = _events(
         _codex_entries(img), image_inputs={str(img): (img.read_bytes(), "png")}
     )[0]
@@ -776,38 +673,37 @@ def test_interpret_events_keeps_local_and_unresolvable_images():
 
 def test_image_fixture_inlines_response_item_image_in_json(tmp_path):
     destination = tmp_path / "out.json"
-    assert (
-        main(
-            [
-                "--transcript",
-                str(FIXTURES / "image.jsonl"),
-                "--output",
-                str(destination),
-            ]
-        )
-        == 0
-    )
+    status = main(["--transcript", str(TRANSCRIPT), "--output", str(destination)])
+    assert status == 0
     events = json.loads(destination.read_text())["events"]
-    images = [image for event in events for image in event.get("images", [])]
-    assert len(images) == 1
-    assert images[0]["media_type"] == "image/png"
-    assert base64.b64decode(images[0]["data"]) == (FIXTURES / "pixel.png").read_bytes()
+    image_groups = []
+    for event in events:
+        if event.get("images"):
+            image_groups.append(event["images"])
+    assert len(image_groups) == 2
+    expected_assets = [
+        ["red.png", "blue.png"],
+        ["red.jpg", "blue-gif-persisted.png", "blue.webp"],
+    ]
+    for images, names in zip(image_groups, expected_assets, strict=True):
+        assert len(images) == len(names)
+        for image, name in zip(images, names, strict=True):
+            assert base64.b64decode(image["data"]) == (ASSETS / name).read_bytes()
 
 
 def test_interpret_events_attaches_output_to_its_function_call():
-    events = _events(
-        load_entries(FIXTURES / "tool_patch_large.jsonl"), tool_result_max_bytes=100
-    )
-    calls = [c for e in events for c in e.get("tool_calls", [])]
-    assert len(calls) == 2
-    assert calls[0]["name"] == "exec"
-    assert any("printf TOOL_FIXTURE_MARKER" in c["input"] for c in calls)
-    assert calls[0]["result"] == ""
-    assert calls[0]["result_truncated"] is False
-    call = calls[1]
-    assert "fixture.txt" in call["input"]
-    assert call["result_bytes"] > 100
-    assert call["result_truncated"] is True
+    entries = exec_interactions()
+    events = _events(entries, tool_result_max_bytes=100)
+    calls = []
+    for event in events:
+        calls.extend(event.get("tool_calls", []))
+    requests = response_items(entries, "custom_tool_call")
+    assert len(calls) == len(requests) == 2
+    for call, request in zip(calls, requests, strict=True):
+        assert call["name"] == request["payload"]["name"]
+        assert call["input"] == request["payload"]["input"]
+    assert calls[0]["result_bytes"] > 100
+    assert calls[0]["result_truncated"] is True
 
 
 # --- timestamp / formatting helpers ---------------------------------------
@@ -816,6 +712,11 @@ def test_interpret_events_attaches_output_to_its_function_call():
 def test_parse_permission_denial_rejects_non_string():
     assert parse_permission_denial(None) is None
     assert parse_permission_denial(123) is None
+
+
+def test_clean_user_text_empty_returns_empty():
+    assert clean_user_text("") == ""
+    assert clean_user_text(None) == ""
 
 
 # --- file discovery / selection ---------------------------------------
@@ -1065,7 +966,10 @@ def test_image_refs_from_event_handles_dict_variants_and_junk():
         ],
     }
     refs = image_refs_from_event(payload)
-    kinds = [r["type"] for r in refs]
+    record_types = []
+    for r in refs:
+        record_types.append(r["type"])
+    kinds = record_types
     assert kinds.count("path") >= 4
     assert "data_url" in kinds
     assert "base64" in kinds
@@ -1084,6 +988,21 @@ def test_image_refs_from_user_message_payload_ignores_non_list_and_other_blocks(
     )
     assert len(refs) == 1
     assert refs[0]["path"] == "/tmp/f.png"
+
+
+def test_is_startup_context_requires_all_markers():
+    assert not is_startup_context("plain text")
+    assert not is_startup_context(
+        "<recommended_plugins>only this</recommended_plugins>"
+    )
+
+
+def test_user_text_from_event_non_string_message():
+    assert user_text_from_event({"message": 123}) == ""
+
+
+def test_user_text_from_response_item_strips():
+    assert user_text_from_response_item({"content": [{"text": "  hi  "}]}) == "hi"
 
 
 def test_assistant_text_from_payload_uses_output_text_key():
@@ -1317,10 +1236,18 @@ def test_interpret_patch_apply_end_before_any_turn_only_records_path():
 
 
 def test_interpret_assistant_message_before_any_user_is_preserved():
-    entries = load_entries(FIXTURES / "model.jsonl")
+    entries = load_entries(TRANSCRIPT)
     # Omit preceding inputs to exercise an assistant-only partial transcript.
-    assistant = next(e for e in entries if e["payload"].get("role") == "assistant")
-    assert _interpret([assistant])["events"][0]["text"] == "FIRST_MODEL_FIXTURE_MARKER"
+    for entry in response_items(entries, "message"):
+        if entry["payload"].get("role") == "assistant":
+            assistant = entry
+            break
+    else:
+        pytest.fail("Capture lacks an assistant response")
+    expected = assistant["payload"]["content"][0]["text"]
+    actual = _interpret([assistant])["events"][0]["text"]
+    assert isinstance(actual, str) and actual
+    assert actual == expected
 
 
 def test_interpret_function_call_before_any_user_turn_creates_turn():
@@ -1421,40 +1348,58 @@ def test_interpret_events_skips_blank_user_event_without_text_or_images():
     assert events[0]["text"] == "real text"
 
 
-@pytest.mark.parametrize("text", ["", "   ", "  reply 🙂  "])
-def test_interpret_events_assistant_text_is_preserved(text):
-    entries = load_entries(FIXTURES / "slash.jsonl")
-    native = next(e for e in entries if e["payload"].get("role") == "assistant")
-    # Vary the captured reply to cover empty and whitespace-preserving boundaries.
-    native["payload"]["content"][0]["text"] = text
-    entries = [native]
+def test_interpret_events_retains_startup_context_as_its_own_message():
+    startup_text = "<recommended_plugins>x</recommended_plugins>\n# AGENTS.md instructions\n<environment_context>y</environment_context>"
+    entries = [
+        {
+            "type": "response_item",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": startup_text}],
+            },
+        },
+        {
+            "type": "event_msg",
+            "timestamp": "2026-01-01T00:00:01Z",
+            "payload": {"type": "user_message", "message": "actual turn"},
+        },
+    ]
     events = _events(entries)
-    if text:
-        assert events[0]["text"] == text
-        assert events[0]["authorship"][0]["source"] == "unknown"
-        assert events[0]["authorship"][0]["end"] == len(text)
-    else:
-        assert events == []
+    assert len(events) == 2
+    assert events[0]["text"] == startup_text
+    assert events[1]["text"] == "actual turn"
+
+
+def test_interpret_events_assistant_whitespace_is_preserved():
+    entries = [
+        {
+            "type": "response_item",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "   "}],
+            },
+        }
+    ]
+    events = _events(entries)
+    assert len(events) == 1
+    assert events[0]["text"] == "   "
 
 
 def test_interpret_events_function_call_flushes_pending_user_message():
-    entries = load_entries(FIXTURES / "question.jsonl")
-    calls = [
-        entry["payload"]
-        for entry in entries
-        if entry["payload"].get("type") in ("function_call", "function_call_output")
-    ]
-    assert [call["type"] for call in calls] == ["function_call", "function_call_output"]
-    assert calls[0]["call_id"] == calls[1]["call_id"]
-
+    entries = question_interaction()
+    user, request, result = entries
+    assert request["payload"]["call_id"] == result["payload"]["call_id"]
     events = _events(entries)
-    call_event = next(e for e in events if e.get("tool_calls"))
-    assert events[call_event["i"] - 1]["role"] == "user"
-    assert (
-        "Which team" in call_event["tool_calls"][0]["input"]["questions"][0]["question"]
-    )
-    assert call_event["tool_calls"][0]["name"] == "request_user_input"
-    assert call_event["tool_calls"][0]["result"] == "QUAL"
+    assert events[0]["role"] == "user"
+    assert events[0]["text"] == user["payload"]["content"][0]["text"]
+    assert events[1]["tool_calls"][0]["name"] == "request_user_input"
+    expected_input = json.loads(request["payload"]["arguments"])
+    assert events[1]["tool_calls"][0]["input"] == expected_input
+    assert events[1]["tool_calls"][0]["result"]
 
 
 def test_export_omits_unmatched_result_without_inventing_a_message():
@@ -1505,12 +1450,21 @@ def test_first_timestamp_empty_entries_returns_none():
 
 
 def test_session_models_dedupes_and_ignores_missing():
-    entries = load_entries(FIXTURES / "model.jsonl")
-    entries += [
-        {"type": "turn_context", "payload": {"model": "gpt-6-luna"}},
-        {"type": "turn_context", "payload": {}},
-    ]
-    assert session_models(entries) == ["gpt-6.1-sol", "gpt-6-luna"]
+    entries = load_entries(TRANSCRIPT)
+    expected = []
+    for entry in entries:
+        model = entry["payload"].get("model")
+        if isinstance(model, str) and model not in expected:
+            expected.append(model)
+    assert len(expected) == 2, "A real model change must be captured"
+    entries.extend(
+        [
+            {"type": "turn_context", "payload": {"model": expected[0]}},
+            {"type": "turn_context", "payload": {}},
+        ]
+    )
+    actual = session_models(entries)
+    assert actual == expected
 
 
 # --- retained interpretation edge cases ---------------------------------------
@@ -1583,15 +1537,24 @@ def test_multiple_plan_updates():
                 },
             }
         )
-    assert [c["plan_update"]["steps"][0]["step"] for c in _calls(entries)] == [
-        "Step 0",
-        "Step 1",
-    ]
+    recorded_values = []
+    for c in _calls(entries):
+        recorded_values.append(c["plan_update"]["steps"][0]["step"])
+    assert recorded_values == ["Step 0", "Step 1"]
 
 
 def test_records_files_changed():
-    entries = load_entries(FIXTURES / "tool_patch_large.jsonl")
-    assert _interpret(entries)["files_changed"] == ["/workspace/fixture.txt"]
+    entries = load_entries(TRANSCRIPT)
+    expected = []
+    for entry in entries:
+        item = entry["payload"].get("item", {})
+        if item.get("type") == "FileChange" and item.get("status") == "completed":
+            for path in item.get("changes", {}):
+                if path not in expected:
+                    expected.append(path)
+    assert expected, "The native capture must contain completed file changes"
+    actual = _interpret(entries)["files_changed"]
+    assert actual == expected
 
 
 # --- extract_transcript / build_raw_envelope / _extract_all / main errors ---------------------------------------
@@ -1652,7 +1615,10 @@ def test_extract_all_skips_unparseable_transcript_and_still_succeeds(monkeypatch
         rc = mod._extract_all(str(sessions), str(out))
 
         assert rc == 0
-        written = sorted(p.name for p in out.glob("codex_session_log_raw_*.json"))
+        output_names = []
+        for p in out.glob("codex_session_log_raw_*.json"):
+            output_names.append(p.name)
+        written = sorted(output_names)
         assert written == ["codex_session_log_raw_good.json"]
 
 
@@ -1667,31 +1633,21 @@ def test_main_errors_when_transcript_not_found():
 def test_main_single_session_to_stdout():
     captured = io.StringIO()
     with contextlib.redirect_stdout(captured):
-        rc = main(
-            ["--transcript", str(FIXTURES / "tool_patch_large.jsonl"), "--output", "-"]
-        )
-    assert rc == 0
-    assert json.loads(captured.getvalue())["harness"] == "codex"
-    assert "TOOL_FIXTURE_MARKER" in captured.getvalue()
-    assert "fixture.txt" in captured.getvalue()
+        status = main(["--transcript", str(TRANSCRIPT), "--output", "-"])
+    assert status == 0
+    envelope = json.loads(captured.getvalue())
+    assert envelope["harness"] == "codex"
+    assert "CAPTURE_FIRST" in captured.getvalue()
+    assert "/tmp/CAPTURE_WORKSPACE/greeting.py" in captured.getvalue()
 
 
 def test_main_single_session_writes_only_json(tmp_path):
     destination = tmp_path / "out.json"
-    assert (
-        main(
-            [
-                "--transcript",
-                str(FIXTURES / "model.jsonl"),
-                "--output",
-                str(destination),
-            ]
-        )
-        == 0
-    )
+    status = main(["--transcript", str(TRANSCRIPT), "--output", str(destination)])
+    assert status == 0
     envelope = json.loads(destination.read_text())
-    assert envelope["models"] == ["gpt-6.1-sol", "gpt-6-luna"]
-    assert "SECOND_MODEL_FIXTURE_MARKER" in destination.read_text()
+    assert envelope["models"] == session_models(load_entries(TRANSCRIPT))
+    assert len(envelope["models"]) == 2
     assert list(tmp_path.iterdir()) == [destination]
 
 
@@ -1757,6 +1713,33 @@ def test_interpret_tagged_command_without_leading_slash_is_ignored():
     assert _users(entries)[0]["text"] == entries[0]["payload"]["message"]
 
 
+def test_interpret_startup_context_preserves_its_timestamp_and_text():
+    startup_text = (
+        "<recommended_plugins>x</recommended_plugins>\n"
+        "# AGENTS.md instructions\n<environment_context>y</environment_context>"
+    )
+    entries = [
+        {
+            "type": "response_item",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": startup_text}],
+            },
+        },
+        {
+            "type": "event_msg",
+            "timestamp": "2026-01-01T00:00:01Z",
+            "payload": {"type": "user_message", "message": "actual turn"},
+        },
+    ]
+    users = _users(entries)
+    assert len(users) == 2
+    assert users[0]["text"] == startup_text
+    assert users[1]["text"] == "actual turn"
+
+
 def test_interpret_events_function_call_arguments_fallback_to_input():
     entries = [
         {
@@ -1782,9 +1765,12 @@ def test_image_bytes_and_ext_data_url_bad_base64_padding():
 
 def test_unique_identifier_suffixes_duplicates():
     used: set = set()
-    assert _unique_identifier("sess", used) == "sess"
-    assert _unique_identifier("sess", used) == "sess-2"
-    assert _unique_identifier("sess", used) == "sess-3"
+    identifier = _unique_identifier("sess", used)
+    assert identifier == "sess"
+    identifier = _unique_identifier("sess", used)
+    assert identifier == "sess-2"
+    identifier = _unique_identifier("sess", used)
+    assert identifier == "sess-3"
 
 
 def test_extract_all_write_failure_is_skipped():
@@ -1818,25 +1804,15 @@ def test_extract_all_write_failure_is_skipped():
 def test_main_write_failure_for_explicit_output_path(tmp_path):
     destination = tmp_path / "out.json"
     destination.mkdir()
-    assert (
-        main(
-            [
-                "--transcript",
-                str(FIXTURES / "model.jsonl"),
-                "--output",
-                str(destination),
-            ]
-        )
-        == 1
-    )
+    status = main(["--transcript", str(TRANSCRIPT), "--output", str(destination)])
+    assert status == 1
 
 
 @pytest.mark.parametrize("mode", ["stdout", "file", "default", "batch"])
 def test_json_entrypoints_bypass_presentation(mode, tmp_path, monkeypatch, capsys):
     transcript = tmp_path / "session.jsonl"
-    entries = _session_entries("s1", tmp_path, "# Recorded Markdown")
-    entries += load_entries(FIXTURES / "image.jsonl")[1:]
-    entries += load_entries(FIXTURES / "tool_patch_large.jsonl")[1:]
+    entries = load_entries(TRANSCRIPT)
+    entries[0]["payload"].update(id="s1", cwd=str(tmp_path))
     _write_jsonl(transcript, entries)
     expected = _events(entries)
     monkeypatch.chdir(tmp_path)
@@ -1851,7 +1827,8 @@ def test_json_entrypoints_bypass_presentation(mode, tmp_path, monkeypatch, capsy
         args += ["--output", str(destination)]
     elif mode == "batch":
         args = ["--all", "--sessions-root", str(tmp_path)]
-    assert main(args, project_root=tmp_path / "out") == 0
+    status = main(args, project_root=tmp_path / "out")
+    assert status == 0
     captured = capsys.readouterr()
     envelope = json.loads(captured.out if mode == "stdout" else destination.read_text())
     assert envelope["events"] == expected
@@ -1902,7 +1879,8 @@ def test_cli_preserves_nested_tools_and_result_cap(
         args += ["--sessions-root", str(tmp_path), "--output", str(tmp_path / "out")]
     else:
         args += ["--transcript", str(transcript), "--output", "-"]
-    assert main(args) == 0
+    status = main(args)
+    assert status == 0
     captured = capsys.readouterr()
     envelope = json.loads(
         (tmp_path / "out" / "codex_session_log_raw_s1.json").read_text()
@@ -1939,7 +1917,8 @@ def test_cli_no_events_writes_no_json(batch, tmp_path, monkeypatch, capsys):
         if batch
         else ["--transcript", str(transcript), "--output", "-"]
     )
-    assert main(args) == (1 if batch else 0)
+    status = main(args)
+    assert status == (1 if batch else 0)
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "no exportable events" in captured.err
@@ -1954,17 +1933,15 @@ def test_cli_warnings_stay_on_stderr(stdout, tmp_path, monkeypatch, capsys):
     with transcript.open("a") as stream:
         stream.write("bad json\n")
     destination = tmp_path / "out.json"
-    assert (
-        main(
-            [
-                "--transcript",
-                str(transcript),
-                "--output",
-                "-" if stdout else str(destination),
-            ]
-        )
-        == 0
+    status = main(
+        [
+            "--transcript",
+            str(transcript),
+            "--output",
+            "-" if stdout else str(destination),
+        ]
     )
+    assert status == 0
     captured = capsys.readouterr()
     assert (
         json.loads(captured.out if stdout else destination.read_text())["session_id"]
@@ -1982,11 +1959,24 @@ def test_batch_duplicate_identifiers_preserve_both_json_files(tmp_path, monkeypa
             tmp_path / f"{name}.jsonl", _session_entries("same", tmp_path, text)
         )
     out = tmp_path / "out"
-    assert main(["--sessions-root", str(tmp_path), "--output", str(out)]) == 0
-    envelopes = [json.loads(path.read_text()) for path in out.glob("*.json")]
-    assert {e["events"][0]["text"] for e in envelopes} == {"first", "second"}
-    assert {e["session_id"] for e in envelopes} == {"same"}
-    assert {p.name for p in out.iterdir()} == {
+    status = main(["--sessions-root", str(tmp_path), "--output", str(out)])
+    assert status == 0
+    selected_envelopes = []
+    for path in out.glob("*.json"):
+        selected_envelopes.append(json.loads(path.read_text()))
+    envelopes = selected_envelopes
+    message_texts = set()
+    for e in envelopes:
+        message_texts.add(e["events"][0]["text"])
+    assert message_texts == {"first", "second"}
+    session_ids = set()
+    for e in envelopes:
+        session_ids.add(e["session_id"])
+    assert session_ids == {"same"}
+    output_names = set()
+    for p in out.iterdir():
+        output_names.add(p.name)
+    assert output_names == {
         "codex_session_log_raw_same.json",
         "codex_session_log_raw_same-2.json",
     }
@@ -2009,7 +1999,8 @@ def test_main_output_root_is_resolved_at_call_time(
             else ["--transcript", str(transcript)]
         )
         output_root = cwd / "exports" if explicit_root else cwd
-        assert main(args, project_root=output_root if explicit_root else None) == 0
+        status = main(args, project_root=output_root if explicit_root else None)
+        assert status == 0
         output = output_root / "codex_session_log_raw_s1.json"
         assert json.loads(output.read_text())["events"][0]["text"] == "hello"
         if explicit_root:
@@ -2030,7 +2021,7 @@ def test_codex_cli_uses_public_stages(batch, tmp_path, monkeypatch, capsys):
             return mod.interpret_source(source)
 
     monkeypatch.setattr(mod, "EXTRACTOR", RecordingExtractor(), raising=False)
-    entries = load_entries(FIXTURES / "question.jsonl")
+    entries = load_entries(TRANSCRIPT)
     entries[0]["payload"]["cwd"] = str(tmp_path)
     _write_jsonl(tmp_path / "s.jsonl", entries)
     monkeypatch.chdir(tmp_path)
@@ -2039,18 +2030,25 @@ def test_codex_cli_uses_public_stages(batch, tmp_path, monkeypatch, capsys):
         if batch
         else ["--transcript", str(tmp_path / "s.jsonl"), "--output", "-"]
     )
-    assert main(args) == 0
+    status = main(args)
+    assert status == 0
     assert stages == ["read", "interpret"]
 
 
 def test_codex_preserves_native_results_and_identity():
     # Retain the native tool shapes, changing only IDs/results to exercise
     # repeated names, unmatched results, and missing/null/empty boundaries.
-    entries = load_entries(FIXTURES / "tool_patch_large.jsonl")
-    calls = [e for e in entries if e["payload"].get("type") == "custom_tool_call"]
-    outputs = [
-        e for e in entries if e["payload"].get("type") == "custom_tool_call_output"
-    ]
+    entries = exec_interactions()
+    matching_entries = []
+    for e in entries:
+        if e["payload"].get("type") == "custom_tool_call":
+            matching_entries.append(e)
+    calls = matching_entries
+    selected_matching_entries = []
+    for e in entries:
+        if e["payload"].get("type") == "custom_tool_call_output":
+            selected_matching_entries.append(e)
+    outputs = selected_matching_entries
     calls[0]["payload"]["id"] = "native-call"
     outputs[0]["payload"]["output"] = {"nested": [None, "", {"unknown": True}]}
     outputs[0]["payload"]["id"] = "native-result"
@@ -2064,8 +2062,15 @@ def test_codex_preserves_native_results_and_identity():
     source = mod.CodexSource(Path("unused.jsonl"), entries)
     session = mod.interpret_source(source)
     assert session is not None
-    interpreted = [c for e in session["events"] for c in e.get("tool_calls", [])]
-    assert [c["name"] for c in interpreted] == ["exec"] * 3
+    tool_calls = []
+    for e in session["events"]:
+        for c in e.get("tool_calls", []):
+            tool_calls.append(c)
+    interpreted = tool_calls
+    tool_names = []
+    for c in interpreted:
+        tool_names.append(c["name"])
+    assert tool_names == ["exec"] * 3
     assert interpreted[0]["id"] == calls[0]["payload"]["call_id"]
     assert interpreted[0]["result_record"]["content"] == outputs[0]["payload"]["output"]
     assert interpreted[0]["result_record"]["id"] == "native-result"
@@ -2073,23 +2078,40 @@ def test_codex_preserves_native_results_and_identity():
     assert "result" not in interpreted[2]
     assert session["unmatched_tool_results"][0]["content"] == ""
     assert session["unsupported_tools"] == ["exec"]
-    assert all("result_truncated" not in c for c in interpreted)
+    result_checks = []
+    for c in interpreted:
+        result_checks.append("result_truncated" not in c)
+    assert all(result_checks)
 
 
 def test_native_results_match_ids_across_user_messages_and_export_without_mutation():
-    entries = load_entries(FIXTURES / "tool_patch_large.jsonl")
-    calls = [e for e in entries if e["payload"].get("type") == "custom_tool_call"]
-    outputs = [
-        e for e in entries if e["payload"].get("type") == "custom_tool_call_output"
-    ]
-    user = next(e for e in entries if e["payload"].get("role") == "user")
+    entries = exec_interactions()
+    matching_entries = []
+    for e in entries:
+        if e["payload"].get("type") == "custom_tool_call":
+            matching_entries.append(e)
+    calls = matching_entries
+    selected_matching_entries = []
+    for e in entries:
+        if e["payload"].get("type") == "custom_tool_call_output":
+            selected_matching_entries.append(e)
+    outputs = selected_matching_entries
+    selected_selected_matching_entries = []
+    for e in entries:
+        if e["payload"].get("role") == "user":
+            selected_selected_matching_entries.append(e)
+    user = next(iter(selected_selected_matching_entries))
     # Retain the native envelope and call IDs, delaying the results past a
     # second human message and returning them in reverse call order.
     outputs[0]["payload"]["output"] = "é" * 12_000
     outputs[0]["payload"]["is_error"] = True
     entries = [user, *calls, user, *reversed(outputs)]
     session = _interpret(entries)
-    interpreted = [c for e in session["events"] for c in e.get("tool_calls", [])]
+    tool_calls = []
+    for e in session["events"]:
+        for c in e.get("tool_calls", []):
+            tool_calls.append(c)
+    interpreted = tool_calls
     assert interpreted[0]["result"] == "é" * 12_000
     assert interpreted[0]["result_record"]["content"] == "é" * 12_000
     assert interpreted[0]["is_error"] is True
@@ -2111,23 +2133,27 @@ def test_native_results_match_ids_across_user_messages_and_export_without_mutati
 
 @pytest.mark.parametrize("output", ["", None, "missing"])
 def test_native_result_missing_null_and_empty_stay_distinct(output):
-    source = mod.read_source(FIXTURES / "question.jsonl")
-    result = next(
-        e["payload"]
-        for e in source.entries
-        if e["payload"].get("type") == "function_call_output"
-    )
+    source = mod.CodexSource(TRANSCRIPT, question_interaction())
+    recorded_values = []
+    for e in source.entries:
+        if e["payload"].get("type") == "function_call_output":
+            recorded_values.append(e["payload"])
+    result = next(iter(recorded_values))
     if output == "missing":
         del result["output"]
     else:
         result["output"] = output
     session = mod.interpret_source(source)
-    call = next(c for e in session["events"] for c in e.get("tool_calls", []))
-    exported = next(
-        c
-        for e in session_log_envelope.export_session(session)["events"]
-        for c in e.get("tool_calls", [])
-    )
+    tool_calls = []
+    for e in session["events"]:
+        for c in e.get("tool_calls", []):
+            tool_calls.append(c)
+    call = next(iter(tool_calls))
+    selected_tool_calls = []
+    for e in session_log_envelope.export_session(session)["events"]:
+        for c in e.get("tool_calls", []):
+            selected_tool_calls.append(c)
+    exported = next(iter(selected_tool_calls))
     if output == "missing":
         assert "content" not in call["result_record"]
         assert "result" not in call
@@ -2139,8 +2165,9 @@ def test_native_result_missing_null_and_empty_stay_distinct(output):
 
 
 def test_native_message_ids_and_image_ownership_survive():
-    source = mod.read_source(FIXTURES / "image.jsonl")
-    user = _native_inputs(source.entries)[0]
+    entries = load_entries(TRANSCRIPT)
+    user = image_message(entries)
+    source = mod.CodexSource(TRANSCRIPT, [user])
     user["payload"].update(
         id="image-owner", message_id="message-1", parent_id="parent-1"
     )
@@ -2152,23 +2179,85 @@ def test_native_message_ids_and_image_ownership_survive():
         }
     )
     session = mod.interpret_source(source)
-    users = [e for e in session["events"] if e["role"] == "user"]
-    owner = next(e for e in users if e.get("id") == "image-owner")
-    assert owner["id"] == "image-owner"
-    assert owner["message_id"] == "message-1"
-    assert owner["parent_id"] == "parent-1"
-    assert len(owner["images"]) == 1
+    matching_entries = []
+    for e in session["events"]:
+        if e["role"] == "user":
+            matching_entries.append(e)
+    users = matching_entries
+    assert users[0]["id"] == "image-owner"
+    assert users[0]["message_id"] == "message-1"
+    assert users[0]["parent_id"] == "parent-1"
+    assert len(users[0]["images"]) == 2
     assert "images" not in users[-1]
 
 
 def test_cli_reports_unsupported_schema_once_and_retains_input(tmp_path, capsys):
-    source = mod.read_source(FIXTURES / "tool_patch_large.jsonl")
-    _write_jsonl(tmp_path / "s.jsonl", source.entries)
-    assert main(["--transcript", str(tmp_path / "s.jsonl"), "--output", "-"]) == 0
+    entries = exec_interactions()
+    transcript = tmp_path / "s.jsonl"
+    _write_jsonl(transcript, entries)
+    status = main(["--transcript", str(transcript), "--output", "-"])
+    assert status == 0
     captured = capsys.readouterr()
     assert captured.err.count("warning: unsupported tool input schemas: exec") == 1
-    calls = [
-        c for e in json.loads(captured.out)["events"] for c in e.get("tool_calls", [])
+    calls = []
+    for event in json.loads(captured.out)["events"]:
+        calls.extend(event.get("tool_calls", []))
+    requests = response_items(entries, "custom_tool_call")
+    assert len(calls) == len(requests) == 2
+    for call, request in zip(calls, requests, strict=True):
+        assert call["input"] == request["payload"]["input"]
+
+
+@pytest.mark.parametrize("selected", [["Leaflet"], ["café, 雪"]])
+def test_native_answer_arrays_match_whole_labels_and_ignore_note_mentions(selected):
+    questions = [
+        {
+            "id": "choice",
+            "question": "Pick",
+            "options": [
+                {"label": "Leaf"},
+                {"label": "Leaflet"},
+                {"label": "café"},
+                {"label": "café, 雪"},
+            ],
+        }
     ]
-    assert len(calls) == 2
-    assert any("printf TOOL_FIXTURE_MARKER" in c["input"] for c in calls)
+    answer = {
+        "answers": {"choice": {"answers": [*selected, 'user_note: Leaf, "café"']}}
+    }
+    actual = option_qa_from_output(answer, questions)
+    assert actual[0]["chosen_labels"] == selected
+    assert 'user_note: Leaf, "café"' in actual[0]["answer_text"]
+
+
+@pytest.mark.parametrize(
+    "text, labels", [("Leaflet", ["Leaflet"]), ("Leaf, Leaflet", ["Leaf", "Leaflet"])]
+)
+def test_legacy_text_answers_match_whole_labels(text, labels):
+    options = [{"label": "Leaf"}, {"label": "Leaflet"}]
+    answer, chosen = _parse_chosen("Pick", options, f'"Pick"="{text}"')
+    actual_labels = []
+    for option in chosen:
+        actual_labels.append(option["label"])
+    assert answer == text
+    assert actual_labels == labels
+
+
+def test_legacy_duplicate_user_views_preserve_raw_text():
+    # Older records have no IDs/provenance. Their exact raw text must match;
+    # cleanup alone cannot establish whether two different inputs are one view.
+    text = "Keep this prose. <bash-stdout>legacy wrapper</bash-stdout>"
+    entries = [
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": text}],
+            },
+        },
+        {"type": "event_msg", "payload": {"type": "user_message", "message": text}},
+    ]
+    users = _users(entries)
+    assert len(users) == 1
+    assert users[0]["text"] == text

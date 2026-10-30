@@ -14,3 +14,9 @@ coverage.xml
 .mypy_cache/
 
 .import_linter_cache/
+
+/captures/
+
+# Capture audit reports stay in captures/; versioned fixtures use README provenance.
+/scripts/fixtures/*/*/coverage.json
+/scripts/fixtures/*/*/manifest.json

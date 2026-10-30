@@ -10,8 +10,7 @@ an event envelope with a top-level ``type`` such as ``session_meta``,
 ``event_msg``, or ``response_item``. The useful conversation data lives under
 ``payload``:
 
-* ``event_msg`` / ``payload.type == "user_message"`` records an input turn;
-  this alone does not establish candidate authorship.
+* ``event_msg`` / ``payload.type == "user_message"`` starts a real user turn.
 * ``response_item`` / ``payload.type == "message"`` and role ``assistant`` is
   assistant text.
 * ``response_item`` / ``payload.type == "function_call"`` is a tool call.
@@ -22,10 +21,11 @@ This script is mechanical: no LLM, no summarization, and no network access.
 It intentionally ignores base instructions, developer messages, reasoning
 payloads, token counts, and encrypted/internal fields.
 
-When the human denies a tool's permission prompt, the decision is surfaced as a
-"permission denied" note on the turn. Current app-server rollouts record the
-rejection in the tool result without a feedback message. Approvals leave no
-distinct record -- an approved tool just runs -- so only denials are captured.
+Older app-server rollouts record CreateProcess rejections in tool results.
+Current interactive cancellation results are preserved without inventing a
+denial decision; later feedback remains a separate recorded message. Settings
+refusals are distinct from human denials. Approvals need not have a separate
+native result.
 
 Codex Plan mode is identified from the per-turn collaboration-mode metadata.
 The retained interpretation helpers recognize structured ``update_plan`` calls,
@@ -84,6 +84,7 @@ from session_log_extractors.session_log_envelope import (
     write_envelope,
 )
 from session_log_extractors.session_model import (
+    FileChange,
     Image,
     Message,
     PatchResult,
@@ -92,6 +93,7 @@ from session_log_extractors.session_model import (
     PlanUpdate,
     QuestionAnswer,
     Session,
+    SkillInvocation,
     ToolCall,
     ToolResult,
     UserMessage,
@@ -114,6 +116,19 @@ INTERACTION_TOOLS = {"request_user_input"}
 # this tool in Plan mode or Default mode.
 PLAN_TOOLS = {"update_plan"}
 
+_NOISE_TAG_BLOCK = re.compile(
+    r"<(system-reminder|local-command-stdout|local-command-stderr|command-stdout|"
+    r"command-stderr|command-name|command-message|command-args|task-notification|"
+    r"bash-stdout|bash-stderr)>.*?"
+    r"</\1>",
+    re.DOTALL | re.IGNORECASE,
+)
+_NOISE_TAG_LOOSE = re.compile(
+    r"</?(system-reminder|local-command-stdout|local-command-stderr|command-stdout|"
+    r"command-stderr|command-name|command-message|command-args|task-notification|"
+    r"bash-stdout|bash-stderr)\b[^>]*/?>",
+    re.IGNORECASE,
+)
 _BASH_INPUT = re.compile(r"<bash-input>(.*?)</bash-input>", re.DOTALL | re.IGNORECASE)
 _COMMAND_NAME = re.compile(
     r"<command-name>\s*(.*?)\s*</command-name>", re.DOTALL | re.IGNORECASE
@@ -150,6 +165,16 @@ def parse_permission_denial(text: JsonValue) -> Optional[str]:
     return m.group(1).strip() if m else ""
 
 
+def clean_user_text(text: str) -> str:
+    """Strip harness-injected wrappers while keeping the human's prose."""
+    if not text:
+        return ""
+    cleaned = _NOISE_TAG_BLOCK.sub("", text)
+    cleaned = _NOISE_TAG_LOOSE.sub("", cleaned)
+    cleaned = re.sub(r"\n[ \t]*\n[ \t]*\n+", "\n\n", cleaned)
+    return cleaned.strip()
+
+
 def _payload(entry: Dict[str, JsonValue]) -> Dict[str, JsonValue]:
     payload = entry.get("payload")
     return payload if isinstance(payload, dict) else {}
@@ -170,6 +195,27 @@ def _content_text(content: JsonValue, text_keys: Tuple[str, ...]) -> str:
                         parts.append(val)
                         break
     return "\n".join(parts)
+
+
+def user_text_from_event(payload: Dict[str, JsonValue]) -> str:
+    text = payload.get("message")
+    if isinstance(text, str):
+        return clean_user_text(text)
+    return ""
+
+
+def user_text_from_response_item(payload: Dict[str, JsonValue]) -> str:
+    """Text from Codex's user-role response item, used for initial prompts."""
+    return clean_user_text(_content_text(payload.get("content"), ("text",)).strip())
+
+
+def is_startup_context(text: str) -> bool:
+    """Codex sends its plugin and workspace context as a user-role item."""
+    return (
+        text.startswith("<recommended_plugins>")
+        and "# AGENTS.md instructions" in text
+        and "<environment_context>" in text
+    )
 
 
 def assistant_text_from_payload(payload: Dict[str, JsonValue]) -> str:
@@ -502,12 +548,44 @@ def _parse_chosen(
             tail = parts[1]
             end = tail.find('"')
             val = tail[:end] if end != -1 else tail
-    chosen = [
-        o
-        for o in options
-        if isinstance(label := o.get("label"), str) and label and label in val
+    return val, _selected_from_text(options, val)
+
+
+def _selected_options(
+    options: list[dict[str, JsonValue]], answers: list[str]
+) -> list[dict[str, JsonValue]]:
+    return [
+        option
+        for option in options
+        if isinstance(label := option.get("label"), str) and label and label in answers
     ]
-    return val, chosen
+
+
+def _selected_from_text(
+    options: list[dict[str, JsonValue]], text: str
+) -> list[dict[str, JsonValue]]:
+    # Legacy text answers can contain comma-separated choices. Native arrays
+    # bypass this ambiguous representation and match their whole labels.
+    return _selected_options(
+        options, [text, *(part.strip() for part in text.split(","))]
+    )
+
+
+def _native_answer_values(
+    question: dict[str, JsonValue], output: JsonValue
+) -> list[str] | None:
+    decoded = _decode_jsonish(output)
+    container = decoded.get("answers") if isinstance(decoded, dict) else None
+    question_id = question.get("id")
+    if not isinstance(container, dict) or not isinstance(question_id, str):
+        return None
+    answer = container.get(question_id)
+    values = answer.get("answers") if isinstance(answer, dict) else None
+    return (
+        [value for value in values if isinstance(value, str)]
+        if isinstance(values, list)
+        else None
+    )
 
 
 def option_qa_from_output(
@@ -527,16 +605,17 @@ def option_qa_from_output(
             if isinstance(raw_options, list)
             else []
         )
-        val, chosen = _parse_chosen(
-            string_value(q.get("question")) or "", options, result_text
-        )
-        if not val:
-            val = _structured_answer_for_question(q, output)
-            chosen = [
-                o
-                for o in options
-                if isinstance(label := o.get("label"), str) and label and label in val
-            ]
+        native_answers = _native_answer_values(q, output)
+        if native_answers is not None:
+            val = ", ".join(answer for answer in native_answers if answer)
+            chosen = _selected_options(options, native_answers)
+        else:
+            val, chosen = _parse_chosen(
+                string_value(q.get("question")) or "", options, result_text
+            )
+            if not val:
+                val = _structured_answer_for_question(q, output)
+                chosen = _selected_from_text(options, val)
         out.append(
             {
                 "question": q.get("question", ""),
@@ -621,11 +700,28 @@ def _copy_identity(
     if isinstance(value, str):
         target["message_id"] = value
     value = payload.get("turn_id")
-    if not isinstance(value, str):
-        metadata = payload.get("internal_chat_message_metadata_passthrough")
-        value = metadata.get("turn_id") if isinstance(metadata, dict) else None
     if isinstance(value, str):
         target["turn_id"] = value
+    metadata = payload.get("internal_chat_message_metadata_passthrough")
+    if isinstance(metadata, dict):
+        turn_id = metadata.get("turn_id")
+        if isinstance(turn_id, str):
+            target["turn_id"] = turn_id
+
+
+def _message_kinds(payload: dict[str, JsonValue]) -> list[str]:
+    metadata = payload.get("internal_chat_message_metadata_passthrough")
+    kinds = metadata.get("content_item_kinds") if isinstance(metadata, dict) else None
+    return (
+        [kind for kind in kinds if isinstance(kind, str)]
+        if isinstance(kinds, list)
+        else []
+    )
+
+
+def _selected_skill(raw_text: str) -> SkillInvocation | None:
+    match = re.match(r"<skill>\s*<name>([^<]+)</name>\s*<path>([^<]+)</path>", raw_text)
+    return SkillInvocation(name=match[1], path=match[2]) if match else None
 
 
 def _user_commands(message: UserMessage, raw_text: str) -> None:
@@ -678,13 +774,25 @@ def _user_message(
     images: list[Image],
     record_type: str,
 ) -> UserMessage:
-    """Preserve user content while retaining identity and command syntax."""
+    """Normalize user content while retaining identity and command syntax."""
+    kinds = _message_kinds(payload)
+    # Preserve original text before projecting native per-content authorship.
     message = user_event(0, timestamp, raw_text, images)
     _copy_identity(message, payload)
     _user_commands(message, raw_text)
     message["authorship"] = message_authorship(
         payload, raw_text, timestamp, record_type
     )
+    if kinds == ["skills.selected_skill_instructions"]:
+        invocation = _selected_skill(raw_text)
+        if invocation is not None:
+            message["skill_invocation"] = invocation
+    if kinds == ["shell.user_command"]:
+        shell = re.match(
+            r"<user_shell_command>\s*<command>\n(.*?)\n</command>", raw_text, re.DOTALL
+        )
+        if shell:
+            message["shell_command"] = shell[1]
     return message
 
 
@@ -707,6 +815,34 @@ def _new_tool_call(payload: dict[str, JsonValue]) -> ToolCall:
     return call
 
 
+def _file_change(path: str, value: JsonValue) -> FileChange:
+    record = value if isinstance(value, dict) else {}
+    change = FileChange(path=path, change_type=_string(record.get("type")))
+    content = record.get("content")
+    if isinstance(content, str):
+        change["content"] = content
+    diff = record.get("unified_diff")
+    if isinstance(diff, str):
+        change["unified_diff"] = diff
+    move = record.get("move_path")
+    if "move_path" in record and (move is None or isinstance(move, str)):
+        change["move_path"] = move
+    return change
+
+
+def _conversation_entries(source: CodexSource) -> list[dict[str, JsonValue]]:
+    """Exclude inherited child context only at the explicitly recorded boundary."""
+    boundary = source.history_start_ordinal
+    if boundary is None:
+        return source.entries
+    entries = []
+    for entry in source.entries:
+        ordinal = entry.get("ordinal")
+        if not isinstance(ordinal, int) or ordinal >= boundary:
+            entries.append(entry)
+    return entries
+
+
 class _CodexSessionBuilder:
     """One native traversal with ordered canonical messages and ID matching."""
 
@@ -718,13 +854,15 @@ class _CodexSessionBuilder:
             events=[],
             cwd=source.cwd,
             started_at=first_timestamp(source.entries),
-            models=session_models(source.entries),
+            models=session_models(_conversation_entries(source)),
             skills_used=[],
             files_changed=[],
             unmatched_tool_results=[],
             unsupported_tools=[],
             patch_results=[],
         )
+        if source.parent_session_id is not None:
+            self.session["parent_session_id"] = source.parent_session_id
         self.pending_calls: dict[str, ToolCall] = {}
         self.pending_user: UserMessage | None = None
         self.mode = ""
@@ -739,9 +877,15 @@ class _CodexSessionBuilder:
 
     def flush_user(self) -> None:
         if self.pending_user is not None:
-            self.active_user = self.pending_user
-            self.append(self.pending_user)
+            self.append_user(self.pending_user)
             self.pending_user = None
+
+    def append_user(self, message: UserMessage) -> None:
+        invocation = message.get("skill_invocation")
+        if invocation and invocation["name"] not in self.session["skills_used"]:
+            self.session["skills_used"].append(invocation["name"])
+        self.active_user = message
+        self.append(message)
 
     def response_user(
         self, payload: dict[str, JsonValue], timestamp: str | None
@@ -765,25 +909,28 @@ class _CodexSessionBuilder:
         message = _user_message(payload, timestamp, raw_text, images, "event_msg")
         self.merge_pending_user(message)
         if message["text"] or message.get("images") or message.get("command"):
-            self.active_user = message
-            self.append(message)
+            self.append_user(message)
 
     def merge_pending_user(self, message: UserMessage) -> None:
-        """Prefer the response view's identity and images for the same input."""
+        """Reconcile equal native views without losing text or block provenance."""
         pending = self.pending_user
         if pending is None:
             return
-        if pending["text"] != message["text"]:
+        if pending["text"] != message["text"] or (
+            "id" in pending and "id" in message and pending["id"] != message["id"]
+        ):
             self.flush_user()
             return
         _copy_identity(message, pending)
         if pending.get("images"):
             message["images"] = pending["images"]
-        event_markers = [
-            marker
-            for span in message.get("authorship", [])
-            for marker in span.get("markers", [])
-        ]
+        if "skill_invocation" in pending:
+            message["skill_invocation"] = pending["skill_invocation"]
+        if "shell_command" in pending:
+            message["shell_command"] = pending["shell_command"]
+        event_markers = []
+        for span in message.get("authorship", []):
+            event_markers.extend(span.get("markers", []))
         message["authorship"] = pending.get("authorship", [])
         for span in message["authorship"]:
             markers = span.setdefault("markers", [])
@@ -802,7 +949,9 @@ class _CodexSessionBuilder:
         message["authorship"] = message_authorship(
             payload, text, timestamp, "response_item"
         )
-        denial = parse_permission_denial(text)
+        denial = (
+            parse_permission_denial(text) if payload.get("type") == "message" else None
+        )
         if denial is not None:
             # A message without a call ID cannot establish tool ownership.
             message["permission_denial"] = PermissionDenial(
@@ -871,12 +1020,18 @@ class _CodexSessionBuilder:
 
     def patch(self, payload: dict[str, JsonValue], timestamp: str | None) -> None:
         changes = payload.get("changes")
-        paths = list(changes) if isinstance(changes, dict) else []
-        for path in paths:
-            append_unique_path(self.session["files_changed"], self.files_seen, path)
+        file_changes = (
+            [_file_change(path, value) for path, value in changes.items()]
+            if isinstance(changes, dict)
+            else []
+        )
+        for change in file_changes:
+            append_unique_path(
+                self.session["files_changed"], self.files_seen, change["path"]
+            )
         result = PatchResult(
             ts=timestamp,
-            paths=paths,
+            file_changes=file_changes,
             stdout=payload.get("stdout"),
             stderr=payload.get("stderr"),
         )
@@ -921,6 +1076,8 @@ class _CodexSessionBuilder:
                 self.response_user(payload, timestamp)
             elif payload.get("role") == "assistant":
                 self.assistant(payload, timestamp)
+        elif kind == "agent_message":
+            self.assistant(payload, timestamp)
         elif kind in ("function_call", "custom_tool_call"):
             self.call(payload, timestamp)
         elif kind in ("function_call_output", "custom_tool_call_output"):
@@ -930,7 +1087,7 @@ class _CodexSessionBuilder:
 def interpret_source(source: CodexSource) -> Session | None:
     """Interpret supplied native data without I/O or export policy."""
     interpreter = _CodexSessionBuilder(source)
-    for entry in source.entries:
+    for entry in _conversation_entries(source):
         interpreter.entry(entry)
     interpreter.flush_user()
     session = interpreter.session

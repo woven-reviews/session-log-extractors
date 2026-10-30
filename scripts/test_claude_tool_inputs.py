@@ -8,27 +8,39 @@ import pytest
 from session_log_extractors.claude_sources import read_source
 from session_log_extractors.tool_inputs.claude import input_schema
 
-FIXTURES = Path(__file__).parent / "fixtures" / "claude"
+ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312"
+(TRANSCRIPT,) = (ROOT / "native").glob("*.jsonl")
+
+
+def _recorded_tool_calls(tool_name):
+    calls = [
+        block
+        for entry in read_source(TRANSCRIPT).entries
+        for block in entry.get("message", {}).get("content", [])
+        if isinstance(block, dict)
+        and block.get("type") == "tool_use"
+        and block.get("name") == tool_name
+    ]
+    assert calls, f"Missing native {tool_name} calls"
+    return calls
 
 
 @pytest.mark.parametrize(
-    "fixture",
+    "tool_name",
     [
-        "continued.jsonl",
-        "permission_denial.jsonl",
-        "questions.jsonl",
-        "plan_modes.jsonl",
-        "skill_command.jsonl",
-        "subagent.jsonl",
+        "Read",
+        "Bash",
+        "AskUserQuestion",
+        "ExitPlanMode",
+        "Skill",
+        "Agent",
+        "Write",
+        "Edit",
+        "NotebookEdit",
     ],
 )
-def test_captured_tool_inputs_have_explicit_schemas(fixture):
-    calls = [
-        block
-        for entry in read_source(FIXTURES / fixture).entries
-        for block in entry.get("message", {}).get("content", [])
-        if isinstance(block, dict) and block.get("type") == "tool_use"
-    ]
+def test_captured_tool_inputs_have_explicit_schemas(tool_name):
+    calls = _recorded_tool_calls(tool_name)
     assert calls
     for call in calls:
         original = deepcopy(call["input"])

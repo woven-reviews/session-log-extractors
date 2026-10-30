@@ -1,39 +1,101 @@
 # Codex fixture provenance
 
-These seven native fixtures cover the captured shapes recorded in [QUAL-2400](https://linear.app/andela/issue/QUAL-2400/codex-test-coverage). Regenerated on 2026-10-29 with Codex CLI 0.165.0. There are **no hand-authored JSONL fixtures**. Tests read committed files and require no local Codex login or session directory.
+Tests explicitly select **one complete interactive capture for CLI 0.166.0**,
+recorded on 2026-10-30 for [QUAL-2715](https://linear.app/andela/issue/QUAL-2715).
+They require no login and never invoke a paid CLI. The old filtered exec/app-server
+fixtures and scripted generator have been retired.
 
-## Regenerate
+## Selected native inputs
 
-Run `python3 scripts/generate_codex_fixtures.py` from the repository root with a logged-in `codex` CLI for the headless captures, then `python3 scripts/generate_codex_fixtures.py --interactive` for Plan mode, answered question, and declined permission captures. Both commands make model calls. Each case runs in a temporary workspace. The headless cases use `codex exec --json --ignore-user-config`; the interactive cases use the `codex app-server` protocol and read its saved native rollout JSONL, not its JSON-RPC notification stream. The model case resumes its first thread under `gpt-6-luna`. The image case attaches `pixel.png`, a 64×64 synthetic test asset enlarged from the existing one-pixel Copilot fixture; the 1×1 source was too small for this Codex CLI to process. The script finds only the new thread IDs, retains relevant native records including startup messages of every role, per-content kinds/provenance, message IDs, timestamps, native envelope metadata, session source, and agent-message authors/recipients; selects focused tool output; redacts home/workspace paths, checks each capture's shape, and stages all outputs before replacement. Session IDs and timestamps vary on regeneration. Review the diff before committing.
+- Main: [rollout](0.166.0/native/rollout-2026-10-30T15-49-18-01a18e5c-0900-7111-91f6-195916aa5e3c.jsonl),
+  session `01a18e5c-0900-7111-91f6-195916aa5e3c`.
+- Child: [complete sidecar](0.166.0/native/rollout-2026-10-30T15-53-14-01a18e5f-a3ec-7360-a6f5-c31e4e8ebb77.jsonl),
+  session `01a18e5f-a3ec-7360-a6f5-c31e4e8ebb77`. Its recorded parent and history
+  boundary distinguish inherited context from child activity.
+- [Assets](0.166.0/assets): two marker files, multibyte text, a literal large
+  write, a local skill, and distinguishable red/blue images. PNGs were generated
+  locally from RGB pixels; JPEG/GIF used macOS `sips`, and WebP used Pillow in a
+  disposable environment. `blue-gif-persisted.png` is decoded from the actual
+  native GIF attachment block, not reconstructed from an assistant description.
 
-| QUAL-2400 shape | Classification and evidence |
+The normal Codex TUI ran under tmux in a disposable workspace outside this repo.
+All launches used CLI 0.166.0 with `--no-daemon --no-alt-screen`; the primary model
+was explicitly selected and one short turn used another model from `/model`.
+Exact-session resumes attached two PNGs, then JPEG/GIF/WebP, and restored the
+original permissions after a read-only/no-approval refusal probe. A final resume
+added a literal 6.7 KB request after validation found that the earlier large write
+used a short expression. About 15 minutes of active operation occurred within
+27 minutes elapsed, including offline validation. No CLI version change occurred.
+
+A first attempt inherited global operator instructions, was stopped, and was
+excluded from promotion. The single retry used an isolated `CODEX_HOME` with the
+existing login; neither that home nor credentials are committed. Repository,
+operator, extraction, and validation instructions are absent from both selected
+native conversations. Original filenames, IDs, timestamps, ordering, complete
+inputs/results, compaction records, and native structure are preserved.
+
+Sanitization uses the shared `capture_sanitization.py` at base revision `10b7fba`,
+with explicit private replacements for workspace/root/home/temp paths and creator
+account/user IDs. JSONL normalization is followed by a JSON-safe literal text
+pass for path-bearing object keys. Repeating both passes from identical raw bytes
+produced identical bytes and per-rule count/hash reports. Raw originals and
+private rules remain outside the repository. Sanitized terminal snapshots, action
+journal, run metadata, coverage ledger, hashes, exports, and audit findings stay
+untracked at `captures/codex/0.166.0/20261030T194718Z/`.
+
+## Evidence and limits
+
+| Behavior | Observed native evidence or limitation |
 | --- | --- |
-| 1. Slash commands | **Headless-generatable:** bare `/review fixture` in `slash.jsonl`. **Fixture-only:** the interactive `<command-name>` wrapper cannot be emitted by `codex exec`; its narrow parser test remains inline. |
-| 2. Plan mode | **App-server capture:** `plan.jsonl` records a native Plan mode turn and Plan item. The original CLI 0.162.1 capture showed that Plan mode disallows `update_plan`, and a Default mode probe reported that tool unavailable. The inline structured `update_plan` test uses handwritten input; we have no native capture showing that combination. |
-| 3. Permission denial | **App-server capture:** `denial.jsonl` records a declined command approval in its native tool result. The current approval response accepts a decision without feedback text; a probe's extra message field did not appear in the saved rollout. The inline assistant-message denial with feedback uses handwritten input; we have no native capture showing that exact form. |
-| 4. `request_user_input` answer | **App-server capture:** `question.jsonl` records the native options request and the answered result. |
-| 5. Pasted images | **Headless-generatable:** `image.jsonl` contains a native base64 `input_image` block and image path; tests decode it using committed `pixel.png`. **Fixture-only:** a deleted backing file requires deliberate mutation; the missing-path test stays inline. |
-| 6. `apply_patch` changes | **Headless-generatable:** `tool_patch_large.jsonl` contains the native `FileChange` and `custom_tool_call` records. The extractor reads completed `FileChange` paths and patch output plus native tool calls/results. The `patch_apply_end` and direct `function_call` patch cases remain inline because these captures do not contain those combinations. |
-| 7. Model switch | **Headless-generatable:** `model.jsonl` has two turns and two native `turn_context.model` values after `codex exec resume -m gpt-6-luna`. |
-| 8. Multi-session scan | **Generatable:** the seven captures have distinct native session IDs and cwd metadata. **Fixture-only:** literal `~`, symlink, overlap, and nonmatch arrangements need controlled path values; the selection tests retain their temporary paths. |
-| 9. Malformed JSONL | **Fixture-only:** a completed headless run cannot intentionally end with a truncated line. The loader test keeps its small inline partial line. |
-| 10. Large tool result | **Headless-generatable:** `tool_patch_large.jsonl` contains thirty repeated tool-output lines. The native result is checked for truncation at a 64-byte limit; large `function_call_output` values remain covered inline. The native `question.jsonl` contains a shorter `function_call_output`. |
+| Questions | Two-question invocation, whole-label single selections, option-plus-note, custom punctuation/Unicode, and cancellation. Multi-select/previews were unavailable; standalone notes-only input was not established. |
+| Plans | Initial plan, stay-in-Plan rejection with later feedback, revised plan, ordinary implementation approval. No edited-plan editor was exposed. |
+| Files/tools | Complete literal large input, 27.3 KB multibyte result, repeated reads/searches, long Unicode path, patch content/diffs, empty successful command, combined stdout/stderr, nonzero exit, and missing-file error. Code-mode JavaScript stays opaque and explicitly unsupported rather than being expanded into invented calls. |
+| Permission sources | Real pending approval cancellation and later feedback; separate actual read-only settings refusal. Native cancellation is not the older CreateProcess denial shape. |
+| Skills/commands | Two native skill selections/expansions; custom slash command with arguments rejected by the UI. Native notebook editing was unavailable. |
+| Images | Two same-message PNG attachments, later JPEG/GIF/WebP attachments, and a separate tool-returned image. GIF converted to PNG at persistence. |
+| Continuation | Queued input, stopped background terminal, permission/question cancellation, model change, exact-session resume, and manual compaction/recall. |
+| Child | One actual read-only subagent, complete sidecar, recorded parent ID/history boundary, separate child interpretation/export. Explicit `agent_message` deliveries retain sender/recipient markers and become assistant contributions with other-agent authorship. There is no dedicated summary API. |
+| Export | Complete recorded inputs/results checked by call IDs; budgets 0/17/4096/unlimited plus an actual split multibyte boundary; non-mutation and CLI file/stdout parity. Model-only identities, invocation/patch details, and relationships are intentional JSON omissions. |
 
-The extractor handles the captured native tool and patch records while retaining parser branches for uncaptured variants. Verify with `pytest -q scripts/test_extract_codex_session_log.py scripts/test_generate_codex_fixtures.py` and both coverage gates in `AGENTS.md`.
+## Post-generation test audit
 
-The cleaner preserves `internal_chat_message_metadata_passthrough`, including
-`content_item_kinds` and `content_item_metadata[].provenance`, without changing
-block order or alignment. Session account/base instructions and unrelated
-reasoning/usage records remain excluded; turn-context collaboration settings
-retain the mode only. Home/workspace paths and emails are redacted throughout
-retained records, including nested provenance. The committed 2026-10-29 fixtures retain this evidence after regeneration with
-the corrected cleaner. User input and startup context have separate recorded
-content kinds and provenance; image preparation wrappers also carry `user.text`,
-so that kind alone does not prove every character was typed by the human.
+Reviewed `test_extract_codex_session_log.py`, `test_codex_sources.py`,
+`test_codex_tool_inputs.py`, `test_codex_capture.py`, Codex cases in
+`test_capture_sanitization.py`, `test_external_definitions.py`,
+`test_extractor_contract.py`, `test_session_model.py`, `test_import_contracts.py`,
+and `tests/test_smoke.py`,
+plus the retired generator/support tests. `codex_capture.py` contains only explicit
+current-fixture paths and small native-record helpers, without version discovery.
 
-The extractor reads the retained per-content kind/provenance arrays: human input
-becomes candidate ranges and workspace/environment context becomes harness
-ranges. Missing, unsupported, conflicting, or misaligned evidence stays unknown.
-Image delimiters around a native image stay unknown even with the user.text
-kind. A controlled fixture mutation combines captured text/context blocks for
-mixed-range tests; it is not a new native mixed-message capture.
+Resolved findings: retired-fixture reads; exact generated prose/model baselines;
+selection by incidental wording/position; comprehension/generator setup in Codex
+cases; hidden CLI actions inside assertions; and synthetic ordinary filesystem
+inputs where captured metadata/messages apply. Native records now cover complete
+payloads, repeated-call ownership, image ordering, source-free interpretation,
+non-mutating export, and child history. Reworded questions, headers, descriptions,
+overlapping labels, answers, and assistant prose are checked separately.
+
+Focused controlled cases remain for malformed/missing records/files, filesystem
+failures, platform/discovery arrangements, byte limits, unknown tools, unmatched
+or reverse-ordered results, missing/null/empty data, older bare/tagged commands,
+CreateProcess/assistant denials, legacy event views, direct patch calls, and
+`update_plan` variants unavailable in this capture. These are explicit compatibility
+or boundary tests and do not read retired fixtures. Native fixtures are not altered
+to manufacture malformed data, unavailable workflows, or successful outcomes.
+
+Regenerate only by explicitly invoking the repository's
+[capture-native-session skill](../../../.agents/skills/capture-native-session/SKILL.md)
+with its [Codex guidance](../../../.agents/skills/capture-native-session/references/codex.md).
+Paid capture remains bounded and outside ordinary tests and CI.
+
+## Authorship verification
+
+`test_codex_authorship.py` uses this complete capture and child sidecar directly.
+It checks candidate text, environment/skill injection, literal markup, both image
+attachment groups, native shell command/output ranges, and agent deliveries.
+Child output is checked after the recorded history boundary, without attributing
+inherited human inputs to the child. Production JSON and non-mutating export
+retain the ranges, markers, timestamps, image ownership, and tool ownership.
+Controlled mutations cover Unicode/mixed blocks, malformed or conflicting
+provenance, legacy duplicate views, and missing evidence. No fixture text is
+rewritten to make a missing native workflow appear successful.
