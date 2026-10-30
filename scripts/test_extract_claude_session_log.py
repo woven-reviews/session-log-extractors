@@ -587,12 +587,9 @@ def test_messages_skip_sidechain_and_retain_meta():
     entries = _recorded_session_entries()
     sidechain = load_entries(SUBAGENT)
     meta_entries = []
-    conversation_entries = []
     for entry in entries:
         if entry.get("isMeta"):
             meta_entries.append(entry)
-        else:
-            conversation_entries.append(entry)
     assert meta_entries
     sidechain_entries = []
     for entry in sidechain:
@@ -604,6 +601,14 @@ def test_messages_skip_sidechain_and_retain_meta():
         ClaudeSource(Path("session.jsonl"), entries + sidechain)
     )
     assert build_events(entries + sidechain) == expected
+    expected_meta_ids = []
+    actual_meta_ids = []
+    for entry in meta_entries:
+        expected_meta_ids.append(entry["uuid"])
+    for message in session["events"]:
+        if message["id"] in expected_meta_ids:
+            actual_meta_ids.append(message["id"])
+    assert actual_meta_ids == expected_meta_ids
     assert session["subagent_count"] == 1
     assert "interactions" not in session
 
@@ -613,6 +618,10 @@ def test_build_events_surfaces_slash_command_invocations():
     event = _require_single_match(build_events([entry]), "command event")
     assert event["text"] == entry["message"]["content"]
     assert event["role"] == "user"
+    interpreted = eclog.interpret_source(ClaudeSource(TRANSCRIPT, [entry]))
+    message = _require_single_match(interpreted["events"], "command message")
+    assert message["command"] == "/capture-echo"
+    assert message["command_args"] == 'CAPTURE_ARGS hello, "café 雪" — two words!'
 
 
 def test_plan_approved_is_captured():
