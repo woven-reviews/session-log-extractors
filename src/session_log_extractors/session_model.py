@@ -133,11 +133,21 @@ class PlanUpdate(TypedDict):
     steps: list[PlanStep]
 
 
+class FileChange(TypedDict):
+    """A recorded file change, preserving content and diff as distinct facts."""
+
+    path: str
+    change_type: str | None
+    content: NotRequired[str]
+    unified_diff: NotRequired[str]
+    move_path: NotRequired[str | None]
+
+
 class PatchResult(NativeIdentity):
     """A native patch completion, without guessed tool ownership."""
 
     ts: str | None
-    paths: list[str]
+    file_changes: list[FileChange]
     stdout: JsonValue
     stderr: JsonValue
 
@@ -203,6 +213,13 @@ class MessageContent(NativeIdentity, total=False):
     permission_denial: PermissionDenial
 
 
+class SkillInvocation(TypedDict):
+    """A recorded expansion of an explicitly selected native skill."""
+
+    name: str
+    path: str
+
+
 class UserMessage(MessageContent):
     """A recorded user input, with command actions recognized explicitly."""
 
@@ -211,6 +228,7 @@ class UserMessage(MessageContent):
     command: NotRequired[str]
     command_args: NotRequired[str | None]
     shell_command: NotRequired[str]
+    skill_invocation: NotRequired[SkillInvocation]
 
 
 class AssistantMessage(MessageContent):
@@ -261,6 +279,7 @@ class Session(TypedDict):
 
     harness: str
     session_id: str
+    parent_session_id: NotRequired[str]
     events: list[Message]
     cwd: NotRequired[str | None]
     started_at: NotRequired[str | None]

@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+from codex_capture import TRANSCRIPT as CODEX_TRANSCRIPT
 
 from session_log_extractors import copilot_sources
 from session_log_extractors import extract_claude_session_log as claude
@@ -14,39 +15,50 @@ ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312"
 (TRANSCRIPT,) = (ROOT / "native").glob("*.jsonl")
 
 
-@pytest.mark.parametrize("command_args", ["fixture", None])
-def test_codex_invocations_do_not_load_definitions(command_args, monkeypatch):
-    fixture_root = Path(__file__).parent / "fixtures" / "codex"
-    source = codex.read_source(fixture_root / "slash.jsonl")
-    if command_args is None:
-        # Remove only the captured command arguments to exercise their absence.
-        next(
-            e["payload"] for e in source.entries if e["payload"].get("role") == "user"
-        )["content"][0]["text"] = "/review"
-    # The fixture has no explicit skill call. Add a narrow structured call,
-    # repeated to retain the existing de-duplication assertion.
-    call = {
-        "type": "response_item",
-        "payload": {
-            "type": "function_call",
-            "name": "skills.read",
-            "arguments": '{"package": "recorded-skill"}',
-        },
-    }
-    empty_call = {
-        **call,
-        "payload": {**call["payload"], "arguments": '{"package": ""}'},
-    }
-    source.entries.extend([call, call, empty_call])
+def test_codex_invocations_do_not_load_definitions(monkeypatch):
+    source = codex.read_source(CODEX_TRANSCRIPT)
 
     def forbidden(*args, **kwargs):
         pytest.fail("Extraction must not read external definitions")
 
     monkeypatch.setattr(Path, "open", forbidden)
     session = codex.interpret_source(source)
-    assert session["skills_used"] == ["recorded-skill"]
+    assert session["skills_used"] == ["capture-greeting"]
+    invocations = []
+    for event in session["events"]:
+        if event.get("skill_invocation"):
+            invocations.append(event)
+    assert len(invocations) == 2
+    for invocation in invocations:
+        assert invocation["skill_invocation"]["name"] == "capture-greeting"
+
+
+@pytest.mark.parametrize("arguments", ["fixture", None])
+def test_legacy_codex_commands_do_not_load_definitions(arguments, monkeypatch):
+    # The installed interactive CLI rejects custom slash commands. Keep the old
+    # command shape as a focused compatibility case, independent of fixtures.
+    text = "/review" + (" " + arguments if arguments else "")
+    source = codex.CodexSource(
+        Path("unused.jsonl"),
+        [
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": text}],
+                },
+            }
+        ],
+    )
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Extraction must not read external definitions")
+
+    monkeypatch.setattr(Path, "open", forbidden)
+    session = codex.interpret_source(source)
     user = session["events"][0]
-    assert (user["command"], user["command_args"]) == ("/review", command_args)
+    assert (user["command"], user["command_args"]) == ("/review", arguments)
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "claude"

@@ -5,8 +5,11 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
+from codex_capture import TRANSCRIPT as CODEX_TRANSCRIPT
+from codex_capture import human_message
 
 from session_log_extractors.claude_sources import read_source
+from session_log_extractors.codex_sources import load_entries
 from session_log_extractors.session_log_envelope import (
     build_envelope,
     export_session,
@@ -361,16 +364,13 @@ def test_claude_native_injected_message_fits_authorship_contract():
         assert event["id"] == native["uuid"]
 
 
-def test_codex_native_prompt_can_remain_unknown_without_evidence():
-    records = _native_records("codex/slash.jsonl")
-    native = next(
-        r
-        for r in records
-        if r["type"] == "response_item" and r["payload"].get("role") == "user"
-    )
+def test_codex_native_prompt_can_remain_unknown_without_classification():
+    native = human_message(load_entries(CODEX_TRANSCRIPT))
     text = native["payload"]["content"][0]["text"]
     event = UserMessage(i=0, role="user", text=text, ts=native["timestamp"])
-    assert json.loads(json.dumps(event))["text"] == "/review fixture"
+    assert isinstance(text, str) and text
+    assert json.loads(json.dumps(event))["text"] == text
+    # User role alone still does not require consumers to claim authorship.
     assert "authorship" not in event
     assert event["ts"] == native["timestamp"]
 

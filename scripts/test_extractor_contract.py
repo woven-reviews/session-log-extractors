@@ -8,6 +8,8 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
+from codex_capture import CHILD_TRANSCRIPT, question_interaction
+from codex_capture import TRANSCRIPT as CODEX_TRANSCRIPT
 
 from session_log_extractors import copilot_sources
 from session_log_extractors import extract_claude_session_log as claude
@@ -90,20 +92,14 @@ def _read_contract_source(extractor, selection, harness, full_result, monkeypatc
         conn.close()
         if full_result:
             # Extend a captured completion past the default export cap.
-            next(
-                r
-                for r in source.state_records
-                if r["type"] == "tool.execution_complete"
-            )["data"]["result"]["content"] = "x" * 20000
+            for record in source.state_records:
+                if record["type"] == "tool.execution_complete":
+                    record["data"]["result"]["content"] = "x" * 20000
+                    break
+            else:
+                pytest.fail("Capture lacks a tool completion to extend")
     else:
         source = extractor.read_source(selection)
-        if harness == "codex" and full_result:
-            # Extend a captured completion past the default export cap.
-            next(
-                e["payload"]
-                for e in source.entries
-                if e["payload"].get("type") == "custom_tool_call_output"
-            )["output"] = "x" * 20000
 
     return source
 
@@ -111,27 +107,15 @@ def _read_contract_source(extractor, selection, harness, full_result, monkeypatc
 # Extend this native-fixture matrix as other harnesses adopt Extractor.
 @pytest.mark.parametrize(
     ("extractor", "selection", "harness", "full_result"),
-    [(claude.EXTRACTOR, TRANSCRIPT, "claude", True)]
-    + [
-        (copilot.EXTRACTOR, case, "copilot", case == "tool_success")
-        for case in ["baseline", "image", "tool_success", "continued", "skill"]
-    ]
-    + [
-        (
-            codex.EXTRACTOR,
-            FIXTURES.parent / "codex" / name,
-            "codex",
-            name == "tool_patch_large.jsonl",
-        )
-        for name in [
-            "slash.jsonl",
-            "image.jsonl",
-            "tool_patch_large.jsonl",
-            "question.jsonl",
-            "denial.jsonl",
-            "model.jsonl",
-            "plan.jsonl",
-        ]
+    [
+        (claude.EXTRACTOR, TRANSCRIPT, "claude", True),
+        (copilot.EXTRACTOR, "baseline", "copilot", False),
+        (copilot.EXTRACTOR, "image", "copilot", False),
+        (copilot.EXTRACTOR, "tool_success", "copilot", True),
+        (copilot.EXTRACTOR, "continued", "copilot", False),
+        (copilot.EXTRACTOR, "skill", "copilot", False),
+        (codex.EXTRACTOR, CODEX_TRANSCRIPT, "codex", True),
+        (codex.EXTRACTOR, CHILD_TRANSCRIPT, "codex", False),
     ],
 )
 def test_public_interpretation_is_source_free_and_export_is_non_mutating(
@@ -160,19 +144,19 @@ def test_public_interpretation_is_source_free_and_export_is_non_mutating(
     assert session is not None
     assert session["harness"] == harness
     original = deepcopy(session)
-    for limit in [0, 17, -1]:
-        assert export_session(session, limit)["events"]
+    for limit in [0, 17, 4096, -1]:
+        exported = export_session(session, limit)
+        assert exported["events"]
         assert session == original
     if full_result:
-        calls = [
-            call for event in session["events"] for call in event.get("tool_calls", [])
-        ]
-        assert any(
-            isinstance(call.get("result"), str)
-            and len(call["result"].encode()) > 10_000
-            for call in calls
-        )
-        assert all("result_truncated" not in call for call in calls)
+        large_results = []
+        for event in session["events"]:
+            for call in event.get("tool_calls", []):
+                result = call.get("result")
+                if isinstance(result, str) and len(result.encode()) > 10000:
+                    large_results.append(result)
+                assert "result_truncated" not in call
+        assert large_results, "Interpretation must retain a native result over 10 KB"
 
 
 def test_public_stage_propagates_reader_errors_and_handles_no_events(tmp_path):
@@ -300,7 +284,7 @@ def test_copilot_public_reader_errors_and_empty_source():
     )
 
 
-@pytest.mark.parametrize("harness", ["claude", "copilot"])
+@pytest.mark.parametrize("harness", ["claude", "copilot", "codex"])
 @pytest.mark.parametrize("unsupported", [False, True])
 def test_native_tool_payloads_keep_unknown_fields_through_export(harness, unsupported):
     """Extend a captured call with a future field and optionally a future tool name."""
@@ -308,7 +292,7 @@ def test_native_tool_payloads_keep_unknown_fields_through_export(harness, unsupp
         source, request = _recorded_claude_read_interaction()
         input_key = "input"
         extractor = claude.EXTRACTOR
-    else:
+    elif harness == "copilot":
         records = copilot_sources.parse_state_records(
             (FIXTURES.parent / "copilot" / "tool_success" / "events.jsonl")
             .read_text()
@@ -317,13 +301,20 @@ def test_native_tool_payloads_keep_unknown_fields_through_export(harness, unsupp
         source = copilot_sources.CopilotSource(
             {"id": "fixture"}, [], state_records=records
         )
-        request = next(
-            r["data"]["toolRequests"][0]
-            for r in records
-            if r["type"] == "assistant.message" and r["data"].get("toolRequests")
-        )
+        recorded_values = []
+        for r in records:
+            if r["type"] == "assistant.message" and r["data"].get("toolRequests"):
+                recorded_values.append(r["data"]["toolRequests"][0])
+        request = next(iter(recorded_values))
         input_key = "arguments"
         extractor = copilot.EXTRACTOR
+    else:
+        source = codex.read_source(CODEX_TRANSCRIPT)
+        source.entries = question_interaction()
+        request = source.entries[1]["payload"]
+        request["arguments"] = json.loads(request["arguments"])
+        input_key = "arguments"
+        extractor = codex.EXTRACTOR
     # Keep recorded call IDs/results; only extend the payload and vary recognition.
     request[input_key]["future_field"] = {
         "nested": [None, False, 17, {"value": "kept"}]
@@ -332,23 +323,23 @@ def test_native_tool_payloads_keep_unknown_fields_through_export(harness, unsupp
         request["name"] = "future_tool"
     expected_input = deepcopy(request[input_key])
     session = extractor.interpret_source(source)
-    call = next(
-        c
-        for event in session["events"]
-        for c in event.get("tool_calls", [])
-        if c["name"] == request["name"]
-    )
+    call = _call_named(session, request["name"])
     assert call["input"] == expected_input
     assert (call["input_schema"] == "unsupported") is unsupported
     if unsupported:
         assert "future_tool" in session["unsupported_tools"]
     original = deepcopy(session)
     exported = export_session(session, 17)
-    exported_call = next(
-        c
-        for event in exported["events"]
-        for c in event.get("tool_calls", [])
-        if c["name"] == request["name"]
-    )
+    exported_call = _call_named(exported, request["name"])
     assert exported_call["input"] == expected_input
     assert session == original
+
+
+def _call_named(session, name):
+    matches = []
+    for event in session["events"]:
+        for call in event.get("tool_calls", []):
+            if call["name"] == name:
+                matches.append(call)
+    assert len(matches) == 1, f"Expected one recorded call to {name}"
+    return matches[0]
