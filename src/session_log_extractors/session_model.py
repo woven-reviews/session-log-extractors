@@ -32,6 +32,8 @@ class QuestionAnswer(TypedDict):
     options: list[QuestionOption]
     chosen_labels: NotRequired[list[str]]
     answer_text: NotRequired[str]
+    field_name: NotRequired[str]
+    recorded_answer: NotRequired[str | list[str]]
 
 
 class PlanDecision(TypedDict):
@@ -76,6 +78,7 @@ class NativeIdentity(TypedDict, total=False):
     originating_message_id: str
     interaction_id: str
     turn_id: str
+    agent_id: str
 
 
 class ToolResult(NativeIdentity):
@@ -146,6 +149,8 @@ class ToolCall(TypedDict, total=False):
     """A complete call and the decisions/results belonging to that call."""
 
     name: Required[str]
+    native_success: bool
+    shell_exit_code: int
     native_id: str
     plan_update: PlanUpdate
     id: str
@@ -157,6 +162,7 @@ class ToolCall(TypedDict, total=False):
     is_error: bool
     error: JsonValue
     result_record: ToolResult
+    result_images: list[Image]
     execution: ToolExecution
     questions: list[QuestionAnswer]
     plan_decision: PlanDecision
@@ -211,6 +217,7 @@ class UserMessage(MessageContent):
     command: NotRequired[str]
     command_args: NotRequired[str | None]
     shell_command: NotRequired[str]
+    shell_result: NotRequired[ToolResult]
 
 
 class AssistantMessage(MessageContent):

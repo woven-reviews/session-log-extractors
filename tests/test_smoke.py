@@ -21,6 +21,10 @@ ROOT = (
     Path(__file__).resolve().parents[1] / "scripts" / "fixtures" / "claude" / "2.1.312"
 )
 (TRANSCRIPT,) = (ROOT / "native").glob("*.jsonl")
+COPILOT_ROOT = ROOT.parent.parent / "copilot" / "1.0.104-3"
+(COPILOT_TRANSCRIPT,) = (COPILOT_ROOT / "native/session-state").glob("*/events.jsonl")
+COPILOT_ID = COPILOT_TRANSCRIPT.parent.name
+COPILOT_DB = COPILOT_ROOT / "native/session-store.db"
 
 
 def test_package_imports():
@@ -56,9 +60,9 @@ def test_help_uses_call_time_output_root(harness, tmp_path, monkeypatch, capsys)
         (
             "copilot",
             [
-                "7e20450a-af9e-45a5-9aac-be9dcf027221",
+                COPILOT_ID,
                 "--db",
-                "scripts/fixtures/copilot/session-store.db",
+                str(COPILOT_DB),
             ],
         ),
     ],
@@ -66,6 +70,13 @@ def test_help_uses_call_time_output_root(harness, tmp_path, monkeypatch, capsys)
 def test_script_exports_fixture_json(harness, arguments, tmp_path):
     root = Path(__file__).resolve().parents[1]
     output = tmp_path / "session.json"
+    environment = dict(os.environ)
+    if harness == "copilot":
+        home = tmp_path / "home"
+        state = home / ".copilot/session-state" / COPILOT_ID
+        state.mkdir(parents=True)
+        shutil.copyfile(COPILOT_TRANSCRIPT, state / "events.jsonl")
+        environment["HOME"] = str(home)
     subprocess.run(
         [
             sys.executable,
@@ -75,6 +86,7 @@ def test_script_exports_fixture_json(harness, arguments, tmp_path):
             str(output),
         ],
         cwd=root,
+        env=environment,
         check=True,
         capture_output=True,
         text=True,
@@ -155,28 +167,19 @@ def test_copilot_checkout_defaults(subdirectory, selection, tmp_path):
     copilot_home = home / ".copilot"
     copilot_home.mkdir(parents=True)
     db = copilot_home / "session-store.db"
-    shutil.copyfile(root / "scripts/fixtures/copilot/session-store.db", db)
-    session_id = "7e20450a-af9e-45a5-9aac-be9dcf027221"
+    shutil.copyfile(COPILOT_DB, db)
+    session_id = COPILOT_ID
     with closing(sqlite3.connect(db)) as conn:
         conn.execute("DELETE FROM sessions WHERE id != ?", (session_id,))
         conn.execute("UPDATE sessions SET cwd = ?", (str(checkout),))
         conn.commit()
     state = copilot_home / "session-state" / session_id
     state.mkdir(parents=True)
-    (state / "events.jsonl").write_text(
-        json.dumps(
-            {
-                "type": "tool.execution_start",
-                "data": {
-                    "toolCallId": "test-call",
-                    "toolName": "checkout-state-tool",
-                    "arguments": {"command": "echo state"},
-                },
-            }
-        )
-        + "\n"
-    )
-    output = checkout / "copilot_session_log_raw_2026-10-14_7e20450a.json"
+    shutil.copyfile(COPILOT_TRANSCRIPT, state / "events.jsonl")
+    with closing(sqlite3.connect(db)) as conn:
+        conn.row_factory = sqlite3.Row
+        metadata = copilot.copilot_sources.get_session_by_id(conn, session_id)
+    output = checkout / raw_filename("copilot", copilot.output_identifier(metadata))
     arguments = [session_id] if selection == "selected" else []
     if selection == "overrides":
         moved_db = tmp_path / "override.db"
@@ -194,7 +197,7 @@ def test_copilot_checkout_defaults(subdirectory, selection, tmp_path):
     assert list(output.parent.glob("copilot_session_log_raw_*.json")) == [output]
     envelope = json.loads(output.read_text())
     assert envelope["harness"] == "copilot"
-    assert "checkout-state-tool" in json.dumps(envelope)
+    assert "CAPTURE_STDOUT_OK" in json.dumps(envelope)
     assert result.stdout == ""
     assert f"wrote {output}" in result.stderr
     assert not list(scripts.glob("copilot_session_log_raw_*.json"))
@@ -258,7 +261,10 @@ def test_codex_checkout_paths(subdirectory, selection, destination, tmp_path):
         {"type": "event_msg", "payload": {"type": "user_message", "message": "hello"}},
     ]
     transcript = sessions / "rollout-session.jsonl"
-    transcript.write_text("\n".join(json.dumps(row) for row in rows))
+    event_lines = []
+    for row in rows:
+        event_lines.append(json.dumps(row))
+    transcript.write_text("\n".join(event_lines))
     arguments = {
         "transcript": ["--transcript", str(transcript)],
         "prefix": ["sess", "--sessions-root", str(sessions)],

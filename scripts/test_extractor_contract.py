@@ -8,6 +8,7 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
+from copilot_fixture import DATABASE, SESSION_ID, native_source, native_tool_source
 
 from session_log_extractors import copilot_sources
 from session_log_extractors import extract_claude_session_log as claude
@@ -25,29 +26,33 @@ FIXTURES = Path(__file__).parent / "fixtures" / "claude"
 
 def _recorded_claude_read_interaction():
     entries = claude.read_source(TRANSCRIPT).entries
-    matches = [
-        (entry, block)
-        for entry in entries
-        if entry.get("type") == "assistant"
-        for block in claude._content_blocks(entry)
-        if isinstance(block, dict)
-        and block.get("type") == "tool_use"
-        and block.get("name") == "Read"
-        and Path(block["input"].get("file_path", "")).name == "multibyte.txt"
-    ]
+    read_interactions = []
+    for entry in entries:
+        if entry.get("type") == "assistant":
+            for block in claude._content_blocks(entry):
+                if (
+                    isinstance(block, dict)
+                    and block.get("type") == "tool_use"
+                    and (block.get("name") == "Read")
+                    and (
+                        Path(block["input"].get("file_path", "")).name
+                        == "multibyte.txt"
+                    )
+                ):
+                    read_interactions.append((entry, block))
+    matches = read_interactions
     assert len(matches) == 1, "Expected one multibyte.txt Read"
     ((assistant, call),) = matches
-    results = [
-        entry
-        for entry in entries
-        if entry.get("type") == "user"
-        and any(
-            isinstance(block, dict)
-            and block.get("type") == "tool_result"
-            and block.get("tool_use_id") == call["id"]
-            for block in claude._content_blocks(entry)
-        )
-    ]
+    result_messages = []
+    for entry in entries:
+        if entry.get("type") != "user":
+            continue
+        for block in claude._content_blocks(entry):
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                if block.get("tool_use_id") == call["id"]:
+                    result_messages.append(entry)
+                    break
+    results = result_messages
     assert len(results) == 1, "Expected one result for the selected Read"
     (result,) = results
     return ClaudeSource(TRANSCRIPT, [assistant, result]), call
@@ -66,7 +71,8 @@ def test_cli_uses_the_public_extractor_stages(monkeypatch, capsys):
             return claude.interpret_source(source)
 
     monkeypatch.setattr(claude, "EXTRACTOR", RecordingExtractor(), raising=False)
-    assert claude.main(["--transcript", str(TRANSCRIPT), "--output", "-"]) == 0
+    status = claude.main(["--transcript", str(TRANSCRIPT), "--output", "-"])
+    assert status == 0
     assert json.loads(capsys.readouterr().out)["events"]
     assert stages == ["read", "interpret"]
 
@@ -74,65 +80,46 @@ def test_cli_uses_the_public_extractor_stages(monkeypatch, capsys):
 def _read_contract_source(extractor, selection, harness, full_result, monkeypatch):
     """Load each harness's native fixtures before enabling the source-access guard."""
     if harness == "copilot":
-        fixtures = FIXTURES.parent / "copilot"
-        cases = json.loads((fixtures / "manifest.json").read_text())["cases"]
-        records = copilot_sources.parse_state_records(
-            (fixtures / selection / "events.jsonl").read_text().splitlines()
-        )
-        monkeypatch.setattr(
-            copilot_sources, "load_state_records", lambda session_id: records
-        )
-        with copilot_sources.get_db_connection(fixtures / "session-store.db") as conn:
-            request = copilot.CopilotRequest(
-                conn, copilot_sources.get_session_by_id(conn, cases[selection])
-            )
-            source = extractor.read_source(request)
-        conn.close()
-        if full_result:
-            # Extend a captured completion past the default export cap.
-            next(
-                r
-                for r in source.state_records
-                if r["type"] == "tool.execution_complete"
-            )["data"]["result"]["content"] = "x" * 20000
+        source = native_source()
     else:
         source = extractor.read_source(selection)
         if harness == "codex" and full_result:
             # Extend a captured completion past the default export cap.
-            next(
-                e["payload"]
-                for e in source.entries
-                if e["payload"].get("type") == "custom_tool_call_output"
-            )["output"] = "x" * 20000
+            completion_payloads = []
+            for event in source.entries:
+                if event["payload"].get("type") == "custom_tool_call_output":
+                    completion_payloads.append(event["payload"])
+            next(iter(completion_payloads))["output"] = "x" * 20000
 
     return source
 
 
 # Extend this native-fixture matrix as other harnesses adopt Extractor.
-@pytest.mark.parametrize(
-    ("extractor", "selection", "harness", "full_result"),
-    [(claude.EXTRACTOR, TRANSCRIPT, "claude", True)]
-    + [
-        (copilot.EXTRACTOR, case, "copilot", case == "tool_success")
-        for case in ["baseline", "image", "tool_success", "continued", "skill"]
-    ]
-    + [
+CONTRACT_CASES = [
+    (claude.EXTRACTOR, TRANSCRIPT, "claude", True),
+    (copilot.EXTRACTOR, None, "copilot", True),
+]
+for codex_name in [
+    "slash.jsonl",
+    "image.jsonl",
+    "tool_patch_large.jsonl",
+    "question.jsonl",
+    "denial.jsonl",
+    "model.jsonl",
+    "plan.jsonl",
+]:
+    CONTRACT_CASES.append(
         (
             codex.EXTRACTOR,
-            FIXTURES.parent / "codex" / name,
+            FIXTURES.parent / "codex" / codex_name,
             "codex",
-            name == "tool_patch_large.jsonl",
+            codex_name == "tool_patch_large.jsonl",
         )
-        for name in [
-            "slash.jsonl",
-            "image.jsonl",
-            "tool_patch_large.jsonl",
-            "question.jsonl",
-            "denial.jsonl",
-            "model.jsonl",
-            "plan.jsonl",
-        ]
-    ],
+    )
+
+
+@pytest.mark.parametrize(
+    ("extractor", "selection", "harness", "full_result"), CONTRACT_CASES
 )
 def test_public_interpretation_is_source_free_and_export_is_non_mutating(
     extractor, selection, harness, full_result, monkeypatch
@@ -164,15 +151,22 @@ def test_public_interpretation_is_source_free_and_export_is_non_mutating(
         assert export_session(session, limit)["events"]
         assert session == original
     if full_result:
-        calls = [
-            call for event in session["events"] for call in event.get("tool_calls", [])
-        ]
-        assert any(
-            isinstance(call.get("result"), str)
-            and len(call["result"].encode()) > 10_000
-            for call in calls
-        )
-        assert all("result_truncated" not in call for call in calls)
+        interpreted_calls = []
+        for event in session["events"]:
+            for call in event.get("tool_calls", []):
+                interpreted_calls.append(call)
+        calls = interpreted_calls
+        has_large_result = []
+        for call in calls:
+            has_large_result.append(
+                isinstance(call.get("result"), str)
+                and len(call["result"].encode()) > 10000
+            )
+        assert any(has_large_result)
+        has_no_export_flags = []
+        for call in calls:
+            has_no_export_flags.append("result_truncated" not in call)
+        assert all(has_no_export_flags)
 
 
 def test_public_stage_propagates_reader_errors_and_handles_no_events(tmp_path):
@@ -180,15 +174,15 @@ def test_public_stage_propagates_reader_errors_and_handles_no_events(tmp_path):
     with pytest.raises(FileNotFoundError):
         extractor.read_source(tmp_path / "missing.jsonl")
     assert extractor.interpret_source(ClaudeSource(tmp_path / "s.jsonl", [])) is None
+    system_entries = []
+    for entry in claude.read_source(TRANSCRIPT).entries:
+        if entry.get("type") == "system":
+            system_entries.append(entry)
     assert (
         extractor.interpret_source(
             ClaudeSource(
                 tmp_path / "s.jsonl",
-                [
-                    entry
-                    for entry in claude.read_source(TRANSCRIPT).entries
-                    if entry.get("type") == "system"
-                ],
+                system_entries,
             )
         )
         is None
@@ -247,8 +241,6 @@ extractor: Extractor[Path, ClaudeSource] = Implementation()
 
 
 def test_copilot_cli_uses_public_stages_and_shared_export(monkeypatch, capsys):
-    fixtures = FIXTURES.parent / "copilot"
-    cases = json.loads((fixtures / "manifest.json").read_text())["cases"]
     stages = []
     original = copilot.EXTRACTOR
     export = copilot.export_session
@@ -269,20 +261,18 @@ def test_copilot_cli_uses_public_stages_and_shared_export(monkeypatch, capsys):
     monkeypatch.setattr(copilot, "EXTRACTOR", RecordingExtractor())
     monkeypatch.setattr(copilot, "export_session", recording_export)
     monkeypatch.setattr(copilot_sources, "load_state_records", lambda session_id: [])
-    assert (
-        copilot.main(
-            [
-                cases["baseline"],
-                "--db",
-                str(fixtures / "session-store.db"),
-                "--output",
-                "-",
-                "--tool-result-bytes",
-                "7",
-            ]
-        )
-        == 0
+    status = copilot.main(
+        [
+            SESSION_ID,
+            "--db",
+            str(DATABASE),
+            "--output",
+            "-",
+            "--tool-result-bytes",
+            "7",
+        ]
     )
+    assert status == 0
     assert json.loads(capsys.readouterr().out)["events"]
     assert stages == ["read", "interpret", ("export", 7)]
 
@@ -300,6 +290,16 @@ def test_copilot_public_reader_errors_and_empty_source():
     )
 
 
+def _calls_named(session, name):
+    calls = []
+    for message in session["events"]:
+        for call in message.get("tool_calls", []):
+            if call["name"] == name:
+                calls.append(call)
+    assert len(calls) == 1, "Expected one selected call"
+    return calls[0]
+
+
 @pytest.mark.parametrize("harness", ["claude", "copilot"])
 @pytest.mark.parametrize("unsupported", [False, True])
 def test_native_tool_payloads_keep_unknown_fields_through_export(harness, unsupported):
@@ -309,19 +309,13 @@ def test_native_tool_payloads_keep_unknown_fields_through_export(harness, unsupp
         input_key = "input"
         extractor = claude.EXTRACTOR
     else:
-        records = copilot_sources.parse_state_records(
-            (FIXTURES.parent / "copilot" / "tool_success" / "events.jsonl")
-            .read_text()
-            .splitlines()
-        )
-        source = copilot_sources.CopilotSource(
-            {"id": "fixture"}, [], state_records=records
-        )
-        request = next(
-            r["data"]["toolRequests"][0]
-            for r in records
-            if r["type"] == "assistant.message" and r["data"].get("toolRequests")
-        )
+        source = native_tool_source()
+        requests = []
+        for record in source.state_records:
+            if record["type"] == "assistant.message":
+                requests.extend(record["data"].get("toolRequests", []))
+        assert len(requests) == 1
+        (request,) = requests
         input_key = "arguments"
         extractor = copilot.EXTRACTOR
     # Keep recorded call IDs/results; only extend the payload and vary recognition.
@@ -332,23 +326,13 @@ def test_native_tool_payloads_keep_unknown_fields_through_export(harness, unsupp
         request["name"] = "future_tool"
     expected_input = deepcopy(request[input_key])
     session = extractor.interpret_source(source)
-    call = next(
-        c
-        for event in session["events"]
-        for c in event.get("tool_calls", [])
-        if c["name"] == request["name"]
-    )
+    call = _calls_named(session, request["name"])
     assert call["input"] == expected_input
     assert (call["input_schema"] == "unsupported") is unsupported
     if unsupported:
         assert "future_tool" in session["unsupported_tools"]
     original = deepcopy(session)
     exported = export_session(session, 17)
-    exported_call = next(
-        c
-        for event in exported["events"]
-        for c in event.get("tool_calls", [])
-        if c["name"] == request["name"]
-    )
+    exported_call = _calls_named(exported, request["name"])
     assert exported_call["input"] == expected_input
     assert session == original
