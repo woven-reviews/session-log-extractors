@@ -107,6 +107,13 @@ def test_native_child_messages_keep_their_recorded_agent_identity():
     for message in session["events"]:
         if message.get("id") in child_messages:
             observed[message["id"]] = message["agent_id"]
+            if message.get("text"):
+                assert message["authorship"]
+                for span in message["authorship"]:
+                    assert span["source"] == "other_agent"
+                    assert {"field": "agentId", "value": message["agent_id"]} in span[
+                        "markers"
+                    ]
     assert observed == child_messages
 
 
@@ -130,6 +137,9 @@ def test_native_user_shell_retains_command_and_complete_result():
     assert message["shell_result"]["tool_call_id"] == data["toolCallId"]
     assert "CAPTURE_USER_STDOUT_1" in message["shell_result"]["content"]["content"]
     assert "CAPTURE_USER_STDERR_1" in message["shell_result"]["content"]["content"]
+    assert message["authorship"]
+    for span in message["authorship"]:
+        assert span["source"] == "candidate"
     original = deepcopy(session)
     assert export_session(session, -1)["events"]
     assert session == original

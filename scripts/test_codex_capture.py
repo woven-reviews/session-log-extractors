@@ -411,4 +411,16 @@ def test_legacy_event_view_preserves_recorded_native_user_semantics(kind):
 
     actual = codex.interpret_source(source)
 
+    actual_ranges = actual["events"][0].pop("authorship")
+    expected_ranges = expected["events"][0].pop("authorship")
     assert actual == expected
+    assert len(actual_ranges) == len(expected_ranges)
+    for actual_range, expected_range in zip(
+        actual_ranges, expected_ranges, strict=True
+    ):
+        actual_markers = actual_range.pop("markers")
+        expected_markers = expected_range.pop("markers")
+        assert actual_range == expected_range
+        for marker in expected_markers:
+            assert marker in actual_markers
+        assert {"field": "type", "value": "event_msg"} in actual_markers

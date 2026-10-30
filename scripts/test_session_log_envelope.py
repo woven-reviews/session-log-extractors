@@ -9,11 +9,15 @@ from __future__ import annotations
 import base64
 import json
 import tempfile
+from copy import deepcopy
 from pathlib import Path
+
+import pytest
 
 from session_log_extractors.session_log_envelope import (
     SCHEMA,
     build_envelope,
+    export_session,
     image_from_base64,
     image_from_bytes,
     media_type_for_ext,
@@ -31,6 +35,41 @@ _PNG_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9"
     "awAAAABJRU5ErkJggg=="
 )
+
+
+@pytest.mark.parametrize(
+    "ranges",
+    [
+        None,
+        [],
+        [
+            {"start": 0, "end": 4, "source": "candidate"},
+            {
+                "start": 4,
+                "end": 11,
+                "source": "harness",
+                "ts": None,
+                "markers": [
+                    {"field": "source", "value": {"native": [None, "runtime"]}}
+                ],
+            },
+        ],
+    ],
+)
+def test_export_preserves_authorship_presence_and_nested_values(ranges):
+    # Illustrative shared-contract ranges; these are not native Codex evidence.
+    event = user_event(0, "recorded", "Hi 🙂context")
+    if ranges is not None:
+        event["authorship"] = ranges
+    session = Session(harness="codex", session_id="test", events=[event])
+    original = deepcopy(session)
+    exported = export_session(session)
+    assert exported["events"] == original["events"]
+    if ranges:
+        exported["events"][0]["authorship"][1]["markers"][0]["value"]["native"].append(
+            "changed"
+        )
+    assert session == original
 
 
 def test_raw_filename_prefixes_every_harness():

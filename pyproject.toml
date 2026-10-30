@@ -67,6 +67,7 @@ source_modules = ["session_log_extractors.session_model"]
 forbidden_modules = [
     "session_log_extractors.claude_sources",
     "session_log_extractors.codex_sources",
+    "session_log_extractors.codex_authorship",
     "session_log_extractors.copilot_sources",
     "session_log_extractors.extract_claude_session_log",
     "session_log_extractors.extract_codex_session_log",
@@ -82,6 +83,7 @@ source_modules = ["session_log_extractors.session_log_envelope"]
 forbidden_modules = [
     "session_log_extractors.claude_sources",
     "session_log_extractors.codex_sources",
+    "session_log_extractors.codex_authorship",
     "session_log_extractors.copilot_sources",
     "session_log_extractors.extract_claude_session_log",
     "session_log_extractors.extract_codex_session_log",

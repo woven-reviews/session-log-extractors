@@ -287,9 +287,36 @@ native identities, collaboration mode, commands, plan updates, skill names,
 changed files, and patch completion records in named model fields. Tool results
 match calls by recorded call ID, including across later human messages; unmatched
 results remain explicit. Denial prose without a call ID stays on its recorded
-message without a guessed tool association. Native answer arrays select whole
-labels by question ID; notes and substring overlap do not invent selections.
-Recorded human text retains literal markup; role alone does not classify authorship.
+message without a guessed tool association. User and assistant text retain
+whitespace and wrappers; startup-shaped user messages remain in order with their
+own timestamps and images. Exact response/event text duplicates reconcile using
+the existing response identity/image preference and event timestamp; differing
+text remains on separate messages, so an input cannot consume another's images.
+Nonempty text carries shared `authorship` ranges into JSON, with exact native
+record, payload, block, and per-content provenance markers. The harness-owned
+`codex_authorship` module uses aligned `content_item_kinds` and
+`content_item_metadata[].provenance` from
+`internal_chat_message_metadata_passthrough`. Recorded human input and supported candidate control activity are `candidate`;
+recorded primary-assistant responses, workspace/environment context, and
+selected-skill expansion are `harness`. Either understood kind or provenance can supply evidence; native primary-assistant
+response records separately identify harness activity. Missing,
+unsupported, misaligned, or conflicting evidence stays `unknown`. Role and
+wrapper-looking text alone never establish source. The original text is
+unchanged, and offsets count Unicode code points. Newlines inserted by the
+existing block serialization stay uncovered (unknown).
+
+Native image-attachment records, including their framing, remain candidate
+activity under their recorded user provenance; image ownership stays unchanged.
+For exact duplicate views, response ranges and their timestamps survive alongside
+the event timestamp and both views' markers. Recorded message and turn IDs stay
+on the model. Native user-shell records retain the complete candidate control activity,
+including the recorded command and outcome, using the native shell kind. Native agent deliveries
+retain sender/recipient markers and are exported as assistant contributions with
+`other_agent` authorship; child interpretation honors the recorded history
+boundary. Developer/system instructions remain outside the conversation. Native
+IDE classification remains unestablished; see the [fixture evidence limits](scripts/fixtures/README.md#native-evidence-and-limits).
+Native answer arrays select whole labels by question ID; notes and substring
+overlap do not invent selections.
 `ToolCall.result_record.content` retains complete native
 results, while `ToolCall.result` retains the existing uncapped textual
 interpretation for JSON compatibility. Missing, null, and empty results stay

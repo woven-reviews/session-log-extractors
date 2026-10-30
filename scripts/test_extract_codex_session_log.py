@@ -455,9 +455,10 @@ def test_codex_summary_options_and_shell_command():
     ]
 
     assert _interpret(entries)["files_changed"] == []
-    assert len(_users(entries)) == 2
+    assert len(_users(entries)) == 3
     assert _calls(entries)[0]["questions"][0]["chosen_labels"] == ["QUAL"]
-    assert _users(entries)[1]["shell_command"] == "ls -la"
+    assert _users(entries)[1]["text"] == "<bash-stdout>ignored</bash-stdout>"
+    assert _users(entries)[2]["shell_command"] == "ls -la"
 
 
 def test_codex_native_question_fixture_marks_answered_option():
@@ -1347,7 +1348,7 @@ def test_interpret_events_skips_blank_user_event_without_text_or_images():
     assert events[0]["text"] == "real text"
 
 
-def test_interpret_events_startup_context_sets_pending_images_not_text():
+def test_interpret_events_retains_startup_context_as_its_own_message():
     startup_text = "<recommended_plugins>x</recommended_plugins>\n# AGENTS.md instructions\n<environment_context>y</environment_context>"
     entries = [
         {
@@ -1366,11 +1367,12 @@ def test_interpret_events_startup_context_sets_pending_images_not_text():
         },
     ]
     events = _events(entries)
-    assert len(events) == 1
-    assert events[0]["text"] == "actual turn"
+    assert len(events) == 2
+    assert events[0]["text"] == startup_text
+    assert events[1]["text"] == "actual turn"
 
 
-def test_interpret_events_assistant_blank_text_is_skipped():
+def test_interpret_events_assistant_whitespace_is_preserved():
     entries = [
         {
             "type": "response_item",
@@ -1382,7 +1384,9 @@ def test_interpret_events_assistant_blank_text_is_skipped():
             },
         }
     ]
-    assert _events(entries) == []
+    events = _events(entries)
+    assert len(events) == 1
+    assert events[0]["text"] == "   "
 
 
 def test_interpret_events_function_call_flushes_pending_user_message():
@@ -1706,10 +1710,10 @@ def test_interpret_tagged_command_without_leading_slash_is_ignored():
         }
     ]
     assert "command" not in _users(entries)[0]
-    assert _users(entries)[0]["text"] == "some text"
+    assert _users(entries)[0]["text"] == entries[0]["payload"]["message"]
 
 
-def test_interpret_startup_context_response_item_sets_pending_images_only():
+def test_interpret_startup_context_preserves_its_timestamp_and_text():
     startup_text = (
         "<recommended_plugins>x</recommended_plugins>\n"
         "# AGENTS.md instructions\n<environment_context>y</environment_context>"
@@ -1730,8 +1734,10 @@ def test_interpret_startup_context_response_item_sets_pending_images_only():
             "payload": {"type": "user_message", "message": "actual turn"},
         },
     ]
-    assert len(_users(entries)) == 1
-    assert _users(entries)[0]["text"] == "actual turn"
+    users = _users(entries)
+    assert len(users) == 2
+    assert users[0]["text"] == startup_text
+    assert users[1]["text"] == "actual turn"
 
 
 def test_interpret_events_function_call_arguments_fallback_to_input():
@@ -2237,7 +2243,7 @@ def test_legacy_text_answers_match_whole_labels(text, labels):
     assert actual_labels == labels
 
 
-def test_legacy_duplicate_user_views_match_raw_text_before_cleanup():
+def test_legacy_duplicate_user_views_preserve_raw_text():
     # Older records have no IDs/provenance. Their exact raw text must match;
     # cleanup alone cannot establish whether two different inputs are one view.
     text = "Keep this prose. <bash-stdout>legacy wrapper</bash-stdout>"
@@ -2254,4 +2260,4 @@ def test_legacy_duplicate_user_views_match_raw_text_before_cleanup():
     ]
     users = _users(entries)
     assert len(users) == 1
-    assert users[0]["text"] == "Keep this prose."
+    assert users[0]["text"] == text

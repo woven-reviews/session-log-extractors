@@ -60,6 +60,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, TypedDict
 
 from session_log_extractors import codex_sources
+from session_log_extractors.codex_authorship import message_authorship
 from session_log_extractors.codex_sources import CodexSource, ImageInputs
 from session_log_extractors.extractor_contract import Extractor
 from session_log_extractors.json_types import (
@@ -218,7 +219,7 @@ def is_startup_context(text: str) -> bool:
 
 
 def assistant_text_from_payload(payload: Dict[str, JsonValue]) -> str:
-    return _content_text(payload.get("content"), ("text", "output_text")).strip()
+    return _content_text(payload.get("content"), ("text", "output_text"))
 
 
 def _image_ref_from_string(value: str) -> Optional[Dict[str, JsonValue]]:
@@ -771,14 +772,17 @@ def _user_message(
     timestamp: str | None,
     raw_text: str,
     images: list[Image],
+    record_type: str,
 ) -> UserMessage:
     """Normalize user content while retaining identity and command syntax."""
     kinds = _message_kinds(payload)
-    # Explicit native user provenance outranks legacy wrapper heuristics.
-    text = raw_text if "user.text" in kinds else clean_user_text(raw_text)
-    message = user_event(0, timestamp, text, images)
+    # Preserve original text before projecting native per-content authorship.
+    message = user_event(0, timestamp, raw_text, images)
     _copy_identity(message, payload)
     _user_commands(message, raw_text)
+    message["authorship"] = message_authorship(
+        payload, raw_text, timestamp, record_type
+    )
     if kinds == ["skills.selected_skill_instructions"]:
         invocation = _selected_skill(raw_text)
         if invocation is not None:
@@ -861,8 +865,6 @@ class _CodexSessionBuilder:
             self.session["parent_session_id"] = source.parent_session_id
         self.pending_calls: dict[str, ToolCall] = {}
         self.pending_user: UserMessage | None = None
-        self.pending_user_raw_text = ""
-        self.pending_images: list[Image] = []
         self.mode = ""
         self.active_user: UserMessage | None = None
         self.files_seen: set[str] = set()
@@ -877,7 +879,6 @@ class _CodexSessionBuilder:
         if self.pending_user is not None:
             self.append_user(self.pending_user)
             self.pending_user = None
-            self.pending_user_raw_text = ""
 
     def append_user(self, message: UserMessage) -> None:
         invocation = message.get("skill_invocation")
@@ -894,13 +895,10 @@ class _CodexSessionBuilder:
         images = envelope_images(
             image_refs_from_user_message_payload(payload), self.source.image_inputs
         )
-        message = _user_message(payload, timestamp, raw_text, images)
-        if not message["text"] or is_startup_context(message["text"]):
-            self.pending_images = images
-            return
+        message = _user_message(payload, timestamp, raw_text, images, "response_item")
         self.flush_user()
-        self.pending_user = message
-        self.pending_user_raw_text = raw_text
+        if message["text"] or images:
+            self.pending_user = message
 
     def event_user(self, payload: dict[str, JsonValue], timestamp: str | None) -> None:
         """Emit the user event after reconciling its buffered response view."""
@@ -908,37 +906,38 @@ class _CodexSessionBuilder:
             image_refs_from_event(payload), self.source.image_inputs
         )
         raw_text = _string(payload.get("message")) or ""
-        message = _user_message(payload, timestamp, raw_text, images)
-        self.merge_pending_user(message, raw_text)
+        message = _user_message(payload, timestamp, raw_text, images, "event_msg")
+        self.merge_pending_user(message)
         if message["text"] or message.get("images") or message.get("command"):
             self.append_user(message)
 
-    def merge_pending_user(self, message: UserMessage, raw_text: str) -> None:
-        """Prefer the response view's identity and images for the same input."""
-        response_images = None
-        if self.pending_user is not None:
-            pending = self.pending_user
-            same_input = (
-                pending["id"] == message["id"]
-                if "id" in pending and "id" in message
-                else self.pending_user_raw_text == raw_text
-            )
-            if same_input:
-                response_images = pending.get("images")
-                message["text"] = pending["text"]
-                _copy_identity(message, pending)
-                if "skill_invocation" in pending:
-                    message["skill_invocation"] = pending["skill_invocation"]
-                if "shell_command" in pending:
-                    message["shell_command"] = pending["shell_command"]
-                self.pending_user = None
-                self.pending_user_raw_text = ""
-            else:
-                self.flush_user()
-        images = response_images or self.pending_images or message.get("images")
-        self.pending_images = []
-        if images:
-            message["images"] = images
+    def merge_pending_user(self, message: UserMessage) -> None:
+        """Reconcile equal native views without losing text or block provenance."""
+        pending = self.pending_user
+        if pending is None:
+            return
+        if pending["text"] != message["text"] or (
+            "id" in pending and "id" in message and pending["id"] != message["id"]
+        ):
+            self.flush_user()
+            return
+        _copy_identity(message, pending)
+        if pending.get("images"):
+            message["images"] = pending["images"]
+        if "skill_invocation" in pending:
+            message["skill_invocation"] = pending["skill_invocation"]
+        if "shell_command" in pending:
+            message["shell_command"] = pending["shell_command"]
+        event_markers = []
+        for span in message.get("authorship", []):
+            event_markers.extend(span.get("markers", []))
+        message["authorship"] = pending.get("authorship", [])
+        for span in message["authorship"]:
+            markers = span.setdefault("markers", [])
+            for marker in event_markers:
+                if marker not in markers:
+                    markers.append(marker)
+        self.pending_user = None
 
     def assistant(self, payload: dict[str, JsonValue], timestamp: str | None) -> None:
         self.flush_user()
@@ -947,7 +946,12 @@ class _CodexSessionBuilder:
             return
         message = assistant_event(0, timestamp, text)
         _copy_identity(message, payload)
-        denial = parse_permission_denial(text)
+        message["authorship"] = message_authorship(
+            payload, text, timestamp, "response_item"
+        )
+        denial = (
+            parse_permission_denial(text) if payload.get("type") == "message" else None
+        )
         if denial is not None:
             # A message without a call ID cannot establish tool ownership.
             message["permission_denial"] = PermissionDenial(
@@ -1072,6 +1076,8 @@ class _CodexSessionBuilder:
                 self.response_user(payload, timestamp)
             elif payload.get("role") == "assistant":
                 self.assistant(payload, timestamp)
+        elif kind == "agent_message":
+            self.assistant(payload, timestamp)
         elif kind in ("function_call", "custom_tool_call"):
             self.call(payload, timestamp)
         elif kind in ("function_call_output", "custom_tool_call_output"):

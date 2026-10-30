@@ -54,7 +54,7 @@ untracked at `captures/codex/0.166.0/20261030T194718Z/`.
 | Skills/commands | Two native skill selections/expansions; custom slash command with arguments rejected by the UI. Native notebook editing was unavailable. |
 | Images | Two same-message PNG attachments, later JPEG/GIF/WebP attachments, and a separate tool-returned image. GIF converted to PNG at persistence. |
 | Continuation | Queued input, stopped background terminal, permission/question cancellation, model change, exact-session resume, and manual compaction/recall. |
-| Child | One actual read-only subagent, complete sidecar, recorded parent ID/history boundary, separate child interpretation/export. There is no dedicated Codex summary API; parent `agent_message` delivery records remain native-only. |
+| Child | One actual read-only subagent, complete sidecar, recorded parent ID/history boundary, separate child interpretation/export. Explicit `agent_message` deliveries retain sender/recipient markers and become assistant contributions with other-agent authorship. There is no dedicated summary API. |
 | Export | Complete recorded inputs/results checked by call IDs; budgets 0/17/4096/unlimited plus an actual split multibyte boundary; non-mutation and CLI file/stdout parity. Model-only identities, invocation/patch details, and relationships are intentional JSON omissions. |
 
 ## Post-generation test audit
@@ -87,3 +87,18 @@ Regenerate only by explicitly invoking the repository's
 [capture-native-session skill](../../../.agents/skills/capture-native-session/SKILL.md)
 with its [Codex guidance](../../../.agents/skills/capture-native-session/references/codex.md).
 Paid capture remains bounded and outside ordinary tests and CI.
+
+## Authorship verification
+
+`test_codex_authorship.py` uses this complete capture and child sidecar directly.
+It checks candidate text, environment/skill injection, literal markup, both image
+attachment groups, candidate shell command/outcome activity, and agent deliveries.
+A full-capture guard checks that all reviewed text activity has resolved attribution.
+Primary-assistant responses are harness activity, and candidate image framing
+and candidate-run shell outcomes remain candidate activity. Child output is
+checked after the recorded history boundary, without attributing
+inherited human inputs to the child. Production JSON and non-mutating export
+retain the ranges, markers, timestamps, image ownership, and tool ownership.
+Controlled mutations cover Unicode/mixed blocks, malformed or conflicting
+provenance, legacy duplicate views, and missing evidence. No fixture text is
+rewritten to make a missing native workflow appear successful.
