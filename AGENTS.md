@@ -124,6 +124,14 @@ split code merely to reduce line counts. Long declarative structures, test
 setup, and expected data can remain together when that improves understanding.
 Apply the same judgment to shorter functions with dense or mixed logic.
 
+Tests should read as specifications: make the scenario, action, and expected
+outcome easy to follow. Use shared fixtures and expressive helpers to hide
+incidental setup, while keeping the behavior under test and its expected result
+explicit. Name helpers for the domain concept they provide or the operation
+they perform. A reader should not need to trace a chain of helpers to discover
+what a test does or why it passes. Prefer a little repetition over abstractions
+that obscure the example.
+
 Name classes and helpers for the responsibility they perform. Distinguish
 records representing domain facts from objects that build, read, or export
 those records; include lifecycle or scope when it helps explain their role.

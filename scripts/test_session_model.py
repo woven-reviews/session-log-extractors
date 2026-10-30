@@ -321,7 +321,7 @@ def test_authorship_examples_define_coverage_without_role_inference():
         assert json.loads(json.dumps(event)) == event
 
 
-def test_claude_native_injected_message_fits_authorship_contract():
+def _recorded_skill_expansions():
     records = read_source(TRANSCRIPT).entries
     expansions = [
         (entry, block["text"])
@@ -332,6 +332,12 @@ def test_claude_native_injected_message_fits_authorship_contract():
         and block.get("type") == "text"
         and block["text"].startswith("Base directory for this skill:")
     ]
+    assert expansions, "Missing native skill expansion messages"
+    return expansions
+
+
+def test_claude_native_injected_message_fits_authorship_contract():
+    expansions = _recorded_skill_expansions()
     assert expansions
     for native, text in expansions:
         span = AuthorshipRange(

@@ -22,6 +22,12 @@ def _check_destinations(inputs: list[Path], outputs: list[Path]) -> None:
         raise ValueError("Output and report must not overwrite the source or rules")
     if len(set(resolved_outputs)) != len(resolved_outputs):
         raise ValueError("Output and report must use different paths")
+    if any(
+        first.exists() and second.exists() and first.samefile(second)
+        for index, first in enumerate(outputs)
+        for second in outputs[index + 1 :]
+    ):
+        raise ValueError("Output and report must use different files")
     input_files = [path for path in inputs if path.exists()]
     if any(
         output.exists() and output.samefile(source)

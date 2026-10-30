@@ -23,7 +23,7 @@ ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312"
 FIXTURES = Path(__file__).parent / "fixtures" / "claude"
 
 
-def _claude_read_call():
+def _recorded_claude_read_interaction():
     entries = claude.read_source(TRANSCRIPT).entries
     matches = [
         (entry, block)
@@ -305,7 +305,7 @@ def test_copilot_public_reader_errors_and_empty_source():
 def test_native_tool_payloads_keep_unknown_fields_through_export(harness, unsupported):
     """Extend a captured call with a future field and optionally a future tool name."""
     if harness == "claude":
-        source, request = _claude_read_call()
+        source, request = _recorded_claude_read_interaction()
         input_key = "input"
         extractor = claude.EXTRACTOR
     else:

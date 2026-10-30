@@ -70,18 +70,18 @@ ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312"
 (SUBAGENT,) = (TRANSCRIPT.with_suffix("") / "subagents").glob("*.jsonl")
 
 
-def _entries():
+def _recorded_session_entries():
     return load_entries(TRANSCRIPT)
 
 
-def _only(matches, description):
+def _require_single_match(matches, description):
     assert len(matches) == 1, f"Expected one {description}, found {len(matches)}"
     (match,) = matches
     return match
 
 
-def _block(entry, kind):
-    return _only(
+def _content_block(entry, kind):
+    return _require_single_match(
         [
             block
             for block in _content_blocks(entry)
@@ -91,11 +91,11 @@ def _block(entry, kind):
     )
 
 
-def _user_entry(marker):
-    return _only(
+def _recorded_user_message(marker):
+    return _require_single_match(
         [
             entry
-            for entry in _entries()
+            for entry in _recorded_session_entries()
             if entry.get("type") == "user"
             and not entry.get("isMeta")
             and not entry.get("isCompactSummary")
@@ -105,9 +105,9 @@ def _user_entry(marker):
     )
 
 
-def _result_entry(entries, call):
+def _recorded_result_for_call(entries, call):
     # IDs from the selected capture connect records; no recorded ID selects a case.
-    return _only(
+    return _require_single_match(
         [
             entry
             for entry in entries
@@ -123,8 +123,8 @@ def _result_entry(entries, call):
     )
 
 
-def _tool_pairs(name, input_contains="", result_contains=""):
-    entries = _entries()
+def _recorded_tool_interactions(name, input_contains="", result_contains=""):
+    entries = _recorded_session_entries()
     calls = [
         (entry, block)
         for entry in entries
@@ -135,11 +135,11 @@ def _tool_pairs(name, input_contains="", result_contains=""):
         and block.get("name") == name
         and input_contains in json.dumps(block.get("input"), ensure_ascii=False)
     ]
-    pairs = [(entry, _result_entry(entries, call)) for entry, call in calls]
+    pairs = [(entry, _recorded_result_for_call(entries, call)) for entry, call in calls]
     matches = [
         (entry, result)
         for entry, result in pairs
-        if result_contains in _result_block_text(_block(result, "tool_result"))
+        if result_contains in _result_block_text(_content_block(result, "tool_result"))
     ]
     assert matches, (
         f"Missing {name} activity matching {input_contains!r} / {result_contains!r}"
@@ -147,15 +147,15 @@ def _tool_pairs(name, input_contains="", result_contains=""):
     return matches
 
 
-def _tool_pair(name, input_contains="", result_contains=""):
-    return _only(
-        _tool_pairs(name, input_contains, result_contains),
+def _recorded_tool_interaction(name, input_contains="", result_contains=""):
+    return _require_single_match(
+        _recorded_tool_interactions(name, input_contains, result_contains),
         f"{name} activity matching {input_contains!r} / {result_contains!r}",
     )
 
 
-def _event_call(events):
-    return _only(
+def _single_tool_call_in(events):
+    return _require_single_match(
         [call for event in events for call in event.get("tool_calls", [])], "tool call"
     )
 
@@ -167,66 +167,52 @@ def _assert_assistant_text(events):
     assert any(text.strip() for text in responses)
 
 
-def _question(call, *, multi_select):
+def _question_in(call, *, multi_select):
     native = call.get("input", call)
-    question = _only(
+    question = _require_single_match(
         [q for q in native["questions"] if bool(q.get("multiSelect")) == multi_select],
         f"question with multiSelect={multi_select}",
     )
-    return _only(
+    return _require_single_match(
         [q for q in call["questions"] if q["question"] == question["question"]],
         "question matching its native input",
     )
 
 
-def _session(entries):
+def _interpret_interaction(entries):
     return eclog.interpret_source(ClaudeSource(Path("session.jsonl"), entries))
 
 
-def _calls(entries):
+def _tool_calls_in(session):
+    return [call for event in session["events"] for call in event.get("tool_calls", [])]
+
+
+def _plan_decisions_in(session):
     return [
-        call
-        for event in _session(entries)["events"]
-        for call in event.get("tool_calls", [])
+        call["plan_decision"]
+        for call in _tool_calls_in(session)
+        if "plan_decision" in call
     ]
 
 
-def _plans(entries):
-    return [
-        call["plan_decision"] for call in _calls(entries) if "plan_decision" in call
-    ]
+def _recorded_multiselect_interaction():
+    matches = []
+    for assistant, result in _recorded_tool_interactions("AskUserQuestion"):
+        call = _content_block(assistant, "tool_use")
+        questions = call["input"]["questions"]
+        if any(question.get("multiSelect") for question in questions):
+            matches.append((assistant, result))
+    return _require_single_match(matches, "multiselect activity")
 
 
-def _question_calls():
-    return _only(_calls(_multiselect_pair()), "question call")
-
-
-def _multiselect_pair():
-    return _only(
-        [
-            pair
-            for pair in _tool_pairs("AskUserQuestion")
-            if any(
-                q.get("multiSelect")
-                for q in _block(pair[0], "tool_use")["input"]["questions"]
-            )
-        ],
-        "multiselect activity",
-    )
-
-
-def _overlapping_options_pair():
-    return _only(
-        [
-            pair
-            for pair in _tool_pairs("AskUserQuestion")
-            if any(
-                _has_overlapping_labels(q["options"])
-                for q in _block(pair[0], "tool_use")["input"]["questions"]
-            )
-        ],
-        "overlapping-option activity",
-    )
+def _recorded_overlapping_options_interaction():
+    matches = []
+    for assistant, result in _recorded_tool_interactions("AskUserQuestion"):
+        call = _content_block(assistant, "tool_use")
+        questions = call["input"]["questions"]
+        if any(_has_overlapping_labels(question["options"]) for question in questions):
+            matches.append((assistant, result))
+    return _require_single_match(matches, "overlapping-option activity")
 
 
 def _has_overlapping_labels(options):
@@ -238,28 +224,24 @@ def _has_overlapping_labels(options):
     )
 
 
-def _assert_selected_answer(question, *, minimum_choices=1):
+def _assert_answer_uses_distinct_recorded_options(question):
     assert isinstance(question["answer_text"], str)
     assert question["answer_text"].strip()
     labels = question["chosen_labels"]
     assert isinstance(labels, list)
     assert all(isinstance(label, str) and label for label in labels)
-    assert len(labels) >= minimum_choices
     assert len(labels) == len(set(labels))
     assert set(labels) <= {option["label"] for option in question["options"]}
-    if minimum_choices == 1:
-        assert len(labels) == 1
-        assert question["answer_text"] == labels[0]
 
 
 def test_native_skill_and_command_invocations_are_retained():
-    entries = _entries()
-    session = _session(entries)
+    entries = _recorded_session_entries()
+    session = _interpret_interaction(entries)
     assert session["skills_used"] == ["capture-leaf"]
-    calls = [call for call in _calls(entries) if call["name"] == "Skill"]
+    calls = [call for call in _tool_calls_in(session) if call["name"] == "Skill"]
     assert len(calls) >= 2
     assert {call["skill"] for call in calls} == {"capture-leaf"}
-    command = _only(
+    command = _require_single_match(
         [
             event
             for event in session["events"]
@@ -272,14 +254,14 @@ def test_native_skill_and_command_invocations_are_retained():
 
 
 def test_single_choice():
-    assistant, result = _overlapping_options_pair()
-    question = _only(
-        _block(assistant, "tool_use")["input"]["questions"], "single question"
+    assistant, result = _recorded_overlapping_options_interaction()
+    question = _require_single_match(
+        _content_block(assistant, "tool_use")["input"]["questions"], "single question"
     )
     value, chosen = _parse_chosen(
         question["question"],
         question["options"],
-        _block(result, "tool_result")["content"],
+        _content_block(result, "tool_result")["content"],
     )
     assert isinstance(value, str)
     assert value.strip()
@@ -289,8 +271,14 @@ def test_single_choice():
 
 
 def test_native_multiselect_answer():
-    qa = _question(_question_calls(), multi_select=True)
-    _assert_selected_answer(qa, minimum_choices=2)
+    entries = _recorded_multiselect_interaction()
+
+    session = _interpret_interaction(entries)
+
+    call = _single_tool_call_in(session["events"])
+    answer = _question_in(call, multi_select=True)
+    assert len(answer["chosen_labels"]) >= 2
+    _assert_answer_uses_distinct_recorded_options(answer)
 
 
 def test_parse_chosen_comma_separated_labels():
@@ -315,8 +303,10 @@ def test_parse_chosen_overlapping_labels_selects_only_the_complete_label(labels)
 
 
 def test_permission_denial_bare():
-    _, result = _tool_pair("Write", "denied-feedback.txt")
-    assert parse_permission_denial(_block(result, "tool_result")["content"]) == ""
+    _, result = _recorded_tool_interaction("Write", "denied-feedback.txt")
+    assert (
+        parse_permission_denial(_content_block(result, "tool_result")["content"]) == ""
+    )
 
 
 def test_permission_denial_with_message():
@@ -335,16 +325,17 @@ def test_permission_denial_ignores_normal_result():
 
 
 def test_native_settings_denial_is_recorded():
-    entries = _tool_pair("Bash", "CAPTURE_SETTINGS_REFUSAL")
+    entries = _recorded_tool_interaction("Bash", "CAPTURE_SETTINGS_REFUSAL")
     _, result_entry = entries
-    result = _block(result_entry, "tool_result")["content"]
+    result = _content_block(result_entry, "tool_result")["content"]
     assert isinstance(result, str)
     assert result.strip()
     assert parse_permission_denial(result) == ""
-    denial = _only(
+    interpreted_session = _interpret_interaction(entries)
+    denial = _require_single_match(
         [
             call["permission_denial"]
-            for call in _calls(entries)
+            for call in _tool_calls_in(interpreted_session)
             if "permission_denial" in call
         ],
         "settings denial",
@@ -361,8 +352,8 @@ def test_permission_denial_ignores_isc_license_text():
 
 
 def test_permission_denials_from_result_names_tool():
-    assistant, result = _tool_pair("Write", "denied-feedback.txt")
-    call = _block(assistant, "tool_use")
+    assistant, result = _recorded_tool_interaction("Write", "denied-feedback.txt")
+    call = _content_block(assistant, "tool_use")
     name = "Write — " + call["input"]["file_path"]
     assert permission_denials_from_result(result, {call["id"]: name}) == [
         {"tool": name, "message": "", "by": "user"}
@@ -370,39 +361,43 @@ def test_permission_denials_from_result_names_tool():
 
 
 def test_custom_answer_matches_no_option():
-    question = _question(
-        _only(
-            _calls(
-                _tool_pair(
-                    "AskUserQuestion", result_contains="CAPTURE_CUSTOM_PLAIN_MOSS"
-                )
-            ),
-            "season question call",
-        ),
-        multi_select=False,
+    entries = _recorded_tool_interaction(
+        "AskUserQuestion", result_contains="CAPTURE_CUSTOM_PLAIN_MOSS"
     )
+
+    session = _interpret_interaction(entries)
+
+    call = _single_tool_call_in(session["events"])
+    question = _question_in(call, multi_select=False)
     assert question["answer_text"] == "CAPTURE_CUSTOM_PLAIN_MOSS"
     assert question["chosen_labels"] == []
 
 
 def test_multi_question_anchors_on_its_own_text():
-    call = _question_calls()
-    _assert_selected_answer(_question(call, multi_select=True), minimum_choices=2)
-    _assert_selected_answer(_question(call, multi_select=False))
+    entries = _recorded_multiselect_interaction()
+    interpreted_session = _interpret_interaction(entries)
+    call = _single_tool_call_in(interpreted_session["events"])
+    answer = _question_in(call, multi_select=True)
+    _assert_answer_uses_distinct_recorded_options(answer)
+    assert len(answer["chosen_labels"]) >= 2
+    answer = _question_in(call, multi_select=False)
+    _assert_answer_uses_distinct_recorded_options(answer)
+    assert len(answer["chosen_labels"]) == 1
+    assert answer["answer_text"] == answer["chosen_labels"][0]
 
 
 def test_task_notification_is_stripped_to_empty():
-    entry = _user_entry("<task-notification>")
+    entry = _recorded_user_message("<task-notification>")
     assert clean_user_text(_human_text(entry)) == ""
 
 
 def test_bash_output_is_stripped_to_empty():
-    (entry,) = [_user_entry("<bash-stdout>CAPTURE_USER_STDOUT_1")]
+    entry = _recorded_user_message("<bash-stdout>CAPTURE_USER_STDOUT_1")
     assert clean_user_text(entry["message"]["content"]) == ""
 
 
 def test_bash_input_survives_cleaning_for_detection():
-    (entry,) = [_user_entry("<bash-input>printf")]
+    entry = _recorded_user_message("<bash-input>printf")
     text = entry["message"]["content"]
     assert clean_user_text(text) == text
     assert "CAPTURE_USER_STDOUT_1" in text
@@ -427,7 +422,7 @@ def test_encode_project_path_does_not_collapse_runs():
 
 def test_build_events_inlines_pasted_images_as_base64():
     entries = [
-        _user_entry(marker)
+        _recorded_user_message(marker)
         for marker in (
             "CAPTURE_IMAGES_SAME:",
             "CAPTURE_IMAGES_LATER_GIF:",
@@ -452,9 +447,9 @@ def test_build_events_inlines_pasted_images_as_base64():
 
 def test_build_events_attaches_tool_results_to_their_call():
     events = build_events(
-        _tool_pair("Read", "multibyte.txt"), tool_result_max_bytes=100
+        _recorded_tool_interaction("Read", "multibyte.txt"), tool_result_max_bytes=100
     )
-    call = _event_call(events)
+    call = _single_tool_call_in(events)
     assert call["name"] == "Read"
     assert call["input"]["file_path"] == "/tmp/CAPTURE_ROOT/workspace/multibyte.txt"
     assert call["result_bytes"] > 10_000
@@ -464,7 +459,8 @@ def test_build_events_attaches_tool_results_to_their_call():
 
 def test_large_native_result_reaches_envelope_size_warning():
     events = build_events(
-        _tool_pair("Read", "multibyte.txt"), tool_result_max_bytes=100_000
+        _recorded_tool_interaction("Read", "multibyte.txt"),
+        tool_result_max_bytes=100_000,
     )
     # Repeated native Read results simulate a long session without checking in 8 MB.
     copies = SIZE_WARN_BYTES // len(json.dumps(events, ensure_ascii=False).encode()) + 2
@@ -480,7 +476,7 @@ def test_large_native_result_reaches_envelope_size_warning():
 
 
 def test_build_events_keeps_full_tool_input():
-    entries = _entries()
+    entries = _recorded_session_entries()
     calls = [
         call for event in build_events(entries) for call in event.get("tool_calls", [])
     ]
@@ -489,7 +485,7 @@ def test_build_events_keeps_full_tool_input():
         for call in calls
         if "nested space 雪" in call["input"].get("file_path", "")
     }
-    long_path = _only(paths, "generated long path")
+    long_path = _require_single_match(paths, "generated long path")
     assert len(long_path) > 100
     assert long_path.endswith("greeting.py")
     writes = [
@@ -513,26 +509,30 @@ def test_build_events_keeps_full_tool_input():
 
 
 def test_messages_skip_sidechain_and_meta():
-    entries = _entries()
+    entries = _recorded_session_entries()
     sidechain = load_entries(SUBAGENT)
     assert any(entry.get("isMeta") for entry in entries)
     assert any(entry.get("isSidechain") for entry in sidechain)
-    expected = build_events(entries)
-    session = _session(entries + sidechain)
+    expected = build_events([entry for entry in entries if not entry.get("isMeta")])
+    session = _interpret_interaction(entries + sidechain)
     assert build_events(entries + sidechain) == expected
     assert session["subagent_count"] == 1
     assert "interactions" not in session
 
 
 def test_build_events_surfaces_slash_command_invocations():
-    entry = _user_entry("<command-name>/capture-echo</command-name>")
-    event = _only(build_events([entry]), "command event")
+    entry = _recorded_user_message("<command-name>/capture-echo</command-name>")
+    event = _require_single_match(build_events([entry]), "command event")
     assert event["text"] == '/capture-echo CAPTURE_ARGS hello, "café 雪" — two words!'
     assert event["role"] == "user"
 
 
 def test_plan_approved_is_captured():
-    (plan,) = _plans(_tool_pair("ExitPlanMode", "", "## Approved Plan:\n"))
+    entries = _recorded_tool_interaction(
+        "ExitPlanMode", result_contains="## Approved Plan:\n"
+    )
+    interpreted_session = _interpret_interaction(entries)
+    (plan,) = _plan_decisions_in(interpreted_session)
     assert isinstance(plan["plan"], str)
     assert plan["plan"].strip()
     assert plan["decision"] == "approved"
@@ -540,7 +540,11 @@ def test_plan_approved_is_captured():
 
 
 def test_plan_approved_with_edit_keeps_final_version():
-    (plan,) = _plans(_tool_pair("ExitPlanMode", "", "(edited by user):"))
+    entries = _recorded_tool_interaction(
+        "ExitPlanMode", result_contains="(edited by user):"
+    )
+    interpreted_session = _interpret_interaction(entries)
+    (plan,) = _plan_decisions_in(interpreted_session)
     assert plan["decision"] == "approved"
     assert plan["plan"] == (ROOT / "assets/plan-before-editor.md").read_text()
     assert (
@@ -550,7 +554,11 @@ def test_plan_approved_with_edit_keeps_final_version():
 
 
 def test_plan_rejected_keeps_steering_message():
-    (call,) = _calls(_tool_pair("ExitPlanMode", "", "CAPTURE_PLAN_REJECT_1:"))
+    entries = _recorded_tool_interaction(
+        "ExitPlanMode", result_contains="CAPTURE_PLAN_REJECT_1:"
+    )
+    interpreted_session = _interpret_interaction(entries)
+    (call,) = _tool_calls_in(interpreted_session)
     plan = call["plan_decision"]
     assert plan["decision"] == "rejected"
     assert (
@@ -562,16 +570,16 @@ def test_plan_rejected_keeps_steering_message():
 
 def test_plan_rejection_reason_is_captured():
     # The wording the harness actually uses when a plan is sent back in plan mode.
-    plans = _plans(
-        _plan_result_variant(
-            "The user doesn't want to proceed with this tool use. The tool use "
-            "was rejected (eg. if it was a file edit, the new_string was NOT "
-            "written to the file). STOP what you are doing and wait for the user "
-            "to tell you how to proceed. The user provided the following reason "
-            "for the rejection:\nwrong table, use line_items\nand keep it in one "
-            "migration\n\nNote: The user's next message may contain a correction."
-        )
+    entries = _plan_result_variant(
+        "The user doesn't want to proceed with this tool use. The tool use "
+        "was rejected (eg. if it was a file edit, the new_string was NOT "
+        "written to the file). STOP what you are doing and wait for the user "
+        "to tell you how to proceed. The user provided the following reason "
+        "for the rejection:\nwrong table, use line_items\nand keep it in one "
+        "migration\n\nNote: The user's next message may contain a correction."
     )
+    interpreted_session = _interpret_interaction(entries)
+    plans = _plan_decisions_in(interpreted_session)
     (plan,) = plans
     assert plan["decision"] == "rejected"
     assert (
@@ -580,8 +588,11 @@ def test_plan_rejection_reason_is_captured():
 
 
 def test_plan_without_result_is_marked_undecided():
-    assistant, _ = _tool_pair("ExitPlanMode", "", "## Approved Plan:\n")
-    (plan,) = _plans([assistant])
+    assistant, _ = _recorded_tool_interaction(
+        "ExitPlanMode", result_contains="## Approved Plan:\n"
+    )
+    interpreted_session = _interpret_interaction([assistant])
+    (plan,) = _plan_decisions_in(interpreted_session)
     assert plan["decision"] == "no decision recorded"
 
 
@@ -735,7 +746,7 @@ def test_select_transcript_global_fallback_picks_newest_anywhere():
 
 def test_load_entries_skips_malformed_lines_with_warning(tmp_path, capsys):
     path = tmp_path / "truncated.jsonl"
-    entries = _overlapping_options_pair()
+    entries = _recorded_overlapping_options_interaction()
     _write_jsonl(path, entries)
     # A completed native capture cannot supply a corrupt trailing line.
     with path.open("a") as stream:
@@ -770,7 +781,7 @@ def test_load_entries_warns_once_for_many_bad_lines():
 
 
 def test_content_blocks_handles_none_and_non_list_content():
-    (entry,) = [_user_entry("Remember **CAPTURE_CONTEXT_CEDAR_73**")]
+    entry = _recorded_user_message("Remember **CAPTURE_CONTEXT_CEDAR_73**")
     assert _content_blocks(entry) == [
         {"type": "text", "text": entry["message"]["content"]}
     ]
@@ -782,8 +793,8 @@ def test_content_blocks_handles_none_and_non_list_content():
 
 
 def test_tool_descriptor_shell_search_and_fallback():
-    assistant, _ = _tool_pair("Bash", "CAPTURE_BASH_OK")
-    call = _block(assistant, "tool_use")
+    assistant, _ = _recorded_tool_interaction("Bash", "CAPTURE_BASH_OK")
+    call = _content_block(assistant, "tool_use")
     descriptor = tool_descriptor(call["name"], call["input"])
     assert isinstance(descriptor, str)
     assert descriptor.strip()
@@ -795,11 +806,11 @@ def test_tool_descriptor_shell_search_and_fallback():
 
 
 def test_extract_file_path_variants():
-    assistant, _ = _tool_pair("Read", "multibyte.txt")
-    read_input = _block(assistant, "tool_use")["input"]
+    assistant, _ = _recorded_tool_interaction("Read", "multibyte.txt")
+    read_input = _content_block(assistant, "tool_use")["input"]
     assert extract_file_path(read_input) == "/tmp/CAPTURE_ROOT/workspace/multibyte.txt"
-    assistant, _ = _tool_pair("NotebookEdit", "sample.ipynb")
-    notebook_input = _block(assistant, "tool_use")["input"]
+    assistant, _ = _recorded_tool_interaction("NotebookEdit", "sample.ipynb")
+    notebook_input = _content_block(assistant, "tool_use")["input"]
     assert (
         extract_file_path(notebook_input) == "/tmp/CAPTURE_ROOT/workspace/sample.ipynb"
     )
@@ -808,32 +819,34 @@ def test_extract_file_path_variants():
 
 
 def test_option_qa_from_result_builds_record():
-    assistant, result = _overlapping_options_pair()
-    call = _block(assistant, "tool_use")
+    assistant, result = _recorded_overlapping_options_interaction()
+    call = _content_block(assistant, "tool_use")
     out = option_qa_from_result(result, {call["id"]: call["input"]["questions"]})
-    answer = _only(out, "choice answer")
-    _assert_selected_answer(answer)
-    native = _only(call["input"]["questions"], "native question")
+    answer = _require_single_match(out, "choice answer")
+    _assert_answer_uses_distinct_recorded_options(answer)
+    assert len(answer["chosen_labels"]) == 1
+    assert answer["answer_text"] == answer["chosen_labels"][0]
+    native = _require_single_match(call["input"]["questions"], "native question")
     assert answer["header"] == native["header"]
 
 
 def test_option_qa_from_result_ignores_untracked_tool():
-    _, result = _overlapping_options_pair()
+    _, result = _recorded_overlapping_options_interaction()
     assert option_qa_from_result(result, {}) == []
 
 
 def test_option_qa_from_result_skips_non_tool_result_blocks_and_bad_questions():
-    assistant, result = _overlapping_options_pair()
-    call = _block(assistant, "tool_use")
+    assistant, result = _recorded_overlapping_options_interaction()
+    call = _content_block(assistant, "tool_use")
     pending = {call["id"]: ["not-a-dict"]}
     # Replace only the question payload with malformed data; include a native text block.
-    (text,) = [_user_entry("CAPTURE_IMAGES_SAME:")]
-    result["message"]["content"].insert(0, _block(text, "text"))
+    text = _recorded_user_message("CAPTURE_IMAGES_SAME:")
+    result["message"]["content"].insert(0, _content_block(text, "text"))
     assert option_qa_from_result(result, pending) == []
 
 
 def test_is_tool_result_entry_true_for_bare_tool_use_result():
-    _, entry = _tool_pair("Bash", "CAPTURE_BASH_OK")
+    _, entry = _recorded_tool_interaction("Bash", "CAPTURE_BASH_OK")
     # Legacy top-level result shape: remove only the result block carrying its ID.
     entry["message"]["content"] = []
     assert entry["toolUseResult"]
@@ -841,7 +854,7 @@ def test_is_tool_result_entry_true_for_bare_tool_use_result():
 
 
 def test_human_text_includes_plain_string_blocks():
-    (entry,) = [_user_entry("Remember **CAPTURE_CONTEXT_CEDAR_73**")]
+    entry = _recorded_user_message("Remember **CAPTURE_CONTEXT_CEDAR_73**")
     text = entry["message"]["content"]
     # Legacy content accepts raw strings inside a block list.
     entry["message"]["content"] = [text]
@@ -854,26 +867,28 @@ def test_clean_user_text_empty_input_is_empty():
 
 
 def test_result_block_text_flattens_list_content():
-    _, result = _tool_pair("Agent")
-    block = _block(result, "tool_result")
-    original = _only(
+    _, result = _recorded_tool_interaction("Agent")
+    block = _content_block(result, "tool_result")
+    original = _require_single_match(
         [part["text"] for part in block["content"] if part.get("type") == "text"],
         "result text",
     )
     assert _result_block_text(block) == original
     # Repeat the captured text block to exercise multi-block flattening.
-    block["content"].append(deepcopy(_only(block["content"], "result content block")))
+    block["content"].append(
+        deepcopy(_require_single_match(block["content"], "result content block"))
+    )
     assert _result_block_text(block) == original + " " + original
 
 
 def test_parse_chosen_single_question_fallback_when_text_mismatches():
-    assistant, result = _overlapping_options_pair()
-    question = _only(
-        _block(assistant, "tool_use")["input"]["questions"], "single question"
+    assistant, result = _recorded_overlapping_options_interaction()
+    question = _require_single_match(
+        _content_block(assistant, "tool_use")["input"]["questions"], "single question"
     )
     # Only the lookup text differs, exercising the single-question fallback.
     value, chosen = _parse_chosen(
-        "Nomatch", question["options"], _block(result, "tool_result")["content"]
+        "Nomatch", question["options"], _content_block(result, "tool_result")["content"]
     )
     assert isinstance(value, str)
     assert value.strip()
@@ -883,22 +898,35 @@ def test_parse_chosen_single_question_fallback_when_text_mismatches():
 
 
 def test_apply_plan_decisions_ignores_non_tool_result_blocks():
-    (entry,) = [_user_entry("CAPTURE_IMAGES_SAME:")]
+    entry = _recorded_user_message("CAPTURE_IMAGES_SAME:")
     assert apply_plan_decisions(entry, {}) is False
 
 
 def test_permission_denials_from_result_ignores_non_tool_result_blocks():
-    (entry,) = [_user_entry("CAPTURE_IMAGES_SAME:")]
+    entry = _recorded_user_message("CAPTURE_IMAGES_SAME:")
     assert permission_denials_from_result(entry, {}) == []
 
 
 def test_legacy_plan_helper_consumes_native_matches_and_updates_plan_records():
     entries = (
-        list(_tool_pair("ExitPlanMode", "", "CAPTURE_PLAN_REJECT_1:"))
-        + list(_tool_pair("ExitPlanMode", "", "## Approved Plan:\n"))
-        + list(_tool_pair("ExitPlanMode", "", "(edited by user):"))
+        list(
+            _recorded_tool_interaction(
+                "ExitPlanMode", result_contains="CAPTURE_PLAN_REJECT_1:"
+            )
+        )
+        + list(
+            _recorded_tool_interaction(
+                "ExitPlanMode", result_contains="## Approved Plan:\n"
+            )
+        )
+        + list(
+            _recorded_tool_interaction(
+                "ExitPlanMode", result_contains="(edited by user):"
+            )
+        )
     )
-    calls = _calls(entries)
+    interpreted_session = _interpret_interaction(entries)
+    calls = _tool_calls_in(interpreted_session)
     records = [
         {
             "plan": call["input"]["plan"],
@@ -926,11 +954,17 @@ def test_legacy_plan_helper_consumes_native_matches_and_updates_plan_records():
 
 @pytest.mark.parametrize("tool_id", [None, "unknown-call"])
 def test_legacy_plan_helper_leaves_unmatched_plans_pending(tool_id):
-    entries = _tool_pair("ExitPlanMode", "", "## Approved Plan:\n")
+    entries = _recorded_tool_interaction(
+        "ExitPlanMode", result_contains="## Approved Plan:\n"
+    )
     result = next(entry for entry in entries if _is_tool_result_entry(entry))
     # Change only the captured result ID to exercise absent/unmatched associations.
-    _block(result, "tool_result")["tool_use_id"] = tool_id
-    pending = {call["id"]: call["plan_decision"] for call in _calls(entries)}
+    _content_block(result, "tool_result")["tool_use_id"] = tool_id
+    interpreted_session = _interpret_interaction(entries)
+    pending = {
+        call["id"]: call["plan_decision"]
+        for call in _tool_calls_in(interpreted_session)
+    }
     original = deepcopy(pending)
     assert apply_plan_decisions(result, pending) is False
     assert pending == original
@@ -947,8 +981,11 @@ def test_legacy_plan_helper_leaves_unmatched_plans_pending(tool_id):
     ],
 )
 def test_legacy_denial_helper_matches_native_result_blocks(fixture, expected):
-    entries = _tool_pair(*fixture)
-    tool_names = {call["id"]: call["name"] for call in _calls(entries)}
+    entries = _recorded_tool_interaction(*fixture)
+    interpreted_session = _interpret_interaction(entries)
+    tool_names = {
+        call["id"]: call["name"] for call in _tool_calls_in(interpreted_session)
+    }
     denials = [
         denial
         for entry in entries
@@ -958,8 +995,8 @@ def test_legacy_denial_helper_matches_native_result_blocks(fixture, expected):
 
 
 def test_activity_keeps_commands_shell_subagents_questions_and_files():
-    entries = _entries() + load_entries(SUBAGENT)
-    session = _session(entries)
+    entries = _recorded_session_entries() + load_entries(SUBAGENT)
+    session = _interpret_interaction(entries)
     assert any(event.get("command") == "/capture-echo" for event in session["events"])
     assert any(
         "CAPTURE_USER_STDOUT_1" in event.get("shell_command", "")
@@ -967,8 +1004,8 @@ def test_activity_keeps_commands_shell_subagents_questions_and_files():
     )
     assert session["subagent_count"] > 0
     assert any(path.endswith("greeting.py") for path in session["files_changed"])
-    calls = _calls(entries)
-    question = _only(
+    calls = _tool_calls_in(session)
+    question = _require_single_match(
         [
             call
             for call in calls
@@ -977,9 +1014,11 @@ def test_activity_keeps_commands_shell_subagents_questions_and_files():
         ],
         "tree question call",
     )
-    _assert_selected_answer(_question(question, multi_select=True), minimum_choices=2)
+    answer = _question_in(question, multi_select=True)
+    _assert_answer_uses_distinct_recorded_options(answer)
+    assert len(answer["chosen_labels"]) >= 2
     assert any(call["name"] == "Write" for call in calls)
-    denial = _only(
+    denial = _require_single_match(
         [
             call["permission_denial"]
             for call in calls
@@ -1020,49 +1059,64 @@ def test_build_events_skips_non_dict_assistant_blocks_and_unmatched_calls():
 # --------------------------------------------------------------------------- #
 
 
-def test_first_timestamp_session_models_and_cwd():
-    entries = _entries()
+def test_first_timestamp_comes_from_the_native_capture():
+    entries = _recorded_session_entries()
     assert first_timestamp(entries) in {
         entry["timestamp"] for entry in entries if entry.get("timestamp")
     }
-    models = session_models(entries)
-    assert len(models) >= 2
-    assert all(isinstance(model, str) and model for model in models)
-    assert len(models) == len(set(models))
-    assert session_cwd(entries) == "/tmp/CAPTURE_ROOT/workspace"
-    assistant, _ = _tool_pair("Read", "multibyte.txt")
-    # The edge is controlled explicitly, independent of capture dates or ordering.
+
+
+def test_session_cwd_comes_from_the_native_capture():
+    assert session_cwd(_recorded_session_entries()) == "/tmp/CAPTURE_ROOT/workspace"
+
+
+def test_synthetic_model_is_excluded():
+    assistant, _ = _recorded_tool_interaction("Read", "multibyte.txt")
     assistant["message"]["model"] = "<synthetic>"
+    assert session_models([assistant]) == []
+
+
+def test_metadata_is_absent_when_not_recorded():
+    assistant, _ = _recorded_tool_interaction("Read", "multibyte.txt")
     assistant["timestamp"] = None
     assistant.pop("cwd", None)
     assert first_timestamp([assistant]) is None
-    assert session_models([assistant]) == []
     assert session_cwd([assistant]) is None
-    user = _user_entry("Remember **CAPTURE_CONTEXT_CEDAR_73**")
+
+
+def test_first_timestamp_skips_messages_without_timestamps():
+    assistant, _ = _recorded_tool_interaction("Read", "multibyte.txt")
+    assistant["timestamp"] = None
+    user = _recorded_user_message("Remember **CAPTURE_CONTEXT_CEDAR_73**")
     user["timestamp"] = "2026-01-01T00:00:00Z"
     assert first_timestamp([assistant, user]) == "2026-01-01T00:00:00Z"
+
+
+def test_empty_session_has_no_metadata():
     assert first_timestamp([]) is None
+    assert session_models([]) == []
     assert session_cwd([]) is None
 
 
 def test_native_resumed_session_lists_multiple_models():
-    entries = _entries()
+    entries = _recorded_session_entries()
     models = session_models(entries)
     assert len(models) >= 2
     assert all(isinstance(model, str) and model for model in models)
     assert len(models) == len(set(models))
     assert any(
-        event.get("command") == "/model" for event in _session(entries)["events"]
+        event.get("command") == "/model"
+        for event in _interpret_interaction(entries)["events"]
     )
 
 
 def test_native_continued_conversation_keeps_follow_up_in_one_session():
-    entries = _entries()
+    entries = _recorded_session_entries()
     assert {entry["sessionId"] for entry in entries if "sessionId" in entry} == {
         TRANSCRIPT.stem
     }
-    events = _session(entries)["events"]
-    prompt = _only(
+    events = _interpret_interaction(entries)["events"]
+    prompt = _require_single_match(
         [
             event
             for event in events
@@ -1076,7 +1130,7 @@ def test_native_continued_conversation_keeps_follow_up_in_one_session():
 
 
 def test_build_raw_envelope_preserves_metadata_and_events():
-    entries = _entries()
+    entries = _recorded_session_entries()
     envelope = build_raw_envelope(Path("/wherever/sess123.jsonl"), entries)
     assert envelope["session_id"] == "sess123"
     assert envelope["cwd"] == "/tmp/CAPTURE_ROOT/workspace"
@@ -1139,7 +1193,7 @@ def test_native_subagent_summary_retains_evidence_without_guessing_ownership():
     assert subs[0]["result"].strip()
     meta = json.loads(SUBAGENT.with_suffix(".meta.json").read_text())
     assert subs[0]["agent_type"] == meta["agentType"]
-    task = _only(
+    task = _require_single_match(
         [
             entry
             for entry in load_entries(SUBAGENT)
@@ -1150,7 +1204,8 @@ def test_native_subagent_summary_retains_evidence_without_guessing_ownership():
         "read-only child task",
     )
     assert subs[0]["start_ts"] == task["timestamp"]
-    session = _session(_entries())
+    entries = _recorded_session_entries()
+    session = _interpret_interaction(entries)
     assert "interactions" not in session
     assert not any("subagents" in event for event in session["events"])
 
@@ -1174,7 +1229,7 @@ def test_extract_transcript_raises_for_empty_file(tmp_path):
 def test_extract_transcript_preserves_native_conversation():
     envelope = extract_transcript(TRANSCRIPT)
     assert envelope["session_id"] == TRANSCRIPT.stem
-    prompt = _only(
+    prompt = _require_single_match(
         [
             event
             for event in envelope["events"]
@@ -1189,7 +1244,7 @@ def test_extract_transcript_preserves_native_conversation():
 
 def test_main_writes_json_to_explicit_output():
     transcript = Path(tempfile.mkdtemp()) / "s1.jsonl"
-    _write_jsonl(transcript, _entries())
+    _write_jsonl(transcript, _recorded_session_entries())
     out_dir = Path(tempfile.mkdtemp())
     out_file = out_dir / "log.json"
     buf = io.StringIO()
@@ -1197,19 +1252,23 @@ def test_main_writes_json_to_explicit_output():
         rc = main(["--transcript", str(transcript), "--output", str(out_file)])
     assert rc == 0
     assert out_file.exists()
-    assert json.loads(out_file.read_text())["events"] == build_events(_entries())
+    assert json.loads(out_file.read_text())["events"] == build_events(
+        _recorded_session_entries()
+    )
     assert list(out_dir.iterdir()) == [out_file]
 
 
 def test_main_stdout_outputs_json():
     transcript = Path(tempfile.mkdtemp()) / "s1.jsonl"
-    _write_jsonl(transcript, _entries())
+    _write_jsonl(transcript, _recorded_session_entries())
     out = io.StringIO()
     err = io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         rc = main(["--transcript", str(transcript), "--output", "-"])
     assert rc == 0
-    assert json.loads(out.getvalue())["events"] == build_events(_entries())
+    assert json.loads(out.getvalue())["events"] == build_events(
+        _recorded_session_entries()
+    )
 
 
 def test_main_errors_for_missing_transcript():
@@ -1231,8 +1290,8 @@ def test_main_default_mode_errors_when_no_project_dir_found():
 
 def test_main_all_mode_extracts_every_session():
     proj = Path(tempfile.mkdtemp())
-    _write_jsonl(proj / "a.jsonl", _entries())
-    _write_jsonl(proj / "b.jsonl", _entries())
+    _write_jsonl(proj / "a.jsonl", _recorded_session_entries())
+    _write_jsonl(proj / "b.jsonl", _recorded_session_entries())
     out_dir = Path(tempfile.mkdtemp())
     err = io.StringIO()
     with contextlib.redirect_stderr(err):
@@ -1277,9 +1336,9 @@ def test_cli_json_destinations(
     destination, tmp_path, monkeypatch, capsys, explicit_root
 ):
     transcript = tmp_path / "session.jsonl"
-    entries = [_user_entry("CAPTURE_IMAGES_SAME:")]
+    entries = [_recorded_user_message("CAPTURE_IMAGES_SAME:")]
     # Keep the Markdown preservation probe while retaining recorded image blocks.
-    _block(_only(entries, "image message"), "text")["text"] = (
+    _content_block(_require_single_match(entries, "image message"), "text")["text"] = (
         "# Keep **recorded Markdown**"
     )
     _write_jsonl(transcript, entries)
@@ -1314,7 +1373,7 @@ def test_cli_json_destinations(
     assert envelope["schema"] == "raw-session-log/1"
     assert envelope["session_id"] == "session"
     assert envelope["events"] == build_events(entries, 3)
-    user = _only(envelope["events"], "image message")
+    user = _require_single_match(envelope["events"], "image message")
     assert user["text"] == "# Keep **recorded Markdown**"
     assert len(user["images"]) == 2
 
@@ -1344,7 +1403,9 @@ def test_cli_batch_emits_only_json(
         "claude_session_log_raw_b.json",
     ]
     for path in output.iterdir():
-        assert json.loads(path.read_text())["events"] == build_events(_entries())
+        assert json.loads(path.read_text())["events"] == build_events(
+            _recorded_session_entries()
+        )
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "done: 2/2" in captured.err
@@ -1395,7 +1456,7 @@ def test_cli_preserves_native_payloads(transcript, limit, capsys):
 @pytest.mark.parametrize("selector", ["path", "prefix", "newest"])
 def test_cli_single_selection_paths(selector, tmp_path, capsys):
     transcript = tmp_path / "session-123.jsonl"
-    _write_jsonl(transcript, _entries())
+    _write_jsonl(transcript, _recorded_session_entries())
     args = ["--project-dir", str(tmp_path), "--output", "-"]
     if selector != "newest":
         args += [str(transcript) if selector == "path" else "session-1"]
@@ -1406,7 +1467,7 @@ def test_cli_single_selection_paths(selector, tmp_path, capsys):
 @pytest.mark.parametrize("mode", ["single", "batch"])
 def test_cli_reports_write_errors(mode, tmp_path, capsys):
     transcript = tmp_path / "session.jsonl"
-    _write_jsonl(transcript, _entries())
+    _write_jsonl(transcript, _recorded_session_entries())
     output = tmp_path / "output"
     output.mkdir()
     if mode == "single":
@@ -1434,7 +1495,7 @@ def test_cli_reports_parse_errors(contents, tmp_path, capsys):
 
 def test_cli_retains_malformed_line_diagnostics(tmp_path, capsys):
     transcript = tmp_path / "truncated.jsonl"
-    entries = _overlapping_options_pair()
+    entries = _recorded_overlapping_options_interaction()
     _write_jsonl(transcript, entries)
     # Append a deliberately interrupted record to a captured call/result pair.
     with transcript.open("a") as stream:
@@ -1471,7 +1532,11 @@ def test_cli_no_event_input_keeps_existing_envelope_omission(mode, tmp_path, cap
     transcript = tmp_path / "session.jsonl"
     _write_jsonl(
         transcript,
-        [entry for entry in _entries() if entry.get("type") == "system"],
+        [
+            entry
+            for entry in _recorded_session_entries()
+            if entry.get("type") == "system"
+        ],
     )
     output = tmp_path / "output"
     if mode == "single":
@@ -1508,11 +1573,11 @@ def test_cli_default_root_uses_current_directory(batch, tmp_path, monkeypatch):
 @pytest.mark.parametrize("limit", [0, 17, -1])
 @pytest.mark.parametrize("fixture", ["complete", "images", "multibyte"])
 def test_interpret_supplied_source_without_filesystem(limit, fixture, monkeypatch):
-    entries = _entries()
+    entries = _recorded_session_entries()
     if fixture == "images":
-        entries = [_user_entry("CAPTURE_IMAGES_SAME:")]
+        entries = [_recorded_user_message("CAPTURE_IMAGES_SAME:")]
     elif fixture == "multibyte":
-        entries = _tool_pair("Read", "multibyte.txt")
+        entries = _recorded_tool_interaction("Read", "multibyte.txt")
     source = ClaudeSource(Path("/unavailable/session.jsonl"), entries)
     expected_events = build_events(entries, limit)
 
@@ -1652,14 +1717,14 @@ def test_main_source_does_not_read_sidecars_or_metadata(monkeypatch):
 
 
 def test_interpretation_retains_full_results_until_shared_export():
-    entries = _tool_pair("Read", "multibyte.txt")
+    entries = _recorded_tool_interaction("Read", "multibyte.txt")
     source = ClaudeSource(Path("/unavailable/session.jsonl"), entries)
     session = eclog.interpret_source(source)
-    call = _event_call(session["events"])
+    call = _single_tool_call_in(session["events"])
     assert len(call["result"].encode()) > 10_000
     assert "result_truncated" not in call
     exported = session_log_envelope.export_session(session, 17)
-    assert len(_event_call(exported["events"])["result"].encode()) == 17
+    assert len(_single_tool_call_in(exported["events"])["result"].encode()) == 17
     assert len(call["result"].encode()) > 10_000
 
 
@@ -1679,16 +1744,16 @@ def test_cli_reaches_shared_exporter(monkeypatch, capsys):
 
 @pytest.mark.parametrize("same_id", [False, True])
 def test_repeated_calls_keep_order_and_native_result_associations(same_id):
-    assistant, result = _tool_pair("Read", "multibyte.txt")
+    assistant, result = _recorded_tool_interaction("Read", "multibyte.txt")
     again = deepcopy(assistant)
     again_result = deepcopy(result)
-    first_call = _block(assistant, "tool_use")
-    second_call = _block(again, "tool_use")
+    first_call = _content_block(assistant, "tool_use")
+    second_call = _content_block(again, "tool_use")
     # Repeat the captured Read, changing only identity/output to expose association.
     if not same_id:
         second_call["id"] = "second-call"
-    _block(again_result, "tool_result")["tool_use_id"] = second_call["id"]
-    _block(again_result, "tool_result")["content"] = "second output"
+    _content_block(again_result, "tool_result")["tool_use_id"] = second_call["id"]
+    _content_block(again_result, "tool_result")["content"] = "second output"
     if same_id:
         entries = [assistant, result, again, again_result]
     else:
@@ -1705,17 +1770,19 @@ def test_repeated_calls_keep_order_and_native_result_associations(same_id):
 
 @pytest.mark.parametrize("result_kind", ["missing", "empty", "null", "error"])
 def test_missing_and_empty_results_preserve_claude_json_contract(result_kind):
-    assistant, result = _tool_pair("Read", "multibyte.txt")
-    block = _block(result, "tool_result")
+    assistant, result = _recorded_tool_interaction("Read", "multibyte.txt")
+    block = _content_block(result, "tool_result")
     # Keep the captured association; vary only the result boundary under test.
     block["content"] = None if result_kind == "null" else ""
     if result_kind == "error":
         block["is_error"] = True
     entries = [assistant] if result_kind == "missing" else [assistant, result]
     session = eclog.interpret_source(ClaudeSource(Path("s.jsonl"), entries))
-    call = _event_call(session["events"])
+    call = _single_tool_call_in(session["events"])
     assert call["result"] == (None if result_kind == "missing" else "")
-    exported = _event_call(session_log_envelope.export_session(session)["events"])
+    exported = _single_tool_call_in(
+        session_log_envelope.export_session(session)["events"]
+    )
     assert exported["result"] == call["result"]
     assert exported["result_bytes"] == 0
     assert exported["result_truncated"] is False
@@ -1723,8 +1790,8 @@ def test_missing_and_empty_results_preserve_claude_json_contract(result_kind):
 
 
 def test_images_remain_owned_by_their_recorded_user_event():
-    image_entries = [_user_entry("CAPTURE_IMAGES_SAME:")]
-    assistant, result = _tool_pair("Read", "multibyte.txt")
+    image_entries = [_recorded_user_message("CAPTURE_IMAGES_SAME:")]
+    assistant, result = _recorded_tool_interaction("Read", "multibyte.txt")
     # Put captured image blocks on result/assistant records: the existing Claude
     # JSON contract includes only human message images; expansion is deferred.
     images = [b for b in image_entries[0]["message"]["content"] if b["type"] == "image"]
@@ -1740,79 +1807,102 @@ def test_images_remain_owned_by_their_recorded_user_event():
 
 
 def test_recorded_skills_deduplicate_and_ignore_empty_names():
-    pairs = _tool_pairs("Skill", "capture-leaf")
+    pairs = _recorded_tool_interactions("Skill", "capture-leaf")
     assert len(pairs) >= 2
     entries = [entry for pair in pairs for entry in pair]
     # Add the same empty-name boundary to each native invocation; none is chosen
     # by occurrence, timestamp, or ID when the invocations are semantically equal.
     for assistant, _ in pairs:
-        skill = _block(assistant, "tool_use")
+        skill = _content_block(assistant, "tool_use")
         empty = deepcopy(skill)
         empty["input"] = {"skill": ""}
         assistant["message"]["content"].append(empty)
-    assert _session(entries)["skills_used"] == ["capture-leaf"]
-    calls = [call for call in _calls(entries) if call["name"] == "Skill"]
+    interpreted_session = _interpret_interaction(entries)
+    assert interpreted_session["skills_used"] == ["capture-leaf"]
+    calls = [
+        call for call in _tool_calls_in(interpreted_session) if call["name"] == "Skill"
+    ]
     assert len(calls) == 2 * len(pairs)
     assert sum(call.get("skill") == "capture-leaf" for call in calls) == len(pairs)
     assert sum(call.get("skill") is None for call in calls) == len(pairs)
 
 
-@pytest.mark.parametrize(
-    "selection",
-    [
-        pytest.param(None, id="questions"),
-        pytest.param(("ExitPlanMode", "", "## Approved Plan:\n"), id="plan"),
-        pytest.param(("Bash", "CAPTURE_SETTINGS_REFUSAL"), id="permission"),
-    ],
-)
-def test_decisions_follow_native_calls_across_later_user_messages(selection):
-    assistant, result = (
-        _multiselect_pair() if selection is None else _tool_pair(*selection)
-    )
-    (later,) = [_user_entry("Remember **CAPTURE_CONTEXT_CEDAR_73**")]
-    # Move a recorded human message between call and result; retain call IDs.
-    session = _session([assistant, later, result])
-    call = _event_call(session["events"])
-    assert call["id"] == _block(assistant, "tool_use")["id"]
+def test_question_stays_with_its_call_across_a_later_user_message():
+    assistant, result = _recorded_multiselect_interaction()
+    later = _recorded_user_message("Remember **CAPTURE_CONTEXT_CEDAR_73**")
+    # Insert a human message between the recorded call and its result.
+
+    session = _interpret_interaction([assistant, later, result])
+
+    call = _single_tool_call_in(session["events"])
+    assert call["id"] == _content_block(assistant, "tool_use")["id"]
     assert call["result_record"]["tool_call_id"] == call["id"]
-    if call["name"] == "AskUserQuestion":
-        _assert_selected_answer(_question(call, multi_select=True), minimum_choices=2)
-    elif call["name"] == "ExitPlanMode":
-        assert call["plan_decision"]["decision"] == "approved"
-    else:
-        assert call["permission_denial"]["by"] == "settings"
-    assert (
-        "CAPTURE_CONTEXT_CEDAR_73"
-        in _only(
-            [event for event in session["events"] if event["role"] == "user"],
-            "later user message",
-        )["text"]
+    answer = _question_in(call, multi_select=True)
+    assert len(answer["chosen_labels"]) >= 2
+    _assert_answer_uses_distinct_recorded_options(answer)
+    (user_message,) = [event for event in session["events"] if event["role"] == "user"]
+    assert "CAPTURE_CONTEXT_CEDAR_73" in user_message["text"]
+    assert "interactions" not in session
+    assert "interpretation" not in session
+
+
+def test_plan_stays_with_its_call_across_a_later_user_message():
+    assistant, result = _recorded_tool_interaction(
+        "ExitPlanMode", result_contains="## Approved Plan:\n"
     )
+    later = _recorded_user_message("Remember **CAPTURE_CONTEXT_CEDAR_73**")
+    # Insert a human message between the recorded call and its result.
+
+    session = _interpret_interaction([assistant, later, result])
+
+    call = _single_tool_call_in(session["events"])
+    assert call["id"] == _content_block(assistant, "tool_use")["id"]
+    assert call["result_record"]["tool_call_id"] == call["id"]
+    assert call["plan_decision"]["decision"] == "approved"
+    (user_message,) = [event for event in session["events"] if event["role"] == "user"]
+    assert "CAPTURE_CONTEXT_CEDAR_73" in user_message["text"]
+    assert "interactions" not in session
+    assert "interpretation" not in session
+
+
+def test_permission_denial_stays_with_its_call_across_a_later_user_message():
+    assistant, result = _recorded_tool_interaction("Bash", "CAPTURE_SETTINGS_REFUSAL")
+    later = _recorded_user_message("Remember **CAPTURE_CONTEXT_CEDAR_73**")
+    # Insert a human message between the recorded call and its result.
+
+    session = _interpret_interaction([assistant, later, result])
+
+    call = _single_tool_call_in(session["events"])
+    assert call["id"] == _content_block(assistant, "tool_use")["id"]
+    assert call["result_record"]["tool_call_id"] == call["id"]
+    assert call["permission_denial"]["by"] == "settings"
+    (user_message,) = [event for event in session["events"] if event["role"] == "user"]
+    assert "CAPTURE_CONTEXT_CEDAR_73" in user_message["text"]
     assert "interactions" not in session
     assert "interpretation" not in session
 
 
 def test_native_message_and_result_identities_survive_interpretation():
-    assistant, result = _tool_pair("Read", "multibyte.txt")
-    session = _session([assistant, result])
-    message = _only(session["events"], "assistant message")
+    assistant, result = _recorded_tool_interaction("Read", "multibyte.txt")
+    session = _interpret_interaction([assistant, result])
+    message = _require_single_match(session["events"], "assistant message")
     assert message["id"] == assistant["uuid"]
     assert message["parent_id"] == assistant["parentUuid"]
     assert message["message_id"] == assistant["message"]["id"]
     record = message["tool_calls"][0]["result_record"]
     assert record["id"] == result["uuid"]
     assert record["ts"] == result["timestamp"]
-    assert record["content"] == _block(result, "tool_result")["content"]
+    assert record["content"] == _content_block(result, "tool_result")["content"]
 
 
 def test_unmatched_result_retains_content_without_inventing_an_owner():
-    assistant, result = _tool_pair("Read", "multibyte.txt")
+    assistant, result = _recorded_tool_interaction("Read", "multibyte.txt")
     # Change only the result ID so the captured result has no matching call.
-    block = _block(result, "tool_result")
+    block = _content_block(result, "tool_result")
     block["tool_use_id"] = "unknown-call"
-    session = _session([assistant, result])
-    assert _event_call(session["events"])["result"] is None
-    assert "result_record" not in _event_call(session["events"])
+    session = _interpret_interaction([assistant, result])
+    assert _single_tool_call_in(session["events"])["result"] is None
+    assert "result_record" not in _single_tool_call_in(session["events"])
     (record,) = session["unmatched_tool_results"]
     assert record["tool_call_id"] == "unknown-call"
     assert record["content"] == block["content"]
@@ -1821,36 +1911,31 @@ def test_unmatched_result_retains_content_without_inventing_an_owner():
 
 @pytest.mark.parametrize("options", [None, 7, "invalid", {"label": "section"}])
 def test_malformed_question_options_preserve_input_and_allow_extraction(options):
-    entries = _multiselect_pair()
-    block = _block(
-        _only(
-            [entry for entry in entries if entry.get("type") == "assistant"],
-            "assistant message",
-        ),
-        "tool_use",
-    )
+    assistant, result = _recorded_multiselect_interaction()
+    entries = [assistant, result]
+    block = _content_block(assistant, "tool_use")
     # Vary only the options container in the audited question fixture.
-    _question(block["input"], multi_select=True)["options"] = options
-    session = _session(entries)
-    call = _event_call(session["events"])
+    _question_in(block["input"], multi_select=True)["options"] = options
+    session = _interpret_interaction(entries)
+    call = _single_tool_call_in(session["events"])
     assert call["input"] == block["input"]
-    assert _question(call, multi_select=True)["options"] == []
-    answer = _question(call, multi_select=True)["answer_text"]
+    assert _question_in(call, multi_select=True)["options"] == []
+    answer = _question_in(call, multi_select=True)["answer_text"]
     assert isinstance(answer, str)
     assert answer.strip()
     exported = session_log_envelope.export_session(session)
-    assert _event_call(exported["events"])["input"] == block["input"]
+    assert _single_tool_call_in(exported["events"])["input"] == block["input"]
 
 
 @pytest.mark.parametrize("payload", [{"stdout": "output"}, "output", {}, "", False])
 def test_top_level_result_preserves_payload_without_inventing_an_owner(payload):
-    assistant, result = _tool_pair("Read", "multibyte.txt")
+    assistant, result = _recorded_tool_interaction("Read", "multibyte.txt")
     # Model the older result-only shape by moving the captured result to the
     # top level and removing the block that carries its call ID.
     result["message"]["content"] = []
     result["toolUseResult"] = payload
-    session = _session([assistant, result])
-    call = _event_call(session["events"])
+    session = _interpret_interaction([assistant, result])
+    call = _single_tool_call_in(session["events"])
     assert call["result"] is None
     assert "result_record" not in call
     (record,) = session["unmatched_tool_results"]
@@ -1863,27 +1948,30 @@ def test_top_level_result_preserves_payload_without_inventing_an_owner(payload):
 
 
 def test_top_level_result_does_not_duplicate_a_recorded_result_block():
-    assistant, result = _tool_pair("Read", "multibyte.txt")
+    assistant, result = _recorded_tool_interaction("Read", "multibyte.txt")
     result["toolUseResult"] = {"stdout": "duplicate output"}
-    session = _session([assistant, result])
+    session = _interpret_interaction([assistant, result])
     assert session["unmatched_tool_results"] == []
-    assert "CAPTURE_MULTIBYTE" in _event_call(session["events"])["result"]
+    assert "CAPTURE_MULTIBYTE" in _single_tool_call_in(session["events"])["result"]
 
 
 def test_unknown_tool_payload_is_preserved_and_reported(tmp_path, capsys):
-    assistant, result = _tool_pair("Read", "multibyte.txt")
+    assistant, result = _recorded_tool_interaction("Read", "multibyte.txt")
     # Change only the captured tool name and extend its input to model a plugin.
-    block = _block(assistant, "tool_use")
+    block = _content_block(assistant, "tool_use")
     block["name"] = "plugin__DeployService"
     block["input"]["plugin_options"] = {
         "targets": [None, True, 1.5, {"region": "east"}]
     }
-    session = _session([assistant, result])
-    call = _event_call(session["events"])
+    session = _interpret_interaction([assistant, result])
+    call = _single_tool_call_in(session["events"])
     assert call["input_schema"] == "unsupported"
     assert session["unsupported_tools"] == ["plugin__DeployService"]
     assert call["input"] == block["input"]
-    assert call["result_record"]["content"] == _block(result, "tool_result")["content"]
+    assert (
+        call["result_record"]["content"]
+        == _content_block(result, "tool_result")["content"]
+    )
     transcript = tmp_path / "s.jsonl"
     _write_jsonl(transcript, [assistant, result, deepcopy(assistant)])
     envelope = extract_transcript(transcript, -1)
@@ -1901,61 +1989,66 @@ def test_unknown_tool_payload_is_preserved_and_reported(tmp_path, capsys):
 
 
 def test_question_options_are_checked_without_losing_recorded_payload():
-    entries = _multiselect_pair()
-    block = _block(
-        _only(
-            [entry for entry in entries if entry.get("type") == "assistant"],
-            "assistant message",
-        ),
-        "tool_use",
-    )
-    options = _question(block["input"], multi_select=True)["options"]
+    assistant, result = _recorded_multiselect_interaction()
+    entries = [assistant, result]
+    block = _content_block(assistant, "tool_use")
+    options = _question_in(block["input"], multi_select=True)["options"]
     # Extend a recorded option and introduce malformed known fields. Semantic
     # parsing uses checked options while the complete native input survives.
     assert options
     for option in options:
         option["preview"] = {"markdown": "**keep this**"}
     options.extend([{"label": 1}, {"label": "bad", "description": None}])
-    session = _session(entries)
-    call = _event_call(session["events"])
+    session = _interpret_interaction(entries)
+    call = _single_tool_call_in(session["events"])
     assert call["input"] == block["input"]
-    assert _question(call, multi_select=True)["options"] == options[:-2]
+    assert _question_in(call, multi_select=True)["options"] == options[:-2]
     assert all(
         option["preview"] == {"markdown": "**keep this**"}
-        for option in _question(call, multi_select=True)["options"]
+        for option in _question_in(call, multi_select=True)["options"]
     )
-    _assert_selected_answer(_question(call, multi_select=True), minimum_choices=2)
+    answer = _question_in(call, multi_select=True)
+    _assert_answer_uses_distinct_recorded_options(answer)
+    assert len(answer["chosen_labels"]) >= 2
 
 
 @pytest.mark.parametrize("name", ["bash", "view", "edit", "create", "skill"])
 def test_claude_reports_copilot_tool_names_as_unsupported(name):
-    assistant, result = _tool_pair("Read", "multibyte.txt")
+    assistant, result = _recorded_tool_interaction("Read", "multibyte.txt")
     # Change only the captured name to the other harness's vocabulary.
-    block = _block(assistant, "tool_use")
+    block = _content_block(assistant, "tool_use")
     block["name"] = name
-    session = _session([assistant, result])
-    call = _event_call(session["events"])
+    session = _interpret_interaction([assistant, result])
+    call = _single_tool_call_in(session["events"])
     assert call["input_schema"] == "unsupported"
     assert session["unsupported_tools"] == [name]
     assert call["input"] == block["input"]
-    assert call["result_record"]["content"] == _block(result, "tool_result")["content"]
+    assert (
+        call["result_record"]["content"]
+        == _content_block(result, "tool_result")["content"]
+    )
 
 
 def _plan_result_variant(text):
     # Legacy rejection-reason wording is absent from the current CLI capture.
-    assistant, result = _tool_pair("ExitPlanMode", "", "CAPTURE_PLAN_REJECT_1:")
-    _block(result, "tool_result")["content"] = text
+    assistant, result = _recorded_tool_interaction(
+        "ExitPlanMode", result_contains="CAPTURE_PLAN_REJECT_1:"
+    )
+    _content_block(result, "tool_result")["content"] = text
     return [assistant, result]
 
 
 def test_legacy_edited_heading_with_unchanged_plan_is_not_an_edit():
     # The earlier audited plan fixture echoed an unchanged plan under this heading.
-    assistant, result = _tool_pair("ExitPlanMode", "", "## Approved Plan:\n")
-    block = _block(result, "tool_result")
+    assistant, result = _recorded_tool_interaction(
+        "ExitPlanMode", result_contains="## Approved Plan:\n"
+    )
+    block = _content_block(result, "tool_result")
     block["content"] = block["content"].replace(
         "## Approved Plan:", "## Approved Plan (edited by user):"
     )
-    (plan,) = _plans([assistant, result])
+    interpreted_session = _interpret_interaction([assistant, result])
+    (plan,) = _plan_decisions_in(interpreted_session)
     assert plan["decision"] == "approved"
     assert plan["edited_plan"] == ""
 
@@ -1964,7 +2057,7 @@ def test_legacy_edited_heading_with_unchanged_plan_is_not_an_edit():
 def test_legacy_image_media_types_are_preserved(media_type):
     # Current Claude converts attachments to PNG. Substitute the captured source
     # asset on every image in the semantically selected message for the legacy edge.
-    entry = _user_entry("CAPTURE_IMAGES_SAME:")
+    entry = _recorded_user_message("CAPTURE_IMAGES_SAME:")
     filenames = {
         "image/jpeg": "blue.jpg",
         "image/gif": "green.gif",
@@ -1982,7 +2075,7 @@ def test_legacy_image_media_types_are_preserved(media_type):
     for source in sources:
         source["media_type"] = media_type
         source["data"] = data
-    user = _only(build_events([entry]), "image event")
+    user = _require_single_match(build_events([entry]), "image event")
     assert len(user["images"]) == len(sources)
     assert all(
         image["media_type"] == media_type and image["data"] == data
@@ -1992,9 +2085,12 @@ def test_legacy_image_media_types_are_preserved(media_type):
 
 def test_legacy_dont_ask_denial_without_command_is_recorded():
     # Claude 2.1.292 omitted the command from its settings denial preamble.
-    assistant, result = _tool_pair("Bash", "CAPTURE_SETTINGS_REFUSAL")
-    _block(result, "tool_result")["content"] = "Permission to use Bash has been denied."
-    (call,) = _calls([assistant, result])
+    assistant, result = _recorded_tool_interaction("Bash", "CAPTURE_SETTINGS_REFUSAL")
+    _content_block(result, "tool_result")["content"] = (
+        "Permission to use Bash has been denied."
+    )
+    interpreted_session = _interpret_interaction([assistant, result])
+    (call,) = _tool_calls_in(interpreted_session)
     assert call["permission_denial"]["by"] == "settings"
     assert call["permission_denial"]["message"] == ""
 
@@ -2027,7 +2123,7 @@ def _reword_generated_questions(entries):
 
 
 def test_fixture_selection_ignores_order_regenerated_ids_and_prose(monkeypatch):
-    entries = _reword_generated_questions(_entries())
+    entries = _reword_generated_questions(_recorded_session_entries())
     for entry in entries:
         if "uuid" in entry:
             entry["uuid"] = "regenerated-" + entry["uuid"]
@@ -2046,40 +2142,51 @@ def test_fixture_selection_ignores_order_regenerated_ids_and_prose(monkeypatch):
         if isinstance(content, list):
             content.reverse()
     entries.reverse()
-    monkeypatch.setattr(__name__ + "._entries", lambda: entries)
-    _assert_selected_answer(
-        _question(_question_calls(), multi_select=True), minimum_choices=2
+    native_entries = entries
+    monkeypatch.setattr(__name__ + "._recorded_session_entries", lambda: native_entries)
+    entries = _recorded_multiselect_interaction()
+    interpreted_session = _interpret_interaction(entries)
+    answer = _question_in(
+        _single_tool_call_in(interpreted_session["events"]), multi_select=True
     )
-    overlap = _event_call(_session(_overlapping_options_pair())["events"])
-    _assert_selected_answer(_question(overlap, multi_select=False))
-    _assert_assistant_text(_session(entries)["events"])
-    assistant, result = _tool_pair("Read", "multibyte.txt")
-    call = _block(assistant, "tool_use")
+    _assert_answer_uses_distinct_recorded_options(answer)
+    assert len(answer["chosen_labels"]) >= 2
+    entries = _recorded_overlapping_options_interaction()
+    overlapping_session = _interpret_interaction(entries)
+    overlap = _single_tool_call_in(overlapping_session["events"])
+    answer = _question_in(overlap, multi_select=False)
+    _assert_answer_uses_distinct_recorded_options(answer)
+    assert len(answer["chosen_labels"]) == 1
+    assert answer["answer_text"] == answer["chosen_labels"][0]
+    full_session = _interpret_interaction(native_entries)
+    _assert_assistant_text(full_session["events"])
+    assistant, result = _recorded_tool_interaction("Read", "multibyte.txt")
+    call = _content_block(assistant, "tool_use")
     assert Path(call["input"]["file_path"]).name == "multibyte.txt"
-    assert _block(result, "tool_result")["tool_use_id"] == call["id"]
-    assert "CAPTURE_MULTIBYTE" in _block(result, "tool_result")["content"]
-    image_entry = _user_entry("CAPTURE_IMAGES_SAME:")
-    assert "CAPTURE_IMAGES_SAME:" in _block(image_entry, "text")["text"]
+    assert _content_block(result, "tool_result")["tool_use_id"] == call["id"]
+    assert "CAPTURE_MULTIBYTE" in _content_block(result, "tool_result")["content"]
+    image_entry = _recorded_user_message("CAPTURE_IMAGES_SAME:")
+    assert "CAPTURE_IMAGES_SAME:" in _content_block(image_entry, "text")["text"]
 
 
 @pytest.mark.parametrize("duplicate", [False, True])
 def test_fixture_selection_rejects_missing_or_ambiguous_activity(
     duplicate, monkeypatch
 ):
-    assistant, result = _tool_pair("Read", "multibyte.txt")
+    assistant, result = _recorded_tool_interaction("Read", "multibyte.txt")
     entries = [assistant, deepcopy(assistant), result] if duplicate else []
-    monkeypatch.setattr(__name__ + "._entries", lambda: entries)
+    monkeypatch.setattr(__name__ + "._recorded_session_entries", lambda: entries)
     message = "Expected one Read activity" if duplicate else "Missing Read activity"
     with pytest.raises(AssertionError, match=message):
-        _tool_pair("Read", "multibyte.txt")
+        _recorded_tool_interaction("Read", "multibyte.txt")
 
 
 @pytest.mark.parametrize("duplicate", [False, True])
 def test_fixture_user_selection_rejects_missing_or_ambiguous_messages(
     duplicate, monkeypatch
 ):
-    user = _user_entry("CAPTURE_IMAGES_SAME:")
+    user = _recorded_user_message("CAPTURE_IMAGES_SAME:")
     entries = [user, deepcopy(user)] if duplicate else []
-    monkeypatch.setattr(__name__ + "._entries", lambda: entries)
+    monkeypatch.setattr(__name__ + "._recorded_session_entries", lambda: entries)
     with pytest.raises(AssertionError, match="Expected one user message"):
-        _user_entry("CAPTURE_IMAGES_SAME:")
+        _recorded_user_message("CAPTURE_IMAGES_SAME:")

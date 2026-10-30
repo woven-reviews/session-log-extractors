@@ -136,6 +136,61 @@ def test_json_redaction_handles_escapes_without_changing_keys_or_scalar_types():
     assert original["path"] == r"C:\Users\example\file.txt"
 
 
+@pytest.mark.parametrize("format", ["json", "jsonl"])
+@pytest.mark.parametrize(
+    "representation",
+    ["image_url", "url", "path", "file_path", "mime_type", "media_type"],
+)
+def test_codex_inline_image_representations_preserve_bytes(format, representation):
+    fixture = Path(__file__).parent / "fixtures/codex/image.jsonl"
+    entries = [json.loads(line) for line in fixture.read_text().splitlines()]
+    content = entries[3]["payload"]["content"]
+    data_url = content[1]["image_url"]
+    # Vary the native image block to exercise the other supported representations.
+    if representation in {"mime_type", "media_type"}:
+        content[1] = {representation: "image/png", "data": data_url.split(",", 1)[1]}
+    else:
+        content[1] = {"type": "input_image", representation: data_url}
+    content.append({"type": "input_text", "text": "iVBOR"})
+    original = (
+        json.dumps(entries)
+        if format == "json"
+        else "\n".join(json.dumps(entry) for entry in entries)
+    )
+    rules = SanitizationRules(
+        literal_replacements=(LiteralReplacement("collision", "iVBOR", "[USER]"),),
+    )
+    result = sanitize_capture(original, rules, format=format)
+    content[-1]["text"] = "[USER]"
+    actual = (
+        json.loads(result.text)
+        if format == "json"
+        else [json.loads(line) for line in result.text.split("\n") if line]
+    )
+    assert actual == entries
+    assert {item.rule: item.matches for item in result.redactions}["collision"] == 1
+
+
+@pytest.mark.parametrize("separator", ["\u2028", "\u0085"])
+@pytest.mark.parametrize("ensure_ascii", [True, False])
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_jsonl_unicode_in_strings_is_not_a_record_boundary(
+    separator, ensure_ascii, newline
+):
+    # These legal JSON string characters are also recognized by str.splitlines().
+    records = [{"text": f"before{separator}after"}, {"text": "second"}]
+    original = (
+        newline.join(
+            json.dumps(record, ensure_ascii=ensure_ascii) for record in records
+        )
+        + newline
+    )
+    rules = SanitizationRules()
+    result = sanitize_capture(original, rules, format="jsonl")
+    assert [json.loads(line) for line in result.text.split("\n") if line] == records
+    assert sanitize_capture(result.text, rules, format="jsonl") == result
+
+
 def test_jsonl_preserves_record_order_and_blank_lines():
     result = sanitize_capture(
         '{"id":"first","email":"a@example.org"}\r\n\r\n{"id":"second"}',

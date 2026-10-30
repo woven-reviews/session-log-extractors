@@ -12,6 +12,19 @@ ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312"
 (TRANSCRIPT,) = (ROOT / "native").glob("*.jsonl")
 
 
+def _recorded_tool_calls(tool_name):
+    calls = [
+        block
+        for entry in read_source(TRANSCRIPT).entries
+        for block in entry.get("message", {}).get("content", [])
+        if isinstance(block, dict)
+        and block.get("type") == "tool_use"
+        and block.get("name") == tool_name
+    ]
+    assert calls, f"Missing native {tool_name} calls"
+    return calls
+
+
 @pytest.mark.parametrize(
     "tool_name",
     [
@@ -27,14 +40,7 @@ ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312"
     ],
 )
 def test_captured_tool_inputs_have_explicit_schemas(tool_name):
-    calls = [
-        block
-        for entry in read_source(TRANSCRIPT).entries
-        for block in entry.get("message", {}).get("content", [])
-        if isinstance(block, dict)
-        and block.get("type") == "tool_use"
-        and block.get("name") == tool_name
-    ]
+    calls = _recorded_tool_calls(tool_name)
     assert calls
     for call in calls:
         original = deepcopy(call["input"])

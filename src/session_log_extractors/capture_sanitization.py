@@ -55,7 +55,7 @@ class _Rule:
 
 
 def _is_inline_image(value: dict[str, JsonValue]) -> bool:
-    media_type = value.get("media_type")
+    media_type = value.get("media_type") or value.get("mime_type")
     return (
         isinstance(media_type, str)
         and media_type.startswith("image/")
@@ -124,6 +124,12 @@ class _CaptureSanitizer:
 
     def _field_value(self, record: dict[str, JsonValue], key: str) -> JsonValue:
         item = record[key]
+        if (
+            key in {"image_url", "url", "path", "file_path"}
+            and isinstance(item, str)
+            and item.startswith("data:image/")
+        ):
+            return item
         if record.get("type") == "credential_org" and key == "organizationUuid":
             self.counts.setdefault("organization_id", 0)
             if item != _ORGANIZATION_PLACEHOLDER:
@@ -140,7 +146,10 @@ class _CaptureSanitizer:
 
 def _sanitize_jsonl(text: str, sanitizer: _CaptureSanitizer) -> str:
     lines = []
-    for number, line in enumerate(text.splitlines(), 1):
+    records = text.split("\n")
+    if records[-1] == "":
+        records.pop()
+    for number, line in enumerate(records, 1):
         if not line.strip():
             lines.append("")
             continue

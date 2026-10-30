@@ -113,26 +113,192 @@ def test_entrypoints_use_the_same_rules_and_report(
     assert capsys.readouterr().out == ""
 
 
-@pytest.mark.parametrize(
-    "destination", ["source", "rules", "same-output", "symlink", "hardlink"]
-)
-def test_cli_rejects_output_aliases_of_inputs(tmp_path, capsys, destination):
-    source, rules, output = (
-        tmp_path / "native.txt",
-        tmp_path / "rules.json",
-        tmp_path / "out.txt",
-    )
-    source.write_text("original")
-    rules.write_text("{}")
+@pytest.fixture
+def sanitizer_files(tmp_path):
+    source = tmp_path / "native.txt"
+    rules = tmp_path / "rules.json"
+    output = tmp_path / "out.txt"
     report = tmp_path / "report.json"
-    if destination in ("source", "rules"):
-        output = source if destination == "source" else rules
-    elif destination == "same-output":
-        report = output
-    elif destination == "symlink":
-        output.symlink_to(source)
-    else:
-        os.link(source, output)
+    source.write_text("private-malformed-content")
+    rules.write_text("{}")
+    return source, rules, output, report
+
+
+def test_cli_rejects_source_as_output(sanitizer_files, capsys):
+    source, rules, output, report = sanitizer_files
+    output = source
+    args = [
+        str(source),
+        "--rules",
+        str(rules),
+        "--output",
+        str(output),
+        "--report",
+        str(report),
+    ]
+
+    assert main(args) == 1
+
+    assert "error:" in capsys.readouterr().err
+    assert source.read_text() == "private-malformed-content"
+    assert rules.read_text() == "{}"
+
+
+def test_cli_rejects_rules_as_output(sanitizer_files, capsys):
+    source, rules, output, report = sanitizer_files
+    output = rules
+    args = [
+        str(source),
+        "--rules",
+        str(rules),
+        "--output",
+        str(output),
+        "--report",
+        str(report),
+    ]
+
+    assert main(args) == 1
+
+    assert "error:" in capsys.readouterr().err
+    assert source.read_text() == "private-malformed-content"
+    assert rules.read_text() == "{}"
+
+
+def test_cli_rejects_report_as_output(sanitizer_files, capsys):
+    source, rules, output, report = sanitizer_files
+    report = output
+    args = [
+        str(source),
+        "--rules",
+        str(rules),
+        "--output",
+        str(output),
+        "--report",
+        str(report),
+    ]
+
+    assert main(args) == 1
+
+    assert "error:" in capsys.readouterr().err
+    assert source.read_text() == "private-malformed-content"
+    assert rules.read_text() == "{}"
+
+
+def test_cli_rejects_symlink_to_source_as_output(sanitizer_files, capsys):
+    source, rules, output, report = sanitizer_files
+    output.symlink_to(source)
+    args = [
+        str(source),
+        "--rules",
+        str(rules),
+        "--output",
+        str(output),
+        "--report",
+        str(report),
+    ]
+
+    assert main(args) == 1
+
+    assert "error:" in capsys.readouterr().err
+    assert source.read_text() == "private-malformed-content"
+    assert rules.read_text() == "{}"
+
+
+def test_cli_rejects_hardlink_to_source_as_output(sanitizer_files, capsys):
+    source, rules, output, report = sanitizer_files
+    os.link(source, output)
+    args = [
+        str(source),
+        "--rules",
+        str(rules),
+        "--output",
+        str(output),
+        "--report",
+        str(report),
+    ]
+
+    assert main(args) == 1
+
+    assert "error:" in capsys.readouterr().err
+    assert source.read_text() == "private-malformed-content"
+    assert rules.read_text() == "{}"
+
+
+def test_cli_reports_missing_source_without_echoing_source(sanitizer_files, capsys):
+    source, rules, output, _ = sanitizer_files
+    source.unlink()
+    args = [str(source), "--rules", str(rules), "--output", str(output)]
+
+    assert main(args) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "error:" in captured.err
+    assert "private-malformed-content" not in captured.err
+
+
+def test_cli_reports_invalid_rules_without_echoing_source(sanitizer_files, capsys):
+    source, rules, output, _ = sanitizer_files
+    rules.write_text('{"unexpected": true}')
+    args = [str(source), "--rules", str(rules), "--output", str(output)]
+
+    assert main(args) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "error:" in captured.err
+    assert "private-malformed-content" not in captured.err
+
+
+def test_cli_reports_invalid_jsonl_without_echoing_source(sanitizer_files, capsys):
+    source, rules, output, _ = sanitizer_files
+
+    args = [str(source), "--rules", str(rules), "--output", str(output)] + [
+        "--format",
+        "jsonl",
+    ]
+
+    assert main(args) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "error:" in captured.err
+    assert "private-malformed-content" not in captured.err
+
+
+def test_cli_reports_invalid_utf8_without_echoing_source(sanitizer_files, capsys):
+    source, rules, output, _ = sanitizer_files
+    source.write_bytes(b"\xff")
+    args = [str(source), "--rules", str(rules), "--output", str(output)]
+
+    assert main(args) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "error:" in captured.err
+    assert "private-malformed-content" not in captured.err
+
+
+def test_cli_reports_unwritable_output_without_echoing_source(sanitizer_files, capsys):
+    source, rules, output, _ = sanitizer_files
+    output.mkdir()
+    args = [str(source), "--rules", str(rules), "--output", str(output)]
+
+    assert main(args) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "error:" in captured.err
+    assert "private-malformed-content" not in captured.err
+
+
+def test_cli_rejects_hard_linked_output_and_report_without_writing(tmp_path, capsys):
+    source, rules = tmp_path / "native.txt", tmp_path / "rules.json"
+    output, report = tmp_path / "out.txt", tmp_path / "report.json"
+    source.write_text("private@example.org")
+    rules.write_text("{}")
+    output.write_text("existing artifact")
+    os.link(output, report)
     assert (
         main(
             [
@@ -147,36 +313,9 @@ def test_cli_rejects_output_aliases_of_inputs(tmp_path, capsys, destination):
         )
         == 1
     )
-    assert "error:" in capsys.readouterr().err
-    assert source.read_text() == "original"
-    assert rules.read_text() == "{}"
-
-
-@pytest.mark.parametrize(
-    "failure",
-    ["missing-source", "bad-rules", "bad-jsonl", "invalid-utf8", "write-error"],
-)
-def test_cli_reports_errors_without_echoing_source_contents(tmp_path, capsys, failure):
-    source, rules, output = (
-        tmp_path / "native.txt",
-        tmp_path / "rules.json",
-        tmp_path / "out.txt",
-    )
-    source.write_text("private-malformed-content")
-    rules.write_text("{}")
-    args = [str(source), "--rules", str(rules), "--output", str(output)]
-    if failure == "missing-source":
-        source.unlink()
-    elif failure == "bad-rules":
-        rules.write_text('{"unexpected": true}')
-    elif failure == "bad-jsonl":
-        args += ["--format", "jsonl"]
-    elif failure == "invalid-utf8":
-        source.write_bytes(b"\xff")
-    else:
-        output.mkdir()
-    assert main(args) == 1
     captured = capsys.readouterr()
+    assert "Output and report must use different files" in captured.err
     assert captured.out == ""
-    assert "error:" in captured.err
-    assert "private-malformed-content" not in captured.err
+    assert output.read_text() == report.read_text() == "existing artifact"
+    assert source.read_text() == "private@example.org"
+    assert rules.read_text() == "{}"
