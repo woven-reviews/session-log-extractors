@@ -8,6 +8,8 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
+from codex_capture import CHILD_TRANSCRIPT, question_interaction
+from codex_capture import TRANSCRIPT as CODEX_TRANSCRIPT
 from copilot_fixture import DATABASE, SESSION_ID, native_source, native_tool_source
 
 from session_log_extractors import copilot_sources
@@ -77,56 +79,30 @@ def test_cli_uses_the_public_extractor_stages(monkeypatch, capsys):
     assert stages == ["read", "interpret"]
 
 
-def _read_contract_source(extractor, selection, harness, full_result, monkeypatch):
+def _read_contract_source(extractor, selection, harness):
     """Load each harness's native fixtures before enabling the source-access guard."""
     if harness == "copilot":
         source = native_source()
     else:
         source = extractor.read_source(selection)
-        if harness == "codex" and full_result:
-            # Extend a captured completion past the default export cap.
-            completion_payloads = []
-            for event in source.entries:
-                if event["payload"].get("type") == "custom_tool_call_output":
-                    completion_payloads.append(event["payload"])
-            next(iter(completion_payloads))["output"] = "x" * 20000
 
     return source
 
 
 # Extend this native-fixture matrix as other harnesses adopt Extractor.
-CONTRACT_CASES = [
-    (claude.EXTRACTOR, TRANSCRIPT, "claude", True),
-    (copilot.EXTRACTOR, None, "copilot", True),
-]
-for codex_name in [
-    "slash.jsonl",
-    "image.jsonl",
-    "tool_patch_large.jsonl",
-    "question.jsonl",
-    "denial.jsonl",
-    "model.jsonl",
-    "plan.jsonl",
-]:
-    CONTRACT_CASES.append(
-        (
-            codex.EXTRACTOR,
-            FIXTURES.parent / "codex" / codex_name,
-            "codex",
-            codex_name == "tool_patch_large.jsonl",
-        )
-    )
-
-
 @pytest.mark.parametrize(
-    ("extractor", "selection", "harness", "full_result"), CONTRACT_CASES
+    ("extractor", "selection", "harness", "full_result"),
+    [
+        (claude.EXTRACTOR, TRANSCRIPT, "claude", True),
+        (copilot.EXTRACTOR, None, "copilot", True),
+        (codex.EXTRACTOR, CODEX_TRANSCRIPT, "codex", True),
+        (codex.EXTRACTOR, CHILD_TRANSCRIPT, "codex", False),
+    ],
 )
 def test_public_interpretation_is_source_free_and_export_is_non_mutating(
     extractor, selection, harness, full_result, monkeypatch
 ):
-    source = _read_contract_source(
-        extractor, selection, harness, full_result, monkeypatch
-    )
+    source = _read_contract_source(extractor, selection, harness)
 
     def forbidden(*args, **kwargs):
         pytest.fail("interpret_source accessed its source store")
@@ -147,26 +123,19 @@ def test_public_interpretation_is_source_free_and_export_is_non_mutating(
     assert session is not None
     assert session["harness"] == harness
     original = deepcopy(session)
-    for limit in [0, 17, -1]:
-        assert export_session(session, limit)["events"]
+    for limit in [0, 17, 4096, -1]:
+        exported = export_session(session, limit)
+        assert exported["events"]
         assert session == original
     if full_result:
-        interpreted_calls = []
+        large_results = []
         for event in session["events"]:
             for call in event.get("tool_calls", []):
-                interpreted_calls.append(call)
-        calls = interpreted_calls
-        has_large_result = []
-        for call in calls:
-            has_large_result.append(
-                isinstance(call.get("result"), str)
-                and len(call["result"].encode()) > 10000
-            )
-        assert any(has_large_result)
-        has_no_export_flags = []
-        for call in calls:
-            has_no_export_flags.append("result_truncated" not in call)
-        assert all(has_no_export_flags)
+                result = call.get("result")
+                if isinstance(result, str) and len(result.encode()) > 10000:
+                    large_results.append(result)
+                assert "result_truncated" not in call
+        assert large_results, "Interpretation must retain a native result over 10 KB"
 
 
 def test_public_stage_propagates_reader_errors_and_handles_no_events(tmp_path):
@@ -290,17 +259,7 @@ def test_copilot_public_reader_errors_and_empty_source():
     )
 
 
-def _calls_named(session, name):
-    calls = []
-    for message in session["events"]:
-        for call in message.get("tool_calls", []):
-            if call["name"] == name:
-                calls.append(call)
-    assert len(calls) == 1, "Expected one selected call"
-    return calls[0]
-
-
-@pytest.mark.parametrize("harness", ["claude", "copilot"])
+@pytest.mark.parametrize("harness", ["claude", "copilot", "codex"])
 @pytest.mark.parametrize("unsupported", [False, True])
 def test_native_tool_payloads_keep_unknown_fields_through_export(harness, unsupported):
     """Extend a captured call with a future field and optionally a future tool name."""
@@ -308,7 +267,7 @@ def test_native_tool_payloads_keep_unknown_fields_through_export(harness, unsupp
         source, request = _recorded_claude_read_interaction()
         input_key = "input"
         extractor = claude.EXTRACTOR
-    else:
+    elif harness == "copilot":
         source = native_tool_source()
         requests = []
         for record in source.state_records:
@@ -318,6 +277,13 @@ def test_native_tool_payloads_keep_unknown_fields_through_export(harness, unsupp
         (request,) = requests
         input_key = "arguments"
         extractor = copilot.EXTRACTOR
+    else:
+        source = codex.read_source(CODEX_TRANSCRIPT)
+        source.entries = question_interaction()
+        request = source.entries[1]["payload"]
+        request["arguments"] = json.loads(request["arguments"])
+        input_key = "arguments"
+        extractor = codex.EXTRACTOR
     # Keep recorded call IDs/results; only extend the payload and vary recognition.
     request[input_key]["future_field"] = {
         "nested": [None, False, 17, {"value": "kept"}]
@@ -326,13 +292,23 @@ def test_native_tool_payloads_keep_unknown_fields_through_export(harness, unsupp
         request["name"] = "future_tool"
     expected_input = deepcopy(request[input_key])
     session = extractor.interpret_source(source)
-    call = _calls_named(session, request["name"])
+    call = _call_named(session, request["name"])
     assert call["input"] == expected_input
     assert (call["input_schema"] == "unsupported") is unsupported
     if unsupported:
         assert "future_tool" in session["unsupported_tools"]
     original = deepcopy(session)
     exported = export_session(session, 17)
-    exported_call = _calls_named(exported, request["name"])
+    exported_call = _call_named(exported, request["name"])
     assert exported_call["input"] == expected_input
     assert session == original
+
+
+def _call_named(session, name):
+    matches = []
+    for event in session["events"]:
+        for call in event.get("tool_calls", []):
+            if call["name"] == name:
+                matches.append(call)
+    assert len(matches) == 1, f"Expected one recorded call to {name}"
+    return matches[0]

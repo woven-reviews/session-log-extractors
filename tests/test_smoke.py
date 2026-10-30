@@ -21,6 +21,13 @@ ROOT = (
     Path(__file__).resolve().parents[1] / "scripts" / "fixtures" / "claude" / "2.1.312"
 )
 (TRANSCRIPT,) = (ROOT / "native").glob("*.jsonl")
+CODEX_TRANSCRIPT = (
+    ROOT.parent.parent
+    / "codex"
+    / "0.166.0"
+    / "native"
+    / "rollout-2026-10-30T15-49-18-01a18e5c-0900-7111-91f6-195916aa5e3c.jsonl"
+)
 COPILOT_ROOT = ROOT.parent.parent / "copilot" / "1.0.104-3"
 (COPILOT_TRANSCRIPT,) = (COPILOT_ROOT / "native/session-state").glob("*/events.jsonl")
 COPILOT_ID = COPILOT_TRANSCRIPT.parent.name
@@ -56,7 +63,7 @@ def test_help_uses_call_time_output_root(harness, tmp_path, monkeypatch, capsys)
     ("harness", "arguments"),
     [
         ("claude", ["--transcript", str(TRANSCRIPT)]),
-        ("codex", ["--transcript", "scripts/fixtures/codex/tool_patch_large.jsonl"]),
+        ("codex", ["--transcript", str(CODEX_TRANSCRIPT)]),
         (
             "copilot",
             [
@@ -256,15 +263,8 @@ def test_codex_checkout_paths(subdirectory, selection, destination, tmp_path):
     home = tmp_path / "home"
     sessions = home / ".codex" / "sessions"
     sessions.mkdir(parents=True)
-    rows = [
-        {"type": "session_meta", "payload": {"id": "session", "cwd": str(checkout)}},
-        {"type": "event_msg", "payload": {"type": "user_message", "message": "hello"}},
-    ]
     transcript = sessions / "rollout-session.jsonl"
-    event_lines = []
-    for row in rows:
-        event_lines.append(json.dumps(row))
-    transcript.write_text("\n".join(event_lines))
+    expected_text = _copy_codex_capture(transcript, checkout)
     arguments = {
         "transcript": ["--transcript", str(transcript)],
         "prefix": ["sess", "--sessions-root", str(sessions)],
@@ -292,8 +292,30 @@ def test_codex_checkout_paths(subdirectory, selection, destination, tmp_path):
     envelope = json.loads(result.stdout if stdout else output.read_text())
     assert envelope["harness"] == "codex"
     assert envelope["session_id"] == "session"
-    assert envelope["events"][0]["text"] == "hello"
+    recorded_texts = []
+    for event in envelope["events"]:
+        recorded_texts.append(event.get("text"))
+    assert expected_text in recorded_texts
     assert output.exists() is not stdout
     assert not (scripts / output.name).exists()
     if subdirectory:
         assert not (cwd / output.name).exists()
+
+
+def _copy_codex_capture(destination, checkout):
+    rows = []
+    expected_text = None
+    for line in CODEX_TRANSCRIPT.read_text().splitlines():
+        row = json.loads(line)
+        payload = row["payload"]
+        if row["type"] == "session_meta":
+            payload.update(id="session", cwd=str(checkout))
+        metadata = payload.get("internal_chat_message_metadata_passthrough", {})
+        if expected_text is None and metadata.get("content_item_kinds") == [
+            "user.text"
+        ]:
+            expected_text = payload["content"][0]["text"]
+        rows.append(json.dumps(row))
+    assert expected_text, "The current native capture must include human text"
+    destination.write_text("\n".join(rows))
+    return expected_text

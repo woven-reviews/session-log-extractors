@@ -21,10 +21,11 @@ This script is mechanical: no LLM, no summarization, and no network access.
 It intentionally ignores base instructions, developer messages, reasoning
 payloads, token counts, and encrypted/internal fields.
 
-When the human denies a tool's permission prompt, the decision is surfaced as a
-"permission denied" note on the turn. Current app-server rollouts record the
-rejection in the tool result without a feedback message. Approvals leave no
-distinct record -- an approved tool just runs -- so only denials are captured.
+Older app-server rollouts record CreateProcess rejections in tool results.
+Current interactive cancellation results are preserved without inventing a
+denial decision; later feedback remains a separate recorded message. Settings
+refusals are distinct from human denials. Approvals need not have a separate
+native result.
 
 Codex Plan mode is identified from the per-turn collaboration-mode metadata.
 The retained interpretation helpers recognize structured ``update_plan`` calls,
@@ -82,6 +83,7 @@ from session_log_extractors.session_log_envelope import (
     write_envelope,
 )
 from session_log_extractors.session_model import (
+    FileChange,
     Image,
     Message,
     PatchResult,
@@ -90,6 +92,7 @@ from session_log_extractors.session_model import (
     PlanUpdate,
     QuestionAnswer,
     Session,
+    SkillInvocation,
     ToolCall,
     ToolResult,
     UserMessage,
@@ -544,12 +547,44 @@ def _parse_chosen(
             tail = parts[1]
             end = tail.find('"')
             val = tail[:end] if end != -1 else tail
-    chosen = [
-        o
-        for o in options
-        if isinstance(label := o.get("label"), str) and label and label in val
+    return val, _selected_from_text(options, val)
+
+
+def _selected_options(
+    options: list[dict[str, JsonValue]], answers: list[str]
+) -> list[dict[str, JsonValue]]:
+    return [
+        option
+        for option in options
+        if isinstance(label := option.get("label"), str) and label and label in answers
     ]
-    return val, chosen
+
+
+def _selected_from_text(
+    options: list[dict[str, JsonValue]], text: str
+) -> list[dict[str, JsonValue]]:
+    # Legacy text answers can contain comma-separated choices. Native arrays
+    # bypass this ambiguous representation and match their whole labels.
+    return _selected_options(
+        options, [text, *(part.strip() for part in text.split(","))]
+    )
+
+
+def _native_answer_values(
+    question: dict[str, JsonValue], output: JsonValue
+) -> list[str] | None:
+    decoded = _decode_jsonish(output)
+    container = decoded.get("answers") if isinstance(decoded, dict) else None
+    question_id = question.get("id")
+    if not isinstance(container, dict) or not isinstance(question_id, str):
+        return None
+    answer = container.get(question_id)
+    values = answer.get("answers") if isinstance(answer, dict) else None
+    return (
+        [value for value in values if isinstance(value, str)]
+        if isinstance(values, list)
+        else None
+    )
 
 
 def option_qa_from_output(
@@ -569,16 +604,17 @@ def option_qa_from_output(
             if isinstance(raw_options, list)
             else []
         )
-        val, chosen = _parse_chosen(
-            string_value(q.get("question")) or "", options, result_text
-        )
-        if not val:
-            val = _structured_answer_for_question(q, output)
-            chosen = [
-                o
-                for o in options
-                if isinstance(label := o.get("label"), str) and label and label in val
-            ]
+        native_answers = _native_answer_values(q, output)
+        if native_answers is not None:
+            val = ", ".join(answer for answer in native_answers if answer)
+            chosen = _selected_options(options, native_answers)
+        else:
+            val, chosen = _parse_chosen(
+                string_value(q.get("question")) or "", options, result_text
+            )
+            if not val:
+                val = _structured_answer_for_question(q, output)
+                chosen = _selected_from_text(options, val)
         out.append(
             {
                 "question": q.get("question", ""),
@@ -662,6 +698,29 @@ def _copy_identity(
     value = payload.get("message_id")
     if isinstance(value, str):
         target["message_id"] = value
+    value = payload.get("turn_id")
+    if isinstance(value, str):
+        target["turn_id"] = value
+    metadata = payload.get("internal_chat_message_metadata_passthrough")
+    if isinstance(metadata, dict):
+        turn_id = metadata.get("turn_id")
+        if isinstance(turn_id, str):
+            target["turn_id"] = turn_id
+
+
+def _message_kinds(payload: dict[str, JsonValue]) -> list[str]:
+    metadata = payload.get("internal_chat_message_metadata_passthrough")
+    kinds = metadata.get("content_item_kinds") if isinstance(metadata, dict) else None
+    return (
+        [kind for kind in kinds if isinstance(kind, str)]
+        if isinstance(kinds, list)
+        else []
+    )
+
+
+def _selected_skill(raw_text: str) -> SkillInvocation | None:
+    match = re.match(r"<skill>\s*<name>([^<]+)</name>\s*<path>([^<]+)</path>", raw_text)
+    return SkillInvocation(name=match[1], path=match[2]) if match else None
 
 
 def _user_commands(message: UserMessage, raw_text: str) -> None:
@@ -714,9 +773,22 @@ def _user_message(
     images: list[Image],
 ) -> UserMessage:
     """Normalize user content while retaining identity and command syntax."""
-    message = user_event(0, timestamp, clean_user_text(raw_text), images)
+    kinds = _message_kinds(payload)
+    # Explicit native user provenance outranks legacy wrapper heuristics.
+    text = raw_text if "user.text" in kinds else clean_user_text(raw_text)
+    message = user_event(0, timestamp, text, images)
     _copy_identity(message, payload)
     _user_commands(message, raw_text)
+    if kinds == ["skills.selected_skill_instructions"]:
+        invocation = _selected_skill(raw_text)
+        if invocation is not None:
+            message["skill_invocation"] = invocation
+    if kinds == ["shell.user_command"]:
+        shell = re.match(
+            r"<user_shell_command>\s*<command>\n(.*?)\n</command>", raw_text, re.DOTALL
+        )
+        if shell:
+            message["shell_command"] = shell[1]
     return message
 
 
@@ -739,6 +811,34 @@ def _new_tool_call(payload: dict[str, JsonValue]) -> ToolCall:
     return call
 
 
+def _file_change(path: str, value: JsonValue) -> FileChange:
+    record = value if isinstance(value, dict) else {}
+    change = FileChange(path=path, change_type=_string(record.get("type")))
+    content = record.get("content")
+    if isinstance(content, str):
+        change["content"] = content
+    diff = record.get("unified_diff")
+    if isinstance(diff, str):
+        change["unified_diff"] = diff
+    move = record.get("move_path")
+    if "move_path" in record and (move is None or isinstance(move, str)):
+        change["move_path"] = move
+    return change
+
+
+def _conversation_entries(source: CodexSource) -> list[dict[str, JsonValue]]:
+    """Exclude inherited child context only at the explicitly recorded boundary."""
+    boundary = source.history_start_ordinal
+    if boundary is None:
+        return source.entries
+    entries = []
+    for entry in source.entries:
+        ordinal = entry.get("ordinal")
+        if not isinstance(ordinal, int) or ordinal >= boundary:
+            entries.append(entry)
+    return entries
+
+
 class _CodexSessionBuilder:
     """One native traversal with ordered canonical messages and ID matching."""
 
@@ -750,15 +850,18 @@ class _CodexSessionBuilder:
             events=[],
             cwd=source.cwd,
             started_at=first_timestamp(source.entries),
-            models=session_models(source.entries),
+            models=session_models(_conversation_entries(source)),
             skills_used=[],
             files_changed=[],
             unmatched_tool_results=[],
             unsupported_tools=[],
             patch_results=[],
         )
+        if source.parent_session_id is not None:
+            self.session["parent_session_id"] = source.parent_session_id
         self.pending_calls: dict[str, ToolCall] = {}
         self.pending_user: UserMessage | None = None
+        self.pending_user_raw_text = ""
         self.pending_images: list[Image] = []
         self.mode = ""
         self.active_user: UserMessage | None = None
@@ -772,15 +875,22 @@ class _CodexSessionBuilder:
 
     def flush_user(self) -> None:
         if self.pending_user is not None:
-            self.active_user = self.pending_user
-            self.append(self.pending_user)
+            self.append_user(self.pending_user)
             self.pending_user = None
+            self.pending_user_raw_text = ""
+
+    def append_user(self, message: UserMessage) -> None:
+        invocation = message.get("skill_invocation")
+        if invocation and invocation["name"] not in self.session["skills_used"]:
+            self.session["skills_used"].append(invocation["name"])
+        self.active_user = message
+        self.append(message)
 
     def response_user(
         self, payload: dict[str, JsonValue], timestamp: str | None
     ) -> None:
         """Buffer a response item until its event view or the next message arrives."""
-        raw_text = _content_text(payload.get("content"), ("text",)).strip()
+        raw_text = _content_text(payload.get("content"), ("text",))
         images = envelope_images(
             image_refs_from_user_message_payload(payload), self.source.image_inputs
         )
@@ -790,6 +900,7 @@ class _CodexSessionBuilder:
             return
         self.flush_user()
         self.pending_user = message
+        self.pending_user_raw_text = raw_text
 
     def event_user(self, payload: dict[str, JsonValue], timestamp: str | None) -> None:
         """Emit the user event after reconciling its buffered response view."""
@@ -798,18 +909,32 @@ class _CodexSessionBuilder:
         )
         raw_text = _string(payload.get("message")) or ""
         message = _user_message(payload, timestamp, raw_text, images)
-        self.merge_pending_user(message)
+        self.merge_pending_user(message, raw_text)
         if message["text"] or message.get("images") or message.get("command"):
-            self.active_user = message
-            self.append(message)
+            self.append_user(message)
 
-    def merge_pending_user(self, message: UserMessage) -> None:
+    def merge_pending_user(self, message: UserMessage, raw_text: str) -> None:
         """Prefer the response view's identity and images for the same input."""
         response_images = None
         if self.pending_user is not None:
-            response_images = self.pending_user.get("images")
-            _copy_identity(message, self.pending_user)
-            self.pending_user = None
+            pending = self.pending_user
+            same_input = (
+                pending["id"] == message["id"]
+                if "id" in pending and "id" in message
+                else self.pending_user_raw_text == raw_text
+            )
+            if same_input:
+                response_images = pending.get("images")
+                message["text"] = pending["text"]
+                _copy_identity(message, pending)
+                if "skill_invocation" in pending:
+                    message["skill_invocation"] = pending["skill_invocation"]
+                if "shell_command" in pending:
+                    message["shell_command"] = pending["shell_command"]
+                self.pending_user = None
+                self.pending_user_raw_text = ""
+            else:
+                self.flush_user()
         images = response_images or self.pending_images or message.get("images")
         self.pending_images = []
         if images:
@@ -891,12 +1016,18 @@ class _CodexSessionBuilder:
 
     def patch(self, payload: dict[str, JsonValue], timestamp: str | None) -> None:
         changes = payload.get("changes")
-        paths = list(changes) if isinstance(changes, dict) else []
-        for path in paths:
-            append_unique_path(self.session["files_changed"], self.files_seen, path)
+        file_changes = (
+            [_file_change(path, value) for path, value in changes.items()]
+            if isinstance(changes, dict)
+            else []
+        )
+        for change in file_changes:
+            append_unique_path(
+                self.session["files_changed"], self.files_seen, change["path"]
+            )
         result = PatchResult(
             ts=timestamp,
-            paths=paths,
+            file_changes=file_changes,
             stdout=payload.get("stdout"),
             stderr=payload.get("stderr"),
         )
@@ -950,7 +1081,7 @@ class _CodexSessionBuilder:
 def interpret_source(source: CodexSource) -> Session | None:
     """Interpret supplied native data without I/O or export policy."""
     interpreter = _CodexSessionBuilder(source)
-    for entry in source.entries:
+    for entry in _conversation_entries(source):
         interpreter.entry(entry)
     interpreter.flush_user()
     session = interpreter.session
