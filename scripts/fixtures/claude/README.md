@@ -13,12 +13,22 @@ The canonical input is
 Test modules pin this version and discover its main transcript and child file
 without embedding captured session or agent IDs. Integration and source-free
 contract tests read the complete transcript; focused tests select unchanged
-records by tool name and input, message content, or question semantics.
+records by tool name and input, operator-authored markers, or question structure.
 Missing or ambiguous semantic matches fail explicitly. Recorded IDs connect
 already selected calls with their results; no lookup uses a saved ID, line
 number, timestamp, or occurrence. The coverage ledger remains provenance,
 not an input to the test selectors. Filesystem tests copy this input
 and its child sidecar into temporary directories. No tests invoke paid CLIs.
+
+Generated assistant responses and subagent prose are checked for string type and
+nonempty content, without requiring particular words or a successful recall by
+the model. Question selectors use multi-select structure or the overlapping
+option labels under test, rather than generated question wording or headers.
+Plan selectors use recorded approval/rejection evidence rather than proposed
+plan wording. Exact assertions remain for structured decisions, operator input,
+edited-plan assets, and focused parsing or sanitization boundaries. Selection
+tests vary generated prose, question wording, IDs, and record order to check
+that new captures can use different wording.
 
 The current capture supplies ordinary Markdown/Unicode, single-choice and
 multi-question/multi-select answers, free text, previews and notes, question

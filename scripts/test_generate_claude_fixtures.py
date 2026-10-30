@@ -82,25 +82,23 @@ def _tool_entries(name, input_contains):
     return [entry for entry in entries if entry in messages or entry in results]
 
 
-def _greeting_entries():
+def _conversation_entries():
     user = _user_entry("Remember **CAPTURE_CONTEXT_CEDAR_73**")
-    # Select the greeting by its content, independent of surrounding messages.
-    reply = _only(
-        [
-            entry
-            for entry in _entries()
-            if entry.get("type") == "assistant"
-            and any(
-                isinstance(block, dict)
-                and block.get("type") == "text"
-                and block["text"].startswith(("Hello", "Hi", "Hey", "Greetings"))
-                and "CAPTURE_CONTEXT_CEDAR_73" in block["text"]
-                for block in _blocks(entry)
-            )
-        ],
-        "greeting reply",
-    )
-    return [user, reply]
+    # Any native assistant prose can exercise collection and sanitization.
+    replies = [
+        entry
+        for entry in _entries()
+        if entry.get("type") == "assistant"
+        and any(
+            isinstance(block, dict)
+            and block.get("type") == "text"
+            and isinstance(block.get("text"), str)
+            and block["text"].strip()
+            for block in _blocks(entry)
+        )
+    ]
+    assert replies, "Missing native assistant text"
+    return [user, *replies]
 
 
 # The first prompt of each case in main(), so the fake CLI can tell which one runs.
@@ -118,7 +116,7 @@ PROMPT_CASES = {
 def _fixture_entries(case):
     # Adapt only the legacy generator's fixed prompt markers on native records.
     if case == "baseline":
-        return _greeting_entries()
+        return _conversation_entries()
     if case == "skill_command":
         entries = _tool_entries("Skill", "capture-leaf")
         entries.append(_user_entry("<command-name>/capture-echo</command-name>"))
@@ -136,7 +134,7 @@ def _fixture_entries(case):
     tool_inputs = {
         "large_result": ("Read", "multibyte.txt"),
         "permission_denial": ("Bash", "CAPTURE_SETTINGS_REFUSAL"),
-        "subagent": ("Agent", "Read hello.py print marker"),
+        "subagent": ("Agent", ""),
     }
     return _tool_entries(*tool_inputs[case]) if case in tool_inputs else _entries()
 
@@ -405,7 +403,7 @@ def test_clean_rejects_leftover_private_temp_path():
         "continued",
     ],
 )
-def test_case_selection_survives_reordered_records_and_regenerated_ids(
+def test_case_selection_survives_reordered_records_regenerated_ids_and_prose(
     case, monkeypatch
 ):
     expected = _fixture_entries(case)
@@ -414,6 +412,12 @@ def test_case_selection_survives_reordered_records_and_regenerated_ids(
         if "uuid" in entry:
             entry["uuid"] = "regenerated-" + entry["uuid"]
         for block in _blocks(entry):
+            if (
+                entry.get("type") == "assistant"
+                and isinstance(block, dict)
+                and block.get("type") == "text"
+            ):
+                block["text"] = "Acknowledged; this response uses different wording."
             if isinstance(block, dict) and block.get("type") == "tool_use":
                 block["id"] = "regenerated-" + block["id"]
             elif isinstance(block, dict) and block.get("type") == "tool_result":

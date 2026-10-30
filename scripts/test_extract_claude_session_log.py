@@ -159,10 +159,22 @@ def _event_call(events):
     )
 
 
-def _question(call, header):
+def _assert_assistant_text(events):
+    responses = [event["text"] for event in events if event["role"] == "assistant"]
+    assert responses
+    assert all(isinstance(text, str) for text in responses)
+    assert any(text.strip() for text in responses)
+
+
+def _question(call, *, multi_select):
+    native = call.get("input", call)
+    question = _only(
+        [q for q in native["questions"] if bool(q.get("multiSelect")) == multi_select],
+        f"question with multiSelect={multi_select}",
+    )
     return _only(
-        [question for question in call["questions"] if question["header"] == header],
-        f"{header} question",
+        [q for q in call["questions"] if q["question"] == question["question"]],
+        "question matching its native input",
     )
 
 
@@ -185,8 +197,34 @@ def _plans(entries):
 
 
 def _question_calls():
+    return _only(_calls(_multiselect_pair()), "question call")
+
+
+def _multiselect_pair():
     return _only(
-        _calls(_tool_pair("AskUserQuestion", "Which tree colors")), "question call"
+        [
+            pair
+            for pair in _tool_pairs("AskUserQuestion")
+            if any(
+                q.get("multiSelect")
+                for q in _block(pair[0], "tool_use")["input"]["questions"]
+            )
+        ],
+        "multiselect activity",
+    )
+
+
+def _overlapping_options_pair():
+    return _only(
+        [
+            pair
+            for pair in _tool_pairs("AskUserQuestion")
+            if any(
+                {o["label"] for o in q["options"]} == {"Leaf", "Leaflet"}
+                for q in _block(pair[0], "tool_use")["input"]["questions"]
+            )
+        ],
+        "overlapping-option activity",
     )
 
 
@@ -210,7 +248,7 @@ def test_native_skill_and_command_invocations_are_retained():
 
 
 def test_single_choice():
-    assistant, result = _tool_pair("AskUserQuestion", "Leaf or Leaflet")
+    assistant, result = _overlapping_options_pair()
     question = _only(
         _block(assistant, "tool_use")["input"]["questions"], "single question"
     )
@@ -224,7 +262,7 @@ def test_single_choice():
 
 
 def test_multiselect_comma():
-    qa = _question(_question_calls(), "Colors")
+    qa = _question(_question_calls(), multi_select=True)
     assert qa["answer_text"] == "Green, Red"
     assert qa["chosen_labels"] == ["Green", "Red"]
 
@@ -289,10 +327,14 @@ def test_permission_denials_from_result_names_tool():
 def test_custom_answer_matches_no_option():
     question = _question(
         _only(
-            _calls(_tool_pair("AskUserQuestion", "Which season")),
+            _calls(
+                _tool_pair(
+                    "AskUserQuestion", result_contains="CAPTURE_CUSTOM_PLAIN_MOSS"
+                )
+            ),
             "season question call",
         ),
-        "Season",
+        multi_select=False,
     )
     assert question["answer_text"] == "CAPTURE_CUSTOM_PLAIN_MOSS"
     assert question["chosen_labels"] == []
@@ -300,9 +342,9 @@ def test_custom_answer_matches_no_option():
 
 def test_multi_question_anchors_on_its_own_text():
     call = _question_calls()
-    assert _question(call, "Colors")["answer_text"] == "Green, Red"
-    assert _question(call, "Tree type")["answer_text"] == "Deciduous"
-    assert _question(call, "Tree type")["chosen_labels"] == ["Deciduous"]
+    assert _question(call, multi_select=True)["answer_text"] == "Green, Red"
+    assert _question(call, multi_select=False)["answer_text"] == "Deciduous"
+    assert _question(call, multi_select=False)["chosen_labels"] == ["Deciduous"]
 
 
 def test_task_notification_is_stripped_to_empty():
@@ -446,18 +488,15 @@ def test_build_events_surfaces_slash_command_invocations():
 
 
 def test_plan_approved_is_captured():
-    (plan,) = _plans(
-        _tool_pair("ExitPlanMode", "CAPTURE_PLAN_REVISED", "## Approved Plan:\n")
-    )
-    assert "CAPTURE_PLAN_REVISED" in plan["plan"]
+    (plan,) = _plans(_tool_pair("ExitPlanMode", "", "## Approved Plan:\n"))
+    assert isinstance(plan["plan"], str)
+    assert plan["plan"].strip()
     assert plan["decision"] == "approved"
     assert plan["edited_plan"] == ""
 
 
 def test_plan_approved_with_edit_keeps_final_version():
-    (plan,) = _plans(
-        _tool_pair("ExitPlanMode", "CAPTURE_PLAN_SECOND", "(edited by user):")
-    )
+    (plan,) = _plans(_tool_pair("ExitPlanMode", "", "(edited by user):"))
     assert plan["decision"] == "approved"
     assert plan["plan"] == (ROOT / "assets/plan-before-editor.md").read_text()
     assert (
@@ -467,9 +506,7 @@ def test_plan_approved_with_edit_keeps_final_version():
 
 
 def test_plan_rejected_keeps_steering_message():
-    (call,) = _calls(
-        _tool_pair("ExitPlanMode", "CAPTURE_PLAN_HELLO", "CAPTURE_PLAN_REJECT_1:")
-    )
+    (call,) = _calls(_tool_pair("ExitPlanMode", "", "CAPTURE_PLAN_REJECT_1:"))
     plan = call["plan_decision"]
     assert plan["decision"] == "rejected"
     assert (
@@ -499,9 +536,7 @@ def test_plan_rejection_reason_is_captured():
 
 
 def test_plan_without_result_is_marked_undecided():
-    assistant, _ = _tool_pair(
-        "ExitPlanMode", "CAPTURE_PLAN_REVISED", "## Approved Plan:\n"
-    )
+    assistant, _ = _tool_pair("ExitPlanMode", "", "## Approved Plan:\n")
     (plan,) = _plans([assistant])
     assert plan["decision"] == "no decision recorded"
 
@@ -656,7 +691,7 @@ def test_select_transcript_global_fallback_picks_newest_anywhere():
 
 def test_load_entries_skips_malformed_lines_with_warning(tmp_path, capsys):
     path = tmp_path / "truncated.jsonl"
-    entries = _tool_pair("AskUserQuestion", "Leaf or Leaflet")
+    entries = _overlapping_options_pair()
     _write_jsonl(path, entries)
     # A completed native capture cannot supply a corrupt trailing line.
     with path.open("a") as stream:
@@ -727,7 +762,7 @@ def test_extract_file_path_variants():
 
 
 def test_option_qa_from_result_builds_record():
-    assistant, result = _tool_pair("AskUserQuestion", "Leaf or Leaflet")
+    assistant, result = _overlapping_options_pair()
     call = _block(assistant, "tool_use")
     out = option_qa_from_result(result, {call["id"]: call["input"]["questions"]})
     answer = _only(out, "choice answer")
@@ -736,12 +771,12 @@ def test_option_qa_from_result_builds_record():
 
 
 def test_option_qa_from_result_ignores_untracked_tool():
-    _, result = _tool_pair("AskUserQuestion", "Leaf or Leaflet")
+    _, result = _overlapping_options_pair()
     assert option_qa_from_result(result, {}) == []
 
 
 def test_option_qa_from_result_skips_non_tool_result_blocks_and_bad_questions():
-    assistant, result = _tool_pair("AskUserQuestion", "Leaf or Leaflet")
+    assistant, result = _overlapping_options_pair()
     call = _block(assistant, "tool_use")
     pending = {call["id"]: ["not-a-dict"]}
     # Replace only the question payload with malformed data; include a native text block.
@@ -772,7 +807,7 @@ def test_clean_user_text_empty_input_is_empty():
 
 
 def test_result_block_text_flattens_list_content():
-    _, result = _tool_pair("Agent", "Read hello.py print marker")
+    _, result = _tool_pair("Agent")
     block = _block(result, "tool_result")
     original = _only(
         [part["text"] for part in block["content"] if part.get("type") == "text"],
@@ -785,7 +820,7 @@ def test_result_block_text_flattens_list_content():
 
 
 def test_parse_chosen_single_question_fallback_when_text_mismatches():
-    assistant, result = _tool_pair("AskUserQuestion", "Leaf or Leaflet")
+    assistant, result = _overlapping_options_pair()
     question = _only(
         _block(assistant, "tool_use")["input"]["questions"], "single question"
     )
@@ -809,11 +844,9 @@ def test_permission_denials_from_result_ignores_non_tool_result_blocks():
 
 def test_legacy_plan_helper_consumes_native_matches_and_updates_plan_records():
     entries = (
-        list(_tool_pair("ExitPlanMode", "CAPTURE_PLAN_HELLO", "CAPTURE_PLAN_REJECT_1:"))
-        + list(
-            _tool_pair("ExitPlanMode", "CAPTURE_PLAN_REVISED", "## Approved Plan:\n")
-        )
-        + list(_tool_pair("ExitPlanMode", "CAPTURE_PLAN_SECOND", "(edited by user):"))
+        list(_tool_pair("ExitPlanMode", "", "CAPTURE_PLAN_REJECT_1:"))
+        + list(_tool_pair("ExitPlanMode", "", "## Approved Plan:\n"))
+        + list(_tool_pair("ExitPlanMode", "", "(edited by user):"))
     )
     calls = _calls(entries)
     records = [
@@ -843,7 +876,7 @@ def test_legacy_plan_helper_consumes_native_matches_and_updates_plan_records():
 
 @pytest.mark.parametrize("tool_id", [None, "unknown-call"])
 def test_legacy_plan_helper_leaves_unmatched_plans_pending(tool_id):
-    entries = _tool_pair("ExitPlanMode", "CAPTURE_PLAN_REVISED", "## Approved Plan:\n")
+    entries = _tool_pair("ExitPlanMode", "", "## Approved Plan:\n")
     result = next(entry for entry in entries if _is_tool_result_entry(entry))
     # Change only the captured result ID to exercise absent/unmatched associations.
     _block(result, "tool_result")["tool_use_id"] = tool_id
@@ -890,11 +923,11 @@ def test_activity_keeps_commands_shell_subagents_questions_and_files():
             call
             for call in calls
             if call["name"] == "AskUserQuestion"
-            and "Which tree colors" in json.dumps(call["input"])
+            and any(q.get("multiSelect") for q in call["input"]["questions"])
         ],
         "tree question call",
     )
-    assert _question(question, "Colors")["chosen_labels"] == ["Green", "Red"]
+    assert _question(question, multi_select=True)["chosen_labels"] == ["Green", "Red"]
     assert any(call["name"] == "Write" for call in calls)
     denial = _only(
         [
@@ -983,26 +1016,7 @@ def test_native_continued_conversation_keeps_follow_up_in_one_session():
         "post-compaction recall prompt",
     )
     assert "without tools" in prompt["text"]
-    answer = _only(
-        [
-            event
-            for event in events
-            if event["role"] == "assistant"
-            and all(
-                marker in event["text"]
-                for marker in (
-                    "CAPTURE_CONTEXT_CEDAR_73",
-                    "CAPTURE_PLAN_EDIT_VIM",
-                    "CAPTURE_CUSTOM",
-                )
-            )
-        ],
-        "recall answer containing context, plan, and custom name",
-    )
-    assert answer.get("tool_calls", []) == []
-    assert any(
-        "CAPTURE_MULTIBYTE" in (call.get("result") or "") for call in _calls(entries)
-    )
+    _assert_assistant_text(events[prompt["i"] + 1 :])
 
 
 def test_build_raw_envelope_preserves_metadata_and_events():
@@ -1030,10 +1044,12 @@ def test_summarize_subagent_reads_meta_task_and_result(tmp_path):
     shutil.copyfile(SUBAGENT.with_suffix(".meta.json"), sub.with_suffix(".meta.json"))
     summary = summarize_subagent(sub)
     assert summary["agent_type"] == "Explore"
-    assert "Read-only task." in summary["task"]
+    assert isinstance(summary["task"], str)
+    assert summary["task"].strip()
     assert summary["tool_count"] == 1
     assert summary["tool_names"] == ["Read"]
-    assert summary["result"] == "CAPTURE_CHILD_RESULT: CAPTURE_PLAN_EDIT_VIM"
+    assert isinstance(summary["result"], str)
+    assert summary["result"].strip()
 
 
 def test_summarize_subagent_returns_none_for_empty_file():
@@ -1058,15 +1074,19 @@ def test_load_subagents_reads_sidecar_dir(tmp_path):
 def test_native_subagent_summary_retains_evidence_without_guessing_ownership():
     subs = load_subagents(TRANSCRIPT)
     assert len(subs) == 1
-    assert "hello.py" in subs[0]["task"]
-    assert subs[0]["result"] == "CAPTURE_CHILD_RESULT: CAPTURE_PLAN_EDIT_VIM"
+    assert isinstance(subs[0]["task"], str)
+    assert subs[0]["task"].strip()
+    assert isinstance(subs[0]["result"], str)
+    assert subs[0]["result"].strip()
     meta = json.loads(SUBAGENT.with_suffix(".meta.json").read_text())
     assert subs[0]["agent_type"] == meta["agentType"]
     task = _only(
         [
             entry
             for entry in load_entries(SUBAGENT)
-            if entry.get("type") == "user" and "Read-only task." in _human_text(entry)
+            if entry.get("type") == "user"
+            and not _is_tool_result_entry(entry)
+            and _human_text(entry).strip()
         ],
         "read-only child task",
     )
@@ -1105,11 +1125,7 @@ def test_extract_transcript_preserves_native_conversation():
         "context prompt",
     )
     assert "café 雪" in prompt["text"]
-    assert any(
-        "CAPTURE_PLAN_EDIT_VIM" in event["text"]
-        for event in envelope["events"]
-        if event["role"] == "assistant"
-    )
+    _assert_assistant_text(envelope["events"])
 
 
 def test_main_writes_json_to_explicit_output():
@@ -1359,7 +1375,7 @@ def test_cli_reports_parse_errors(contents, tmp_path, capsys):
 
 def test_cli_retains_malformed_line_diagnostics(tmp_path, capsys):
     transcript = tmp_path / "truncated.jsonl"
-    entries = _tool_pair("AskUserQuestion", "Leaf or Leaflet")
+    entries = _overlapping_options_pair()
     _write_jsonl(transcript, entries)
     # Append a deliberately interrupted record to a captured call/result pair.
     with transcript.open("a") as stream:
@@ -1685,15 +1701,15 @@ def test_recorded_skills_deduplicate_and_ignore_empty_names():
 @pytest.mark.parametrize(
     "selection",
     [
-        pytest.param(("AskUserQuestion", "Which tree colors"), id="questions"),
-        pytest.param(
-            ("ExitPlanMode", "CAPTURE_PLAN_REVISED", "## Approved Plan:\n"), id="plan"
-        ),
+        pytest.param(None, id="questions"),
+        pytest.param(("ExitPlanMode", "", "## Approved Plan:\n"), id="plan"),
         pytest.param(("Bash", "CAPTURE_SETTINGS_REFUSAL"), id="permission"),
     ],
 )
 def test_decisions_follow_native_calls_across_later_user_messages(selection):
-    assistant, result = _tool_pair(*selection)
+    assistant, result = (
+        _multiselect_pair() if selection is None else _tool_pair(*selection)
+    )
     (later,) = [_user_entry("Remember **CAPTURE_CONTEXT_CEDAR_73**")]
     # Move a recorded human message between call and result; retain call IDs.
     session = _session([assistant, later, result])
@@ -1701,7 +1717,7 @@ def test_decisions_follow_native_calls_across_later_user_messages(selection):
     assert call["id"] == _block(assistant, "tool_use")["id"]
     assert call["result_record"]["tool_call_id"] == call["id"]
     if call["name"] == "AskUserQuestion":
-        assert _question(call, "Colors")["chosen_labels"] == ["Green", "Red"]
+        assert _question(call, multi_select=True)["chosen_labels"] == ["Green", "Red"]
     elif call["name"] == "ExitPlanMode":
         assert call["plan_decision"]["decision"] == "approved"
     else:
@@ -1746,7 +1762,7 @@ def test_unmatched_result_retains_content_without_inventing_an_owner():
 
 @pytest.mark.parametrize("options", [None, 7, "invalid", {"label": "section"}])
 def test_malformed_question_options_preserve_input_and_allow_extraction(options):
-    entries = _tool_pair("AskUserQuestion", "Which tree colors")
+    entries = _multiselect_pair()
     block = _block(
         _only(
             [entry for entry in entries if entry.get("type") == "assistant"],
@@ -1755,12 +1771,12 @@ def test_malformed_question_options_preserve_input_and_allow_extraction(options)
         "tool_use",
     )
     # Vary only the options container in the audited question fixture.
-    _question(block["input"], "Colors")["options"] = options
+    _question(block["input"], multi_select=True)["options"] = options
     session = _session(entries)
     call = _event_call(session["events"])
     assert call["input"] == block["input"]
-    assert _question(call, "Colors")["options"] == []
-    assert _question(call, "Colors")["answer_text"] == "Green, Red"
+    assert _question(call, multi_select=True)["options"] == []
+    assert _question(call, multi_select=True)["answer_text"] == "Green, Red"
     exported = session_log_envelope.export_session(session)
     assert _event_call(exported["events"])["input"] == block["input"]
 
@@ -1824,7 +1840,7 @@ def test_unknown_tool_payload_is_preserved_and_reported(tmp_path, capsys):
 
 
 def test_question_options_are_checked_without_losing_recorded_payload():
-    entries = _tool_pair("AskUserQuestion", "Which tree colors")
+    entries = _multiselect_pair()
     block = _block(
         _only(
             [entry for entry in entries if entry.get("type") == "assistant"],
@@ -1832,7 +1848,7 @@ def test_question_options_are_checked_without_losing_recorded_payload():
         ),
         "tool_use",
     )
-    options = _question(block["input"], "Colors")["options"]
+    options = _question(block["input"], multi_select=True)["options"]
     # Extend a recorded option and introduce malformed known fields. Semantic
     # parsing uses checked options while the complete native input survives.
     option = _only(
@@ -1843,16 +1859,16 @@ def test_question_options_are_checked_without_losing_recorded_payload():
     session = _session(entries)
     call = _event_call(session["events"])
     assert call["input"] == block["input"]
-    assert _question(call, "Colors")["options"] == options[:-2]
+    assert _question(call, multi_select=True)["options"] == options[:-2]
     assert _only(
         [
             option
-            for option in _question(call, "Colors")["options"]
+            for option in _question(call, multi_select=True)["options"]
             if option["label"] == "Green"
         ],
         "Green option",
     )["preview"] == {"markdown": "**keep this**"}
-    assert _question(call, "Colors")["chosen_labels"] == ["Green", "Red"]
+    assert _question(call, multi_select=True)["chosen_labels"] == ["Green", "Red"]
 
 
 @pytest.mark.parametrize("name", ["bash", "view", "edit", "create", "skill"])
@@ -1871,18 +1887,14 @@ def test_claude_reports_copilot_tool_names_as_unsupported(name):
 
 def _plan_result_variant(text):
     # Legacy rejection-reason wording is absent from the current CLI capture.
-    assistant, result = _tool_pair(
-        "ExitPlanMode", "CAPTURE_PLAN_HELLO", "CAPTURE_PLAN_REJECT_1:"
-    )
+    assistant, result = _tool_pair("ExitPlanMode", "", "CAPTURE_PLAN_REJECT_1:")
     _block(result, "tool_result")["content"] = text
     return [assistant, result]
 
 
 def test_legacy_edited_heading_with_unchanged_plan_is_not_an_edit():
     # The earlier audited plan fixture echoed an unchanged plan under this heading.
-    assistant, result = _tool_pair(
-        "ExitPlanMode", "CAPTURE_PLAN_REVISED", "## Approved Plan:\n"
-    )
+    assistant, result = _tool_pair("ExitPlanMode", "", "## Approved Plan:\n")
     block = _block(result, "tool_result")
     block["content"] = block["content"].replace(
         "## Approved Plan:", "## Approved Plan (edited by user):"
@@ -1931,14 +1943,34 @@ def test_legacy_dont_ask_denial_without_command_is_recorded():
     assert call["permission_denial"]["message"] == ""
 
 
-def test_fixture_selection_ignores_record_order_block_order_and_regenerated_ids(
+def test_fixture_selection_ignores_order_regenerated_ids_and_prose(
     monkeypatch,
 ):
     entries = _entries()
+    # Rephrase generated questions consistently in calls and native answers.
+    # Labels and operator-entered answers stay fixed for the selection boundaries.
+    replacements = {
+        question[field]: f"Reworded: {question[field]}"
+        for entry in entries
+        for block in _content_blocks(entry)
+        if isinstance(block, dict) and block.get("name") == "AskUserQuestion"
+        for question in block["input"]["questions"]
+        for field in ("question", "header")
+    }
+    serialized = json.dumps(entries, ensure_ascii=False)
+    for original, replacement in replacements.items():
+        serialized = serialized.replace(original, replacement)
+    entries = json.loads(serialized)
     for entry in entries:
         if "uuid" in entry:
             entry["uuid"] = "regenerated-" + entry["uuid"]
         for block in _content_blocks(entry):
+            if (
+                entry.get("type") == "assistant"
+                and isinstance(block, dict)
+                and block.get("type") == "text"
+            ):
+                block["text"] = "A different generated response."
             if isinstance(block, dict) and block.get("type") == "tool_use":
                 block["id"] = "regenerated-" + block["id"]
             elif isinstance(block, dict) and block.get("type") == "tool_result":
@@ -1948,6 +1980,13 @@ def test_fixture_selection_ignores_record_order_block_order_and_regenerated_ids(
             content.reverse()
     entries.reverse()
     monkeypatch.setattr(__name__ + "._entries", lambda: entries)
+    assert _question(_question_calls(), multi_select=True)["chosen_labels"] == [
+        "Green",
+        "Red",
+    ]
+    overlap = _event_call(_session(_overlapping_options_pair())["events"])
+    assert _question(overlap, multi_select=False)["chosen_labels"] == ["Leaflet"]
+    _assert_assistant_text(_session(entries)["events"])
     assistant, result = _tool_pair("Read", "multibyte.txt")
     call = _block(assistant, "tool_use")
     assert Path(call["input"]["file_path"]).name == "multibyte.txt"
