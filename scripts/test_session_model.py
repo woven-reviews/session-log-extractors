@@ -5,6 +5,7 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
+from copilot_fixture import native_records
 
 from session_log_extractors.claude_sources import read_source
 from session_log_extractors.session_log_envelope import (
@@ -264,9 +265,10 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def _native_records(relative_path):
-    return [
-        json.loads(line) for line in (FIXTURES / relative_path).read_text().splitlines()
-    ]
+    records = []
+    for line in (FIXTURES / relative_path).read_text().splitlines():
+        records.append(json.loads(line))
+    return records
 
 
 @pytest.mark.parametrize(
@@ -303,11 +305,17 @@ def test_authorship_examples_define_coverage_without_role_inference():
     candidate, mixed, injected, unknown, missing, partial = examples
     assert candidate["text"] == "Hi 🙂"
     assert candidate["authorship"] == [{"start": 0, "end": 4, "source": "candidate"}]
-    assert [mixed["text"][r["start"] : r["end"]] for r in mixed["authorship"]] == [
+    authored_texts = []
+    for record in mixed["authorship"]:
+        authored_texts.append(mixed["text"][record["start"] : record["end"]])
+    assert authored_texts == [
         "Hi 🙂",
         "<notice>context</notice>",
     ]
-    assert [r["source"] for r in mixed["authorship"]] == ["candidate", "harness"]
+    authored_sources = []
+    for record in mixed["authorship"]:
+        authored_sources.append(record["source"])
+    assert authored_sources == ["candidate", "harness"]
     assert injected["authorship"][0]["end"] == len(injected["text"])
     assert injected["authorship"][0]["source"] == "ide"
     assert unknown["authorship"][0]["source"] == "unknown"
@@ -323,15 +331,17 @@ def test_authorship_examples_define_coverage_without_role_inference():
 
 def _recorded_skill_expansions():
     records = read_source(TRANSCRIPT).entries
-    expansions = [
-        (entry, block["text"])
-        for entry in records
-        if entry.get("type") == "user" and entry.get("isMeta")
-        for block in entry.get("message", {}).get("content", [])
-        if isinstance(block, dict)
-        and block.get("type") == "text"
-        and block["text"].startswith("Base directory for this skill:")
-    ]
+    skill_expansions = []
+    for entry in records:
+        if entry.get("type") == "user" and entry.get("isMeta"):
+            for block in entry.get("message", {}).get("content", []):
+                if (
+                    isinstance(block, dict)
+                    and block.get("type") == "text"
+                    and block["text"].startswith("Base directory for this skill:")
+                ):
+                    skill_expansions.append((entry, block["text"]))
+    expansions = skill_expansions
     assert expansions, "Missing native skill expansion messages"
     return expansions
 
@@ -363,11 +373,14 @@ def test_claude_native_injected_message_fits_authorship_contract():
 
 def test_codex_native_prompt_can_remain_unknown_without_evidence():
     records = _native_records("codex/slash.jsonl")
-    native = next(
-        r
-        for r in records
-        if r["type"] == "response_item" and r["payload"].get("role") == "user"
-    )
+    user_records = []
+    for record in records:
+        if (
+            record["type"] == "response_item"
+            and record["payload"].get("role") == "user"
+        ):
+            user_records.append(record)
+    native = next(iter(user_records))
     text = native["payload"]["content"][0]["text"]
     event = UserMessage(i=0, role="user", text=text, ts=native["timestamp"])
     assert json.loads(json.dumps(event))["text"] == "/review fixture"
@@ -376,8 +389,12 @@ def test_codex_native_prompt_can_remain_unknown_without_evidence():
 
 
 def test_copilot_native_transformed_prompt_fits_mixed_ranges():
-    records = _native_records("copilot/baseline/events.jsonl")
-    native = next(r for r in records if r["type"] == "user.message")
+    records = native_records()
+    user_records = []
+    for record in records:
+        if record["type"] == "user.message":
+            user_records.append(record)
+    native = next(iter(user_records))
     data = native["data"]
     text = data["transformedContent"]
     boundary = len(text) - len(data["content"])
@@ -433,6 +450,12 @@ def test_authorship_retains_message_structure_without_changing_export():
     assert decoded["events"][1]["tool_calls"][0]["id"] == "call-1"
     assert decoded["events"][1]["authorship"][0]["ts"] is None
     exported = export_session(session)
-    assert all("authorship" not in event for event in exported["events"])
-    assert [event["i"] for event in exported["events"]] == [0, 1, 2]
+    omitted_authorship = []
+    for event in exported["events"]:
+        omitted_authorship.append("authorship" not in event)
+    assert all(omitted_authorship)
+    exported_indices = []
+    for event in exported["events"]:
+        exported_indices.append(event["i"])
+    assert exported_indices == [0, 1, 2]
     assert session == original

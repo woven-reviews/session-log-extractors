@@ -1,0 +1,199 @@
+{
+  "schema": 1,
+  "snapshots": [
+    {
+      "snapshotId": "14701b9a-5753-4d95-9d70-4bd3f69a19cb",
+      "eventId": "71ee1f0d-38a9-43b7-8f13-8379803d6d72",
+      "userMessage": "Create a tiny Python greeting program in the existing nested path with spaces and Unicode. First propose a plan and wait for my review.",
+      "timestamp": "2026-10-30T19:54:05.973Z",
+      "files": {
+        "1ad732144f4de3f2bc16f0fbf4136b5d": {
+          "path": "/home/fixture-user/.copilot/session-state/07640183-dc62-4ab4-813f-d9f285a63b90/plan.md",
+          "preimage": {
+            "kind": "absent"
+          },
+          "postimage": {
+            "kind": "content",
+            "contentHash": "dd38daad9563321908f2eb140b116f830bed3c4436f8a82ee5bd5f85e30d88ca",
+            "resolvedPath": "/home/fixture-user/.copilot/session-state/07640183-dc62-4ab4-813f-d9f285a63b90/plan.md",
+            "encodedPath": {
+              "encoding": "unix-bytes",
+              "data": "2f55736572732f6d74686f6d736f6e2f2e636f70696c6f742f73657373696f6e2d73746174652f30373634303138332d646336322d346162342d383133662d6439663238356136336239302f706c616e2e6d64"
+            }
+          },
+          "linesAdded": 26,
+          "linesRemoved": 0
+        },
+        "47e721b362896ce7acde31b16131642b": {
+          "path": "/workspace/nested path 雪 segment segment segment segment segment segment segment segment segment segment segment segment segment segment segment /greeting.py",
+          "preimage": {
+            "kind": "content",
+            "contentHash": "7a55b31d7ed23c58ce242ecc34fc7264f0d8a89ced049dcedab98816592445ac",
+            "backupFile": "7a55b31d7ed23c58ce242ecc34fc7264f0d8a89ced049dcedab98816592445ac",
+            "mode": 33188,
+            "size": 24,
+            "resolvedPath": "/workspace/nested path 雪 segment segment segment segment segment segment segment segment segment segment segment segment segment segment segment /greeting.py",
+            "encodedPath": {
+              "encoding": "unix-bytes",
+              "data": "2f707269766174652f7661722f666f6c646572732f6a6c2f34393873365f30643779625f6d7867736a3533796c796a3430303030676e2f542f7175616c323731362d62696c3465325f392f776f726b73706163652f6e6573746564207061746820e99baa207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74202f6772656574696e672e7079"
+            }
+          },
+          "postimage": {
+            "kind": "content",
+            "contentHash": "ea07c702681eacd569e9bcff5f4d7e722a14e41f56e8fe210acda4eb5488eefe",
+            "resolvedPath": "/workspace/nested path 雪 segment segment segment segment segment segment segment segment segment segment segment segment segment segment segment /greeting.py",
+            "encodedPath": {
+              "encoding": "unix-bytes",
+              "data": "2f707269766174652f7661722f666f6c646572732f6a6c2f34393873365f30643779625f6d7867736a3533796c796a3430303030676e2f542f7175616c323731362d62696c3465325f392f776f726b73706163652f6e6573746564207061746820e99baa207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74202f6772656574696e672e7079"
+            }
+          },
+          "linesAdded": 11,
+          "linesRemoved": 1
+        }
+      },
+      "backupFiles": [
+        "7a55b31d7ed23c58ce242ecc34fc7264f0d8a89ced049dcedab98816592445ac"
+      ],
+      "fileCount": 2,
+      "linesAdded": 37,
+      "linesRemoved": 1
+    },
+    {
+      "snapshotId": "333dbab7-1ba7-4bd4-b2c2-f07adcbf3ef3",
+      "eventId": "3eaccf3a-b6bd-4d43-9fc3-6706db69d805",
+      "userMessage": "Use native file tools: read first.txt and second.txt independently together, read greeting.py, change its greeting marker to CAPTURE_AFTER, then read it again. Create large-write.txt with at least 5000 bytes of repeated Unicode text using a native write tool, not a shell. Read all of large.txt with the native reader. Read missing-CAPTURE.txt to show a genuine missing-file error. Search CAPTURE_FIRST and CAPTURE_SECOND with the native local search tool in separate calls. Read red.png with a native image tool if available. Do not launch subagents yet. Keep your final response brief.",
+      "timestamp": "2026-10-30T19:56:00.728Z",
+      "files": {
+        "47e721b362896ce7acde31b16131642b": {
+          "path": "/workspace/nested path 雪 segment segment segment segment segment segment segment segment segment segment segment segment segment segment segment /greeting.py",
+          "preimage": {
+            "kind": "content",
+            "contentHash": "ea07c702681eacd569e9bcff5f4d7e722a14e41f56e8fe210acda4eb5488eefe",
+            "backupFile": "ea07c702681eacd569e9bcff5f4d7e722a14e41f56e8fe210acda4eb5488eefe",
+            "mode": 33188,
+            "size": 181,
+            "resolvedPath": "/workspace/nested path 雪 segment segment segment segment segment segment segment segment segment segment segment segment segment segment segment /greeting.py",
+            "encodedPath": {
+              "encoding": "unix-bytes",
+              "data": "2f707269766174652f7661722f666f6c646572732f6a6c2f34393873365f30643779625f6d7867736a3533796c796a3430303030676e2f542f7175616c323731362d62696c3465325f392f776f726b73706163652f6e6573746564207061746820e99baa207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74202f6772656574696e672e7079"
+            }
+          },
+          "postimage": {
+            "kind": "content",
+            "contentHash": "bb643a796ef1fad651044719c8e2dda395d369cb7d96b8c62720b4520b91f409",
+            "resolvedPath": "/workspace/nested path 雪 segment segment segment segment segment segment segment segment segment segment segment segment segment segment segment /greeting.py",
+            "encodedPath": {
+              "encoding": "unix-bytes",
+              "data": "2f707269766174652f7661722f666f6c646572732f6a6c2f34393873365f30643779625f6d7867736a3533796c796a3430303030676e2f542f7175616c323731362d62696c3465325f392f776f726b73706163652f6e6573746564207061746820e99baa207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74202f6772656574696e672e7079"
+            }
+          },
+          "linesAdded": 1,
+          "linesRemoved": 1
+        },
+        "6d922507860700e4cf9585ecf21bafd0": {
+          "path": "/workspace/large-write.txt",
+          "preimage": {
+            "kind": "absent"
+          },
+          "postimage": {
+            "kind": "content",
+            "contentHash": "e9bc5af31b8da2c3473f9b66e5e9436ed41840b09cd97b82885633097ccb396a",
+            "resolvedPath": "/workspace/large-write.txt",
+            "encodedPath": {
+              "encoding": "unix-bytes",
+              "data": "2f707269766174652f7661722f666f6c646572732f6a6c2f34393873365f30643779625f6d7867736a3533796c796a3430303030676e2f542f7175616c323731362d62696c3465325f392f776f726b73706163652f6c617267652d77726974652e747874"
+            }
+          },
+          "linesAdded": 33,
+          "linesRemoved": 0
+        }
+      },
+      "backupFiles": [
+        "ea07c702681eacd569e9bcff5f4d7e722a14e41f56e8fe210acda4eb5488eefe"
+      ],
+      "fileCount": 2,
+      "linesAdded": 34,
+      "linesRemoved": 1
+    },
+    {
+      "snapshotId": "b86675f8-bd65-4665-a840-b1d325d302b9",
+      "eventId": "38ebc925-13b2-4295-a6e4-8ece0958c979",
+      "userMessage": "Propose a tiny follow-up change: append a comment to greeting.py. Wait for review so I can edit the plan using the real editor.",
+      "timestamp": "2026-10-30T20:00:35.769Z",
+      "files": {
+        "1ad732144f4de3f2bc16f0fbf4136b5d": {
+          "path": "/home/fixture-user/.copilot/session-state/07640183-dc62-4ab4-813f-d9f285a63b90/plan.md",
+          "preimage": {
+            "kind": "content",
+            "contentHash": "dd38daad9563321908f2eb140b116f830bed3c4436f8a82ee5bd5f85e30d88ca",
+            "backupFile": "dd38daad9563321908f2eb140b116f830bed3c4436f8a82ee5bd5f85e30d88ca",
+            "mode": 33188,
+            "size": 1362,
+            "resolvedPath": "/home/fixture-user/.copilot/session-state/07640183-dc62-4ab4-813f-d9f285a63b90/plan.md",
+            "encodedPath": {
+              "encoding": "unix-bytes",
+              "data": "2f55736572732f6d74686f6d736f6e2f2e636f70696c6f742f73657373696f6e2d73746174652f30373634303138332d646336322d346162342d383133662d6439663238356136336239302f706c616e2e6d64"
+            }
+          },
+          "postimage": {
+            "kind": "content",
+            "contentHash": "de782f5defb70b65788c30260f259a26d40b77857139d8c4d8c94fe24e1a0dca",
+            "resolvedPath": "/home/fixture-user/.copilot/session-state/07640183-dc62-4ab4-813f-d9f285a63b90/plan.md",
+            "encodedPath": {
+              "encoding": "unix-bytes",
+              "data": "2f55736572732f6d74686f6d736f6e2f2e636f70696c6f742f73657373696f6e2d73746174652f30373634303138332d646336322d346162342d383133662d6439663238356136336239302f706c616e2e6d64"
+            }
+          },
+          "linesAdded": 16,
+          "linesRemoved": 0
+        }
+      },
+      "backupFiles": [
+        "dd38daad9563321908f2eb140b116f830bed3c4436f8a82ee5bd5f85e30d88ca"
+      ],
+      "fileCount": 1,
+      "linesAdded": 16,
+      "linesRemoved": 0
+    },
+    {
+      "snapshotId": "67944641-d0e2-4bbd-88a7-149a82c5c6a4",
+      "eventId": "bf3570e3-b447-4d2b-a313-2e29229fa67d",
+      "userMessage": "I edited plan.md through Ctrl+Y. Read the changed follow-up section and request approval for it without rewriting the edited comment.",
+      "timestamp": "2026-10-30T20:01:32.751Z",
+      "files": {
+        "47e721b362896ce7acde31b16131642b": {
+          "path": "/workspace/nested path 雪 segment segment segment segment segment segment segment segment segment segment segment segment segment segment segment /greeting.py",
+          "preimage": {
+            "kind": "content",
+            "contentHash": "bb643a796ef1fad651044719c8e2dda395d369cb7d96b8c62720b4520b91f409",
+            "backupFile": "bb643a796ef1fad651044719c8e2dda395d369cb7d96b8c62720b4520b91f409",
+            "mode": 33188,
+            "size": 171,
+            "resolvedPath": "/workspace/nested path 雪 segment segment segment segment segment segment segment segment segment segment segment segment segment segment segment /greeting.py",
+            "encodedPath": {
+              "encoding": "unix-bytes",
+              "data": "2f707269766174652f7661722f666f6c646572732f6a6c2f34393873365f30643779625f6d7867736a3533796c796a3430303030676e2f542f7175616c323731362d62696c3465325f392f776f726b73706163652f6e6573746564207061746820e99baa207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74202f6772656574696e672e7079"
+            }
+          },
+          "postimage": {
+            "kind": "content",
+            "contentHash": "8036142dfceb4747bd33da2038c34e97479b872dc6b69339023a5635abd272fe",
+            "resolvedPath": "/workspace/nested path 雪 segment segment segment segment segment segment segment segment segment segment segment segment segment segment segment /greeting.py",
+            "encodedPath": {
+              "encoding": "unix-bytes",
+              "data": "2f707269766174652f7661722f666f6c646572732f6a6c2f34393873365f30643779625f6d7867736a3533796c796a3430303030676e2f542f7175616c323731362d62696c3465325f392f776f726b73706163652f6e6573746564207061746820e99baa207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74207365676d656e74202f6772656574696e672e7079"
+            }
+          },
+          "linesAdded": 1,
+          "linesRemoved": 0
+        }
+      },
+      "backupFiles": [
+        "bb643a796ef1fad651044719c8e2dda395d369cb7d96b8c62720b4520b91f409"
+      ],
+      "fileCount": 1,
+      "linesAdded": 1,
+      "linesRemoved": 0
+    }
+  ]
+}

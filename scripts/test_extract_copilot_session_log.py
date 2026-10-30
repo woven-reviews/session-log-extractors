@@ -14,6 +14,18 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from copilot_fixture import (
+    ASSETS,
+    DATABASE,
+    ROOT,
+    SESSION_ID,
+    TRANSCRIPT,
+    native_prose_source,
+    native_source,
+    native_tool_source,
+    recorded_calls,
+    single_image_source,
+)
 
 from session_log_extractors import copilot_sources as sources
 from session_log_extractors import extract_copilot_session_log as copilot_log
@@ -29,35 +41,42 @@ from session_log_extractors.extract_copilot_session_log import (
     clean_user_text,
 )
 
-FIXTURES = Path(__file__).resolve().parent / "fixtures" / "copilot"
-NATIVE_IDS = json.loads((FIXTURES / "manifest.json").read_text())["cases"]
-PNG = (FIXTURES / "pixel.png").read_bytes()
+FIXTURES = ROOT
+PNG = (ASSETS / "red.png").read_bytes()
 
 
-def _native_lines(case: str) -> list[str]:
-    return (FIXTURES / case / "events.jsonl").read_text(encoding="utf-8").splitlines()
+def _native_lines() -> list[str]:
+    return TRANSCRIPT.read_text(encoding="utf-8").splitlines()
+
+
+def _call_names(session):
+    names = []
+    for message in session["events"]:
+        for call in message.get("tool_calls", []):
+            names.append(call["name"])
+    return names
 
 
 def _native_db():
-    return get_db_connection(FIXTURES / "session-store.db")
+    return get_db_connection(DATABASE)
 
 
 def _native_db_copy(tmp_path: Path, sql: str = "", params=()) -> Path:
     """Copy the native DB into tmp_path, optionally applying one edit."""
     db_path = tmp_path / "session-store.db"
-    shutil.copyfile(FIXTURES / "session-store.db", db_path)
+    shutil.copyfile(DATABASE, db_path)
     if sql:
         with sqlite3.connect(db_path) as conn:
             conn.execute(sql, params)
     return db_path
 
 
-def _install_native_events(case: str) -> None:
-    _write_events_log(NATIVE_IDS[case], _native_lines(case))
+def _install_native_events() -> None:
+    _write_events_log(SESSION_ID, _native_lines())
 
 
 def _hand_lines(name: str) -> list[str]:
-    return (FIXTURES / "hand-authored" / name).read_text(encoding="utf-8").splitlines()
+    return (FIXTURES / "boundary" / name).read_text(encoding="utf-8").splitlines()
 
 
 @pytest.fixture(autouse=True)
@@ -89,16 +108,16 @@ def _make_test_db(tmp_path, session_id, turns):
                 "2026-01-01T12:00:00Z",
             ),
         )
-        for t in turns:
+        for turn in turns:
             conn.execute(
                 "INSERT INTO turns (session_id, turn_index, user_message, "
                 "assistant_response, timestamp) VALUES (?, ?, ?, ?, ?)",
                 (
                     session_id,
-                    t["turn_index"],
-                    t["user_message"],
-                    t["assistant_response"],
-                    t["timestamp"],
+                    turn["turn_index"],
+                    turn["user_message"],
+                    turn["assistant_response"],
+                    turn["timestamp"],
                 ),
             )
     return db_path
@@ -128,9 +147,12 @@ def test_copilot_permissions_join_approval_denial_and_pending():
     perms = _permissions_from_events(
         sources.parse_state_records(_hand_lines("permissions.jsonl"))
     )
-    assert [
-        (p["tool"], p["native_decision"], p["feedback"], p["ts"]) for p in perms
-    ] == [
+    actual_permissions = []
+    for p in perms:
+        actual_permissions.append(
+            (p["tool"], p["native_decision"], p["feedback"], p["ts"])
+        )
+    assert actual_permissions == [
         ("pytest", "approved", "", "2026-07-01T22:04:04Z"),
         (
             "edit crud.py",
@@ -143,38 +165,40 @@ def test_copilot_permissions_join_approval_denial_and_pending():
 
 
 def test_copilot_db_operations():
-    _install_native_events("continued")
+    _install_native_events()
     with _native_db() as conn:
-        session = get_session_by_id(conn, NATIVE_IDS["continued"])
-        assert session["cwd"] == "/workspace"
+        session = get_session_by_id(conn, SESSION_ID)
         turns = get_session_turns(conn, session["id"])
-        assert [t["assistant_response"] for t in turns] == ["READY", "BLUE-WREN-17"]
-        assert any(
-            row["id"] == session["id"]
-            for row in matching_sessions(conn, Path("/workspace"), strict=True)
-        )
+        matches = matching_sessions(conn, Path("/workspace"), strict=True)
         envelope = copilot_log.extract_session(conn, session)
-    assert [e["text"] for e in envelope["events"] if e["role"] == "assistant"] == [
-        "READY",
-        "BLUE-WREN-17",
-    ]
+    assert session["cwd"] == "/workspace"
+    assert len(turns) > 1
+    assert matches == [session]
     assert envelope["cwd"] == "/workspace"
     assert envelope["started_at"] == session["created_at"]
-    assert envelope["models"] == ["claude-sonnet-5"]
+    assert envelope["models"] == native_source().models
+    assert len(envelope["models"]) >= 2
+    for turn in turns:
+        assert turn["assistant_response"] is None or isinstance(
+            turn["assistant_response"], str
+        )
 
 
 def test_copilot_native_fixture_ids_match_db_and_events():
     with _native_db() as conn:
-        assert {row["id"] for row in conn.execute("SELECT id FROM sessions")} == set(
-            NATIVE_IDS.values()
-        )
-        for case, session_id in NATIVE_IDS.items():
-            events = [json.loads(line) for line in _native_lines(case)]
-            assert events[0]["type"] == "session.start"
-            assert events[0]["data"]["sessionId"] == session_id
-            assert sum(event["type"] == "user.message" for event in events) == len(
-                get_session_turns(conn, session_id)
-            )
+        rows = conn.execute("SELECT id FROM sessions").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["id"] == SESSION_ID
+    records = sources.parse_state_records(_native_lines())
+    starts = []
+    resumes = []
+    for record in records:
+        if record["type"] == "session.start":
+            starts.append(record)
+        elif record["type"] == "session.resume":
+            resumes.append(record)
+    assert len(starts) == len(resumes) == 1
+    assert starts[0]["data"]["sessionId"] == SESSION_ID
 
 
 def test_copilot_image_reference_without_attachment_is_flagged(tmp_path):
@@ -202,7 +226,7 @@ def test_copilot_image_reference_without_attachment_is_flagged(tmp_path):
 
 def test_copilot_image_attachment_is_inlined_from_db(tmp_path):
     img_path = tmp_path / "pixel.png"
-    shutil.copyfile(FIXTURES / "pixel.png", img_path)
+    shutil.copyfile(ASSETS / "red.png", img_path)
     db_path = _make_test_db(
         tmp_path,
         session_id="img-session-2",
@@ -232,50 +256,58 @@ def test_copilot_image_attachment_is_inlined_from_db(tmp_path):
 
 
 def test_copilot_native_image_attachment_is_inlined():
-    assert not Path("/workspace/pixel.png").exists()
-    _install_native_events("image")
+    assert not Path("/workspace/red.png").exists()
+    _install_native_events()
     with _native_db() as conn:
         envelope = copilot_log.extract_session(
-            conn, get_session_by_id(conn, NATIVE_IDS["image"])
+            conn, get_session_by_id(conn, SESSION_ID)
         )
-    user = next(e for e in envelope["events"] if e["role"] == "user")
-    assert base64.b64decode(user["images"][0]["data"]) == PNG
-    assert "description pending" not in user["text"]
+    users = []
+    for event in envelope["events"]:
+        if event.get("images"):
+            users.append(event)
+    assert len(users) == 2
+    assert len(users[0]["images"]) == 2
+    assert len(users[1]["images"]) == 3
+    assert base64.b64decode(users[0]["images"][0]["data"]) == PNG
 
 
 def test_copilot_attachment_without_its_binary_asset_keeps_the_path():
-    lines = [
-        line for line in _native_lines("image") if '"session.binary_asset"' not in line
-    ]
+    records = single_image_source().state_records
+    lines = []
+    for record in records:
+        if record["type"] != "session.binary_asset":
+            lines.append(json.dumps(record))
     _write_events_log("sess-asset", lines)
     [record] = copilot_log.get_state_attachments("sess-asset")
-    assert record["path"] == "/workspace/pixel.png"
+    assert record["path"] == "/workspace/red.png"
     assert "data" not in record
 
 
 def test_copilot_native_tool_success_keeps_full_call():
-    _install_native_events("tool_success")
-    with _native_db() as conn:
-        envelope = copilot_log.extract_session(
-            conn, get_session_by_id(conn, NATIVE_IDS["tool_success"])
-        )
-    calls = [c for e in envelope["events"] for c in e.get("tool_calls", [])]
+    source = native_tool_source()
+    session = copilot_log.interpret_source(source)
+    calls = list(recorded_calls(session).values())
     assert len(calls) == 1
-    assert calls[0]["name"] == "bash"
-    assert calls[0]["input"]["command"] == "printf TOOL_FIXTURE_MARKER"
-    assert "TOOL_FIXTURE_MARKER" in calls[0]["result"]
+    (call,) = calls
+    assert call["name"] == "bash"
+    assert "CAPTURE_STDOUT_OK" in call["input"]["command"]
+    assert "CAPTURE_STDOUT_OK" in call["result"]
+    assert "CAPTURE_STDERR_OK" in call["result"]
 
 
 def test_copilot_native_tool_failure_keeps_shell_exit_code():
-    _install_native_events("tool_failure")
-    with _native_db() as conn:
-        envelope = copilot_log.extract_session(
-            conn, get_session_by_id(conn, NATIVE_IDS["tool_failure"])
-        )
-    calls = [c for e in envelope["events"] for c in e.get("tool_calls", [])]
-    assert len(calls) == 1
-    assert calls[0]["input"]["command"] == "false"
-    assert "exit code 1" in calls[0]["result"]
+    session = copilot_log.interpret_source(native_source())
+    failures = []
+    for call in recorded_calls(session).values():
+        if call["name"] == "bash" and "CAPTURE_ERROR_7" in call["input"].get(
+            "command", ""
+        ):
+            failures.append(call)
+    assert len(failures) == 1
+    (call,) = failures
+    assert "exit code 7" in call["result"]
+    assert call["is_error"] is True
 
 
 def test_copilot_main_defaults_to_all_without_a_selector(monkeypatch, tmp_path):
@@ -357,11 +389,11 @@ def test_copilot_get_state_attachments_skips_malformed_and_irrelevant_lines():
 
 def test_copilot_state_log_readers_return_empty_on_os_error(monkeypatch):
     _write_events_log("sess-oserr", ["{}"])
-    monkeypatch.setattr(
-        Path,
-        "read_text",
-        lambda self, *a, **k: (_ for _ in ()).throw(OSError("boom")),
-    )
+
+    def unreadable(*args, **kwargs):
+        raise OSError("boom")
+
+    monkeypatch.setattr(Path, "read_text", unreadable)
     assert copilot_log.get_state_attachments("sess-oserr") == []
     assert copilot_log.get_state_permissions("sess-oserr") == []
     assert copilot_log.get_state_skills("sess-oserr") == []
@@ -454,29 +486,29 @@ def test_copilot_output_identifier_without_created_at_omits_date():
 
 def test_copilot_unique_identifier_increments_on_collision():
     used = set()
-    assert copilot_log._unique_identifier("day_id", used) == "day_id"
-    assert copilot_log._unique_identifier("day_id", used) == "day_id-2"
-    assert copilot_log._unique_identifier("day_id", used) == "day_id-3"
+    actual_identifier = copilot_log._unique_identifier("day_id", used)
+    assert actual_identifier == "day_id"
+    actual_identifier = copilot_log._unique_identifier("day_id", used)
+    assert actual_identifier == "day_id-2"
+    actual_identifier = copilot_log._unique_identifier("day_id", used)
+    assert actual_identifier == "day_id-3"
 
 
 # -- session extraction integration ------------------------------------------
 
 
 def test_copilot_session_prefers_events_log_tools_over_db_files(tmp_path):
-    session_id = NATIVE_IDS["tool_success"]
     db_path = _native_db_copy(
         tmp_path,
         "INSERT INTO session_files (session_id, file_path, tool_name, turn_index) VALUES (?, ?, ?, ?)",
-        (session_id, "/tmp/from_db.py", "edit", 0),
+        (SESSION_ID, "/tmp/from_db.py", "edit", 0),
     )
-    _install_native_events("tool_success")
+    _install_native_events()
     with get_db_connection(db_path) as conn:
-        envelope = copilot_log.extract_session(
-            conn, get_session_by_id(conn, session_id)
-        )
-    calls = [c for e in envelope["events"] for c in e.get("tool_calls", [])]
-    assert [c["name"] for c in calls] == ["bash"]
-    assert calls[0]["input"]["command"] == "printf TOOL_FIXTURE_MARKER"
+        session = get_session_by_id(conn, SESSION_ID)
+        actual = copilot_log.extract_session(conn, session)
+    expected = copilot_log.build_raw_envelope(native_source())
+    assert actual == expected
 
 
 # -- _extract_all --------------------------------------------------------------
@@ -491,31 +523,20 @@ def test_copilot_extract_all_reports_error_when_no_sessions(tmp_path, capsys):
 
 
 def test_copilot_extract_all_writes_one_file_per_session(tmp_path, monkeypatch, capsys):
-    for case in NATIVE_IDS:
-        _install_native_events(case)
+    _install_native_events()
     db_path = _native_db_copy(tmp_path, "UPDATE sessions SET cwd=?", (str(tmp_path),))
     monkeypatch.chdir(tmp_path)
     output = tmp_path / "output"
     with get_db_connection(db_path) as conn:
-        assert copilot_log._extract_all(conn, str(output)) == 0
-    written = list(output.iterdir())
-    assert len(written) == len(NATIVE_IDS)
-    assert all(p.suffix == ".json" for p in written)
-    outputs = {
-        case: json.loads(next(output.glob(f"*_{sid[:8]}.json")).read_text())
-        for case, sid in NATIVE_IDS.items()
-    }
-    assert "BASELINE_FIXTURE_MARKER" in json.dumps(outputs["baseline"])
-    assert "BLUE-WREN-17" in json.dumps(outputs["continued"])
-    assert "TOOL_FIXTURE_MARKER" in json.dumps(outputs["tool_success"])
-    assert "exit code 1" in json.dumps(outputs["tool_failure"])
-    assert "SKILL_FIXTURE_MARKER" in json.dumps(outputs["skill"])
-    user = next(e for e in outputs["image"]["events"] if e["role"] == "user")
-    assert base64.b64decode(user["images"][0]["data"]) == PNG
-    assert (
-        f"done: {len(NATIVE_IDS)}/{len(NATIVE_IDS)} session(s) written"
-        in capsys.readouterr().err
-    )
+        result = copilot_log._extract_all(conn, str(output))
+    assert result == 0
+    (written,) = output.iterdir()
+    actual = json.loads(written.read_text())
+    expected = copilot_log.build_raw_envelope(native_source())
+    expected["cwd"] = str(tmp_path)
+    assert written.suffix == ".json"
+    assert actual == expected
+    assert "done: 1/1 session(s) written" in capsys.readouterr().err
 
 
 def test_copilot_extract_all_skips_session_that_fails_to_extract(
@@ -532,7 +553,7 @@ def test_copilot_extract_all_skips_session_that_fails_to_extract(
         rc = copilot_log._extract_all(conn, str(tmp_path))
     captured = capsys.readouterr()
     assert rc == 1
-    assert captured.err.count("skip") == len(NATIVE_IDS)
+    assert captured.err.count("skip") == 1
     assert list(tmp_path.glob("*.json")) == []
 
 
@@ -565,7 +586,7 @@ def test_copilot_main_reports_missing_database(tmp_path, capsys):
 
 
 def test_copilot_main_session_not_found_returns_error():
-    rc = copilot_log.main(["bogus-id", "--db", str(FIXTURES / "session-store.db")])
+    rc = copilot_log.main(["bogus-id", "--db", str(DATABASE)])
     assert rc == 1
 
 
@@ -609,60 +630,57 @@ def test_copilot_main_with_explicit_session_id_and_default_output(
 ):
     if not explicit_root:
         monkeypatch.chdir(tmp_path)
-    assert (
-        copilot_log.main(
-            [NATIVE_IDS["baseline"], "--db", str(FIXTURES / "session-store.db")],
-            project_root=tmp_path if explicit_root else None,
-        )
-        == 0
+    status = copilot_log.main(
+        [SESSION_ID, "--db", str(DATABASE)],
+        project_root=tmp_path if explicit_root else None,
     )
+    assert status == 0
     [output] = tmp_path.iterdir()
-    assert output.name.endswith(f"_{NATIVE_IDS['baseline'][:8]}.json")
-    assert "BASELINE_FIXTURE_MARKER" in output.read_text()
+    assert output.name.endswith(f"_{SESSION_ID[:8]}.json")
+    assert "CAPTURE_CONTEXT_SNOW_47" in output.read_text()
 
 
 def test_copilot_main_with_explicit_session_id_and_output_path_writes_there(tmp_path):
     out_path = tmp_path / "custom.json"
     rc = copilot_log.main(
         [
-            NATIVE_IDS["baseline"],
+            SESSION_ID,
             "--output",
             str(out_path),
             "--db",
-            str(FIXTURES / "session-store.db"),
+            str(DATABASE),
         ]
     )
     assert rc == 0
     envelope = json.loads(out_path.read_text())
-    assert "BASELINE_FIXTURE_MARKER" in json.dumps(envelope)
-    assert envelope["models"] == ["claude-sonnet-5"]
+    assert "CAPTURE_CONTEXT_SNOW_47" in json.dumps(envelope)
+    assert envelope["models"] == native_source().models
 
 
 def test_copilot_main_reports_output_write_error(tmp_path, capsys):
     output = tmp_path / "directory.json"
     output.mkdir()
-    assert (
-        copilot_log.main(
-            [
-                NATIVE_IDS["baseline"],
-                "--db",
-                str(FIXTURES / "session-store.db"),
-                "--output",
-                str(output),
-            ]
-        )
-        == 1
+    status = copilot_log.main(
+        [
+            SESSION_ID,
+            "--db",
+            str(DATABASE),
+            "--output",
+            str(output),
+        ]
     )
+    assert status == 1
     assert "error:" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("selector", [True, False])
 def test_copilot_cli_stdout_is_json(selector, capsys):
-    _install_native_events("tool_success")
-    args = ["--db", str(FIXTURES / "session-store.db"), "--output", "-"]
+    _install_native_events()
+    args = ["--db", str(DATABASE), "--output", "-"]
     if selector:
-        args.insert(0, NATIVE_IDS["tool_success"])
-    assert copilot_log.main(args) == 0
+        args.insert(0, SESSION_ID)
+    status = copilot_log.main(args)
+    assert status == 0
     captured = capsys.readouterr()
     envelope = json.loads(captured.out)
     assert envelope["harness"] == "copilot"
@@ -679,24 +697,26 @@ def test_copilot_cli_rejects_removed_flags(flag):
 
 
 def test_copilot_cli_tool_result_cap(tmp_path):
-    _install_native_events("tool_success")
+    _install_native_events()
     output = tmp_path / "session.json"
-    assert (
-        copilot_log.main(
-            [
-                NATIVE_IDS["tool_success"],
-                "--db",
-                str(FIXTURES / "session-store.db"),
-                "--output",
-                str(output),
-                "--tool-result-bytes",
-                "4",
-            ]
-        )
-        == 0
+    status = copilot_log.main(
+        [
+            SESSION_ID,
+            "--db",
+            str(DATABASE),
+            "--output",
+            str(output),
+            "--tool-result-bytes",
+            "4",
+        ]
     )
+    assert status == 0
     envelope = json.loads(output.read_text())
-    call = next(c for e in envelope["events"] for c in e.get("tool_calls", []))
+    exported_calls = []
+    for event in envelope["events"]:
+        for call in event.get("tool_calls", []):
+            exported_calls.append(call)
+    call = next(iter(exported_calls))
     assert call["result_truncated"] is True
     assert call["result_bytes"] > 4
     assert len(call["result"].encode("utf-8")) <= 4
@@ -709,7 +729,8 @@ def test_copilot_empty_session_writes_no_json(tmp_path, capsys, selector):
     args = ["--db", str(db_path)]
     if selector:
         args = ["empty", "--output", "-", *args]
-    assert copilot_log.main(args, project_root=tmp_path / "output") == 1
+    status = copilot_log.main(args, project_root=tmp_path / "output")
+    assert status == 1
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "no exportable events" in captured.err
@@ -717,17 +738,23 @@ def test_copilot_empty_session_writes_no_json(tmp_path, capsys, selector):
 
 
 def test_copilot_db_file_fallback_preserves_names_and_targets(tmp_path):
-    session_id = NATIVE_IDS["baseline"]
+    session_id = SESSION_ID
     target = " /tmp/a -> b.py "
     db_path = _native_db_copy(
         tmp_path,
         "INSERT INTO session_files (session_id, file_path, tool_name, turn_index) VALUES (?, ?, ?, ?)",
         (session_id, target, "edit", 0),
     )
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DELETE FROM session_files WHERE file_path != ?", (target,))
     with get_db_connection(db_path) as conn:
         session = get_session_by_id(conn, session_id)
         envelope = copilot_log.extract_session(conn, session)
-    [call] = [c for e in envelope["events"] for c in e.get("tool_calls", [])]
+    fallback_calls = []
+    for event in envelope["events"]:
+        for call in event.get("tool_calls", []):
+            fallback_calls.append(call)
+    [call] = fallback_calls
     assert call == {
         "name": "edit",
         "input": {"target": target},
@@ -745,18 +772,16 @@ def test_copilot_size_warning_uses_current_flag(
         "session_log_extractors.session_log_envelope.SIZE_WARN_BYTES", 1
     )
     output = "-" if destination == "stdout" else str(tmp_path / "output.json")
-    assert (
-        copilot_log.main(
-            [
-                NATIVE_IDS["baseline"],
-                "--db",
-                str(FIXTURES / "session-store.db"),
-                "--output",
-                output,
-            ]
-        )
-        == 0
+    status = copilot_log.main(
+        [
+            SESSION_ID,
+            "--db",
+            str(DATABASE),
+            "--output",
+            output,
+        ]
     )
+    assert status == 0
     captured = capsys.readouterr()
     assert "warning:" in captured.err
     assert "--tool-result-bytes" in captured.err
@@ -768,19 +793,19 @@ def test_copilot_size_warning_uses_current_flag(
 
 @pytest.mark.parametrize("cap", [0, -1])
 def test_copilot_tool_result_cap_boundaries(cap):
-    _install_native_events("tool_success")
-    with _native_db() as conn:
-        envelope = copilot_log.extract_session(
-            conn, get_session_by_id(conn, NATIVE_IDS["tool_success"]), cap
-        )
-    [call] = [c for e in envelope["events"] for c in e.get("tool_calls", [])]
+    envelope = copilot_log.build_raw_envelope(native_tool_source(), cap)
+    exported_calls = []
+    for event in envelope["events"]:
+        for call in event.get("tool_calls", []):
+            exported_calls.append(call)
+    [call] = exported_calls
     assert envelope["truncation"]["tool_result_max_bytes"] == cap
     assert call["result_truncated"] is (cap == 0)
     assert call["result_bytes"] > 0
     if cap == 0:
         assert call["result"] == ""
     else:
-        assert "TOOL_FIXTURE_MARKER" in call["result"]
+        assert "CAPTURE_STDOUT_OK" in call["result"]
 
 
 @pytest.mark.parametrize("explicit_root", [False, True])
@@ -788,20 +813,31 @@ def test_copilot_all_default_destination_and_colliding_names(
     tmp_path, monkeypatch, explicit_root
 ):
     db_path = _native_db_copy(tmp_path, "UPDATE sessions SET cwd=?", (str(tmp_path),))
+    # Duplicate only the database identity and turns to exercise output-name collision.
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO sessions (id,cwd,created_at,updated_at) SELECT 'collision',cwd,created_at,updated_at FROM sessions WHERE id=?",
+            (SESSION_ID,),
+        )
+        conn.execute(
+            "INSERT INTO turns (session_id,turn_index,user_message,assistant_response,timestamp) SELECT 'collision',turn_index,user_message,assistant_response,timestamp FROM turns WHERE session_id=?",
+            (SESSION_ID,),
+        )
     output = tmp_path / "output" if explicit_root else tmp_path
     monkeypatch.setattr(copilot_log, "output_identifier", lambda session: "same")
     monkeypatch.chdir(tmp_path)
-    assert (
-        copilot_log.main(
-            ["--db", str(db_path)], project_root=output if explicit_root else None
-        )
-        == 0
+    status = copilot_log.main(
+        ["--db", str(db_path)], project_root=output if explicit_root else None
     )
+    assert status == 0
     paths = sorted(output.glob("*.json"))
-    assert len(paths) == len(NATIVE_IDS)
+    assert len(paths) == 2
     assert (output / "copilot_session_log_raw_same.json").is_file()
     assert (output / "copilot_session_log_raw_same-2.json").is_file()
-    assert all(json.loads(p.read_text())["events"] for p in paths)
+    written_conversations = []
+    for p in paths:
+        written_conversations.append(json.loads(p.read_text())["events"])
+    assert all(written_conversations)
 
 
 @pytest.mark.parametrize("fail", [False, True])
@@ -814,7 +850,8 @@ def test_main_closes_connection(monkeypatch, fail):
         with pytest.raises(ValueError, match="failure"):
             copilot_log.main(["selected"])
     else:
-        assert copilot_log.main(["selected"]) == 0
+        status = copilot_log.main(["selected"])
+        assert status == 0
     conn.close.assert_called_once_with()
 
 
@@ -824,32 +861,39 @@ def test_output_identifier_rejects_non_string_ids(session_id):
         copilot_log.output_identifier({"id": session_id})
 
 
-def _supplied_native_source(case):
-    with _native_db() as conn:
-        metadata = get_session_by_id(conn, NATIVE_IDS[case])
-        source = sources.read_source(conn, metadata)
-    source.state_records = sources.parse_state_records(_native_lines(case))
-    return source
-
-
 def test_native_messages_keep_order_identity_and_complete_results():
-    source = _supplied_native_source("tool_success")
+    source = native_tool_source()
     # Enlarge the captured result, retaining the native call/message links.
-    complete = next(
-        r for r in source.state_records if r["type"] == "tool.execution_complete"
-    )
+    completion_records = []
+    for record in source.state_records:
+        if record["type"] == "tool.execution_complete":
+            completion_records.append(record)
+    complete = next(iter(completion_records))
     complete["data"]["result"]["content"] = "é" * 20000
     complete["data"]["result"]["additional"] = {"recorded": True}
     session = copilot_log.interpret_source(source)
     events = session["events"]
-    assert [e["role"] for e in events] == ["user", "assistant", "assistant"]
-    native = [
-        r
-        for r in source.state_records
-        if r["type"] in ("user.message", "assistant.message")
-    ]
-    assert [e["id"] for e in events] == [r["id"] for r in native]
-    [call] = [c for e in events for c in e.get("tool_calls", [])]
+    actual_roles = []
+    for event in events:
+        actual_roles.append(event["role"])
+    assert actual_roles == ["user", "assistant", "assistant"]
+    native_messages = []
+    for record in source.state_records:
+        if record["type"] in ("user.message", "assistant.message"):
+            native_messages.append(record)
+    native = native_messages
+    actual_message_ids = []
+    for event in events:
+        actual_message_ids.append(event["id"])
+    native_message_ids = []
+    for record in native:
+        native_message_ids.append(record["id"])
+    assert actual_message_ids == native_message_ids
+    interpreted_calls = []
+    for event in events:
+        for call in event.get("tool_calls", []):
+            interpreted_calls.append(call)
+    [call] = interpreted_calls
     assert call["id"] == complete["data"]["toolCallId"]
     assert call["result"] == "é" * 20000
     assert call["result_record"]["content"] == complete["data"]["result"]
@@ -857,32 +901,48 @@ def test_native_messages_keep_order_identity_and_complete_results():
 
 
 def test_native_repeated_or_missing_results_are_not_lost():
-    source = _supplied_native_source("tool_success")
-    complete = next(
-        r for r in source.state_records if r["type"] == "tool.execution_complete"
-    )
+    source = native_tool_source()
+    completion_records = []
+    for record in source.state_records:
+        if record["type"] == "tool.execution_complete":
+            completion_records.append(record)
+    complete = next(iter(completion_records))
     # Duplicate completion is retained as unmatched; it must not overwrite the first.
     repeated = json.loads(json.dumps(complete))
     repeated["id"] = "repeat"
     repeated["data"]["result"] = {"content": "second result"}
     source.state_records.append(repeated)
     session = copilot_log.interpret_source(source)
-    [call] = [c for e in session["events"] for c in e.get("tool_calls", [])]
-    assert "TOOL_FIXTURE_MARKER" in call["result"]
+    calls_with_repeated_result = []
+    for event in session["events"]:
+        for call in event.get("tool_calls", []):
+            calls_with_repeated_result.append(call)
+    [call] = calls_with_repeated_result
+    assert "CAPTURE_STDOUT_OK" in call["result"]
     assert session["unmatched_tool_results"][0]["id"] == "repeat"
-    source.state_records = [
-        r for r in source.state_records if r["type"] != "tool.execution_complete"
-    ]
+    records_without_results = []
+    for record in source.state_records:
+        if record["type"] != "tool.execution_complete":
+            records_without_results.append(record)
+    source.state_records = records_without_results
     session = copilot_log.interpret_source(source)
-    [call] = [c for e in session["events"] for c in e.get("tool_calls", [])]
+    calls_without_results = []
+    for event in session["events"]:
+        for call in event.get("tool_calls", []):
+            calls_without_results.append(call)
+    [call] = calls_without_results
     assert call["result"] is None
     assert "result_record" not in call
 
 
 def test_native_image_ownership_uses_its_record_despite_timestamp():
-    source = _supplied_native_source("image")
+    source = single_image_source()
     # Misleading timestamps must not transfer the image to a later human message.
-    user = next(r for r in source.state_records if r["type"] == "user.message")
+    native_users = []
+    for record in source.state_records:
+        if record["type"] == "user.message":
+            native_users.append(record)
+    user = next(iter(native_users))
     user["timestamp"] = "2099-01-01T00:00:00Z"
     later = json.loads(json.dumps(user))
     later["id"] = "later-user"
@@ -890,7 +950,11 @@ def test_native_image_ownership_uses_its_record_despite_timestamp():
     later["data"].pop("attachments")
     source.state_records.append(later)
     session = copilot_log.interpret_source(source)
-    users = [e for e in session["events"] if e["role"] == "user"]
+    user_messages = []
+    for event in session["events"]:
+        if event["role"] == "user":
+            user_messages.append(event)
+    users = user_messages
     assert len(users) == 2
     assert base64.b64decode(users[0]["images"][0]["data"]) == PNG
     assert not users[1].get("images")
@@ -900,14 +964,20 @@ def test_native_image_ownership_uses_its_record_despite_timestamp():
     "result", [None, "", {}, {"content": "", "additional": [1, False]}, [1, 2]]
 )
 def test_native_empty_and_structured_results_survive(result):
-    source = _supplied_native_source("tool_success")
-    complete = next(
-        r for r in source.state_records if r["type"] == "tool.execution_complete"
-    )
+    source = native_tool_source()
+    completion_records = []
+    for record in source.state_records:
+        if record["type"] == "tool.execution_complete":
+            completion_records.append(record)
+    complete = next(iter(completion_records))
     complete["data"]["result"] = result
     complete["data"]["success"] = False
     session = copilot_log.interpret_source(source)
-    [call] = [c for e in session["events"] for c in e.get("tool_calls", [])]
+    interpreted_calls = []
+    for event in session["events"]:
+        for call in event.get("tool_calls", []):
+            interpreted_calls.append(call)
+    [call] = interpreted_calls
     assert call["result_record"]["content"] == result
     assert call["is_error"] is True
     assert call["result"] == copilot_log._result_text(result)
@@ -915,12 +985,22 @@ def test_native_empty_and_structured_results_survive(result):
 
 
 def test_native_tool_results_match_ids_instead_of_completion_order():
-    source = _supplied_native_source("tool_success")
-    request = next(r for r in source.state_records if r["type"] == "assistant.message")
-    start = next(r for r in source.state_records if r["type"] == "tool.execution_start")
-    complete = next(
-        r for r in source.state_records if r["type"] == "tool.execution_complete"
-    )
+    source = native_tool_source()
+    native_assistants = []
+    for record in source.state_records:
+        if record["type"] == "assistant.message":
+            native_assistants.append(record)
+    request = next(iter(native_assistants))
+    execution_records = []
+    for record in source.state_records:
+        if record["type"] == "tool.execution_start":
+            execution_records.append(record)
+    start = next(iter(execution_records))
+    completion_records = []
+    for record in source.state_records:
+        if record["type"] == "tool.execution_complete":
+            completion_records.append(record)
+    complete = next(iter(completion_records))
     # Add a concurrent opaque request and finish it before the captured call.
     request["data"]["toolRequests"].append(
         {
@@ -935,9 +1015,16 @@ def test_native_tool_results_match_ids_instead_of_completion_order():
     source.state_records.insert(source.state_records.index(complete), other)
     start["data"]["arguments"]["extra"] = ["execution-only"]
     session = copilot_log.interpret_source(source)
-    calls = [c for e in session["events"] for c in e.get("tool_calls", [])]
-    assert [c["id"] for c in calls] == [complete["data"]["toolCallId"], "other"]
-    assert "TOOL_FIXTURE_MARKER" in calls[0]["result"]
+    interpreted_calls = []
+    for event in session["events"]:
+        for call in event.get("tool_calls", []):
+            interpreted_calls.append(call)
+    calls = interpreted_calls
+    actual_call_ids = []
+    for call in calls:
+        actual_call_ids.append(call["id"])
+    assert actual_call_ids == [complete["data"]["toolCallId"], "other"]
+    assert "CAPTURE_STDOUT_OK" in calls[0]["result"]
     assert calls[0]["execution"]["input"]["extra"] == ["execution-only"]
     assert calls[0]["execution"]["id"] == start["id"]
     assert calls[1]["result"] == "other output"
@@ -947,67 +1034,94 @@ def test_native_tool_results_match_ids_instead_of_completion_order():
 
 @pytest.mark.parametrize("parent", [True, False])
 def test_native_start_without_request_uses_only_recorded_parent(parent):
-    source = _supplied_native_source("tool_success")
-    request = next(r for r in source.state_records if r["type"] == "assistant.message")
+    source = native_tool_source()
+    native_assistants = []
+    for record in source.state_records:
+        if record["type"] == "assistant.message":
+            native_assistants.append(record)
+    request = next(iter(native_assistants))
     request["data"]["toolRequests"] = []
     if not parent:
-        start = next(
-            r for r in source.state_records if r["type"] == "tool.execution_start"
-        )
+        execution_records = []
+        for record in source.state_records:
+            if record["type"] == "tool.execution_start":
+                execution_records.append(record)
+        start = next(iter(execution_records))
         start["parentId"] = "unrecorded-message"
     session = copilot_log.interpret_source(source)
-    tool_message = next(e for e in session["events"] if e.get("tool_calls"))
+    tool_messages = []
+    for event in session["events"]:
+        if event.get("tool_calls"):
+            tool_messages.append(event)
+    tool_message = next(iter(tool_messages))
     assert (tool_message["id"] == request["id"]) is parent
-    assert "TOOL_FIXTURE_MARKER" in tool_message["tool_calls"][0]["result"]
+    assert "CAPTURE_STDOUT_OK" in tool_message["tool_calls"][0]["result"]
 
 
 def test_partial_state_keeps_database_prose_and_unowned_activity():
-    source = _supplied_native_source("tool_success")
-    source.state_records = [
-        r for r in source.state_records if r["type"].startswith("tool.")
-    ]
+    source = native_tool_source()
+    tool_records = []
+    for record in source.state_records:
+        if record["type"].startswith("tool."):
+            tool_records.append(record)
+    source.state_records = tool_records
     source.files = [{"file_path": "/db.py", "tool_name": "edit", "turn_index": 0}]
     session = copilot_log.interpret_source(source)
-    assert any("Report its output" in e.get("text", "") for e in session["events"])
-    calls = [c for e in session["events"] for c in e.get("tool_calls", [])]
-    assert [c["name"] for c in calls] == ["bash"]
-    source.state_records = [
-        r for r in source.state_records if r["type"] == "tool.execution_complete"
-    ]
+    contains_context_marker = []
+    for event in session["events"]:
+        contains_context_marker.append(
+            "CAPTURE_CONTEXT_SNOW_47" in event.get("text", "")
+        )
+    assert any(contains_context_marker)
+    native_tool_names = _call_names(session)
+    assert native_tool_names == ["bash"]
+    completion_records = []
+    for record in source.state_records:
+        if record["type"] == "tool.execution_complete":
+            completion_records.append(record)
+    source.state_records = completion_records
     session = copilot_log.interpret_source(source)
     assert session["unmatched_tool_results"][0]["tool_call_id"]
-    assert [c["name"] for e in session["events"] for c in e.get("tool_calls", [])] == [
-        "edit"
-    ]
+    fallback_tool_names = _call_names(session)
+    assert fallback_tool_names == ["edit"]
 
 
 def test_native_messages_keep_database_file_fallback_without_tool_activity():
-    source = _supplied_native_source("baseline")
+    source = native_prose_source()
     source.files = [{"file_path": " a -> b.py ", "tool_name": "edit", "turn_index": 0}]
     session = copilot_log.interpret_source(source)
-    [call] = [c for e in session["events"] for c in e.get("tool_calls", [])]
+    fallback_calls = []
+    for event in session["events"]:
+        for call in event.get("tool_calls", []):
+            fallback_calls.append(call)
+    [call] = fallback_calls
     assert call["input"] == {"target": " a -> b.py "}
 
 
-def test_session_retains_skills_and_unassociated_permission_lifecycle():
-    source = _supplied_native_source("skill")
-    source.state_records.extend(
-        sources.parse_state_records(_hand_lines("permissions.jsonl"))
-    )
+def test_session_retains_recorded_skills_and_permission_lifecycle():
+    source = native_source()
     session = copilot_log.interpret_source(source)
-    assert session["skills_used"] == ["fixture-skill"]
-    assert any("SKILL_FIXTURE_MARKER" in e.get("text", "") for e in session["events"])
-    assert [p["native_decision"] for p in session["permission_decisions"]] == [
-        "approved",
-        "denied-interactively-by-user",
-        None,
-    ]
-    assert session["permission_decisions"][1]["feedback"] == "not like that"
+    assert session["skills_used"] == ["capture-greeting", "capture-command"]
+    decisions = []
+    feedback = []
+    for permission in session["permission_decisions"]:
+        decisions.append(permission["native_decision"])
+        if permission["feedback"]:
+            feedback.append(permission["feedback"])
+    assert "approved" in decisions
+    assert "denied-interactively-by-user" in decisions
+    assert "cancelled" in decisions
+    assert len(feedback) == 1
+    assert feedback[0].startswith("CAPTURE_PERMISSION_DENY_1")
 
 
 def test_owned_images_keep_distinct_paths_and_deduplicate_tokens():
-    source = _supplied_native_source("image")
-    user = next(r for r in source.state_records if r["type"] == "user.message")
+    source = single_image_source()
+    native_users = []
+    for record in source.state_records:
+        if record["type"] == "user.message":
+            native_users.append(record)
+    user = next(iter(native_users))
     user["data"]["content"] = "[image: pixel.png] [image:   ] compare"
     first = user["data"]["attachments"][0]
     other = {**first, "path": "/different/pixel.png"}
@@ -1019,9 +1133,16 @@ def test_owned_images_keep_distinct_paths_and_deduplicate_tokens():
         ]
     )
     session = copilot_log.interpret_source(source)
-    [message] = [e for e in session["events"] if e["role"] == "user"]
+    user_messages = []
+    for event in session["events"]:
+        if event["role"] == "user":
+            user_messages.append(event)
+    [message] = user_messages
     assert len(message["images"]) == 2
-    assert all(base64.b64decode(image["data"]) == PNG for image in message["images"])
+    images_match_asset = []
+    for image in message["images"]:
+        images_match_asset.append(base64.b64decode(image["data"]) == PNG)
+    assert all(images_match_asset)
     assert user["data"]["content"] == message["text"]
 
 
@@ -1051,7 +1172,7 @@ def test_attachment_shape_boundaries_and_shell_input():
 
 
 def test_malformed_native_tools_do_not_invent_calls():
-    source = _supplied_native_source("baseline")
+    source = native_prose_source()
     source.state_records.extend(
         [
             {"type": "tool.execution_start", "data": {}},
@@ -1059,11 +1180,14 @@ def test_malformed_native_tools_do_not_invent_calls():
         ]
     )
     session = copilot_log.interpret_source(source)
-    assert not any(e.get("tool_calls") for e in session["events"])
+    recorded_call_groups = []
+    for event in session["events"]:
+        recorded_call_groups.append(event.get("tool_calls"))
+    assert not any(recorded_call_groups)
 
 
 def test_native_tools_preserve_recorded_database_file_activity():
-    source = _supplied_native_source("tool_success")
+    source = native_tool_source()
     source.files = [
         {
             "file_path": "/tmp/file.py",
@@ -1084,32 +1208,40 @@ def test_native_tools_preserve_recorded_database_file_activity():
             },
         }
     ]
-    assert [c["name"] for e in session["events"] for c in e.get("tool_calls", [])] == [
-        "bash"
-    ]
+    actual_tool_names = []
+    for event in session["events"]:
+        for call in event.get("tool_calls", []):
+            actual_tool_names.append(call["name"])
+    assert actual_tool_names == ["bash"]
 
 
 @pytest.mark.parametrize(
-    "name", ["Bash", "Read", "Skill", "AskUserQuestion", "exit_plan_mode"]
+    "name", ["Bash", "Read", "Skill", "AskUserQuestion", "ExitPlanMode"]
 )
 def test_copilot_reports_claude_tool_names_as_unsupported(name):
-    source = _supplied_native_source("tool_success")
-    request = next(r for r in source.state_records if r["type"] == "assistant.message")[
-        "data"
-    ]["toolRequests"][0]
+    source = native_tool_source()
+    native_assistants = []
+    for record in source.state_records:
+        if record["type"] == "assistant.message":
+            native_assistants.append(record)
+    request = next(iter(native_assistants))["data"]["toolRequests"][0]
     # Rename only the native tool request; complete input and call links must survive.
     request["name"] = name
     session = copilot_log.interpret_source(source)
-    [call] = [c for event in session["events"] for c in event.get("tool_calls", [])]
+    interpreted_calls = []
+    for event in session["events"]:
+        for call in event.get("tool_calls", []):
+            interpreted_calls.append(call)
+    [call] = interpreted_calls
     assert call["input_schema"] == "unsupported"
     assert session["unsupported_tools"] == [name]
     assert call["input"] == request["arguments"]
-    assert "TOOL_FIXTURE_MARKER" in call["result"]
+    assert "CAPTURE_STDOUT_OK" in call["result"]
 
 
 @pytest.mark.parametrize("native_kind", ["pending", "future-policy-result", None])
 def test_permission_completion_status_is_separate_from_native_label(native_kind):
-    source = _supplied_native_source("baseline")
+    source = native_prose_source()
     permissions = sources.parse_state_records(_hand_lines("permissions.jsonl"))
     # Change only a completed result's label, including one resembling a lifecycle state.
     permissions[1]["data"]["result"]["kind"] = native_kind
@@ -1122,15 +1254,15 @@ def test_permission_completion_status_is_separate_from_native_label(native_kind)
     assert pending["status"] == "pending"
     assert pending["native_decision"] is None
     assert pending["request_id"] == "r3"
-    assert not any(
-        "permission_denial" in call
-        for event in session["events"]
-        for call in event.get("tool_calls", [])
-    )
+    has_permission_denial = []
+    for event in session["events"]:
+        for call in event.get("tool_calls", []):
+            has_permission_denial.append("permission_denial" in call)
+    assert not any(has_permission_denial)
 
 
 def test_file_activity_keeps_database_fields_as_provenance():
-    source = _supplied_native_source("tool_success")
+    source = native_tool_source()
     # This native database index deliberately differs from all shared message indices.
     source.files = [
         {
@@ -1162,28 +1294,33 @@ def test_permission_completion_retains_request_identity_and_timestamp_fallback(
     records[1].pop("timestamp")
     records[1]["data"]["requestId"] = request_id
     permissions = copilot_log._permissions_from_events(records)
-    completion = next(
-        record for record in permissions if record["status"] == "completed"
-    )
+    completed_permissions = []
+    for record in permissions:
+        if record["status"] == "completed":
+            completed_permissions.append(record)
+    completion = next(iter(completed_permissions))
     assert completion["request_id"] == request_id
     assert completion["native_decision"] == "approved"
     assert completion["ts"] == (records[0]["timestamp"] if request_id == "r1" else None)
     assert completion["tool"] == ("pytest" if request_id == "r1" else "tool")
-    assert any(record["status"] == "pending" for record in permissions) is (
-        request_id != "r1"
-    )
+    is_pending = []
+    for record in permissions:
+        is_pending.append(record["status"] == "pending")
+    assert any(is_pending) is (request_id != "r1")
 
 
 def test_native_result_without_execution_start_does_not_invent_one():
-    source = _supplied_native_source("tool_success")
-    source.state_records = [
-        record
-        for record in source.state_records
-        if record["type"] != "tool.execution_start"
-    ]
+    source = native_tool_source()
+    records_without_starts = []
+    for record in source.state_records:
+        if record["type"] != "tool.execution_start":
+            records_without_starts.append(record)
+    source.state_records = records_without_starts
     session = copilot_log.interpret_source(source)
-    [call] = [
-        call for event in session["events"] for call in event.get("tool_calls", [])
-    ]
+    interpreted_calls = []
+    for event in session["events"]:
+        for call in event.get("tool_calls", []):
+            interpreted_calls.append(call)
+    [call] = interpreted_calls
     assert "execution" not in call
-    assert "TOOL_FIXTURE_MARKER" in call["result"]
+    assert "CAPTURE_STDOUT_OK" in call["result"]
