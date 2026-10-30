@@ -25,7 +25,7 @@ class Image(TypedDict, total=False):
 
 
 class QuestionAnswer(TypedDict):
-    """A question together with its options and the human's answer."""
+    """Legacy combined record; migrate in QUAL-2523/QUAL-2524/QUAL-2525."""
 
     question: str
     header: str
@@ -34,6 +34,96 @@ class QuestionAnswer(TypedDict):
     answer_text: NotRequired[str]
     field_name: NotRequired[str]
     recorded_answer: NotRequired[str | list[str]]
+
+
+class QuestionEvidence(TypedDict):
+    """A native field path and its recorded value, not a matching heuristic."""
+
+    field: str
+    value: JsonValue
+
+
+class QuestionActivityReference(TypedDict):
+    """Local canonical activity address, justified by nonempty native evidence.
+
+    message_i addresses Message.i, not a source turn or native message ID.
+    tool_call_index, when present, indexes that message's ordered tool_calls.
+    Omit the reference when native containment or recorded IDs do not prove it.
+    """
+
+    message_i: int
+    tool_call_index: NotRequired[int]
+    evidence: list[QuestionEvidence]
+
+
+class QuestionChoice(TypedDict):
+    """An offered option occurrence; recommendation markers never select it."""
+
+    ref: str
+    native_id: NotRequired[str]
+    label: str
+    description: NotRequired[str]
+    preview: NotRequired[str]
+    recommendation_markers: NotRequired[list[QuestionEvidence]]
+
+
+class Question(TypedDict):
+    """One question occurrence, independent of any observed responses.
+
+    ref is session-local and distinct from a source-recorded native_id.
+    Repeated identical text/IDs remain separate occurrences. No associated
+    response means no answer was observed, never an inferred refusal.
+    """
+
+    ref: str
+    native_id: NotRequired[str]
+    text: str
+    header: NotRequired[str]
+    options: list[QuestionChoice]
+    multiple_selections: NotRequired[bool]
+    activity: NotRequired[QuestionActivityReference]
+
+
+class QuestionAssociation(TypedDict):
+    """An evidenced link to a question occurrence, never count/time matching."""
+
+    question_ref: str
+    evidence: list[QuestionEvidence]
+
+
+class QuestionSelection(TypedDict):
+    """A recorded selected label, with an option ref only when established."""
+
+    label: str
+    option_ref: NotRequired[str]
+
+
+class QuestionRefusal(TypedDict):
+    """An evidenced refusal, distinct from tool errors and candidate feedback."""
+
+    by: Literal["candidate", "settings", "harness", "unknown"]
+    explanation: NotRequired[str]
+
+
+class QuestionResponse(TypedDict):
+    """One observed response; None explicitly preserves unknown association.
+
+    outcome is an evidence-based interpretation, not a native result label.
+    Unknown responses preserve ambiguity; tool errors alone are not responses.
+    Refused responses carry refusal; free_text is answer content, whereas
+    candidate_feedback contains only evidenced candidate-authored feedback.
+    """
+
+    ref: str
+    native_id: NotRequired[str]
+    question: QuestionAssociation | None
+    outcome: Literal["answered", "refused", "unknown"]
+    selections: NotRequired[list[QuestionSelection]]
+    selected_preview: NotRequired[str]
+    free_text: NotRequired[str]
+    refusal: NotRequired[QuestionRefusal]
+    candidate_feedback: NotRequired[str]
+    activity: NotRequired[QuestionActivityReference]
 
 
 class PlanDecision(TypedDict):
@@ -299,3 +389,5 @@ class Session(TypedDict):
     files_changed: NotRequired[list[str]]
     file_activity: NotRequired[list[FileActivity]]
     patch_results: NotRequired[list[PatchResult]]
+    interaction_questions: NotRequired[list[Question]]
+    question_responses: NotRequired[list[QuestionResponse]]
