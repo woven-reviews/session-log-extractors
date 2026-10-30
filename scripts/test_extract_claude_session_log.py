@@ -451,20 +451,26 @@ def test_build_events_inlines_pasted_images_as_base64():
             "CAPTURE_IMAGES_LATER_WEBP:",
         )
     ]
+    recorded_image_data = []
+    for entry in entries:
+        for block in entry["message"]["content"]:
+            if block["type"] == "image":
+                recorded_image_data.append(block["source"]["data"])
+
     events = build_events(entries)
+
     assert [event["role"] for event in events] == ["user"] * 3
     assert [len(event["images"]) for event in events] == [2, 1, 1]
     assert any("CAPTURE_IMAGES_SAME" in event["text"] for event in events)
     # Claude 2.1.312/314 converts all four source formats to PNG on attachment.
-    assert [image["media_type"] for event in events for image in event["images"]] == [
-        "image/png"
-    ] * 4
-    assert [image["data"] for event in events for image in event["images"]] == [
-        block["source"]["data"]
-        for entry in entries
-        for block in entry["message"]["content"]
-        if block["type"] == "image"
-    ]
+    extracted_image_data = []
+    extracted_media_types = []
+    for event in events:
+        for image in event["images"]:
+            extracted_image_data.append(image["data"])
+            extracted_media_types.append(image["media_type"])
+    assert extracted_media_types == ["image/png"] * 4
+    assert extracted_image_data == recorded_image_data
 
 
 def test_build_events_attaches_tool_results_to_their_call():
@@ -959,23 +965,16 @@ def test_permission_denials_from_result_ignores_non_tool_result_blocks():
 
 
 def test_legacy_plan_helper_consumes_native_matches_and_updates_plan_records():
-    entries = (
-        list(
-            _recorded_tool_interaction(
-                "ExitPlanMode", result_contains="CAPTURE_PLAN_REJECT_1:"
-            )
-        )
-        + list(
-            _recorded_tool_interaction(
-                "ExitPlanMode", result_contains="## Approved Plan:\n"
-            )
-        )
-        + list(
-            _recorded_tool_interaction(
-                "ExitPlanMode", result_contains="(edited by user):"
-            )
-        )
+    rejected_entries = _recorded_tool_interaction(
+        "ExitPlanMode", result_contains="CAPTURE_PLAN_REJECT_1:"
     )
+    approved_entries = _recorded_tool_interaction(
+        "ExitPlanMode", result_contains="## Approved Plan:\n"
+    )
+    edited_entries = _recorded_tool_interaction(
+        "ExitPlanMode", result_contains="(edited by user):"
+    )
+    entries = [*rejected_entries, *approved_entries, *edited_entries]
     interpreted_session = eclog.interpret_source(
         ClaudeSource(Path("session.jsonl"), entries)
     )
@@ -989,20 +988,25 @@ def test_legacy_plan_helper_consumes_native_matches_and_updates_plan_records():
         }
         for call in calls
     ]
+    rejected_plan, approved_plan, edited_plan = records
     pending = {call["id"]: record for call, record in zip(calls, records, strict=True)}
-    assert sum(apply_plan_decisions(entry, pending) for entry in entries) == 3
+
+    updated_count = 0
+    for entry in entries:
+        if apply_plan_decisions(entry, pending):
+            updated_count += 1
+
+    assert updated_count == 3
     assert pending == {}
-    assert [record["decision"] for record in records] == [
-        "rejected",
-        "approved",
-        "approved",
-    ]
-    assert records[1]["edited_plan"] == ""
+    assert rejected_plan["decision"] == "rejected"
+    assert approved_plan["decision"] == "approved"
+    assert edited_plan["decision"] == "approved"
+    assert approved_plan["edited_plan"] == ""
     assert (
-        records[2]["edited_plan"]
+        edited_plan["edited_plan"]
         == (ROOT / "assets/plan-after-editor.md").read_text().rstrip()
     )
-    assert records[0]["message"].startswith("CAPTURE_PLAN_REJECT_1:")
+    assert rejected_plan["message"].startswith("CAPTURE_PLAN_REJECT_1:")
 
 
 @pytest.mark.parametrize("tool_id", [None, "unknown-call"])
@@ -1051,39 +1055,47 @@ def test_legacy_denial_helper_matches_native_result_blocks(fixture, expected):
     assert denials == expected
 
 
-def test_activity_keeps_commands_shell_subagents_questions_and_files():
+def test_native_session_keeps_commands_shell_subagents_and_files():
     entries = _recorded_session_entries() + load_entries(SUBAGENT)
     session = eclog.interpret_source(ClaudeSource(Path("session.jsonl"), entries))
-    assert any(event.get("command") == "/capture-echo" for event in session["events"])
-    assert any(
-        "CAPTURE_USER_STDOUT_1" in event.get("shell_command", "")
-        for event in session["events"]
-    )
+    commands = [event.get("command") for event in session["events"]]
+    shell_commands = [event.get("shell_command", "") for event in session["events"]]
+    assert "/capture-echo" in commands
+    assert any("CAPTURE_USER_STDOUT_1" in command for command in shell_commands)
     assert session["subagent_count"] > 0
     assert any(path.endswith("greeting.py") for path in session["files_changed"])
-    calls = _tool_calls_in(session)
-    question = _require_single_match(
-        [
-            call
-            for call in calls
-            if call["name"] == "AskUserQuestion"
-            and any(q.get("multiSelect") for q in call["input"]["questions"])
-        ],
-        "tree question call",
-    )
-    answer = _answered_question_in(question, multi_select=True)
+
+
+def test_native_session_keeps_multiselect_answers():
+    entries = _recorded_session_entries() + load_entries(SUBAGENT)
+    session = eclog.interpret_source(ClaudeSource(Path("session.jsonl"), entries))
+
+    multiselect_calls = []
+    for call in _tool_calls_in(session):
+        if call["name"] != "AskUserQuestion":
+            continue
+        for question in call["input"]["questions"]:
+            if question.get("multiSelect"):
+                multiselect_calls.append(call)
+                break
+    question_call = _require_single_match(multiselect_calls, "multiselect call")
+    answer = _answered_question_in(question_call, multi_select=True)
     _assert_answer_uses_distinct_recorded_options(answer)
     assert len(answer["chosen_labels"]) >= 2
-    assert any(call["name"] == "Write" for call in calls)
-    denial = _require_single_match(
-        [
-            call["permission_denial"]
-            for call in calls
-            if call["name"] == "Write"
-            and "denied-feedback.txt" in json.dumps(call["input"])
-        ],
-        "silent write denial",
-    )
+
+
+def test_native_session_keeps_user_write_denial():
+    entries = _recorded_session_entries() + load_entries(SUBAGENT)
+    session = eclog.interpret_source(ClaudeSource(Path("session.jsonl"), entries))
+
+    write_calls = [call for call in _tool_calls_in(session) if call["name"] == "Write"]
+    assert write_calls
+    denied_writes = []
+    for call in write_calls:
+        if "denied-feedback.txt" in json.dumps(call["input"]):
+            denied_writes.append(call)
+    denied_write = _require_single_match(denied_writes, "denied Write call")
+    denial = denied_write["permission_denial"]
     assert denial["by"] == "user"
     assert denial["message"] == ""
 
@@ -1391,46 +1403,81 @@ def test_extract_all_skips_unparseable_file():
     assert "skip bad" in err.getvalue()
 
 
+def test_retired_turn_interfaces_are_absent():
+    assert not hasattr(eclog, "Turn")
+    assert not hasattr(eclog, "build_turns")
+
+
 @pytest.mark.parametrize("explicit_root", [False, True])
-@pytest.mark.parametrize("destination", ["stdout", "explicit", "default"])
-def test_cli_json_destinations(
-    destination, tmp_path, monkeypatch, capsys, explicit_root
+def test_cli_stdout_preserves_markdown_and_images(
+    tmp_path, monkeypatch, capsys, explicit_root
 ):
+    image_entry = _recorded_user_message("CAPTURE_IMAGES_SAME:")
+    text_block = _content_block(image_entry, "text")
+    text_block["text"] = "# Keep **recorded Markdown**"
+    entries = [image_entry]
     transcript = tmp_path / "session.jsonl"
-    entries = [_recorded_user_message("CAPTURE_IMAGES_SAME:")]
-    # Keep the Markdown preservation probe while retaining recorded image blocks.
-    _content_block(_require_single_match(entries, "image message"), "text")["text"] = (
-        "# Keep **recorded Markdown**"
-    )
     _write_jsonl(transcript, entries)
     output = tmp_path / "output"
     output.mkdir()
-
-    assert not hasattr(eclog, "Turn")
-    assert not hasattr(eclog, "build_turns")
-    args = ["--transcript", str(transcript), "--tool-result-bytes", "3"]
-    if destination == "stdout":
-        args += ["--output", "-"]
-    elif destination == "explicit":
-        args += ["--output", str(output / "custom.json")]
     if not explicit_root:
         monkeypatch.chdir(output)
-    assert main(args, project_root=output if explicit_root else None) == 0
+    project_root = output if explicit_root else None
+    args = [
+        "--transcript",
+        str(transcript),
+        "--tool-result-bytes",
+        "3",
+        "--output",
+        "-",
+    ]
+
+    exit_code = main(args, project_root=project_root)
+
+    assert exit_code == 0
     captured = capsys.readouterr()
-    if destination == "stdout":
-        envelope = json.loads(captured.out)
-        assert list(output.iterdir()) == []
-    else:
-        name = (
-            "custom.json"
-            if destination == "explicit"
-            else "claude_session_log_raw_session.json"
-        )
-        assert [p.name for p in output.iterdir()] == [name]
-        envelope = json.loads((output / name).read_text())
-        assert captured.out == ""
-        assert "wrote" in captured.err
+    envelope = json.loads(captured.out)
+    assert list(output.iterdir()) == []
     assert "using transcript:" in captured.err
+    assert envelope["schema"] == "raw-session-log/1"
+    assert envelope["session_id"] == "session"
+    assert envelope["events"] == build_events(entries, 3)
+    user = _require_single_match(envelope["events"], "image message")
+    assert user["text"] == "# Keep **recorded Markdown**"
+    assert len(user["images"]) == 2
+
+
+@pytest.mark.parametrize("explicit_root", [False, True])
+@pytest.mark.parametrize("destination", ["explicit", "default"])
+def test_cli_file_preserves_markdown_and_images(
+    destination, tmp_path, monkeypatch, capsys, explicit_root
+):
+    image_entry = _recorded_user_message("CAPTURE_IMAGES_SAME:")
+    text_block = _content_block(image_entry, "text")
+    text_block["text"] = "# Keep **recorded Markdown**"
+    entries = [image_entry]
+    transcript = tmp_path / "session.jsonl"
+    _write_jsonl(transcript, entries)
+    output = tmp_path / "output"
+    output.mkdir()
+    if not explicit_root:
+        monkeypatch.chdir(output)
+    project_root = output if explicit_root else None
+    args = ["--transcript", str(transcript), "--tool-result-bytes", "3"]
+    filename = "claude_session_log_raw_session.json"
+    if destination == "explicit":
+        filename = "custom.json"
+        args += ["--output", str(output / filename)]
+
+    exit_code = main(args, project_root=project_root)
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "wrote" in captured.err
+    assert "using transcript:" in captured.err
+    assert [path.name for path in output.iterdir()] == [filename]
+    envelope = json.loads((output / filename).read_text())
     assert envelope["schema"] == "raw-session-log/1"
     assert envelope["session_id"] == "session"
     assert envelope["events"] == build_events(entries, 3)
@@ -2077,16 +2124,18 @@ def test_question_options_are_checked_without_losing_recorded_payload():
     assert options
     for option in options:
         option["preview"] = {"markdown": "**keep this**"}
-    options.extend([{"label": 1}, {"label": "bad", "description": None}])
+    valid_options = deepcopy(options)
+    malformed_options = [{"label": 1}, {"label": "bad", "description": None}]
+    options.extend(malformed_options)
+
     session = eclog.interpret_source(ClaudeSource(Path("session.jsonl"), entries))
+
     call = _single_tool_call_in(session["events"])
     assert call["input"] == block["input"]
-    assert _answered_question_in(call, multi_select=True)["options"] == options[:-2]
-    assert all(
-        option["preview"] == {"markdown": "**keep this**"}
-        for option in _answered_question_in(call, multi_select=True)["options"]
-    )
     answer = _answered_question_in(call, multi_select=True)
+    assert answer["options"] == valid_options
+    for option in answer["options"]:
+        assert option["preview"] == {"markdown": "**keep this**"}
     _assert_answer_uses_distinct_recorded_options(answer)
     assert len(answer["chosen_labels"]) >= 2
 
@@ -2211,57 +2260,98 @@ def _reword_generated_questions(entries):
     return json.loads(reworded_entries)
 
 
-def test_fixture_selection_ignores_order_regenerated_ids_and_prose(monkeypatch):
+@pytest.fixture
+def varied_native_entries():
+    """Return capture entries with reworded prose, regenerated IDs, and reversed order."""
     entries = _reword_generated_questions(_recorded_session_entries())
     for entry in entries:
         if "uuid" in entry:
             entry["uuid"] = "regenerated-" + entry["uuid"]
         for block in _content_blocks(entry):
-            if (
-                entry.get("type") == "assistant"
-                and isinstance(block, dict)
-                and block.get("type") == "text"
-            ):
+            if not isinstance(block, dict):
+                continue
+            block_type = block.get("type")
+            if entry.get("type") == "assistant" and block_type == "text":
                 block["text"] = "A different generated response."
-            if isinstance(block, dict) and block.get("type") == "tool_use":
+            if block_type == "tool_use":
                 block["id"] = "regenerated-" + block["id"]
-            elif isinstance(block, dict) and block.get("type") == "tool_result":
+            elif block_type == "tool_result":
                 block["tool_use_id"] = "regenerated-" + block["tool_use_id"]
         content = entry.get("message", {}).get("content")
         if isinstance(content, list):
             content.reverse()
     entries.reverse()
-    native_entries = entries
-    monkeypatch.setattr(__name__ + "._recorded_session_entries", lambda: native_entries)
-    entries = _recorded_multiselect_interaction()
-    interpreted_session = eclog.interpret_source(
-        ClaudeSource(Path("session.jsonl"), entries)
+    return entries
+
+
+def test_multiselect_selection_tolerates_changed_capture(
+    varied_native_entries, monkeypatch
+):
+    monkeypatch.setattr(
+        __name__ + "._recorded_session_entries", lambda: varied_native_entries
     )
-    answer = _answered_question_in(
-        _single_tool_call_in(interpreted_session["events"]), multi_select=True
+    multiselect_entries = _recorded_multiselect_interaction()
+
+    session = eclog.interpret_source(
+        ClaudeSource(Path("session.jsonl"), multiselect_entries)
     )
+
+    call = _single_tool_call_in(session["events"])
+    answer = _answered_question_in(call, multi_select=True)
     _assert_answer_uses_distinct_recorded_options(answer)
     assert len(answer["chosen_labels"]) >= 2
-    entries = _recorded_overlapping_options_interaction()
-    overlapping_session = eclog.interpret_source(
-        ClaudeSource(Path("session.jsonl"), entries)
+
+
+def test_overlapping_option_selection_tolerates_changed_capture(
+    varied_native_entries, monkeypatch
+):
+    monkeypatch.setattr(
+        __name__ + "._recorded_session_entries", lambda: varied_native_entries
     )
-    overlap = _single_tool_call_in(overlapping_session["events"])
-    answer = _answered_question_in(overlap, multi_select=False)
+    overlapping_entries = _recorded_overlapping_options_interaction()
+
+    session = eclog.interpret_source(
+        ClaudeSource(Path("session.jsonl"), overlapping_entries)
+    )
+
+    call = _single_tool_call_in(session["events"])
+    answer = _answered_question_in(call, multi_select=False)
     _assert_answer_uses_distinct_recorded_options(answer)
     assert len(answer["chosen_labels"]) == 1
     assert answer["answer_text"] == answer["chosen_labels"][0]
-    full_session = eclog.interpret_source(
-        ClaudeSource(Path("session.jsonl"), native_entries)
+
+
+def test_interpretation_accepts_reworded_assistant_prose(varied_native_entries):
+    source = ClaudeSource(Path("session.jsonl"), varied_native_entries)
+
+    session = eclog.interpret_source(source)
+
+    _assert_assistant_text(session["events"])
+
+
+def test_tool_selection_tolerates_changed_capture(varied_native_entries, monkeypatch):
+    monkeypatch.setattr(
+        __name__ + "._recorded_session_entries", lambda: varied_native_entries
     )
-    _assert_assistant_text(full_session["events"])
     assistant, result = _recorded_tool_interaction("Read", "multibyte.txt")
+
     call = _content_block(assistant, "tool_use")
+    result_block = _content_block(result, "tool_result")
     assert Path(call["input"]["file_path"]).name == "multibyte.txt"
-    assert _content_block(result, "tool_result")["tool_use_id"] == call["id"]
-    assert "CAPTURE_MULTIBYTE" in _content_block(result, "tool_result")["content"]
+    assert result_block["tool_use_id"] == call["id"]
+    assert "CAPTURE_MULTIBYTE" in result_block["content"]
+
+
+def test_user_message_selection_tolerates_changed_capture(
+    varied_native_entries, monkeypatch
+):
+    monkeypatch.setattr(
+        __name__ + "._recorded_session_entries", lambda: varied_native_entries
+    )
     image_entry = _recorded_user_message("CAPTURE_IMAGES_SAME:")
-    assert "CAPTURE_IMAGES_SAME:" in _content_block(image_entry, "text")["text"]
+
+    text_block = _content_block(image_entry, "text")
+    assert "CAPTURE_IMAGES_SAME:" in text_block["text"]
 
 
 @pytest.mark.parametrize("duplicate", [False, True])
