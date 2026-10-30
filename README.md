@@ -2,6 +2,26 @@
 
 Reusable extractors for Claude, Codex, and Copilot session logs.
 
+## Attribution approach
+
+Our goal is to make the candidate's deliberate actions and decisions visible in
+the session log. A reviewer should be able to understand what the candidate
+said, what they chose to do, and the recorded outcomes of those actions.
+
+Classify a record by the activity it represents, using the available evidence—not
+simply by who generated its wording. Software-generated text can represent a
+deliberate candidate action. Automatically supplied context should remain
+distinguishable from the candidate's contribution.
+
+Preserve the original information while making that distinction. When attribution
+is unclear, treat it as unresolved ambiguity to investigate and resolve, rather
+than silently accepting it or hiding potentially meaningful candidate behavior.
+If the evidence genuinely cannot establish attribution, retain the information
+and document the gap rather than guessing.
+
+Specific examples and tests illustrate these principles; they do not define an
+exhaustive list of candidate actions.
+
 ## Extraction compatibility
 
 The [extraction information contract](scripts/fixtures/README.md) records the
