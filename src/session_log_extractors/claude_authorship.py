@@ -75,9 +75,9 @@ def _assistant_authorship(
     role = message.get("role") if isinstance(message, dict) else None
     markers = _markers(entry) + [AuthorshipMarker(field="message.role", value=role)]
     source: AuthorshipSource = (
-        "harness"
+        AuthorshipSource.HARNESS
         if entry.get("type") == "assistant" and role == "assistant"
-        else "unknown"
+        else AuthorshipSource.UNKNOWN
     )
     return [_span(entry, text, source, markers)]
 
@@ -92,7 +92,7 @@ def _split_content(
     start = text.find(body) if isinstance(body, str) and body else -1
     if start < 0 or not isinstance(body, str) or text.find(body, start + 1) >= 0:
         unknown = wrapper.copy()
-        unknown["source"] = "unknown"
+        unknown["source"] = AuthorshipSource.UNKNOWN
         return [unknown]
     end = start + len(body)
     spans = []
@@ -224,8 +224,8 @@ def _user_authorship(entry: dict[str, JsonValue], text: str) -> list[AuthorshipR
         return _split_content(
             text,
             origin.get("body"),
-            _span(entry, text, "other_agent", markers),
-            _span(entry, text, "harness", markers),
+            _span(entry, text, AuthorshipSource.OTHER_AGENT, markers),
+            _span(entry, text, AuthorshipSource.HARNESS, markers),
         )
     if (
         entry.get("isMeta") is True
@@ -234,16 +234,16 @@ def _user_authorship(entry: dict[str, JsonValue], text: str) -> list[AuthorshipR
         or entry.get("promptSource") == "system"
         or entry.get("turnOrigin") in ("task_notification", "scheduled")
     ):
-        source: AuthorshipSource = "harness"
+        source: AuthorshipSource = AuthorshipSource.HARNESS
     elif user_action is not None:
         # Candidate-visible activity includes deliberate user control actions
         # and command input, preserving their native notices and wrappers.
-        source = "candidate"
+        source = AuthorshipSource.CANDIDATE
         markers.append(user_action)
     elif _is_human_input(entry):
-        source = "candidate"
+        source = AuthorshipSource.CANDIDATE
     else:
-        source = "unknown"
+        source = AuthorshipSource.UNKNOWN
     return [_span(entry, text, source, markers)]
 
 
@@ -254,7 +254,7 @@ def _queued_authorship(
 ) -> list[AuthorshipRange]:
     """Separate queued human input from its recorded rendered wrapper."""
     markers = _markers(entry) + _markers(attachment, "attachment.")
-    wrapper = _span(entry, text, "harness", markers)
+    wrapper = _span(entry, text, AuthorshipSource.HARNESS, markers)
     if (
         _origin(attachment).get("kind") == "human"
         and attachment.get("humanTurn") is True
@@ -262,10 +262,10 @@ def _queued_authorship(
         return _split_content(
             text,
             attachment.get("prompt"),
-            _span(attachment, text, "candidate", markers),
+            _span(attachment, text, AuthorshipSource.CANDIDATE, markers),
             wrapper,
         )
-    wrapper["source"] = "unknown"
+    wrapper["source"] = AuthorshipSource.UNKNOWN
     return [wrapper]
 
 
@@ -316,16 +316,16 @@ def _link_candidate_output(
     output: Message,
     parent: Message,
 ) -> None:
-    if not _has_single_source(parent, "candidate") or not _has_single_source(
-        output, "unknown"
-    ):
+    if not _has_single_source(
+        parent, AuthorshipSource.CANDIDATE
+    ) or not _has_single_source(output, AuthorshipSource.UNKNOWN):
         return
     text = output.get("text")
     if isinstance(text, str):
         markers = _markers(entry) + [
             AuthorshipMarker(field="parentUuid", value=entry["parentUuid"])
         ]
-        output["authorship"] = [_span(entry, text, "candidate", markers)]
+        output["authorship"] = [_span(entry, text, AuthorshipSource.CANDIDATE, markers)]
 
 
 def _attribute_command_outputs(

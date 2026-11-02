@@ -7,6 +7,7 @@ fields in the current JSON schema and preserves nested event payloads. Additiona
 session semantics remain available on the model for other consumers.
 """
 
+from enum import StrEnum
 from typing import Literal, Never, NotRequired, Required, TypeAlias, TypedDict
 
 from session_log_extractors.json_types import JsonValue
@@ -79,6 +80,7 @@ class NativeIdentity(TypedDict, total=False):
     interaction_id: str
     turn_id: str
     agent_id: str
+    parent_agent_task_id: str
 
 
 class ToolResult(NativeIdentity):
@@ -162,6 +164,7 @@ class ToolCall(TypedDict, total=False):
     native_success: bool
     shell_exit_code: int
     native_id: str
+    agent_id: str
     plan_update: PlanUpdate
     id: str
     input: ToolInput
@@ -180,9 +183,14 @@ class ToolCall(TypedDict, total=False):
     skill: str
 
 
-AuthorshipSource: TypeAlias = Literal[
-    "candidate", "harness", "ide", "other_agent", "unknown"
-]
+class AuthorshipSource(StrEnum):
+    """Shared contribution sources; values are the stable JSON spellings."""
+
+    CANDIDATE = "candidate"
+    HARNESS = "harness"
+    IDE = "ide"
+    OTHER_AGENT = "other_agent"
+    UNKNOWN = "unknown"
 
 
 class AuthorshipMarker(TypedDict):
@@ -207,6 +215,47 @@ class AuthorshipRange(TypedDict):
     ts: NotRequired[str | None]
 
 
+class SourcePosition(TypedDict, total=False):
+    """Recorded editor coordinates, separate from message code-point offsets."""
+
+    line: int
+    character: int
+    unrecognized_fields: dict[str, JsonValue]
+
+
+class TextSelection(TypedDict, total=False):
+    start: SourcePosition
+    end: SourcePosition
+    unrecognized_fields: dict[str, JsonValue]
+
+
+class ContextAttachment(TypedDict, total=False):
+    """Recorded non-image context and fields whose semantics are not yet known."""
+
+    kind: str
+    display_name: str
+    path: str
+    file_path: str
+    text: str
+    selection: TextSelection
+    mention_index: int
+    mime_type: str
+    media_type: str
+    asset_id: str
+    byte_length: int
+    data_url: str
+    data: str
+    tagged_files_entry: JsonValue
+    unrecognized_fields: dict[str, JsonValue]
+
+
+class SubmittedText(TypedDict):
+    """Recorded pre-transformation input with its interpreted authorship."""
+
+    text: str
+    authorship: AuthorshipSource
+
+
 class MessageContent(NativeIdentity, total=False):
     """Content and native identity shared by ordered conversation messages."""
 
@@ -215,6 +264,9 @@ class MessageContent(NativeIdentity, total=False):
     text: str | None
     images: list[Image] | None
     authorship: list[AuthorshipRange]
+    source_markers: list[AuthorshipMarker]
+    context_attachments: list[ContextAttachment]
+    submitted: SubmittedText
     collaboration_mode: str
     permission_denial: PermissionDenial
 
