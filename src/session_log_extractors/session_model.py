@@ -171,6 +171,144 @@ class PermissionDenial(TypedDict):
     by: str
 
 
+class DecisionEvidence(TypedDict):
+    """A source field path and its unchanged value supporting a decision fact."""
+
+    field: str
+    value: JsonValue
+
+
+class DecisionActivityReference(TypedDict):
+    """Canonical activity address established by nonempty native evidence.
+
+    message_i addresses Message.i; tool_call_index indexes its ordered calls
+    and their ID-matched results. Neither address nor temporal proximity proves
+    ownership. Unmatched results retain their evidence without this reference.
+    """
+
+    message_i: int
+    tool_call_index: NotRequired[int]
+    evidence: list[DecisionEvidence]
+
+
+class RefusalSource(StrEnum):
+    """Evidence-based refusal source, independent of native denial labels."""
+
+    CANDIDATE = "candidate"
+    SETTINGS = "settings"
+    HARNESS = "harness"
+    UNKNOWN = "unknown"
+
+
+class DeniedAction(TypedDict):
+    """Recorded description of the denied action; full input stays on its call."""
+
+    description: str
+    tool_name: NotRequired[str]
+
+
+class PermissionRefusal(TypedDict):
+    """An observed denial, never an inferred approval/pending lifecycle.
+
+    Native labels alone and tool errors do not establish denial. None preserves
+    an unknown action, variant, or activity. Only evidenced candidate-authored
+    feedback belongs in candidate_feedback, separately from explanation.
+    """
+
+    ref: str
+    native_id: NotRequired[str]
+    action: DeniedAction | None
+    source: RefusalSource
+    native_variant: str | None
+    evidence: list[DecisionEvidence]
+    activity: DecisionActivityReference | None
+    explanation: NotRequired[str]
+    candidate_feedback: NotRequired[str]
+
+
+class PlanVersionKind(StrEnum):
+    """Recorded plan content's role, not an inferred planning-mode state."""
+
+    PROPOSED = "proposed"
+    EDITED = "edited"
+    UNKNOWN = "unknown"
+
+
+class PlanVersionAssociation(TypedDict):
+    """Link to a local version occurrence justified by nonempty native evidence."""
+
+    version_ref: str
+    evidence: list[DecisionEvidence]
+
+
+class PlanVersion(TypedDict):
+    """One complete recorded version; repeated identical content stays distinct.
+
+    edited_from requires an explicit recorded relationship, not a text diff or
+    adjacency. Omit it when no original version can be established. A proposed
+    version does not imply presentation for approval or any observed decision.
+    """
+
+    ref: str
+    native_id: NotRequired[str]
+    kind: PlanVersionKind
+    text: str
+    edited_from: NotRequired[PlanVersionAssociation]
+    evidence: list[DecisionEvidence]
+    activity: DecisionActivityReference | None
+
+
+class PlanPresentation(TypedDict):
+    """Recorded presentation for approval, with an explicitly nullable version.
+
+    Presentation alone is neither approval nor a planning lifecycle transition.
+    """
+
+    ref: str
+    native_id: NotRequired[str]
+    version: PlanVersionAssociation | None
+    evidence: list[DecisionEvidence]
+    activity: DecisionActivityReference | None
+
+
+class PlanPresentationAssociation(TypedDict):
+    """Link to a local presentation occurrence, supported by native evidence."""
+
+    presentation_ref: str
+    evidence: list[DecisionEvidence]
+
+
+class PlanOutcome(StrEnum):
+    """Meaning established from a recorded decision; silence has no outcome."""
+
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    UNKNOWN = "unknown"
+
+
+class ObservedPlanDecision(TypedDict):
+    """One recorded decision, independent of versions and presentations.
+
+    version identifies the content decided on (possibly an edited version),
+    while presentation identifies the review occurrence. Null preserves either
+    unknown association. native_decision retains any recorded JSON value;
+    missing means no native label, not approval. Nonempty evidence supports the
+    observed fact even when its meaning is unknown. Feedback authorship must be
+    established separately from a harness-generated explanation.
+    """
+
+    ref: str
+    native_id: NotRequired[str]
+    outcome: PlanOutcome
+    native_decision: NotRequired[JsonValue]
+    version: PlanVersionAssociation | None
+    presentation: PlanPresentationAssociation | None
+    evidence: list[DecisionEvidence]
+    activity: DecisionActivityReference | None
+    explanation: NotRequired[str]
+    candidate_feedback: NotRequired[str]
+
+
 class SubagentSummary(TypedDict, total=False):
     """Recorded sidecar activity available independently of JSON export."""
 
@@ -477,3 +615,7 @@ class Session(TypedDict):
     # Codex stages these facts for projection onto evidenced calls at export.
     interaction_questions: NotRequired[list[Question]]
     question_responses: NotRequired[list[QuestionResponse]]
+    permission_refusals: NotRequired[list[PermissionRefusal]]
+    plan_versions: NotRequired[list[PlanVersion]]
+    plan_presentations: NotRequired[list[PlanPresentation]]
+    plan_decisions: NotRequired[list[ObservedPlanDecision]]
