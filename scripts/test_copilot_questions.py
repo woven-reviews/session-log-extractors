@@ -1,5 +1,6 @@
 """Copilot question facts come from structured native records, never prose."""
 
+import json
 from copy import deepcopy
 
 import pytest
@@ -55,6 +56,14 @@ def _human_response(source):
         if record["type"] == "human_response.recorded":
             return record
     pytest.fail("Required captured answer is missing")
+
+
+def _question_result(call):
+    result = call["result"]
+    assert isinstance(result, str), (
+        "Existing tool-result string type must remain unchanged"
+    )
+    return json.loads(result)
 
 
 @pytest.mark.parametrize(
@@ -244,8 +253,37 @@ def test_native_structured_question_facts_survive_export(limit):
     session = _assert_native_questions(native_source())
     original = deepcopy(session)
     exported = export_session(session, limit)
-    assert exported["interaction_questions"] == session["interaction_questions"]
-    assert exported["question_responses"] == session["question_responses"]
+    assert set(exported) == {
+        "schema",
+        "harness",
+        "session_id",
+        "events",
+        "cwd",
+        "started_at",
+        "models",
+        "truncation",
+    }
+    exported_questions = []
+    exported_responses = []
+    for message, exported_message in zip(
+        session["events"], exported["events"], strict=True
+    ):
+        for call, exported_call in zip(
+            message.get("tool_calls", []),
+            exported_message.get("tool_calls", []),
+            strict=True,
+        ):
+            assert "interaction_questions" not in exported_call
+            assert "question_responses" not in exported_call
+            if call["name"] != "ask_user":
+                continue
+            result = _question_result(exported_call)
+            assert result["questions"] == call["interaction_questions"]
+            assert result["responses"] == call["question_responses"]
+            exported_questions.extend(result["questions"])
+            exported_responses.extend(result["responses"])
+    assert exported_questions == session["interaction_questions"]
+    assert exported_responses == session["question_responses"]
     refusals = []
     for response in session["question_responses"]:
         if response["outcome"] == "refused":
@@ -255,8 +293,8 @@ def test_native_structured_question_facts_survive_export(limit):
     assert refusal["refusal"]["by"] == "candidate"
     assert refusal["question"]["evidence"]
     assert "candidate_feedback" not in refusal
-    exported["interaction_questions"].clear()
-    exported["question_responses"].clear()
+    exported_questions[0]["options"].clear()
+    exported_responses[0]["selections"].clear()
     assert session == original
 
 
@@ -279,7 +317,14 @@ def test_unmatched_answers_are_retained_without_guessing(missing):
     assert response["question"] is None
     assert response["outcome"] == "answered"
     assert response["free_text"]
-    assert "activity" not in response
+    assert ("activity" in response) is (missing == "field")
+    exported = export_session(session, 0)
+    exported_responses = []
+    for message in exported["events"]:
+        for call in message.get("tool_calls", []):
+            result = _question_result(call)
+            exported_responses.extend(result["responses"])
+    assert exported_responses == [response]
 
 
 def test_repeated_identical_questions_keep_distinct_occurrences():
@@ -371,21 +416,111 @@ def test_multiple_custom_values_retain_their_recorded_boundaries():
     assert response["free_text"] == "comma, note\nline\nnote"
     assert response["recorded_answer"] == answer
     exported = export_session(session, 0)
-    (exported_response,) = exported["question_responses"]
+    result = _question_result(exported["events"][0]["tool_calls"][0])
+    (exported_response,) = result["responses"]
     exported_response["recorded_answer"].clear()
     assert response["recorded_answer"] == answer
 
 
-def test_response_only_source_is_exportable_without_inventing_activity():
+def test_response_only_source_exports_a_result_without_inventing_a_request():
     source = _question_source()
     source.state_records = [_human_response(source)]
     session = copilot.interpret_source(source)
     assert session is not None
-    assert session["events"] == []
+    assert len(session["events"]) == 1
     assert session["interaction_questions"] == []
     (response,) = session["question_responses"]
     assert response["question"] is None
-    assert export_session(session)["question_responses"] == [response]
+    exported = export_session(session, 0)
+    (event,) = exported["events"]
+    (call,) = event["tool_calls"]
+    assert call["name"] == "ask_user"
+    assert "input" not in call
+    assert "id" not in session["events"][0]["tool_calls"][0]
+    result = _question_result(call)
+    assert result["responses"] == [response]
+    assert result["raw_result"] == ""
+    assert "question_responses" not in exported
+    uncapped = export_session(session, -1)
+    uncapped_result = _question_result(uncapped["events"][0]["tool_calls"][0])
+    assert json.loads(uncapped_result["raw_result"]) == source.state_records[0]["data"]
+
+
+def test_unassociated_results_keep_native_order_and_valid_activity_addresses():
+    source = _question_source()
+    owner = source.state_records[0]
+    unassociated = deepcopy(_human_response(source))
+    unassociated["id"] = "controlled-unassociated-before-owner"
+    del unassociated["data"]["toolCallId"]
+    source.state_records.insert(0, unassociated)
+
+    session = copilot.interpret_source(source)
+
+    actual_ids = []
+    for event in session["events"]:
+        actual_ids.append(event["id"])
+    assert actual_ids == [unassociated["id"], owner["id"]]
+    (question,) = session["interaction_questions"]
+    unmatched, matched = session["question_responses"]
+    assert unmatched["question"] is None
+    assert "activity" not in unmatched
+    assert question["activity"]["message_i"] == 1
+    assert matched["activity"]["message_i"] == 1
+    exported = export_session(session, 0)
+    unmatched_result = _question_result(exported["events"][0]["tool_calls"][0])
+    matched_result = _question_result(exported["events"][1]["tool_calls"][0])
+    assert unmatched_result["responses"] == [unmatched]
+    assert matched_result["responses"] == [matched]
+    assert matched_result["questions"] == [question]
+
+
+def test_unassociated_fields_share_their_recorded_response_only_result():
+    source = _question_source()
+    response_record = _human_response(source)
+    response_record["data"]["response"]["content"] = {
+        "first": "plain answer",
+        "second": ["comma, value", "next value"],
+    }
+    source.state_records = [response_record]
+
+    session = copilot.interpret_source(source)
+    exported = export_session(session, 0)
+
+    (event,) = exported["events"]
+    (call,) = event["tool_calls"]
+    result = _question_result(call)
+    first, second = result["responses"]
+    assert first["question"] is None and second["question"] is None
+    assert first["recorded_answer"] == "plain answer"
+    assert second["recorded_answer"] == ["comma, value", "next value"]
+    assert first["native_id"] == second["native_id"] == response_record["id"]
+    assert first["ref"] != second["ref"]
+    assert "input" not in call
+
+
+def test_cancellation_without_its_request_remains_a_response_only_result():
+    source = _question_source()
+    completions = []
+    for record in source.state_records:
+        if record["type"] == "tool.execution_complete":
+            record["data"]["toolTelemetry"]["properties"]["elicitation_action"] = (
+                "cancel"
+            )
+            completions.append(record)
+    source.state_records = completions
+
+    session = copilot.interpret_source(source)
+    exported = export_session(session, 0)
+
+    (event,) = exported["events"]
+    (call,) = event["tool_calls"]
+    result = _question_result(call)
+    (response,) = result["responses"]
+    assert response["question"] is None
+    assert "activity" not in response
+    assert response["outcome"] == "refused"
+    assert response["refusal"]["by"] == "candidate"
+    assert result["questions"] == []
 
 
 def _assert_answer_preservation(question, response, answers):

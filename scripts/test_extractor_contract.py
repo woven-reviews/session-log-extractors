@@ -129,8 +129,8 @@ def test_public_interpretation_is_source_free_and_export_is_non_mutating(
         if harness == "copilot":
             assert session["interaction_questions"]
             assert session["question_responses"]
-            assert exported["interaction_questions"] == session["interaction_questions"]
-            assert exported["question_responses"] == session["question_responses"]
+            assert "interaction_questions" not in exported
+            assert "question_responses" not in exported
         assert session == original
     if full_result:
         large_results = []

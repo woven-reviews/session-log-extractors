@@ -1,6 +1,8 @@
 """Interpret Copilot elicitation records against canonical, ID-scoped calls."""
 
+import json
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 
 from session_log_extractors.copilot_protocol import (
     ASK_USER,
@@ -25,6 +27,17 @@ from session_log_extractors.session_model import (
 @dataclass
 class _QuestionGroup:
     questions: dict[str, Question]
+    call: ToolCall
+    activity: QuestionActivityReference
+
+
+@dataclass
+class CopilotQuestionInterpretation:
+    """Question facts and result-only activity indexed by native record order."""
+
+    questions: list[Question] = dataclass_field(default_factory=list)
+    responses: list[QuestionResponse] = dataclass_field(default_factory=list)
+    unassociated_results: dict[int, ToolCall] = dataclass_field(default_factory=dict)
 
 
 def _schema_questions(call: ToolCall, prefix: str) -> dict[str, Question]:
@@ -76,8 +89,7 @@ class _CopilotQuestionInterpreter:
     """Index question occurrences before interpreting responses, in any order."""
 
     def __init__(self, events: list[Message]):
-        self.questions: list[Question] = []
-        self.responses: list[QuestionResponse] = []
+        self.interpretation = CopilotQuestionInterpretation()
         self.groups: dict[tuple[str | None, str], list[_QuestionGroup]] = {}
         for event in events:
             for index, call in enumerate(event.get("tool_calls") or []):
@@ -85,7 +97,11 @@ class _CopilotQuestionInterpreter:
                     self.add_call(event, call, index)
 
     def add_call(self, event: Message, call: ToolCall, index: int) -> None:
-        questions = _schema_questions(call, f"copilot:q{len(self.questions)}")
+        questions = _schema_questions(
+            call, f"copilot:q{len(self.interpretation.questions)}"
+        )
+        call["interaction_questions"] = list(questions.values())
+        call["question_responses"] = []
         evidence = [QuestionEvidence(field="tool.name", value=ASK_USER)]
         call_id = call.get("id")
         if call_id is not None:
@@ -95,10 +111,12 @@ class _CopilotQuestionInterpreter:
         )
         for question in questions.values():
             question["activity"] = activity
-            self.questions.append(question)
+            self.interpretation.questions.append(question)
         if call_id is not None:
             scope = (call.get("agent_id", event.get("agent_id")), call_id)
-            self.groups.setdefault(scope, []).append(_QuestionGroup(questions))
+            self.groups.setdefault(scope, []).append(
+                _QuestionGroup(questions, call, activity)
+            )
 
     def group(self, record: dict[str, JsonValue]) -> _QuestionGroup | None:
         data = record.get("data")
@@ -111,10 +129,16 @@ class _CopilotQuestionInterpreter:
         return matches[0] if len(matches) == 1 else None
 
     def response(
-        self, record: dict[str, JsonValue], question: Question | None
+        self,
+        record: dict[str, JsonValue],
+        question: Question | None,
+        group: _QuestionGroup | None,
+        position: int,
     ) -> QuestionResponse:
         response = QuestionResponse(
-            ref=f"copilot:r{len(self.responses)}", question=None, outcome="unknown"
+            ref=f"copilot:r{len(self.interpretation.responses)}",
+            question=None,
+            outcome="unknown",
         )
         native_id = string_value(record.get("id"))
         if native_id is not None:
@@ -124,23 +148,47 @@ class _CopilotQuestionInterpreter:
             response["question"] = QuestionAssociation(
                 question_ref=question["ref"], evidence=evidence
             )
-            response["activity"] = question["activity"]
-        self.responses.append(response)
+        self.interpretation.responses.append(response)
+        if group is not None:
+            response["activity"] = group.activity
+            group.call["question_responses"].append(response)
+        else:
+            self.unassociated_call(record, position)["question_responses"].append(
+                response
+            )
         return response
 
+    def unassociated_call(
+        self, record: dict[str, JsonValue], position: int
+    ) -> ToolCall:
+        results = self.interpretation.unassociated_results
+        if position not in results:
+            # This is recorded response-only activity, without a fabricated
+            # request ID, input, or question association.
+            call = ToolCall(
+                name=ASK_USER,
+                result=json.dumps(record.get("data"), ensure_ascii=False),
+                question_responses=[],
+            )
+            agent_id = string_value(record.get("agentId"))
+            if agent_id is not None:
+                call["agent_id"] = agent_id
+            results[position] = call
+        return results[position]
+
     def answer(
-        self, record: dict[str, JsonValue], native: dict[str, JsonValue]
+        self, record: dict[str, JsonValue], native: dict[str, JsonValue], position: int
     ) -> None:
         group = self.group(record)
         content = native.get("content")
         if not isinstance(content, dict) or not content:
-            response = self.response(record, None)
+            response = self.response(record, None, group, position)
             response["recorded_answer"] = content
             _apply_feedback(response, native)
             return
         for name, value in content.items():
             question = group.questions.get(name) if group is not None else None
-            response = self.response(record, question)
+            response = self.response(record, question, group, position)
             _apply_answer(response, question, value)
             association = response["question"]
             if association is not None:
@@ -150,7 +198,7 @@ class _CopilotQuestionInterpreter:
             _apply_feedback(response, native)
 
     def cancellation(
-        self, record: dict[str, JsonValue], data: dict[str, JsonValue]
+        self, record: dict[str, JsonValue], data: dict[str, JsonValue], position: int
     ) -> None:
         telemetry = data.get("toolTelemetry")
         properties = (
@@ -167,7 +215,7 @@ class _CopilotQuestionInterpreter:
         # establishes a particular question; do not distribute it by question count.
         if group is not None and len(group.questions) == 1:
             question = next(iter(group.questions.values()))
-        response = self.response(record, question)
+        response = self.response(record, question, group, position)
         response["outcome"] = "refused"
         response["refusal"] = {"by": "candidate"}
         result = data.get("result")
@@ -234,17 +282,17 @@ def _apply_answer(
 
 def interpret_questions(
     events: list[Message], records: list[dict[str, JsonValue]]
-) -> tuple[list[Question], list[QuestionResponse]]:
+) -> CopilotQuestionInterpretation:
     """Retain each question and response without guessing missing associations."""
     interpreter = _CopilotQuestionInterpreter(events)
-    for record in records:
+    for position, record in enumerate(records):
         data = record.get("data")
         if not isinstance(data, dict):
             continue
         if record.get("type") == HUMAN_RESPONSE_RECORDED:
             response = data.get("response")
             if isinstance(response, dict) and response.get("responseKind") == ASK_USER:
-                interpreter.answer(record, response)
+                interpreter.answer(record, response, position)
         elif record.get("type") == TOOL_EXECUTION_COMPLETE:
-            interpreter.cancellation(record, data)
-    return interpreter.questions, interpreter.responses
+            interpreter.cancellation(record, data, position)
+    return interpreter.interpretation

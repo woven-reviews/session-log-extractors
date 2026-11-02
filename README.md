@@ -245,12 +245,19 @@ recorded call ID. Repeated and orphan results remain in `unmatched_tool_results`
 and the complete native result stays in `result_record` beside the compatible
 textual JSON result. Database-only inputs retain file targets by `turn_index`.
 
-Copilot exports `interaction_questions` and `question_responses` using the shared
-question contract. Each schema property is a distinct question occurrence with
+Copilot keeps structured questions and responses inside the existing tool
+`result` string as JSON text: `questions`, `responses`, and `raw_result`.
+The envelope and event fields and their value types are unchanged, so consumers
+can display the same linear conversation.
+Only `raw_result` is capped; structured facts remain complete. The session's
+`interaction_questions` and `question_responses` remain internal model views.
+Each schema property is a distinct question occurrence with
 the exact request message, title, description, enum options, and selection mode.
 Responses link through a unique same-agent `toolCallId` and the recorded answer
 map's property key. Repeated questions retain distinct local references; missing,
 duplicate, or cross-agent identifiers leave answers explicitly unassociated.
+Responses without an evidenced owning call appear as result-only tool activity
+at their native record position, without an invented request ID or input.
 `recorded_answer` retains the original JSON value, including unsupported shapes;
 `selections` and `free_text` describe its interpretation. Multiple custom values
 are newline-joined in `free_text`; their original boundaries remain in

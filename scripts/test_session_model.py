@@ -186,8 +186,8 @@ def test_native_question_facts_survive_export_policy(limit):
     assert recorded_answers == [selection["label"]]
     assert question["native_id"] in json.loads(call["result"])["answers"]
     assert question["activity"]["message_i"] == session["events"][0]["i"]
-    assert exported["interaction_questions"] == [question]
-    assert exported["question_responses"] == [response]
+    assert "interaction_questions" not in exported
+    assert "question_responses" not in exported
     assert session == original
     actual["input"]["questions"].clear()
     assert session == original

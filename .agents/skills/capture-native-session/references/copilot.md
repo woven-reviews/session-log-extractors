@@ -148,7 +148,11 @@ state-root flag. For ordinary offline CLI checks use an isolated HOME containing
 the selected state layout. In-process tests can set `copilot_sources.COPILOT_STATE_ROOT`.
 Use `read_source`/`interpret_source` and the shared exporter for uncapped model
 validation. `copilot_interactions.subagent_summaries` separately summarizes inline
-children. Structured questions, decisions, identities, shell-result records,
-schemas, and child summaries remain model semantics omitted by the current JSON
-schema; complete tool inputs/results/errors, images, and shell-rendered text are
-exported. Record that boundary explicitly.
+children. Structured questions and responses are exported within existing tool
+result strings as JSON alongside capped `raw_result` text; no top-level fields
+are added, and existing value types are preserved.
+Unassociated responses appear as response-only tool results in native order.
+Plan decisions, complete identity and shell-result records, schemas, and child
+summaries remain available on the model. JSON also exports tool
+inputs/results/errors, selected message provenance, images, and shell-rendered
+text. Record that boundary explicitly.

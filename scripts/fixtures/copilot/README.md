@@ -70,9 +70,12 @@ and a checkpoint; the original native history remained available.
 for questions; rendered comma-separated result text is not an answer parser.
 The interpreted model retains agent identities, question answers, plan decisions,
 refusal sources, native shell success/exit status, complete tool-result blocks,
-and separately accessible child summaries. JSON now exports shared question and
-response records, including ID-linked answers and telemetry-evidenced question
-cancellation, before applying raw-result limits. Plain enum labels provide no
+and separately accessible child summaries. The existing tool `result` string now
+holds JSON text with shared question and response records alongside `raw_result`, including ID-linked
+answers and telemetry-evidenced question cancellation. The raw-result cap does
+not shorten these structured facts. There are no new top-level or event fields.
+Unassociated responses remain result-only activity in native order.
+Plain enum labels provide no
 structured recommendation, option-description, or preview fields; these remain
 unknown. Plan decisions and child summaries remain model-only.
 JSON also exports complete tool inputs/results/errors, ordered images,

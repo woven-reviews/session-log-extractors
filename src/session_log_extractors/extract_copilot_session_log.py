@@ -58,7 +58,10 @@ from session_log_extractors.copilot_protocol import (
     HUMAN_RESPONSE_RECORDED,
     TOOL_EXECUTION_COMPLETE,
 )
-from session_log_extractors.copilot_questions import interpret_questions
+from session_log_extractors.copilot_questions import (
+    CopilotQuestionInterpretation,
+    interpret_questions,
+)
 from session_log_extractors.copilot_sources import CopilotSource, ImageInputs
 from session_log_extractors.extractor_contract import Extractor
 from session_log_extractors.json_types import JsonValue
@@ -675,6 +678,7 @@ class _CopilotSessionBuilder:
         self.source = source
         self.record_index = copilot_authorship.record_index(source.state_records)
         self.events: list[Message] = []
+        self.event_positions: dict[int, int] = {}
         self.calls: dict[str, ToolCall] = {}
         self.messages: dict[str, AssistantMessage] = {}
         self.unmatched: list[ToolResult] = []
@@ -963,11 +967,14 @@ class _CopilotSessionBuilder:
             "tool.execution_start": self.start,
             TOOL_EXECUTION_COMPLETE: self.complete,
         }
-        for record in self.source.state_records:
+        for position, record in enumerate(self.source.state_records):
             data = record.get("data")
             handler = handlers.get(str(record.get("type")))
             if handler is not None and isinstance(data, dict):
+                previous_count = len(self.events)
                 handler(record, data)
+                for event in self.events[previous_count:]:
+                    self.event_positions[id(event)] = position
         return self.events
 
 
@@ -1070,6 +1077,68 @@ def _session_skills(source: CopilotSource, calls: list[ToolCall]) -> list[str]:
     return list(dict.fromkeys(skills))
 
 
+def _include_unassociated_question_results(
+    builder: _CopilotSessionBuilder,
+    events: list[Message],
+    questions: CopilotQuestionInterpretation,
+) -> list[Message]:
+    """Keep response-only results in native order without inventing an owner."""
+    if not questions.unassociated_results:
+        return events
+    original_message_ids = {event["i"]: id(event) for event in events}
+    ordered = []
+    saw_native_event = False
+    for event in events:
+        position = builder.event_positions.get(id(event))
+        if position is None:
+            position = len(builder.source.state_records) if saw_native_event else -1
+        else:
+            saw_native_event = True
+        ordered.append((position, event))
+    for position, call in questions.unassociated_results.items():
+        record = builder.source.state_records[position]
+        response_event = assistant_event(
+            0, _string(record.get("timestamp")), "", [call]
+        )
+        data = record.get("data")
+        _apply_identity(
+            response_event, _identity(record, data if isinstance(data, dict) else {})
+        )
+        response_event["source_markers"] = copilot_authorship.source_markers(record)
+        ordered.append((position, response_event))
+    ordered.sort(key=lambda item: item[0])
+    result = [event for _, event in ordered]
+    _reindex_question_activity(questions, original_message_ids, result)
+    return result
+
+
+def _reindex_question_activity(
+    questions: CopilotQuestionInterpretation,
+    original_message_ids: dict[int, int],
+    events: list[Message],
+) -> None:
+    """Keep canonical activity addresses valid after inserting standalone results."""
+    message_indices = {}
+    for index, event in enumerate(events):
+        event["i"] = index
+        message_indices[id(event)] = index
+    for question in questions.questions:
+        activity = question["activity"]
+        question["activity"] = {
+            **activity,
+            "message_i": message_indices[original_message_ids[activity["message_i"]]],
+        }
+    for response in questions.responses:
+        response_activity = response.get("activity")
+        if response_activity is not None:
+            response["activity"] = {
+                **response_activity,
+                "message_i": message_indices[
+                    original_message_ids[response_activity["message_i"]]
+                ],
+            }
+
+
 def interpret_source(source: CopilotSource) -> Session | None:
     """Interpret complete supplied activity without I/O or export limits."""
     builder = _CopilotSessionBuilder(source)
@@ -1088,9 +1157,10 @@ def interpret_source(source: CopilotSource) -> Session | None:
     for index, event in enumerate(events):
         event["i"] = index
 
-    questions, responses = interpret_questions(events, source.state_records)
-    if not events and not responses:
+    questions = interpret_questions(events, source.state_records)
+    if not events and not questions.responses:
         return None
+    events = _include_unassociated_question_results(builder, events, questions)
 
     calls = [call for event in events for call in event.get("tool_calls") or []]
     unsupported_tools = {
@@ -1109,8 +1179,8 @@ def interpret_source(source: CopilotSource) -> Session | None:
         file_activity=_file_activity(source),
         unsupported_tools=sorted(unsupported_tools),
         permission_decisions=_permissions_from_events(source.state_records),
-        interaction_questions=questions,
-        question_responses=responses,
+        interaction_questions=questions.questions,
+        question_responses=questions.responses,
     )
 
 

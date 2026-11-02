@@ -2,8 +2,8 @@
 """Build the raw session-log envelope shared by all three session-log extractors.
 
 Each extractor writes a normalized JSON envelope carrying the conversation with
-images inlined as base64. Tool inputs remain complete and tool results retain
-their configured byte cap. Markdown already recorded in messages is content;
+images inlined as base64. Tool inputs and interpreted decision facts remain
+complete; raw textual results retain their configured byte cap. Markdown already recorded in messages is content;
 this module does not generate a separate presentation artifact.
 
 One schema serves all three harnesses. That matters because they store images
@@ -29,7 +29,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import List, Optional, TypedDict
 
-from session_log_extractors.json_types import JsonValue
+from session_log_extractors.json_types import JsonValue, json_value
 from session_log_extractors.session_model import (
     AssistantMessage,
     Event,
@@ -266,10 +266,6 @@ def export_session(
         ),
         tool_result_max_bytes,
     )
-    if "interaction_questions" in session:
-        envelope["interaction_questions"] = deepcopy(session["interaction_questions"])
-    if "question_responses" in session:
-        envelope["question_responses"] = deepcopy(session["question_responses"])
     return envelope
 
 
@@ -329,7 +325,23 @@ def _export_call(call: ToolCall, limit: int) -> ToolCall:
         capped["result_bytes"] = call.get("result_bytes", capped["result_bytes"])
         capped["result_truncated"] |= call.get("result_truncated", False)
         attach_result(exported, capped)
+    _export_question_result(call, exported)
     return exported
+
+
+def _export_question_result(call: ToolCall, exported: ToolCall) -> None:
+    """Keep decision facts in the existing result alongside its capped raw text."""
+    if "interaction_questions" not in call and "question_responses" not in call:
+        return
+    exported["result"] = json.dumps(
+        {
+            "raw_result": exported.get("result"),
+            "questions": json_value(call.get("interaction_questions", [])),
+            "responses": json_value(call.get("question_responses", [])),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
 
 
 def write_envelope(

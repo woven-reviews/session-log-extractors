@@ -696,10 +696,22 @@ def test_copilot_cli_tool_result_cap(tmp_path):
     for event in envelope["events"]:
         for call in event.get("tool_calls", []):
             exported_calls.append(call)
-    call = next(iter(exported_calls))
-    assert call["result_truncated"] is True
-    assert call["result_bytes"] > 4
-    assert len(call["result"].encode("utf-8")) <= 4
+    truncated = []
+    for call in exported_calls:
+        result = call["result"]
+        if call["name"] == "ask_user":
+            assert isinstance(result, str)
+            result = json.loads(result)["raw_result"]
+        if result is None:
+            assert call["result_bytes"] == 0
+            assert call["result_truncated"] is False
+            continue
+        assert isinstance(result, str)
+        assert len(result.encode("utf-8")) <= 4
+        if call["result_truncated"]:
+            assert call["result_bytes"] > 4
+            truncated.append(call)
+    assert truncated, "Required native result exceeding the byte cap is missing"
     assert list(tmp_path.glob("*.json")) == [output]
 
 
@@ -1328,3 +1340,32 @@ def test_native_result_without_execution_start_does_not_invent_one():
     [call] = interpreted_calls
     assert "execution" not in call
     assert "CAPTURE_STDOUT_OK" in call["result"]
+
+
+def test_response_only_results_preserve_supplemental_file_activity_order():
+    source = native_source()
+    users = []
+    responses = []
+    for record in source.state_records:
+        if record["type"] == "user.message":
+            users.append(record)
+        if (
+            record["type"] == "human_response.recorded"
+            and record["data"]["response"]["responseKind"] == "ask_user"
+        ):
+            responses.append(record)
+    assert users and responses and source.files, (
+        "Required native fallback evidence is missing"
+    )
+    source.state_records = [users[0], responses[0]]
+    source.files = source.files[:1]
+
+    session = copilot_log.interpret_source(source)
+
+    user, response, file_activity = session["events"]
+    assert user["id"] == users[0]["id"]
+    assert response["id"] == responses[0]["id"]
+    assert (
+        file_activity["tool_calls"][0]["input"]["target"]
+        == source.files[0]["file_path"]
+    )

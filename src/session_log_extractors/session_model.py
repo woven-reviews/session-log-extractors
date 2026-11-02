@@ -272,6 +272,8 @@ class ToolCall(TypedDict, total=False):
     result_images: list[Image]
     execution: ToolExecution
     questions: list[QuestionAnswer]
+    interaction_questions: list[Question]
+    question_responses: list[QuestionResponse]
     plan_decision: PlanDecision
     permission_denial: PermissionDenial
     skill: str
