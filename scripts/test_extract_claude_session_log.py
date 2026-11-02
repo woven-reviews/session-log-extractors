@@ -1629,17 +1629,16 @@ def test_cli_preserves_native_payloads(transcript, limit, capsys):
     captured = capsys.readouterr()
     envelope = json.loads(captured.out)
     entries = load_entries(transcript)
-    assert envelope == build_envelope(
-        Session(
-            harness="claude",
-            session_id=transcript.stem,
-            events=build_events(entries, limit),
-            cwd=session_cwd(entries),
-            started_at=first_timestamp(entries),
-            models=session_models(entries),
-        ),
-        tool_result_max_bytes=limit,
-    )
+    expected_events = build_events(entries, limit)
+    assert envelope["events"] == expected_events
+    assert envelope["schema"] == "raw-session-log/1"
+    assert envelope["session_id"] == transcript.stem
+    assert envelope["cwd"] == session_cwd(entries)
+    assert envelope["started_at"] == first_timestamp(entries)
+    assert envelope["models"] == session_models(entries)
+    assert envelope["truncation"] == {"tool_result_max_bytes": limit}
+    assert envelope["interaction_questions"]
+    assert envelope["question_responses"]
 
 
 @pytest.mark.parametrize("selector", ["path", "prefix", "newest"])

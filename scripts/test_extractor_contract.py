@@ -127,6 +127,10 @@ def test_public_interpretation_is_source_free_and_export_is_non_mutating(
         exported = export_session(session, limit)
         assert exported["events"]
         assert session == original
+        if harness == "claude":
+            assert session["interaction_questions"] and session["question_responses"]
+            assert exported["interaction_questions"] == session["interaction_questions"]
+            assert exported["question_responses"] == session["question_responses"]
     if full_result:
         large_results = []
         for event in session["events"]:
