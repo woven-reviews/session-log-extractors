@@ -67,6 +67,15 @@ meaning is already known. Passing regression tests alone does not establish
 that a model or abstraction is appropriate; review where each semantic concept
 belongs and whether the model duplicates another representation.
 
+Use enums or named constants for strings that represent domain concepts,
+protocol values, or repeated identifiers. Define each value once at the
+appropriate scope: shared concepts in shared modules, harness-specific concepts
+in harness-owned modules. Use those definitions consistently in construction,
+comparisons, and mappings. Keep native protocol values distinct from normalized
+domain values, even when their spellings match. Ordinary prose and one-off
+display text do not require constants. Serialization tests may use explicit
+literal expectations to independently verify the external contract.
+
 When adding shared model fields, choose names and types that distinguish
 recorded data from derived conclusions. Separate values with different meanings
 into separate fields. If that distinction requires a long explanation,
