@@ -165,14 +165,14 @@ def _has_model_evidence(
 
 
 def assistant_authorship(record: dict[str, JsonValue]) -> list[AuthorshipRange]:
-    """Native model and provider response ID establish a model contribution."""
+    """Recorded model replies are harness content, not another agent's input."""
     data = record.get("data")
     data = data if isinstance(data, dict) else {}
     text = string_value(data.get("content")) or ""
     if not text:
         return []
     source: AuthorshipSource = (
-        "other_agent" if _has_model_evidence(record, data) else "unknown"
+        "harness" if _has_model_evidence(record, data) else "unknown"
     )
     span = _span(0, len(text), source, source_markers(record))
     if "timestamp" in record:

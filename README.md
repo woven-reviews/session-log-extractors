@@ -258,7 +258,8 @@ record. Its supported invocation notice and exact supplied arguments are candida
 activity; loaded skill instructions and automatic context stay harness content.
 Missing links, conflicting definitions, or ambiguous rendered matches stay unknown.
 Native assistant prose with model and provider response ID evidence is an
-`other_agent` contribution, retaining assistant role. Role alone is insufficient.
+`harness` contribution, retaining assistant role. Model generation does not
+establish another agent's input. Role alone is insufficient.
 Original-only steering messages and DB fallback text remain verbatim.
 
 Native system messages, notifications, and instruction updates remain ordered

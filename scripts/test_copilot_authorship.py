@@ -382,7 +382,7 @@ def test_database_fallback_keeps_literal_text_without_inferred_authorship():
     assert "submitted" not in message
 
 
-def test_native_assistant_prose_has_recorded_model_provenance():
+def test_native_assistant_prose_is_harness_with_recorded_model_provenance():
     source = native_source()
     session = copilot.interpret_source(source)
     messages = {}
@@ -395,8 +395,9 @@ def test_native_assistant_prose_has_recorded_model_provenance():
         data = record["data"]
         assert data["model"] and data["apiCallId"]
         message = messages[record["id"]]
-        actual = _text_from_source(message, "other_agent")
+        actual = _text_from_source(message, "harness")
         assert actual == [data["content"]]
+        assert _text_from_source(message, "other_agent") == []
         assert message["role"] == "assistant"
         assert {"field": "data.model", "value": data["model"]} in message["authorship"][
             0
@@ -748,7 +749,7 @@ def test_api_eligibility_flag_does_not_determine_authorship(eligibility):
 
     spans = authorship.assistant_authorship(record)
 
-    assert spans[0]["source"] == "other_agent"
+    assert spans[0]["source"] == "harness"
 
 
 def test_native_parent_link_can_establish_a_shell_outcome_without_the_optional_flag():

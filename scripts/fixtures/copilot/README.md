@@ -133,8 +133,9 @@ unknown, and contradictory automatic-continuation evidence stays unknown.
 `parentAgentTaskId`, delivery timing, and tag spelling alone do not establish an
 author. The original-only steering inputs retain their full candidate text.
 All 32 assistant prose records have `model` and `apiCallId` producer
-evidence; they retain assistant role and resolved `other_agent` contribution
-ranges. Assistant role or an agent ID alone is insufficient. User-shell output
+evidence; they retain assistant role and resolved `harness` contribution
+ranges. Model replies are harness output; `other_agent` identifies separately
+recorded agent-origin input. Assistant role or an agent ID alone is insufficient. User-shell output
 retains candidate activity through the recorded unique, same-agent call ID and
 `isUserRequested: true` completion (or an unambiguous direct parent link when
 that optional flag is absent). An explicitly non-user completion never inherits
