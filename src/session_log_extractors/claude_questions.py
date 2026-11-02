@@ -137,21 +137,39 @@ def _association(
     )
 
 
+def _selection_partitions(
+    value: str, options: list[QuestionChoice]
+) -> list[list[QuestionChoice]]:
+    """Find partitions of complete, unrepeated labels until ambiguity is clear."""
+    partitions: list[list[QuestionChoice]] = []
+    pending: list[tuple[str, list[QuestionChoice]]] = [(value, [])]
+    while pending and len(partitions) < 2:
+        remaining, chosen = pending.pop()
+        for option in options:
+            label = option["label"]
+            if not label or any(item["label"] == label for item in chosen):
+                continue
+            if remaining == label:
+                partitions.append(chosen + [option])
+            elif remaining.startswith(label + ", "):
+                pending.append((remaining[len(label) + 2 :], chosen + [option]))
+    return partitions
+
+
 def _selections(value: str, question: Question) -> list[QuestionSelection]:
-    """Only an exact, unambiguous whole-label partition establishes selections."""
+    """Prefer an exact label, otherwise require a unique whole-label partition."""
     options = question["options"]
-    labels = [option["label"] for option in options]
-    chosen = [value] if value in labels else value.split(", ")
-    if len(chosen) > 1 and question.get("multiple_selections") is not True:
-        return []
-    if len(chosen) != len(set(chosen)) or any(
-        labels.count(label) != 1 for label in chosen
-    ):
+    exact = [option for option in options if option["label"] == value]
+    partitions = [[option] for option in exact]
+    if not exact and question.get("multiple_selections") is True:
+        partitions = _selection_partitions(value, options)
+    if len(partitions) != 1:
         return []
     selections: list[QuestionSelection] = []
-    for label in chosen:
-        option = options[labels.index(label)]
-        selections.append(QuestionSelection(label=label, option_ref=option["ref"]))
+    for option in partitions[0]:
+        selections.append(
+            QuestionSelection(label=option["label"], option_ref=option["ref"])
+        )
     return selections
 
 
@@ -247,6 +265,8 @@ class _ClaudeQuestionInterpreter:
 
     def answer_content(self, response: QuestionResponse, value: str) -> None:
         if value == _NOTES_ONLY:
+            response["outcome"] = QuestionResponseOutcome.ANSWERED
+            response["selections"] = []
             return
         if value:
             response["outcome"] = QuestionResponseOutcome.ANSWERED

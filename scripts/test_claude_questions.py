@@ -596,8 +596,11 @@ def test_duplicate_option_labels_and_repeated_selections_preserve_ambiguity():
     assert repeated_response["free_text"] == "One, One"
 
 
-def test_entry_level_answers_with_multiple_result_blocks_remain_unassociated():
+@pytest.mark.parametrize("has_uuid", [False, True])
+def test_entry_level_answers_with_multiple_result_blocks_remain_unassociated(has_uuid):
     assistant, result, _ = _interaction()
+    if not has_uuid:
+        result.pop("uuid")
     # The alternate result is recorded once for the whole native entry. Adding
     # another result block removes proof that it belongs to a particular call.
     extra_block = deepcopy(result["message"]["content"][0])
@@ -652,6 +655,8 @@ def test_text_only_notes_keep_candidate_punctuation():
     recorded_responses = _conversation_responses(session)
     (response,) = recorded_responses
     assert response["candidate_feedback"] == "Keep this period."
+    assert response["outcome"] == "answered"
+    assert response["selections"] == []
 
 
 def test_native_question_fields_preserve_exact_offered_values():
@@ -786,3 +791,91 @@ def test_repeated_question_call_ids_do_not_capture_the_orphan_response():
     for response in record["question_responses"]:
         assert response["question"] is None
         assert "activity" not in response
+
+
+@pytest.mark.parametrize(
+    "labels,value,expected",
+    [
+        (["Red, green", "Blue"], "Red, green, Blue", ["Red, green", "Blue"]),
+        (["Red, green", "Blue"], "Blue, Red, green", ["Blue", "Red, green"]),
+        (["Red", "Red, green", "Blue"], "Red, green, Blue", ["Red, green", "Blue"]),
+        (["Red", "green, Blue", "Red, green", "Blue"], "Red, green, Blue", []),
+        (["Red, green", "Blue"], "Red, green, Red, green", []),
+        (["Red, green", "Red, green", "Blue"], "Red, green, Blue", []),
+        (["", "Blue"], "Blue, ", []),
+        (["Red, green", "Blue"], "Red, green, Unknown", []),
+    ],
+)
+def test_multiselect_requires_unique_complete_label_partition(labels, value, expected):
+    assistant, result, call = _interaction()
+    # Control only labels and answer to exercise comma boundaries and ambiguity.
+    question = call["input"]["questions"][0]
+    question["multiSelect"] = True
+    question["options"] = []
+    for label in labels:
+        question["options"].append({"label": label})
+    result["toolUseResult"]["answers"] = {question["question"]: value}
+
+    session = _interpret([assistant, result])
+    responses = _conversation_responses(export_session(session, 0))
+
+    (response,) = responses
+    actual = []
+    for selection in response.get("selections", []):
+        actual.append(selection["label"])
+    assert actual == expected
+    if expected:
+        assert "free_text" not in response
+    else:
+        assert response["free_text"] == value
+
+
+@pytest.mark.parametrize("notes", [None, "", "Recorded feedback"])
+def test_notes_only_sentinel_explicitly_answers_without_selections(notes):
+    assistant, result, call = _interaction()
+    # Keep the captured call/result ownership, controlling the sentinel and notes.
+    key = call["input"]["questions"][0]["question"]
+    result["toolUseResult"]["answers"] = {key: "(notes only)"}
+    result["toolUseResult"]["annotations"] = {}
+    if notes is not None:
+        result["toolUseResult"]["annotations"][key] = {"notes": notes}
+
+    session = _interpret([assistant, result])
+    responses = _conversation_responses(export_session(session, 0))
+
+    (response,) = responses
+    assert response["outcome"] == "answered"
+    assert response["selections"] == []
+    assert "free_text" not in response
+    if notes is not None:
+        assert response["candidate_feedback"] == notes
+
+
+def test_native_notes_only_response_has_explicit_empty_selections():
+    entries = claude.load_entries(TRANSCRIPT)
+    notes_only_results = []
+    for entry in entries:
+        payload = entry.get("toolUseResult")
+        if not isinstance(payload, dict):
+            continue
+        for key, answer in payload.get("answers", {}).items():
+            if answer == "(notes only)":
+                notes_only_results.append((entry, key))
+    assert notes_only_results, "Capture must exercise notes-only answers"
+    for result, key in notes_only_results:
+        call_id = result["message"]["content"][0]["tool_use_id"]
+        assistant = None
+        for entry in entries:
+            for block in claude._content_blocks(entry):
+                if isinstance(block, dict) and block.get("id") == call_id:
+                    assistant = entry
+        assert assistant is not None
+        session = _interpret([assistant, result])
+        responses = _conversation_responses(export_session(session, 0))
+        (response,) = responses
+        assert response["outcome"] == "answered"
+        assert response["selections"] == []
+        assert (
+            response["candidate_feedback"]
+            == result["toolUseResult"]["annotations"][key]["notes"]
+        )
