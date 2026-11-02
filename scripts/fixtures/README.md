@@ -143,9 +143,13 @@ proximity.
 
 `Session.interaction_questions` and `Session.question_responses` are optional,
 ordered lists of separate `Question` and `QuestionResponse` records. These are
-shared-model fields ready for adapter adoption, not production JSON additions.
-The current exporter continues to read only its existing schema and leaves
-these records intact on the source model, even when it truncates raw results.
+internal shared-model lists. The JSON envelope keeps its existing top-level
+schema and linear `events` conversation. Structured facts appear only within
+the existing tool-call entries as `interaction_questions` and `question_responses`,
+using their recorded activity addresses. The exporter copies them without
+truncating structured facts or mutating the source model. Facts without an
+evidenced call address remain available on the model; export never guesses a
+call or adds a separate conversation event for them.
 `QuestionAnswer` and `ToolCall.questions` remain migration debt for
 QUAL-2523/QUAL-2524/QUAL-2525; do not populate both representations in new consumers.
 
@@ -159,11 +163,12 @@ QUAL-2523/QUAL-2524/QUAL-2525; do not populate both representations in new consu
 | `multiple_selections` | Optional recorded boolean indicating whether multiple selections were offered. Missing means unknown capability, not false; the response still retains every recorded selection. |
 | `QuestionResponse.question` | Required `QuestionAssociation` or explicit null for unassociated responses. An association has a local `question_ref` and nonempty `evidence` of recorded IDs or an explicit native structural relationship. This addresses an occurrence, not a question string or native ID alone. |
 | `activity` | Optional `QuestionActivityReference` on a question or response. `message_i` addresses canonical `Message.i`; optional zero-based `tool_call_index` addresses that message's ordered calls (including the call's matching result). Nonempty `evidence` establishes the address through native containment or recorded identifiers. Omit when unknown; a response may have an evidenced activity while its particular question remains unassociated. |
-| `outcome` | Required evidence-based `answered`, `refused`, or `unknown`. Unknown means a response is present but its meaning cannot be established. A question with no associated response is unanswered **in the observed log**; this does not prove a person ignored it. Never synthesize an empty answer or refusal from silence, tool failure, missing results, or unfamiliar labels. |
+| `outcome` | Required evidence-based `answered`, `refused`, `cancelled`, or `unknown`. Unknown means a response is present but its meaning cannot be established. A question with no associated response is unanswered **in the observed log**; this does not prove a person ignored it. Never synthesize an empty answer or refusal from silence, tool failure, missing results, or unfamiliar labels. |
 | `selections` | Optional ordered `QuestionSelection` records with full recorded `label` and optional `option_ref` scoped to the associated question. Retain multiple/repeated selections. An option ref requires native selection evidence establishing the offered option; substring similarity is insufficient. Unassociated or ambiguous selections retain labels without option refs. Missing means unknown/not supplied; `[]` means explicitly no selected options. |
 | `selected_preview` | Optional full preview recorded with the response, independently of offered `QuestionChoice.preview` values. Never synthesize it by copying an offered option preview; a selection does not prove a preview was returned. |
 | `free_text` | Optional complete answer text, distinct from selected labels. May coexist with selections; an empty recorded string stays empty. Do not turn arbitrary raw tool text into a human answer. |
 | `refusal` | Required for `outcome: refused`, otherwise absent. `QuestionRefusal.by` is `candidate`, `settings`, `harness`, or `unknown`, based on recorded evidence. Optional `explanation` retains the refusal explanation, independently of its author. Tool errors remain on canonical calls/results, never automatic candidate refusals. This is not the permission/plan contract. |
+| `cancellation` | Required for `outcome: cancelled`, otherwise absent. Named `QuestionCancellation` carries evidenced `by` (`candidate`, `settings`, `harness`, or `unknown`) and optional native `explanation`. Cancellation records a stopped interaction without asserting refusal or candidate feedback. |
 | `candidate_feedback` | Optional full feedback known to be candidate-authored. Keep harness-generated refusal explanations in `refusal.explanation`; unknown authorship does not justify candidate feedback. |
 
 All optional fields are non-nullable unless explicitly stated above. Missing
@@ -193,7 +198,9 @@ The illustrative JSON below covers repeated questions, a recommended option
 that was not selected, multiple selections plus free text, refusal with separate
 feedback, an unanswered question, unassociated answers, an unknown response,
 and an unrelated tool error. The `native.*` paths are illustrative evidence,
-not claims about any harness's schema. These are proposed model shapes only.
+not claims about any harness's schema. This example shows the internal model,
+not the exported envelope: its question/response lists are projected onto existing
+tool calls for conversation consumers.
 
 ```json
 {
@@ -234,7 +241,7 @@ native parsers or assert adapter conformance. This change generates no paid capt
 | Harness | Evidence and interpretation inspected | Fit and gaps |
 | --- | --- | --- |
 | Claude | [Provenance](claude/README.md): the complete `2.1.312/native/` capture, recorded interactively on 2026-10-30 with 2.1.312/2.1.314, supplies `AskUserQuestion` calls, options/descriptions/previews, multi-question/multi-select answers, notes-only and selection-with-notes responses, free text, and cancellation. `tool_use.id` / `tool_result.tool_use_id` scope `toolUseResult.answers` and `annotations` keyed by question text. | Local refs need no invented native question IDs. Capture-backed projections preserve offered previews separately from recorded selected previews and candidate notes separately from free-text answers. Cancellation has `toolDenialKind: user-rejected` as well as `is_error: true`. Parser integration remains QUAL-2523; this contract does not change the current combined-record interpretation. Recommendations, repeated identical questions, and unknown/unassociated responses remain evidence gaps. |
-| Codex | [Provenance](codex/README.md): the complete interactive CLI 0.166.0 capture (2026-10-30) supplies two-question calls, recommendation suffixes, whole-label selections, selection-plus-note, custom Unicode/punctuation and cancellation. Recorded `call_id` scopes answer maps keyed by native question IDs; map order differs from question order. | Contract tests select an explicit whole-label answer using the current `codex_capture.question_interaction` helper, preserving the complete multi-question input/result. They join by question ID, never map position. `user_note:` entries and the Other sentinel remain raw native content for harness-specific interpretation; they are not additional selected options. Multi-select and previews remain unestablished. Adapter migration remains QUAL-2524. |
+| Codex | [Provenance](codex/README.md): the complete interactive CLI 0.166.0 capture (2026-10-30) supplies two-question calls, recommendation suffixes, whole-label selections, selection-plus-note, custom Unicode/punctuation and cancellation. Recorded `call_id` scopes answer maps keyed by native question IDs; map order differs from question order. | Contract tests select an explicit whole-label answer using the current `codex_capture.question_interaction` helper, preserving the complete multi-question input/result. They join by question ID, never map position. Production interpretation retains `user_note:` content as `free_text`, distinct from selected labels, and excludes the custom-answer sentinel from selections when a note supplies the answer. Native cancellation is distinct from refusal. Multi-select and previews remain unestablished. |
 | Copilot | [Provenance](copilot/README.md): the complete interactive CLI 1.0.104-3 capture (2026-10-30) supplies `human_response.recorded` answer maps linked by `toolCallId`, single/multiple selections, separate free-text schema answers, selection-plus-note and cancellation. The operator-marked shell exit 7 retains wrapper `success: true`. | Source property keys establish question scope within the call. A separate free-text schema property is another question's answer, not feedback on the preceding question. Shell failure provides no candidate refusal evidence. Native previews/annotation fields remain unavailable. `copilot_fixture.native_records` selects the current source; shared-contract adoption remains QUAL-2525. |
 
 Claude's structured `toolUseResult` is on the result entry, outside the textual
@@ -270,6 +277,66 @@ unknown/unassociated responses, repeated identical questions, and refusal-source
 variants beyond candidate cancellation use illustrative boundaries. Tests do
 not establish rejection of malformed references, classify arbitrary native
 refusal strings, or claim complete native-format coverage.
+
+### Codex production questions and responses
+
+Codex populates both shared lists, including questions with no observed result.
+The existing legacy `ToolCall.questions` interpretation remains for compatibility.
+JSON places the shared facts on their existing conversation tool-call entries;
+consumers continue to traverse `events` in the same order. A `request_user_input` call defines
+question occurrences through its native containment. `call_id` joins results to
+that call, and the `answers` map keys identify questions within the call. Repeated
+IDs across calls remain distinct. Duplicate IDs or question text within a call,
+unmatched keys, and results with no matching call retain unassociated responses;
+matching counts and timestamps never establish a link.
+
+Native answer arrays retain whole selected labels, including punctuation and
+commas, with an option reference only for one exact offered match. `user_note: `
+is a native prefix: its suffix is retained verbatim as `free_text`, including
+empty text. With a note, `None of the above` is a TUI custom-answer sentinel,
+not a selected offered option, unless that exact option was offered. A selected
+label and a note can coexist; the note is answer content, not separate feedback.
+Unknown payload fields remain on complete canonical inputs/results. Unrecognized
+answer values retain an `unknown` response rather than inventing an answer.
+
+An explicit `aborted by user after <duration>s` question result is a candidate
+cancellation. A multi-question call cancellation retains call activity but no
+per-question association. Later user feedback stays a separate message. Older
+explicit user-rejection wording is a refusal; only its `The user said:` segment
+becomes candidate feedback. Error flags alone establish neither refusal nor
+cancellation. Settings/permission and plan semantics remain separate.
+
+For example, cancelling a two-question call without naming either question yields
+this response (with its evidenced call activity omitted for brevity):
+
+```json
+{"ref": "codex:r0", "question": null, "outcome": "cancelled", "cancellation": {"by": "candidate", "explanation": "aborted by user after 10.2s"}}
+```
+
+The native capture verifies whole-label selections, selection-plus-note, custom
+Unicode/punctuation and explicit cancellation independently of generated prose.
+Controlled cases cover repeated/unmatched questions, duplicate labels, malformed
+values, missing identifiers, legacy refusal feedback, and error boundaries. JSON
+exports retain structured facts within their evidenced tool calls at zero, short,
+and unlimited raw-result caps. Unmatched answers with no recorded call address
+remain unassociated on the internal model, alongside unmatched native results.
+No paid captures or consumer/timestamp changes are part of this adoption.
+
+For example, an exported tool entry contains the facts at the point where the
+interaction occurred, without new envelope-level question/response lists:
+
+```json
+{
+  "name": "request_user_input",
+  "input": {"questions": [{"id": "q", "question": "Choose?", "options": [{"label": "A"}]}]},
+  "result": "A",
+  "interaction_questions": [{"ref": "codex:q0", "native_id": "q", "text": "Choose?", "options": [{"ref": "codex:q0:o0", "label": "A"}]}],
+  "question_responses": [{"ref": "codex:r0", "question": {"question_ref": "codex:q0", "evidence": [{"field": "answers key", "value": "q"}]}, "outcome": "answered", "selections": [{"label": "A", "option_ref": "codex:q0:o0"}]}]
+}
+```
+
+Activity/evidence details and raw-result byte metadata are abbreviated in this
+example; native payload preservation and the existing raw-result cap still apply.
 
 ## Shared permission refusals and plan decisions contract
 
