@@ -30,8 +30,9 @@ native result.
 Codex Plan mode is identified from the per-turn collaboration-mode metadata.
 The retained interpretation helpers recognize structured ``update_plan`` calls,
 but no current native capture shows that call in Plan mode. Unlike Claude Code's ``ExitPlanMode`` flow, Codex
-does not currently record a separate plan approval result; later approval or
-steering is captured as the next ordinary user turn.
+does not currently record a separate plan approval result. Explicit candidate
+implementation/rejection statements are retained as shared decisions without
+guessing which plan version they address; other steering stays message content.
 
 Examples
 --------
@@ -61,9 +62,15 @@ from typing import Dict, List, Optional, Tuple, TypedDict
 
 from session_log_extractors import codex_sources
 from session_log_extractors.codex_authorship import message_authorship
+from session_log_extractors.codex_decisions import (
+    is_process_rejection,
+    populate_decision_facts,
+)
+from session_log_extractors.codex_decisions import (
+    parse_permission_denial as parse_permission_denial,
+)
 from session_log_extractors.codex_questions import (
     REQUEST_USER_INPUT,
-    USER_REFUSAL_PREFIX,
     _CodexQuestionInterpreter,
 )
 from session_log_extractors.codex_sources import CodexSource, ImageInputs
@@ -143,31 +150,6 @@ _COMMAND_ARGS = re.compile(
 )
 _SLASH_COMMAND = re.compile(r"^\s*(/[A-Za-z0-9][\w:.-]*)(?:\s+(.*?))?\s*$", re.DOTALL)
 _DATA_IMAGE_URL = re.compile(r"^data:(image/[A-Za-z0-9.+-]+);base64,(.*)$", re.DOTALL)
-
-# This branch recognizes a harness-style assistant rejection message. The
-# current native app-server denial instead appears in a tool result.
-_PERMISSION_DENIAL_PREFIXES = (
-    USER_REFUSAL_PREFIX,
-    "Permission for this tool use was denied.",
-)
-_EXT_AGENT_PREFIX = re.compile(
-    r"^\[external_agent_tool_result[^\]]*\]\s*", re.IGNORECASE
-)
-_DENIAL_MESSAGE = re.compile(
-    r"the user said:\s*\n?(.*?)(?:\n\nNote:|\Z)", re.DOTALL | re.IGNORECASE
-)
-
-
-def parse_permission_denial(text: JsonValue) -> Optional[str]:
-    """If ``text`` is a permission-denial message, return the human's steering
-    message (``""`` if they just denied). Return ``None`` otherwise."""
-    if not isinstance(text, str):
-        return None
-    stripped = _EXT_AGENT_PREFIX.sub("", text).lstrip()
-    if not stripped.startswith(_PERMISSION_DENIAL_PREFIXES):
-        return None
-    m = _DENIAL_MESSAGE.search(stripped)
-    return m.group(1).strip() if m else ""
 
 
 def clean_user_text(text: str) -> str:
@@ -354,14 +336,6 @@ def skill_names_from_call(name: str, arguments: JsonValue) -> List[str]:
 def _tool_name(payload: Dict[str, JsonValue]) -> str:
     name = payload.get("name")
     return name if isinstance(name, str) else "tool"
-
-
-def _is_process_rejection(result: object) -> bool:
-    return (
-        isinstance(result, str)
-        and "exec_command failed: CreateProcess" in result
-        and "rejected by user" in result.lower()
-    )
 
 
 def _is_interaction_tool(name: str) -> bool:
@@ -1019,7 +993,7 @@ class _CodexSessionBuilder:
             questions = _questions(call, output)
             if questions:
                 call["questions"] = questions
-            if _is_process_rejection(_flatten_result_text(output)):
+            if is_process_rejection(_flatten_result_text(output)):
                 call["permission_denial"] = PermissionDenial(
                     tool=call["name"], message="", by="user"
                 )
@@ -1098,6 +1072,7 @@ def interpret_source(source: CodexSource) -> Session | None:
     for entry in _conversation_entries(source):
         interpreter.entry(entry)
     interpreter.flush_user()
+    populate_decision_facts(interpreter.session)
     session = interpreter.session
     return (
         session

@@ -452,6 +452,10 @@ class ToolCall(TypedDict, total=False):
     question_responses: list[QuestionResponse]
     plan_decision: PlanDecision
     permission_denial: PermissionDenial
+    permission_refusals: list[PermissionRefusal]
+    plan_versions: list[PlanVersion]
+    plan_presentations: list[PlanPresentation]
+    plan_decisions: list[ObservedPlanDecision]
     skill: str
 
 
@@ -542,6 +546,10 @@ class MessageContent(NativeIdentity, total=False):
     collaboration_mode: str
     tool_results: list[ToolResult]
     permission_denial: PermissionDenial
+    permission_refusals: list[PermissionRefusal]
+    plan_versions: list[PlanVersion]
+    plan_presentations: list[PlanPresentation]
+    plan_decisions: list[ObservedPlanDecision]
 
 
 class SkillInvocation(TypedDict):

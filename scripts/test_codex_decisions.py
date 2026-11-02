@@ -5,11 +5,9 @@ from copy import deepcopy
 import pytest
 from codex_capture import TRANSCRIPT, exec_interactions
 
+from session_log_extractors.codex_decisions import parse_permission_denial
 from session_log_extractors.codex_sources import CodexSource, load_entries
-from session_log_extractors.extract_codex_session_log import (
-    interpret_source,
-    parse_permission_denial,
-)
+from session_log_extractors.extract_codex_session_log import interpret_source
 from session_log_extractors.session_log_envelope import export_session
 
 

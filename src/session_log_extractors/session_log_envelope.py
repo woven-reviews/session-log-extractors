@@ -32,9 +32,11 @@ from typing import List, Optional, TypedDict
 from session_log_extractors.json_types import JsonValue, json_value
 from session_log_extractors.session_model import (
     AssistantMessage,
+    DecisionActivityReference,
     Event,
     Image,
     Message,
+    MessageContent,
     QuestionActivityReference,
     Session,
     ToolCall,
@@ -269,7 +271,44 @@ def export_session(
         tool_result_max_bytes,
     )
     _export_question_facts(session, envelope)
+    _export_decision_facts(session, envelope)
     return envelope
+
+
+def _decision_target(
+    envelope: Envelope, activity: DecisionActivityReference | None
+) -> MessageContent | ToolCall | None:
+    if activity is None or not activity["evidence"]:
+        return None
+    for message in envelope["events"]:
+        if message["i"] != activity["message_i"]:
+            continue
+        if "tool_call_index" not in activity:
+            return message
+        calls = message.get("tool_calls") or []
+        index = activity["tool_call_index"]
+        return calls[index] if 0 <= index < len(calls) else None
+    return None
+
+
+def _export_decision_facts(session: Session, envelope: Envelope) -> None:
+    """Enrich only the activity supported by recorded evidence."""
+    for refusal in session.get("permission_refusals", []):
+        target = _decision_target(envelope, refusal["activity"])
+        if target is not None:
+            target.setdefault("permission_refusals", []).append(deepcopy(refusal))
+    for version in session.get("plan_versions", []):
+        target = _decision_target(envelope, version["activity"])
+        if target is not None:
+            target.setdefault("plan_versions", []).append(deepcopy(version))
+    for presentation in session.get("plan_presentations", []):
+        target = _decision_target(envelope, presentation["activity"])
+        if target is not None:
+            target.setdefault("plan_presentations", []).append(deepcopy(presentation))
+    for decision in session.get("plan_decisions", []):
+        target = _decision_target(envelope, decision["activity"])
+        if target is not None:
+            target.setdefault("plan_decisions", []).append(deepcopy(decision))
 
 
 def _export_question_facts(session: Session, envelope: Envelope) -> None:
