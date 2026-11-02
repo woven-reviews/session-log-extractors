@@ -20,6 +20,7 @@ from session_log_extractors.session_model import (
     QuestionEvidence,
     QuestionResponse,
     QuestionResponseOutcome,
+    QuestionResultFacts,
     QuestionSelection,
     ToolCall,
 )
@@ -101,8 +102,9 @@ class _CopilotQuestionInterpreter:
         questions = _schema_questions(
             call, f"copilot:q{len(self.interpretation.questions)}"
         )
-        call["interaction_questions"] = list(questions.values())
-        call["question_responses"] = []
+        call["question_result_facts"] = QuestionResultFacts(
+            questions=list(questions.values()), responses=[]
+        )
         evidence = [QuestionEvidence(field="tool.name", value=ASK_USER)]
         call_id = call.get("id")
         if call_id is not None:
@@ -152,11 +154,11 @@ class _CopilotQuestionInterpreter:
         self.interpretation.responses.append(response)
         if group is not None:
             response["activity"] = group.activity
-            group.call["question_responses"].append(response)
+            group.call["question_result_facts"]["responses"].append(response)
         else:
-            self.unassociated_call(record, position)["question_responses"].append(
-                response
-            )
+            self.unassociated_call(record, position)["question_result_facts"][
+                "responses"
+            ].append(response)
         return response
 
     def unassociated_call(
@@ -169,7 +171,7 @@ class _CopilotQuestionInterpreter:
             call = ToolCall(
                 name=ASK_USER,
                 result=json.dumps(record.get("data"), ensure_ascii=False),
-                question_responses=[],
+                question_result_facts=QuestionResultFacts(questions=[], responses=[]),
             )
             agent_id = string_value(record.get("agentId"))
             if agent_id is not None:

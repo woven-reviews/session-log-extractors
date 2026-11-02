@@ -275,11 +275,12 @@ def test_native_structured_question_facts_survive_export(limit):
         ):
             assert "interaction_questions" not in exported_call
             assert "question_responses" not in exported_call
+            assert "question_result_facts" not in exported_call
             if call["name"] != "ask_user":
                 continue
             result = _question_result(exported_call)
-            assert result["questions"] == call["interaction_questions"]
-            assert result["responses"] == call["question_responses"]
+            assert result["questions"] == call["question_result_facts"]["questions"]
+            assert result["responses"] == call["question_result_facts"]["responses"]
             exported_questions.extend(result["questions"])
             exported_responses.extend(result["responses"])
     assert exported_questions == session["interaction_questions"]

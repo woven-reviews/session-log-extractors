@@ -24,6 +24,7 @@ import argparse
 import json
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -33,6 +34,10 @@ from session_log_extractors.claude_authorship import (
     _attribute_command_outputs,
     _queued_authorship,
     _user_authorship,
+)
+from session_log_extractors.claude_questions import (
+    ASK_USER_QUESTION,
+    _attach_questions,
 )
 from session_log_extractors.claude_sources import (
     ClaudeSource,
@@ -58,7 +63,6 @@ from session_log_extractors.session_log_envelope import (
 from session_log_extractors.session_model import (
     Event,
     Message,
-    MessageContent,
     NativeIdentity,
     PermissionDenial,
     PlanDecision,
@@ -82,7 +86,7 @@ FILE_WRITING_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "Create"}
 # Tools that prompt the human for a direct answer (pop-up questions, etc.). Their
 # tool_result carries the human's selection, so we surface it as a user
 # interaction rather than folding it into the generic result notes.
-INTERACTION_TOOLS = {"AskUserQuestion"}
+INTERACTION_TOOLS = {ASK_USER_QUESTION}
 
 # Plan mode: the assistant presents a plan via ExitPlanMode and the human either
 # approves it (optionally after editing it in the approval dialog) or rejects it
@@ -638,7 +642,7 @@ def _message_identity(entry: Dict[str, JsonValue]) -> NativeIdentity:
     return identity
 
 
-def _attach_identity(message: MessageContent, identity: NativeIdentity) -> None:
+def _attach_identity(message: NativeIdentity, identity: NativeIdentity) -> None:
     if "id" in identity:
         message["id"] = identity["id"]
     if "parent_id" in identity:
@@ -675,16 +679,65 @@ def _questions(tool_input: object) -> List[QuestionAnswer]:
     return _question_records(questions) if isinstance(questions, list) else []
 
 
+def _attach_question_result(
+    record: ToolResult, entry: Dict[str, JsonValue], call: ToolCall | None
+) -> None:
+    """Keep the entry's alternate question result alongside its result block."""
+    payload = entry.get("toolUseResult")
+    has_question_data = isinstance(payload, dict) and (
+        "answers" in payload or "annotations" in payload
+    )
+    if not has_question_data and (call is None or call["name"] != ASK_USER_QUESTION):
+        return
+    if "toolUseResult" in entry:
+        record["native_result"] = payload
+    denial_kind = entry.get("toolDenialKind")
+    if isinstance(denial_kind, str):
+        record["native_denial_kind"] = denial_kind
+
+
+def _ambiguous_question_ids(entries: List[Dict[str, JsonValue]]) -> set[str]:
+    counts: Counter[str] = Counter()
+    question_ids: set[str] = set()
+    for entry in entries:
+        if entry.get("type") != "assistant" or entry.get("isSidechain") is True:
+            continue
+        for block in _content_blocks(entry):
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            tool_id = block.get("id")
+            if isinstance(tool_id, str) and tool_id:
+                counts[tool_id] += 1
+                if block.get("name") == ASK_USER_QUESTION:
+                    question_ids.add(tool_id)
+    return {tool_id for tool_id in question_ids if counts[tool_id] > 1}
+
+
+def _tool_result_record(
+    entry: Dict[str, JsonValue], block: Dict[str, JsonValue]
+) -> ToolResult:
+    tool_id = block.get("tool_use_id")
+    record = ToolResult(
+        tool_call_id=tool_id if isinstance(tool_id, str) else None,
+        ts=string_value(entry.get("timestamp")),
+        content=block.get("content"),
+        is_error=bool(block.get("is_error")),
+    )
+    _attach_identity(record, _message_identity(entry))
+    return record
+
+
 class _ClaudeInterpreter:
     """Interpret ordered messages and associate tool activity by native call ID."""
 
-    def __init__(self) -> None:
+    def __init__(self, ambiguous_question_ids: set[str]) -> None:
+        self.ambiguous_question_ids = ambiguous_question_ids
+        self.results_with_alternates: List[ToolResult] = []
         self.events: List[Message] = []
         self.files_changed: List[str] = []
         self.skills_used: List[str] = []
         self.subagent_count = 0
         self.pending_calls: Dict[str, ToolCall] = {}
-        self.unmatched_tool_results: List[ToolResult] = []
         self.unsupported_tools: List[str] = []
 
     def consume(self, entry: Dict[str, JsonValue]) -> None:
@@ -832,41 +885,58 @@ class _ClaudeInterpreter:
             for block in _content_blocks(entry)
             if isinstance(block, dict) and block.get("type") == "tool_result"
         ]
-        if not blocks and entry.get("toolUseResult") is not None:
-            # Older records have no call ID. Retain the complete payload without
-            # assigning it to a nearby call or duplicating a recorded block.
-            self.unmatched_tool_results.append(
-                ToolResult(
-                    tool_call_id=None,
-                    ts=string_value(entry.get("timestamp")),
-                    content=entry["toolUseResult"],
-                    is_error=False,
-                    **_message_identity(entry),
-                )
-            )
-        for block in blocks:
-            tool_id = block.get("tool_use_id")
+        unmatched: List[ToolResult] = []
+        payload = entry.get("toolUseResult")
+        ambiguous_payload = (
+            len(blocks) > 1
+            and isinstance(payload, dict)
+            and ("answers" in payload or "annotations" in payload)
+        )
+        if len(blocks) != 1 and payload is not None:
             record = ToolResult(
-                tool_call_id=tool_id if isinstance(tool_id, str) else None,
+                tool_call_id=None,
                 ts=string_value(entry.get("timestamp")),
-                content=block.get("content"),
-                is_error=bool(block.get("is_error")),
-                **_message_identity(entry),
+                content=payload,
+                is_error=False,
             )
+            _attach_identity(record, _message_identity(entry))
+            unmatched.append(record)
+        for block in blocks:
+            record = _tool_result_record(entry, block)
+            tool_id = record["tool_call_id"]
             call = (
-                self.pending_calls.pop(tool_id, None)
-                if isinstance(tool_id, str)
-                else None
+                self.pending_calls.pop(tool_id, None) if tool_id is not None else None
             )
+            if len(blocks) == 1:
+                _attach_question_result(record, entry, call)
+            if tool_id in self.ambiguous_question_ids:
+                call = None
+            if ambiguous_payload and call is not None:
+                self.results_with_alternates.append(record)
             if call is None:
-                self.unmatched_tool_results.append(record)
-                continue
-            call["result_record"] = record
-            result_text = _result_block_text(block)
-            call["result"] = result_text
-            if block.get("is_error"):
-                call["is_error"] = True
-            self.decision(call, result_text)
+                unmatched.append(record)
+            else:
+                self.complete_call(call, record, block)
+        if unmatched:
+            message = Event(
+                i=len(self.events),
+                role="user",
+                text="",
+                ts=string_value(entry.get("timestamp")),
+                tool_results=unmatched,
+            )
+            _attach_identity(message, _message_identity(entry))
+            self.events.append(message)
+
+    def complete_call(
+        self, call: ToolCall, record: ToolResult, block: Dict[str, JsonValue]
+    ) -> None:
+        call["result_record"] = record
+        result_text = _result_block_text(block)
+        call["result"] = result_text
+        if block.get("is_error"):
+            call["is_error"] = True
+        self.decision(call, result_text)
 
     def decision(self, call: ToolCall, result_text: str) -> None:
         if "plan_decision" in call:
@@ -942,19 +1012,19 @@ def interpret_source(
     source: ClaudeSource,
 ) -> Optional[Session]:
     """Interpret supplied records, inline images and source identity without I/O."""
-    adapter = _ClaudeInterpreter()
+    adapter = _ClaudeInterpreter(_ambiguous_question_ids(source.entries))
     for entry in source.entries:
         adapter.consume(entry)
     if not adapter.events:
         return None
     _attribute_command_outputs(source.entries, adapter.events)
+    _attach_questions(adapter.events, adapter.results_with_alternates)
     return Session(
         harness="claude",
         session_id=source.path.stem,
         events=adapter.events,
         skills_used=adapter.skills_used,
         subagent_count=adapter.subagent_count,
-        unmatched_tool_results=adapter.unmatched_tool_results,
         unsupported_tools=adapter.unsupported_tools,
         files_changed=adapter.files_changed,
         cwd=session_cwd(source.entries),

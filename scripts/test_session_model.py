@@ -83,13 +83,23 @@ def test_question_occurrences_and_response_states_are_independent():
     session = Session(
         harness="test",
         session_id="s",
-        events=[],
-        interaction_questions=questions,
-        question_responses=responses,
+        events=[
+            Event(
+                i=0,
+                role="assistant",
+                tool_calls=[
+                    ToolCall(
+                        name="question-tool",
+                        interaction_questions=questions,
+                        question_responses=responses,
+                    )
+                ],
+            )
+        ],
     )
     decoded = json.loads(json.dumps(session))
     question_refs = set()
-    for question in decoded["interaction_questions"]:
+    for question in decoded["events"][0]["tool_calls"][0]["interaction_questions"]:
         question_refs.add(question["ref"])
         assert question["text"] == "Choose?"
     assert len(question_refs) == 3
@@ -168,12 +178,12 @@ def _codex_question_contract():
 @pytest.mark.parametrize("limit", [0, 8, -1])
 def test_native_question_facts_survive_export_policy(limit):
     question, response, call = _codex_question_contract()
+    call["interaction_questions"] = [question]
+    call["question_responses"] = [response]
     session = Session(
         harness="codex",
         session_id="s",
         events=[Event(i=0, role="assistant", tool_calls=[call])],
-        interaction_questions=[question],
-        question_responses=[response],
     )
     original = deepcopy(session)
     exported = export_session(session, limit)
@@ -188,10 +198,10 @@ def test_native_question_facts_survive_export_policy(limit):
     assert recorded_answers == [selection["label"]]
     assert question["native_id"] in json.loads(call["result"])["answers"]
     assert question["activity"]["message_i"] == session["events"][0]["i"]
-    assert "interaction_questions" not in exported
-    assert "question_responses" not in exported
     assert actual["interaction_questions"] == [question]
     assert actual["question_responses"] == [response]
+    assert "interaction_questions" not in exported
+    assert "question_responses" not in exported
     assert session == original
     actual["input"]["questions"].clear()
     assert session == original
@@ -287,6 +297,8 @@ def test_claude_native_notes_and_previews_survive_export(marker, limit):
         id=call["id"],
         input=call["input"],
         result=result_block["content"],
+        interaction_questions=[question],
+        question_responses=[response],
         result_record={
             "tool_call_id": call["id"],
             "ts": result["timestamp"],
@@ -298,8 +310,6 @@ def test_claude_native_notes_and_previews_survive_export(marker, limit):
         harness="claude",
         session_id="s",
         events=[Event(i=0, role="assistant", tool_calls=[raw_call])],
-        interaction_questions=[question],
-        question_responses=[response],
     )
     original = deepcopy(session)
 
@@ -397,15 +407,27 @@ def test_claude_native_multiselect_preserves_question_scope():
     session = Session(
         harness="claude",
         session_id="s",
-        events=[],
-        interaction_questions=questions,
-        question_responses=responses,
+        events=[
+            Event(
+                i=0,
+                role="assistant",
+                tool_calls=[
+                    ToolCall(
+                        name="question-tool",
+                        interaction_questions=questions,
+                        question_responses=responses,
+                    )
+                ],
+            )
+        ],
     )
 
     decoded = json.loads(json.dumps(session))
 
-    assert len(decoded["interaction_questions"]) >= 2
-    for index, response in enumerate(decoded["question_responses"]):
+    assert len(decoded["events"][0]["tool_calls"][0]["interaction_questions"]) >= 2
+    for index, response in enumerate(
+        decoded["events"][0]["tool_calls"][0]["question_responses"]
+    ):
         assert response["question"]["question_ref"] == questions[index]["ref"]
         assert response["question"]["evidence"]
 
@@ -489,12 +511,11 @@ def test_copilot_shell_failure_does_not_supply_question_response_evidence():
         harness="copilot",
         session_id="s",
         events=[Event(i=0, role="assistant", tool_calls=[call])],
-        question_responses=[],
     )
     original = deepcopy(session)
     exported = export_session(session, 0)
     assert exported["events"][0]["tool_calls"][0]["result"] == result["result"]
-    assert session["question_responses"] == []
+    assert "question_responses" not in call
     assert session == original
 
 
@@ -516,8 +537,11 @@ def test_documented_question_examples_preserve_distinct_states():
     documentation = (FIXTURES / "README.md").read_text()
     section = documentation.split("## Shared questions and responses contract", 1)[1]
     example = json.loads(section.split("```json\n", 1)[1].split("```", 1)[0])
-    first, repeated, unanswered = example["interaction_questions"]
-    answer, refusal, orphan, unknown = example["question_responses"]
+    question_call, unrelated_call = example["events"][0]["tool_calls"]
+    (orphan_result,) = example["events"][1]["tool_results"]
+    first, repeated, unanswered = question_call["interaction_questions"]
+    answer, refusal = question_call["question_responses"]
+    orphan, unknown = orphan_result["question_responses"]
     assert first["text"] == repeated["text"] and first["ref"] != repeated["ref"]
     assert (
         first["options"][0]["recommendation_markers"][0]["value"] == "A (Recommended)"
@@ -533,13 +557,18 @@ def test_documented_question_examples_preserve_distinct_states():
     assert orphan["question"] is None and orphan["selections"] == []
     assert unknown == {"ref": "r4", "outcome": "unknown", "question": None}
     associated_refs = []
-    for response in example["question_responses"]:
+    responses = (
+        question_call["question_responses"] + orphan_result["question_responses"]
+    )
+    for response in responses:
         if response["question"] is not None:
             assert response["question"]["evidence"]
             associated_refs.append(response["question"]["question_ref"])
         assert "activity" not in response
     assert unanswered["ref"] not in associated_refs
-    assert example["events"][0]["tool_calls"][0]["is_error"] is True
+    assert unrelated_call["is_error"] is True
+    assert "interaction_questions" not in example
+    assert "question_responses" not in example
     assert json.loads(json.dumps(example)) == example
 
 

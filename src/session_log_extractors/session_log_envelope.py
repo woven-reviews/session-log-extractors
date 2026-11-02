@@ -38,6 +38,7 @@ from session_log_extractors.session_model import (
     QuestionActivityReference,
     Session,
     ToolCall,
+    ToolResult,
     UserMessage,
 )
 
@@ -279,7 +280,8 @@ def _export_question_facts(session: Session, envelope: Envelope) -> None:
         for index, exported_call in enumerate(event.get("tool_calls") or []):
             source_call = source_calls[index]
             if (
-                "interaction_questions" in source_call
+                "question_result_facts" in source_call
+                or "interaction_questions" in source_call
                 or "question_responses" in source_call
             ):
                 continue
@@ -316,6 +318,10 @@ def _export_event(event: Message, limit: int) -> Event:
     if "images" in event:
         exported["images"] = event["images"]
     _export_provenance(event, exported)
+    if "tool_results" in event:
+        exported["tool_results"] = [
+            _export_result(record, limit) for record in event["tool_results"]
+        ]
     if "tool_calls" in event:
         calls = event["tool_calls"]
         exported["tool_calls"] = (
@@ -354,6 +360,7 @@ def _export_call(call: ToolCall, limit: int) -> ToolCall:
         exported["is_error"] = call["is_error"]
     if "error" in call:
         exported["error"] = call["error"]
+    _export_question_records(call, exported, limit)
     result = call.get("result")
     if "result" in call and (result is None or isinstance(result, str)):
         capped = truncate_result(result, limit)
@@ -366,17 +373,41 @@ def _export_call(call: ToolCall, limit: int) -> ToolCall:
 
 def _export_question_result(call: ToolCall, exported: ToolCall) -> None:
     """Keep decision facts in the existing result alongside its capped raw text."""
-    if "interaction_questions" not in call and "question_responses" not in call:
+    facts = call.get("question_result_facts")
+    if facts is None:
         return
     exported["result"] = json.dumps(
         {
             "raw_result": exported.get("result"),
-            "questions": json_value(call.get("interaction_questions", [])),
-            "responses": json_value(call.get("question_responses", [])),
+            "questions": json_value(facts["questions"]),
+            "responses": json_value(facts["responses"]),
         },
         ensure_ascii=False,
         indent=2,
     )
+
+
+def _export_question_records(call: ToolCall, exported: ToolCall, limit: int) -> None:
+    if "interaction_questions" in call:
+        exported["interaction_questions"] = call["interaction_questions"]
+    if "question_responses" in call:
+        exported["question_responses"] = call["question_responses"]
+    record = call.get("result_record")
+    if record is not None and (
+        "native_result" in record or "native_denial_kind" in record
+    ):
+        exported["result_record"] = _export_result(record, limit)
+
+
+def _export_result(record: ToolResult, limit: int) -> ToolResult:
+    """Retain native structured payloads; apply the text cap to textual copies."""
+    exported = deepcopy(record)
+    content, native_result = record.get("content"), record.get("native_result")
+    if isinstance(content, str):
+        exported["content"] = truncate_result(content, limit)["result"]
+    if isinstance(native_result, str):
+        exported["native_result"] = truncate_result(native_result, limit)["result"]
+    return exported
 
 
 def write_envelope(

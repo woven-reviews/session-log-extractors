@@ -8,11 +8,15 @@ session semantics remain available on the model for other consumers.
 """
 
 from enum import StrEnum
-from typing import Literal, Never, NotRequired, Required, TypeAlias, TypedDict
+from typing import Final, Literal, Never, NotRequired, Required, TypeAlias, TypedDict
 
 from session_log_extractors.json_types import JsonValue
 from session_log_extractors.question_types import QuestionOption
 from session_log_extractors.tool_inputs import ToolInput, ToolInputSchema
+
+REFUSAL_CANDIDATE: Final = "candidate"
+REFUSAL_SETTINGS: Final = "settings"
+REFUSAL_UNKNOWN: Final = "unknown"
 
 
 class Image(TypedDict, total=False):
@@ -149,6 +153,13 @@ class QuestionResponse(TypedDict):
     activity: NotRequired[QuestionActivityReference]
 
 
+class QuestionResultFacts(TypedDict):
+    """Question records carried by an existing textual tool result."""
+
+    questions: list[Question]
+    responses: list[QuestionResponse]
+
+
 class PlanDecision(TypedDict):
     """A proposed plan and any recorded approval, edit, or rejection."""
 
@@ -169,6 +180,144 @@ class PermissionDenial(TypedDict):
     tool: str
     message: str
     by: str
+
+
+class DecisionEvidence(TypedDict):
+    """A source field path and its unchanged value supporting a decision fact."""
+
+    field: str
+    value: JsonValue
+
+
+class DecisionActivityReference(TypedDict):
+    """Canonical activity address established by nonempty native evidence.
+
+    message_i addresses Message.i; tool_call_index indexes its ordered calls
+    and their ID-matched results. Neither address nor temporal proximity proves
+    ownership. Unmatched results retain their evidence without this reference.
+    """
+
+    message_i: int
+    tool_call_index: NotRequired[int]
+    evidence: list[DecisionEvidence]
+
+
+class RefusalSource(StrEnum):
+    """Evidence-based refusal source, independent of native denial labels."""
+
+    CANDIDATE = "candidate"
+    SETTINGS = "settings"
+    HARNESS = "harness"
+    UNKNOWN = "unknown"
+
+
+class DeniedAction(TypedDict):
+    """Recorded description of the denied action; full input stays on its call."""
+
+    description: str
+    tool_name: NotRequired[str]
+
+
+class PermissionRefusal(TypedDict):
+    """An observed denial, never an inferred approval/pending lifecycle.
+
+    Native labels alone and tool errors do not establish denial. None preserves
+    an unknown action, variant, or activity. Only evidenced candidate-authored
+    feedback belongs in candidate_feedback, separately from explanation.
+    """
+
+    ref: str
+    native_id: NotRequired[str]
+    action: DeniedAction | None
+    source: RefusalSource
+    native_variant: str | None
+    evidence: list[DecisionEvidence]
+    activity: DecisionActivityReference | None
+    explanation: NotRequired[str]
+    candidate_feedback: NotRequired[str]
+
+
+class PlanVersionKind(StrEnum):
+    """Recorded plan content's role, not an inferred planning-mode state."""
+
+    PROPOSED = "proposed"
+    EDITED = "edited"
+    UNKNOWN = "unknown"
+
+
+class PlanVersionAssociation(TypedDict):
+    """Link to a local version occurrence justified by nonempty native evidence."""
+
+    version_ref: str
+    evidence: list[DecisionEvidence]
+
+
+class PlanVersion(TypedDict):
+    """One complete recorded version; repeated identical content stays distinct.
+
+    edited_from requires an explicit recorded relationship, not a text diff or
+    adjacency. Omit it when no original version can be established. A proposed
+    version does not imply presentation for approval or any observed decision.
+    """
+
+    ref: str
+    native_id: NotRequired[str]
+    kind: PlanVersionKind
+    text: str
+    edited_from: NotRequired[PlanVersionAssociation]
+    evidence: list[DecisionEvidence]
+    activity: DecisionActivityReference | None
+
+
+class PlanPresentation(TypedDict):
+    """Recorded presentation for approval, with an explicitly nullable version.
+
+    Presentation alone is neither approval nor a planning lifecycle transition.
+    """
+
+    ref: str
+    native_id: NotRequired[str]
+    version: PlanVersionAssociation | None
+    evidence: list[DecisionEvidence]
+    activity: DecisionActivityReference | None
+
+
+class PlanPresentationAssociation(TypedDict):
+    """Link to a local presentation occurrence, supported by native evidence."""
+
+    presentation_ref: str
+    evidence: list[DecisionEvidence]
+
+
+class PlanOutcome(StrEnum):
+    """Meaning established from a recorded decision; silence has no outcome."""
+
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    UNKNOWN = "unknown"
+
+
+class ObservedPlanDecision(TypedDict):
+    """One recorded decision, independent of versions and presentations.
+
+    version identifies the content decided on (possibly an edited version),
+    while presentation identifies the review occurrence. Null preserves either
+    unknown association. native_decision retains any recorded JSON value;
+    missing means no native label, not approval. Nonempty evidence supports the
+    observed fact even when its meaning is unknown. Feedback authorship must be
+    established separately from a harness-generated explanation.
+    """
+
+    ref: str
+    native_id: NotRequired[str]
+    outcome: PlanOutcome
+    native_decision: NotRequired[JsonValue]
+    version: PlanVersionAssociation | None
+    presentation: PlanPresentationAssociation | None
+    evidence: list[DecisionEvidence]
+    activity: DecisionActivityReference | None
+    explanation: NotRequired[str]
+    candidate_feedback: NotRequired[str]
 
 
 class SubagentSummary(TypedDict, total=False):
@@ -196,11 +345,19 @@ class NativeIdentity(TypedDict, total=False):
 
 
 class ToolResult(NativeIdentity):
-    """A recorded result, associated by native call ID when available."""
+    """A recorded result, associated by native call ID when available.
+
+    content retains the result block; native_result retains an alternate native
+    representation. native_denial_kind is a recorded protocol value, not a
+    normalized refusal source.
+    """
 
     tool_call_id: str | None
     ts: str | None
     content: NotRequired[JsonValue]
+    native_result: NotRequired[JsonValue]
+    native_denial_kind: NotRequired[str]
+    question_responses: NotRequired[list[QuestionResponse]]
     is_error: bool
 
 
@@ -290,6 +447,7 @@ class ToolCall(TypedDict, total=False):
     result_images: list[Image]
     execution: ToolExecution
     questions: list[QuestionAnswer]
+    question_result_facts: QuestionResultFacts
     interaction_questions: list[Question]
     question_responses: list[QuestionResponse]
     plan_decision: PlanDecision
@@ -382,6 +540,7 @@ class MessageContent(NativeIdentity, total=False):
     context_attachments: list[ContextAttachment]
     submitted: SubmittedText
     collaboration_mode: str
+    tool_results: list[ToolResult]
     permission_denial: PermissionDenial
 
 
@@ -465,5 +624,10 @@ class Session(TypedDict):
     files_changed: NotRequired[list[str]]
     file_activity: NotRequired[list[FileActivity]]
     patch_results: NotRequired[list[PatchResult]]
+    # Codex stages these facts for projection onto evidenced calls at export.
     interaction_questions: NotRequired[list[Question]]
     question_responses: NotRequired[list[QuestionResponse]]
+    permission_refusals: NotRequired[list[PermissionRefusal]]
+    plan_versions: NotRequired[list[PlanVersion]]
+    plan_presentations: NotRequired[list[PlanPresentation]]
+    plan_decisions: NotRequired[list[ObservedPlanDecision]]
