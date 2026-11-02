@@ -270,3 +270,115 @@ unknown/unassociated responses, repeated identical questions, and refusal-source
 variants beyond candidate cancellation use illustrative boundaries. Tests do
 not establish rejection of malformed references, classify arbitrary native
 refusal strings, or claim complete native-format coverage.
+
+## Shared permission refusals and plan decisions contract
+
+`Session.permission_refusals`, `plan_versions`, `plan_presentations`, and
+`plan_decisions` are optional ordered lists for adapter adoption in
+QUAL-2526/QUAL-2527/QUAL-2528. These add shared-model semantics only. Production
+JSON and native parsing are unchanged. The current exporter reads its existing
+fields and leaves these complete records on the source model, independently of
+raw-result byte limits. Existing `PermissionDenial`, `PlanDecision`, their
+message/call fields, and `Session.permission_decisions` remain intact for
+compatibility. New consumers should use the separate facts rather than populate
+both old summaries and new records.
+
+| Record/field | Contract |
+| --- | --- |
+| `ref` | Required session-local occurrence reference, unique within each list. Repeated identical content or native IDs remain distinct occurrences. List order is not an inferred lifecycle. |
+| `native_id` | Optional verbatim source identifier for that fact, never a generated ref or a borrowed tool ID. |
+| `evidence` | Required nonempty list of `DecisionEvidence` records with a native field path and its complete recorded JSON value. Unknown outcome/source still requires evidence that the fact occurred. Preserve unfamiliar fields in canonical payloads; evidence is not a schema filter. |
+| `activity` | Required `DecisionActivityReference` or explicit null for unknown ownership. A reference has `message_i` addressing canonical `Message.i`, optional zero-based `tool_call_index` addressing its ordered calls and matched results, and nonempty native evidence proving ownership. A message-only reference can address other recorded activity. Retain unassociated/unmatched result evidence without inventing a canonical call. |
+| `PermissionRefusal.action` | Required `DeniedAction` or null when unknown. `description` retains the recorded action description; optional `tool_name` retains the native tool name when known. Full arguments stay on the canonical call, accessible through `activity`; do not replace them with this description. |
+| `source` | `RefusalSource`: `candidate`, `settings`, `harness`, or `unknown`. This interpretation is separate from the native variant. Never attribute a refusal to a person solely because the call failed. |
+| `native_variant` | Required exact native denial-kind string, or null when no variant was recorded. Preserve unfamiliar labels; establish denial from evidence rather than assuming every unknown result label is a refusal. |
+| `explanation`, `candidate_feedback` | Separate optional complete strings on refusals and observed plan decisions. An explanation is the recorded explanation, without an authorship claim. Candidate feedback requires evidence of candidate authorship; never copy a harness explanation into it. Recorded empty strings stay empty; omit unrecorded feedback. |
+| `PlanVersion.kind`, `text` | Required `PlanVersionKind` (`proposed`, `edited`, `unknown`) and full recorded plan text. A proposal alone does not prove it was presented for approval. Structured step updates remain on canonical `ToolCall.plan_update`; these versions do not create a planning-mode lifecycle. |
+| `edited_from` | Optional `PlanVersionAssociation` with local `version_ref` and nonempty evidence establishing the original version. Editing is a content fact, not approval. Omit this link when the original cannot be established. Keep every version's complete text. |
+| `PlanPresentation.version` | Required `PlanVersionAssociation` or null. The presentation records that a plan was offered for approval, even if its exact content cannot be associated. Repeated presentations stay distinct. A failed attempt to present a plan does not establish presentation. |
+| `ObservedPlanDecision.outcome` | Required `PlanOutcome`: `approved`, `rejected`, or `unknown`. Represents an observed decision only. Missing decisions imply neither approval nor rejection; do not synthesize pending records or outcomes from silence. An unknown decision is distinct from no observed decision. |
+| `native_decision` | Optional exact recorded JSON decision value, including unfamiliar strings, booleans, objects, or null. Omission means no native decision value was recorded. This value is distinct from the interpreted outcome. |
+| `ObservedPlanDecision.version`, `presentation` | Required, independently nullable associations. `version` identifies the content decided on; `presentation` uses a `PlanPresentationAssociation` with `presentation_ref` identifying the review occurrence. Both require nonempty native evidence. An edited version may be approved following presentation of another version. An observed decision can remain entirely unassociated. |
+
+Optional fields are non-nullable unless explicitly stated. Missing session lists
+mean that this semantic interpretation was not supplied; empty lists mean no
+such facts were retained. Types do not enforce reference integrity or validate
+native payloads at runtime; that work and schema-version handling remain
+QUAL-2533. Consumer decision timestamps remain QUAL-2499. Source timestamps
+remain on canonical activity.
+
+Associations require recorded IDs (retaining both sides and their call scope),
+native containment, or explicit recorded relationships. Local refs merely
+address facts after evidence establishes the relationship. Text equality,
+similarity, nearest timestamps, most recent human messages, ordering, matching
+counts, and generated assistant assertions do not establish ownership or edits.
+Do not infer that later feedback refers to a cancelled permission or plan review.
+Preserve complete inputs/results and unmatched results in their existing model
+fields. Tool errors, cancellation, permission refusals, and plan rejection are
+distinct facts; a result can support multiple facts only with explicit evidence.
+Successful execution does not create a permission approval record.
+
+This illustrative JSON is a model example, not a production export or native
+capture. The `example.*` paths represent deliberately controlled source fields.
+The unrelated error is not a refusal; the last version and presentation have no
+decisions. The edited approval identifies a different version from the one
+originally presented. No intermediate lifecycle events are necessary.
+
+```json
+{
+  "harness": "illustrative", "session_id": "decisions-example",
+  "events": [{"i": 0, "role": "assistant", "tool_calls": [
+    {"name": "read", "is_error": true, "result": "File not found"}
+  ]}],
+  "permission_refusals": [
+    {"ref": "d1", "action": {"description": "Write a file", "tool_name": "write"}, "source": "candidate", "native_variant": "user-rejected", "activity": null,
+     "evidence": [{"field": "example.refusal", "value": {"kind": "user-rejected", "actor": "human", "feedback": "Use another file"}}],
+     "explanation": "Request rejected", "candidate_feedback": "Use another file"},
+    {"ref": "d2", "action": null, "source": "settings", "native_variant": "permission-rule", "activity": null,
+     "evidence": [{"field": "example.refusal", "value": {"kind": "permission-rule", "denied": true}}], "explanation": "Blocked by configured rule"},
+    {"ref": "d3", "action": null, "source": "unknown", "native_variant": "future-denial", "activity": null,
+     "evidence": [{"field": "example.refusal", "value": {"kind": "future-denial", "denied": true}}]}
+  ],
+  "plan_versions": [
+    {"ref": "v1", "kind": "proposed", "text": "Original café plan", "activity": null, "evidence": [{"field": "example.proposal", "value": {"id": "a", "text": "Original café plan"}}]},
+    {"ref": "v2", "kind": "edited", "text": "Edited 雪 plan", "activity": null, "evidence": [{"field": "example.edit.text", "value": "Edited 雪 plan"}],
+     "edited_from": {"version_ref": "v1", "evidence": [{"field": "example.edit", "value": {"original_id": "a", "edited_id": "b", "text": "Edited 雪 plan"}}]}},
+    {"ref": "v3", "kind": "unknown", "text": "Another recorded plan", "activity": null, "evidence": [{"field": "example.content", "value": "Another recorded plan"}]}
+  ],
+  "plan_presentations": [
+    {"ref": "p1", "version": {"version_ref": "v1", "evidence": [{"field": "example.review", "value": {"id": "review-a", "proposal_id": "a"}}]}, "activity": null,
+     "evidence": [{"field": "example.review", "value": {"id": "review-a", "proposal_id": "a"}}]},
+    {"ref": "p2", "version": null, "activity": null, "evidence": [{"field": "example.review", "value": {"id": "review-b"}}]}
+  ],
+  "plan_decisions": [
+    {"ref": "r1", "outcome": "rejected", "native_decision": false, "activity": null,
+     "version": {"version_ref": "v1", "evidence": [{"field": "example.decision", "value": {"review_id": "review-a", "version_id": "a", "approved": false}}]},
+     "presentation": {"presentation_ref": "p1", "evidence": [{"field": "example.decision.review_id", "value": "review-a"}]},
+     "evidence": [{"field": "example.decision.approved", "value": false}], "candidate_feedback": "Revise the plan", "explanation": "Review returned a rejection"},
+    {"ref": "r2", "outcome": "approved", "native_decision": true, "activity": null,
+     "version": {"version_ref": "v2", "evidence": [{"field": "example.decision", "value": {"review_id": "review-a", "version_id": "b", "approved": true}}]},
+     "presentation": {"presentation_ref": "p1", "evidence": [{"field": "example.decision.review_id", "value": "review-a"}]},
+     "evidence": [{"field": "example.decision.approved", "value": true}]},
+    {"ref": "r3", "outcome": "unknown", "native_decision": {"kind": "future"}, "version": null, "presentation": null, "activity": null,
+     "evidence": [{"field": "example.decision", "value": {"kind": "future"}}]}
+  ]
+}
+```
+
+### Permission and plan fixture evidence and limits
+
+`test_session_decisions.py` checks shared-model projections from the following
+committed captures and illustrative unknown/missing states. It does not assert
+native adapter adoption, infer a complete lifecycle, or generate paid captures.
+
+| Harness | Evidence and interpretation inspected | Fit and gaps |
+| --- | --- | --- |
+| Claude | [Provenance](claude/README.md), `2.1.312/native/` interactive capture (2026-10-30): `toolDenialKind: user-rejected` and `permission-rule` on ID-matched results; `ExitPlanMode` calls; error outside plan mode; rejection feedback; structured `toolUseResult.plan` and `planWasEdited: true`. Inspected `parse_permission_denial`, `parse_plan_decision`, and `_apply_plan_result`. | Projections retain denial source/variant, canonical call ownership, and complete proposed/edited text compared directly with before/after editor assets. The failed presentation is a tool error, not candidate rejection. Harness-generated rejection instructions are explanations, not candidate feedback. Text-only feedback parsing and production adoption remain QUAL-2526. Unknown sources/variants use controlled boundaries. |
+| Codex | [Provenance](codex/README.md), CLI 0.166.0 interactive capture (2026-10-30): `call_id`-matched permission/question cancellations (`aborted by user`), separate structured read-only sandbox refusal, proposed-plan assistant text, stay-in-Plan choice and later feedback, ordinary implementation approval. Inspected `_is_process_rejection`, `_plan_update`, and call/result interpretation. | Tests preserve complete cancellation results on canonical calls and project the separate settings refusal with its complete structured evidence. Cancellation is not the older CreateProcess denial variant; later feedback has no proven call link. The capture does not establish edited-plan editor content or `update_plan` in Plan mode. It supplies no dedicated structured decision record proving the association between ordinary implementation text and a specific plan version. Native plan interpretation remains QUAL-2527; do not invent approvals, edits, or associations from nearby messages. |
+| Copilot | [Provenance](copilot/README.md), CLI 1.0.104-3 interactive capture (2026-10-30): `permission.completed` has native kind, feedback, request/tool IDs and `decisionSource`; configured refusal is on `tool.execution_complete.error`; `human_response.recorded` contains `responseKind: exit_plan_mode`, boolean `approved`, full `planContent`, and optional feedback. Inspected `copilot_interactions` and permission joins. | Projections retain native boolean outcomes, full returned plan text, independently linked presentations/versions, candidate denial feedback, and settings explanations. The response's returned plan is directly associated by containment; its equality to the initially presented version is not established. The real editor assets establish changed content in this capture, but text differences alone never prove an `edited_from` association. Permission-menu cancellation remains distinct from denial. Production adoption remains QUAL-2528. |
+
+Generated plan text, feedback, and assistant prose are compared with recorded
+fields or prepared editor assets rather than fixed wording. Selectors use native
+tool names, denial kinds, flags and ID relationships. These tests do not classify
+arbitrary denial text, prove all native variants, enforce malformed-reference
+rejection, or claim that all plan presentations and decisions are recoverable.
