@@ -278,7 +278,15 @@ def test_native_cli_stdout_and_file_agree(tmp_path, capsys):
     assert file_diagnostics.out == ""
     assert "unsupported tool input schemas" in file_diagnostics.err
     assert "unsupported tool input schemas" in stdout.err
-    assert json.loads(stdout.out) == json.loads(destination.read_text())
+    exported = json.loads(stdout.out)
+    assert exported == json.loads(destination.read_text())
+    assert len(exported["interaction_questions"]) == 4
+    assert len(exported["question_responses"]) == 4
+    outcomes = []
+    for response in exported["question_responses"]:
+        outcomes.append(response["outcome"])
+    assert outcomes.count("answered") == 3
+    assert outcomes.count("cancelled") == 1
 
 
 def test_native_question_selection_tolerates_rewording_questions_labels_and_answers():
@@ -329,6 +337,17 @@ def test_native_question_selection_tolerates_rewording_questions_labels_and_answ
         for option in recorded["options"]:
             labels.append(option["label"])
         assert actual["chosen_labels"][0] in labels
+    for question in session["interaction_questions"]:
+        recorded_answers = answers["answers"][question["native_id"]]["answers"]
+        matching_responses = []
+        for response in session["question_responses"]:
+            if response["question"]["question_ref"] == question["ref"]:
+                matching_responses.append(response)
+        (response,) = matching_responses
+        assert question["text"].startswith("Reworded question")
+        assert question["header"].startswith("New header")
+        assert len(response["selections"]) == 1
+        assert response["selections"][0]["label"] in recorded_answers
     assert isinstance(session["events"][-1]["text"], str)
     assert session["events"][-1]["text"]
 
