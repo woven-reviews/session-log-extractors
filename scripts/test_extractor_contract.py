@@ -312,3 +312,54 @@ def _call_named(session, name):
                 matches.append(call)
     assert len(matches) == 1, f"Expected one recorded call to {name}"
     return matches[0]
+
+
+def _assert_harness_response(message):
+    spans = message.get("authorship", [])
+    assert spans, "Recorded primary-assistant output must have attribution"
+    for span in spans:
+        assert span["source"] == "harness"
+        assert span["markers"]
+    return spans
+
+
+@pytest.mark.parametrize(
+    ("extractor", "selection", "harness"),
+    [
+        (claude.EXTRACTOR, TRANSCRIPT, "claude"),
+        (codex.EXTRACTOR, CODEX_TRANSCRIPT, "codex"),
+        (copilot.EXTRACTOR, None, "copilot"),
+    ],
+)
+def test_recorded_primary_assistant_text_is_harness_activity(
+    extractor, selection, harness
+):
+    source = _read_contract_source(extractor, selection, harness)
+    native_ids = set()
+    if harness == "copilot":
+        for record in source.state_records:
+            if record["type"] == "assistant.message" and not record.get("agentId"):
+                native_ids.add(record["id"])
+    else:
+        for record in source.entries:
+            if harness == "claude" and record.get("type") == "assistant":
+                native_ids.add(record["uuid"])
+            elif harness == "codex":
+                payload = record.get("payload", {})
+                if (
+                    payload.get("type") == "message"
+                    and payload.get("role") == "assistant"
+                ):
+                    native_ids.add(payload["id"])
+    session = extractor.interpret_source(source)
+    original = deepcopy(session)
+    exported = export_session(session)
+    checked = 0
+    for message in session["events"]:
+        if message.get("id") not in native_ids or not message.get("text"):
+            continue
+        spans = _assert_harness_response(message)
+        assert exported["events"][message["i"]]["authorship"] == spans
+        checked += 1
+    assert checked > 0, "Capture must supply a primary-assistant response"
+    assert session == original

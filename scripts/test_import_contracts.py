@@ -46,6 +46,7 @@ for target in [
     "session_log_envelope",
     "claude_sources",
     "codex_sources",
+    "codex_authorship",
     "copilot_sources",
     "extract_claude_session_log",
     "extract_codex_session_log",
@@ -55,6 +56,7 @@ for target in [
 for target in [
     "claude_sources",
     "codex_sources",
+    "codex_authorship",
     "copilot_sources",
     "extract_claude_session_log",
     "extract_codex_session_log",

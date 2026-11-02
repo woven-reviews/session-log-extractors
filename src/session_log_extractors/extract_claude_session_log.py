@@ -29,6 +29,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from session_log_extractors import session_log_envelope
 from session_log_extractors.claude_authorship import (
+    _assistant_authorship,
     _attribute_command_outputs,
     _queued_authorship,
     _user_authorship,
@@ -777,6 +778,9 @@ class _ClaudeInterpreter:
                 calls,
             )
             _attach_identity(message, _message_identity(entry))
+            message["authorship"] = _assistant_authorship(
+                entry, message.get("text") or ""
+            )
             self.events.append(message)
 
     def call(self, block: Dict[str, JsonValue]) -> ToolCall:

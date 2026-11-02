@@ -65,6 +65,23 @@ def _span(
     return span
 
 
+def _assistant_authorship(
+    entry: dict[str, JsonValue], text: str
+) -> list[AuthorshipRange]:
+    """A recorded assistant response is harness activity, independent of wording."""
+    if not text:
+        return []
+    message = entry.get("message")
+    role = message.get("role") if isinstance(message, dict) else None
+    markers = _markers(entry) + [AuthorshipMarker(field="message.role", value=role)]
+    source: AuthorshipSource = (
+        "harness"
+        if entry.get("type") == "assistant" and role == "assistant"
+        else "unknown"
+    )
+    return [_span(entry, text, source, markers)]
+
+
 def _split_content(
     text: str,
     body: JsonValue,
