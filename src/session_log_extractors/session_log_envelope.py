@@ -2,8 +2,8 @@
 """Build the raw session-log envelope shared by all three session-log extractors.
 
 Each extractor writes a normalized JSON envelope carrying the conversation with
-images inlined as base64. Tool inputs remain complete and tool results retain
-their configured byte cap. Markdown already recorded in messages is content;
+images inlined as base64. Tool inputs and interpreted decision facts remain
+complete; raw textual results retain their configured byte cap. Markdown already recorded in messages is content;
 this module does not generate a separate presentation artifact.
 
 One schema serves all three harnesses. That matters because they store images
@@ -29,7 +29,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import List, Optional, TypedDict
 
-from session_log_extractors.json_types import JsonValue
+from session_log_extractors.json_types import JsonValue, json_value
 from session_log_extractors.session_model import (
     AssistantMessage,
     Event,
@@ -275,8 +275,16 @@ def export_session(
 def _export_question_facts(session: Session, envelope: Envelope) -> None:
     """Project model facts onto their evidenced calls in the linear conversation."""
     calls: dict[tuple[int, int], ToolCall] = {}
-    for event in envelope["events"]:
+    for source_event, event in zip(session["events"], envelope["events"], strict=True):
+        source_calls = source_event.get("tool_calls") or []
         for index, exported_call in enumerate(event.get("tool_calls") or []):
+            source_call = source_calls[index]
+            if (
+                "question_result_facts" in source_call
+                or "interaction_questions" in source_call
+                or "question_responses" in source_call
+            ):
+                continue
             calls[event["i"], index] = exported_call
     for question in session.get("interaction_questions", []):
         call = _activity_call(calls, question.get("activity"))
@@ -359,7 +367,24 @@ def _export_call(call: ToolCall, limit: int) -> ToolCall:
         capped["result_bytes"] = call.get("result_bytes", capped["result_bytes"])
         capped["result_truncated"] |= call.get("result_truncated", False)
         attach_result(exported, capped)
+    _export_question_result(call, exported)
     return exported
+
+
+def _export_question_result(call: ToolCall, exported: ToolCall) -> None:
+    """Keep decision facts in the existing result alongside its capped raw text."""
+    facts = call.get("question_result_facts")
+    if facts is None:
+        return
+    exported["result"] = json.dumps(
+        {
+            "raw_result": exported.get("result"),
+            "questions": json_value(facts["questions"]),
+            "responses": json_value(facts["responses"]),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
 
 
 def _export_question_records(call: ToolCall, exported: ToolCall, limit: int) -> None:

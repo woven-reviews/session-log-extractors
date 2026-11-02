@@ -70,8 +70,15 @@ and a checkpoint; the original native history remained available.
 for questions; rendered comma-separated result text is not an answer parser.
 The interpreted model retains agent identities, question answers, plan decisions,
 refusal sources, native shell success/exit status, complete tool-result blocks,
-and separately accessible child summaries. The current JSON schema omits question/plan decisions and child summaries
-intentionally; it exports complete tool inputs/results/errors, ordered images,
+and separately accessible child summaries. The existing tool `result` string now
+holds JSON text with shared question and response records alongside `raw_result`, including ID-linked
+answers and telemetry-evidenced question cancellation. The raw-result cap does
+not shorten these structured facts. There are no new top-level or event fields.
+Unassociated responses remain result-only activity in native order.
+Plain enum labels provide no
+structured recommendation, option-description, or preview fields; these remain
+unknown. Plan decisions and child summaries remain model-only.
+JSON also exports complete tool inputs/results/errors, ordered images,
 agent scope, authorship, source/type markers, and user-shell rendered text. Native user-shell streams are
 combined; separate stdout/stderr ordering cannot be recovered. Tool-result
 budgets 0/17/4096/unlimited and a real multibyte split, non-mutation, and exact

@@ -267,6 +267,32 @@ recorded call ID. Repeated and orphan results remain in `unmatched_tool_results`
 and the complete native result stays in `result_record` beside the compatible
 textual JSON result. Database-only inputs retain file targets by `turn_index`.
 
+Copilot keeps structured questions and responses inside the existing tool
+`result` string as JSON text: `questions`, `responses`, and `raw_result`.
+The envelope and event fields and their value types are unchanged, so consumers
+can display the same linear conversation.
+Only `raw_result` is capped; structured facts remain complete. The session's
+`interaction_questions` and `question_responses` remain internal model views.
+Each schema property is a distinct question occurrence with
+the exact request message, title, description, enum options, and selection mode.
+Responses link through a unique same-agent `toolCallId` and the recorded answer
+map's property key. Repeated questions retain distinct local references; missing,
+duplicate, or cross-agent identifiers leave answers explicitly unassociated.
+Responses without an evidenced owning call appear as result-only tool activity
+at their native record position, without an invented request ID or input.
+`recorded_answer` retains the original JSON value, including unsupported shapes;
+`selections` and `free_text` describe its interpretation. Multiple custom values
+are newline-joined in `free_text`; their original boundaries remain in
+`recorded_answer`. Candidate feedback stays separate from answer text and harness
+explanations. A native `elicitation_action: cancel` establishes a candidate
+cancellation, separate from refusal; errors and rendered cancellation prose
+alone do not establish either. Cancellation of a
+multi-question request remains unassociated with an individual question.
+The captured enum format has no option descriptions, recommendation markers,
+or previews: these fields remain absent, while labels and complete raw tool
+inputs/results remain available. Structured question facts survive every raw
+result byte budget, including zero. Permission and plan semantics are unchanged.
+
 Copilot authorship is independent of role. Recorded `data.source` and automatic
 continuation evidence distinguish candidate, harness, and other-agent input;
 unfamiliar or contradictory evidence remains unknown. The supported unscoped

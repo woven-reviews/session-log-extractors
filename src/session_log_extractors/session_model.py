@@ -84,6 +84,7 @@ class Question(TypedDict):
     native_id: NotRequired[str]
     text: str
     header: NotRequired[str]
+    description: NotRequired[str]
     options: list[QuestionChoice]
     multiple_selections: NotRequired[bool]
     activity: NotRequired[QuestionActivityReference]
@@ -131,6 +132,8 @@ class QuestionResponse(TypedDict):
 
     outcome is an evidence-based interpretation, not a native result label.
     Unknown responses preserve ambiguity; tool errors alone are not responses.
+    recorded_answer preserves the native answer value before interpretation,
+    including unsupported shapes. It is absent for a refusal without an answer.
     Refused responses carry refusal; cancelled responses carry cancellation.
     free_text is answer content, whereas
     candidate_feedback contains only evidenced candidate-authored feedback.
@@ -140,6 +143,7 @@ class QuestionResponse(TypedDict):
     native_id: NotRequired[str]
     question: QuestionAssociation | None
     outcome: QuestionResponseOutcome
+    recorded_answer: NotRequired[JsonValue]
     selections: NotRequired[list[QuestionSelection]]
     selected_preview: NotRequired[str]
     free_text: NotRequired[str]
@@ -147,6 +151,13 @@ class QuestionResponse(TypedDict):
     cancellation: NotRequired[QuestionCancellation]
     candidate_feedback: NotRequired[str]
     activity: NotRequired[QuestionActivityReference]
+
+
+class QuestionResultFacts(TypedDict):
+    """Question records carried by an existing textual tool result."""
+
+    questions: list[Question]
+    responses: list[QuestionResponse]
 
 
 class PlanDecision(TypedDict):
@@ -436,6 +447,7 @@ class ToolCall(TypedDict, total=False):
     result_images: list[Image]
     execution: ToolExecution
     questions: list[QuestionAnswer]
+    question_result_facts: QuestionResultFacts
     interaction_questions: list[Question]
     question_responses: list[QuestionResponse]
     plan_decision: PlanDecision
