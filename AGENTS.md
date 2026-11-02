@@ -104,6 +104,15 @@ the fields required by their output schema, leaving other model fields available
 to consumers; do not serialize the whole model and then delete semantic fields.
 Keep complete inputs/results until export applies the configured output policy.
 
+Allow envelope enrichment that preserves the ordered conversation and existing
+content. Attach new information to the message, tool call, or result it describes
+when recorded evidence establishes that relationship. Session-level model
+collections support internal consumers but must not automatically become
+top-level envelope fields or require display consumers to reconstruct the
+conversation from parallel lists. Keep information with unknown ownership
+explicitly unassociated. Verify that enrichment preserves existing conversation
+content and order and associates new information only through recorded evidence.
+
 ## Test data policy
 
 Prefer existing committed fixtures for new or substantially changed extractor
