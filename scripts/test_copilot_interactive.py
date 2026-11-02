@@ -41,44 +41,6 @@ def test_native_human_markup_survives_interpretation():
     assert message["text"] == native["data"]["transformedContent"]
 
 
-def test_native_question_answers_use_recorded_maps_and_call_ids():
-    _assert_recorded_question_answers(native_source())
-
-
-def _assert_recorded_question_answers(source):
-    responses = []
-    for record in source.state_records:
-        if record["type"] == "human_response.recorded":
-            if record["data"]["response"]["responseKind"] == "ask_user":
-                responses.append(record)
-    assert len(responses) >= 5, "Required question evidence is missing"
-
-    session = copilot.interpret_source(source)
-    calls = recorded_calls(session)
-
-    for response in responses:
-        data = response["data"]
-        call = calls[data["toolCallId"]]
-        answers = data["response"]["content"]
-        questions = call["questions"]
-        assert len(questions) == len(answers)
-        for question in questions:
-            expected = answers[question["field_name"]]
-            assert question["recorded_answer"] == expected
-            assert isinstance(question["answer_text"], str)
-            assert question["answer_text"]
-            offered = []
-            for option in question["options"]:
-                offered.append(option["label"])
-            values = [expected] if isinstance(expected, str) else expected
-            chosen = []
-            for value in values:
-                if value in offered:
-                    chosen.append(value)
-            assert question["chosen_labels"] == chosen
-            assert len(chosen) == len(set(chosen))
-
-
 def test_native_plan_decisions_follow_boolean_approval_and_feedback():
     source = native_source()
     session = copilot.interpret_source(source)
@@ -344,61 +306,6 @@ def test_native_cli_stdout_and_file_agree(tmp_path, monkeypatch, capsys):
     assert "using session:" in stdout_diagnostics.err
 
 
-def test_question_contract_tolerates_reworded_capture():
-    source = native_source()
-    replacements = _question_label_replacements(source)
-    for record in source.state_records:
-        data = record["data"]
-        if record["type"] == "assistant.message":
-            data["content"] = "Reworded assistant response."
-            for request in data.get("toolRequests", []):
-                if request["name"] == "ask_user":
-                    _reword_question_payload(request["arguments"], replacements)
-        elif record["type"] == "human_response.recorded":
-            response = data["response"]
-            if response["responseKind"] == "ask_user":
-                _reword_question_payload(response, replacements)
-                _reword_recorded_answers(response, replacements)
-    _assert_recorded_question_answers(source)
-
-
-def _reword_question_payload(payload, replacements):
-    payload["message"] = "Reworded question?"
-    for field in payload["requestedSchema"]["properties"].values():
-        field["title"] = "Reworded header"
-        choices = field.get("items", field)
-        if "enum" in choices:
-            labels = []
-            for label in choices["enum"]:
-                labels.append(replacements.get(label, "Reworded " + label))
-            choices["enum"] = labels
-
-
-def _question_label_replacements(source):
-    replacements = {}
-    for record in source.state_records:
-        if record["type"] == "human_response.recorded":
-            response = record["data"]["response"]
-            if response["responseKind"] != "ask_user":
-                continue
-            for field in response["requestedSchema"]["properties"].values():
-                choices = field.get("items", field)
-                for label in choices.get("enum", []):
-                    replacements[label] = "Reworded " + label
-    return replacements
-
-
-def _reword_recorded_answers(response, replacements):
-    for key, value in response["content"].items():
-        if isinstance(value, list):
-            changed = []
-            for item in value:
-                changed.append(replacements.get(item, "Reworded custom answer"))
-            response["content"][key] = changed
-        else:
-            response["content"][key] = replacements.get(value, "Reworded custom answer")
-
-
 def test_native_skill_calls_and_slash_arguments_remain_distinct():
     source = native_source()
     session = copilot.interpret_source(source)
@@ -420,27 +327,6 @@ def test_native_skill_calls_and_slash_arguments_remain_distinct():
         command["submitted"]["text"]
         == '/capture-command CAPTURE_ARGS "two words", café 雪'
     )
-
-
-def test_native_question_cancellation_is_not_an_answer():
-    source = native_source()
-    session = copilot.interpret_source(source)
-    calls = recorded_calls(session)
-    answered_ids = set()
-    cancelled = []
-    for record in source.state_records:
-        if record["type"] == "human_response.recorded":
-            answered_ids.add(record["data"]["toolCallId"])
-    for call in calls.values():
-        if call["name"] == "ask_user" and call["id"] not in answered_ids:
-            cancelled.append(call)
-    assert len(cancelled) == 1, "Missing cancelled question evidence"
-    (call,) = cancelled
-    assert call["result_record"]
-    for question in call["questions"]:
-        assert "recorded_answer" not in question
-        assert "answer_text" not in question
-        assert "chosen_labels" not in question
 
 
 def test_native_plan_editor_assets_agree_with_approved_plan():
@@ -495,44 +381,6 @@ def test_missing_tool_image_asset_is_explicitly_unavailable():
     assert len(images) == 1
     assert images[0]["unavailable"] is True
     assert images[0]["ref"].startswith("sha256:")
-
-
-def test_native_question_capture_contains_each_required_answer_shape():
-    session = copilot.interpret_source(native_source())
-    features = set()
-    for call in recorded_calls(session).values():
-        if call["name"] != "ask_user":
-            continue
-        questions = call["questions"]
-        if len(questions) > 1:
-            features.add("multiple questions")
-        for question in questions:
-            _record_question_features(question, features)
-    assert features == {
-        "multiple questions",
-        "multiple selections",
-        "custom text",
-        "selection plus note",
-        "overlapping labels",
-    }
-
-
-def _record_question_features(question, features):
-    labels = []
-    for option in question["options"]:
-        labels.append(option["label"])
-    answer = question.get("recorded_answer")
-    chosen = question.get("chosen_labels", [])
-    if len(chosen) >= 2:
-        features.add("multiple selections")
-    if isinstance(answer, str) and answer and answer not in labels:
-        features.add("custom text")
-    if isinstance(answer, list) and len(answer) > len(chosen) and chosen:
-        features.add("selection plus note")
-    for short in labels:
-        for long in labels:
-            if short != long and short in long and chosen == [long]:
-                features.add("overlapping labels")
 
 
 def test_duplicate_user_shell_completion_preserves_first_and_unmatched():

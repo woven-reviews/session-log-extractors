@@ -52,9 +52,13 @@ from session_log_extractors.copilot_interactions import (
     apply_configured_refusal,
     apply_human_response,
     apply_permission_refusal,
-    questions_from_schema,
     subagent_summaries,
 )
+from session_log_extractors.copilot_protocol import (
+    HUMAN_RESPONSE_RECORDED,
+    TOOL_EXECUTION_COMPLETE,
+)
+from session_log_extractors.copilot_questions import interpret_questions
 from session_log_extractors.copilot_sources import CopilotSource, ImageInputs
 from session_log_extractors.extractor_contract import Extractor
 from session_log_extractors.json_types import JsonValue
@@ -772,8 +776,6 @@ class _CopilotSessionBuilder:
         call = _new_call(
             _string(data.get("name")) or "tool", _json_value(data.get("arguments"))
         )
-        if call["name"] == "ask_user":
-            call["questions"] = questions_from_schema(call.get("input"))
         call_id = _string(data.get("toolCallId"))
         if call_id:
             call["id"] = call_id
@@ -952,14 +954,14 @@ class _CopilotSessionBuilder:
         handlers = {
             "user.message": self.user_message,
             "tool.user_requested": self.user_shell,
-            "human_response.recorded": self.human_response,
+            HUMAN_RESPONSE_RECORDED: self.human_response,
             "permission.completed": self.permission_completion,
             "assistant.message": self.assistant_message,
             "system.message": self.activity,
             "system.notification": self.activity,
             "instruction.update": self.activity,
             "tool.execution_start": self.start,
-            "tool.execution_complete": self.complete,
+            TOOL_EXECUTION_COMPLETE: self.complete,
         }
         for record in self.source.state_records:
             data = record.get("data")
@@ -1083,10 +1085,12 @@ def interpret_source(source: CopilotSource) -> Session | None:
         or event.get("context_attachments")
         or event["role"] == "system"
     ]
-    if not events:
-        return None
     for index, event in enumerate(events):
         event["i"] = index
+
+    questions, responses = interpret_questions(events, source.state_records)
+    if not events and not responses:
+        return None
 
     calls = [call for event in events for call in event.get("tool_calls") or []]
     unsupported_tools = {
@@ -1105,6 +1109,8 @@ def interpret_source(source: CopilotSource) -> Session | None:
         file_activity=_file_activity(source),
         unsupported_tools=sorted(unsupported_tools),
         permission_decisions=_permissions_from_events(source.state_records),
+        interaction_questions=questions,
+        question_responses=responses,
     )
 
 
