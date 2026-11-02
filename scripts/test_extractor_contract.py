@@ -126,6 +126,11 @@ def test_public_interpretation_is_source_free_and_export_is_non_mutating(
     for limit in [0, 17, 4096, -1]:
         exported = export_session(session, limit)
         assert exported["events"]
+        if harness == "copilot":
+            assert session["interaction_questions"]
+            assert session["question_responses"]
+            assert exported["interaction_questions"] == session["interaction_questions"]
+            assert exported["question_responses"] == session["question_responses"]
         assert session == original
     if full_result:
         large_results = []
