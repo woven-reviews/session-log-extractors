@@ -8,9 +8,6 @@ import re
 
 from session_log_extractors.json_types import JsonValue
 from session_log_extractors.session_model import (
-    QUESTION_ANSWERED,
-    QUESTION_REFUSED,
-    QUESTION_UNKNOWN,
     REFUSAL_CANDIDATE,
     REFUSAL_SETTINGS,
     REFUSAL_UNKNOWN,
@@ -22,6 +19,7 @@ from session_log_extractors.session_model import (
     QuestionEvidence,
     QuestionRefusal,
     QuestionResponse,
+    QuestionResponseOutcome,
     QuestionSelection,
     ToolCall,
     ToolResult,
@@ -231,7 +229,7 @@ class _ClaudeQuestionInterpreter:
         response = QuestionResponse(
             ref=f"{self.response_scope}/{len(self.responses)}",
             question=association,
-            outcome=QUESTION_UNKNOWN,
+            outcome=QuestionResponseOutcome.UNKNOWN,
         )
         if activity is not None:
             response["activity"] = activity
@@ -242,7 +240,7 @@ class _ClaudeQuestionInterpreter:
             if isinstance(notes, str):
                 response["candidate_feedback"] = notes
                 if notes:
-                    response["outcome"] = QUESTION_ANSWERED
+                    response["outcome"] = QuestionResponseOutcome.ANSWERED
             if isinstance(preview, str):
                 response["selected_preview"] = preview
         self.responses.append(response)
@@ -251,7 +249,7 @@ class _ClaudeQuestionInterpreter:
         if value == _NOTES_ONLY:
             return
         if value:
-            response["outcome"] = QUESTION_ANSWERED
+            response["outcome"] = QuestionResponseOutcome.ANSWERED
         association = response["question"]
         matching = [
             question
@@ -306,7 +304,7 @@ class _ClaudeQuestionInterpreter:
         response = QuestionResponse(
             ref=f"{self.response_scope}/{len(self.responses)}",
             question=association,
-            outcome=QUESTION_REFUSED,
+            outcome=QuestionResponseOutcome.REFUSED,
             refusal=refusal,
         )
         content = _result_text(record.get("content"))

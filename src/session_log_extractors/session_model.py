@@ -14,9 +14,6 @@ from session_log_extractors.json_types import JsonValue
 from session_log_extractors.question_types import QuestionOption
 from session_log_extractors.tool_inputs import ToolInput, ToolInputSchema
 
-QUESTION_ANSWERED: Final = "answered"
-QUESTION_REFUSED: Final = "refused"
-QUESTION_UNKNOWN: Final = "unknown"
 REFUSAL_CANDIDATE: Final = "candidate"
 REFUSAL_SETTINGS: Final = "settings"
 REFUSAL_UNKNOWN: Final = "unknown"
@@ -106,6 +103,22 @@ class QuestionSelection(TypedDict):
     option_ref: NotRequired[str]
 
 
+class QuestionResponseOutcome(StrEnum):
+    """Evidence-based response states, independent of native result labels."""
+
+    ANSWERED = "answered"
+    REFUSED = "refused"
+    CANCELLED = "cancelled"
+    UNKNOWN = "unknown"
+
+
+class QuestionCancellation(TypedDict):
+    """An explicit cancellation, without asserting a refusal to answer."""
+
+    by: Literal["candidate", "settings", "harness", "unknown"]
+    explanation: NotRequired[str]
+
+
 class QuestionRefusal(TypedDict):
     """An evidenced refusal, distinct from tool errors and candidate feedback."""
 
@@ -118,18 +131,20 @@ class QuestionResponse(TypedDict):
 
     outcome is an evidence-based interpretation, not a native result label.
     Unknown responses preserve ambiguity; tool errors alone are not responses.
-    Refused responses carry refusal; free_text is answer content, whereas
+    Refused responses carry refusal; cancelled responses carry cancellation.
+    free_text is answer content, whereas
     candidate_feedback contains only evidenced candidate-authored feedback.
     """
 
     ref: str
     native_id: NotRequired[str]
     question: QuestionAssociation | None
-    outcome: Literal["answered", "refused", "unknown"]
+    outcome: QuestionResponseOutcome
     selections: NotRequired[list[QuestionSelection]]
     selected_preview: NotRequired[str]
     free_text: NotRequired[str]
     refusal: NotRequired[QuestionRefusal]
+    cancellation: NotRequired[QuestionCancellation]
     candidate_feedback: NotRequired[str]
     activity: NotRequired[QuestionActivityReference]
 
@@ -459,3 +474,6 @@ class Session(TypedDict):
     files_changed: NotRequired[list[str]]
     file_activity: NotRequired[list[FileActivity]]
     patch_results: NotRequired[list[PatchResult]]
+    # Codex stages these facts for projection onto evidenced calls at export.
+    interaction_questions: NotRequired[list[Question]]
+    question_responses: NotRequired[list[QuestionResponse]]
