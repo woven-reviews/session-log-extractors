@@ -35,6 +35,10 @@ def source_markers(
     markers = [AuthorshipMarker(field=prefix + "type", value=record.get("type"))]
     if prefix and "id" in record:
         markers.append(AuthorshipMarker(field=prefix + "id", value=record["id"]))
+    if "agentId" in record:
+        markers.append(
+            AuthorshipMarker(field=prefix + "agentId", value=record["agentId"])
+        )
     if "parentId" in record:
         markers.append(
             AuthorshipMarker(field=prefix + "parentId", value=record["parentId"])
@@ -67,18 +71,22 @@ def _original_source(
     source = data.get("source")
     continuation = data.get("isAutopilotContinuation") is True
     if continuation:
-        return "harness" if source in (None, "system") else "unknown"
+        return (
+            AuthorshipSource.HARNESS
+            if source in (None, "system")
+            else AuthorshipSource.UNKNOWN
+        )
     # The SDK documents omitted source as the runtime's ordinary-human default.
     # An agent-scoped record without source cannot establish human authorship.
     if "source" not in data:
-        return "unknown" if agent_scoped else "candidate"
+        return AuthorshipSource.UNKNOWN if agent_scoped else AuthorshipSource.CANDIDATE
     if source == "user":
-        return "candidate"
+        return AuthorshipSource.CANDIDATE
     if source == "system":
-        return "harness"
+        return AuthorshipSource.HARNESS
     if isinstance(source, str) and source.startswith("agent-") and source[6:]:
-        return "other_agent"
-    return "unknown"
+        return AuthorshipSource.OTHER_AGENT
+    return AuthorshipSource.UNKNOWN
 
 
 def submitted_text(record: dict[str, JsonValue]) -> SubmittedText | None:
@@ -115,27 +123,31 @@ def user_content(
     if transformed is None:
         return text, [_span(0, len(text), source, markers)]
     if original is None:
-        source = "harness" if source == "harness" else "unknown"
+        source = (
+            AuthorshipSource.HARNESS
+            if source == AuthorshipSource.HARNESS
+            else AuthorshipSource.UNKNOWN
+        )
         return text, [_span(0, len(text), source, markers)]
     if not original:
-        return text, [_span(0, len(text), "harness", markers)]
+        return text, [_span(0, len(text), AuthorshipSource.HARNESS, markers)]
     start = text.find(original)
     if start < 0 or text.find(original, start + 1) >= 0:
         linked = (
             _command_ranges(record, text, indexed, original)
-            if source == "candidate"
+            if source == AuthorshipSource.CANDIDATE
             else None
         )
         return text, linked if linked is not None else [
-            _span(0, len(text), "unknown", markers)
+            _span(0, len(text), AuthorshipSource.UNKNOWN, markers)
         ]
     end = start + len(original)
     ranges = []
     if start:
-        ranges.append(_span(0, start, "harness", markers))
+        ranges.append(_span(0, start, AuthorshipSource.HARNESS, markers))
     ranges.append(_span(start, end, source, markers))
     if end < len(text):
-        ranges.append(_span(end, len(text), "harness", markers))
+        ranges.append(_span(end, len(text), AuthorshipSource.HARNESS, markers))
     return text, _selection_ranges(text, ranges, data, (start, end))
 
 
@@ -145,11 +157,19 @@ def user_shell_output_source(
     """Called only after a unique, same-agent shell call-ID join is established."""
     data = record.get("data")
     if not isinstance(data, dict):
-        return "unknown"
+        return AuthorshipSource.UNKNOWN
     if "isUserRequested" in data:
-        return "candidate" if data["isUserRequested"] is True else "unknown"
+        return (
+            AuthorshipSource.CANDIDATE
+            if data["isUserRequested"] is True
+            else AuthorshipSource.UNKNOWN
+        )
     parent = string_value(record.get("parentId"))
-    return "candidate" if parent and message.get("id") == parent else "unknown"
+    return (
+        AuthorshipSource.CANDIDATE
+        if parent and message.get("id") == parent
+        else AuthorshipSource.UNKNOWN
+    )
 
 
 def _has_model_evidence(
@@ -172,7 +192,9 @@ def assistant_authorship(record: dict[str, JsonValue]) -> list[AuthorshipRange]:
     if not text:
         return []
     source: AuthorshipSource = (
-        "harness" if _has_model_evidence(record, data) else "unknown"
+        AuthorshipSource.HARNESS
+        if _has_model_evidence(record, data)
+        else AuthorshipSource.UNKNOWN
     )
     span = _span(0, len(text), source, source_markers(record))
     if "timestamp" in record:
@@ -260,11 +282,11 @@ def _command_ranges(
     cursor = 0
     for start, end in windows:
         if start > cursor:
-            ranges.append(_span(cursor, start, "harness", markers))
-        ranges.append(_span(start, end, "candidate", markers))
+            ranges.append(_span(cursor, start, AuthorshipSource.HARNESS, markers))
+        ranges.append(_span(start, end, AuthorshipSource.CANDIDATE, markers))
         cursor = end
     if cursor < len(text):
-        ranges.append(_span(cursor, len(text), "harness", markers))
+        ranges.append(_span(cursor, len(text), AuthorshipSource.HARNESS, markers))
     return ranges
 
 
@@ -302,17 +324,19 @@ def _overlay_selection(
     result = []
     for span in ranges:
         if (
-            span["source"] != "harness"
+            span["source"] != AuthorshipSource.HARNESS
             or not span["start"] <= start < end <= span["end"]
         ):
             result.append(span)
             continue
         markers = span.get("markers", [])
         if span["start"] < start:
-            result.append(_span(span["start"], start, "harness", markers))
-        result.append(_span(start, end, "ide", [*markers, evidence]))
+            result.append(
+                _span(span["start"], start, AuthorshipSource.HARNESS, markers)
+            )
+        result.append(_span(start, end, AuthorshipSource.IDE, [*markers, evidence]))
         if end < span["end"]:
-            result.append(_span(end, span["end"], "harness", markers))
+            result.append(_span(end, span["end"], AuthorshipSource.HARNESS, markers))
     return result
 
 

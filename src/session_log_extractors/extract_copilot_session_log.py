@@ -77,6 +77,7 @@ from session_log_extractors.session_log_envelope import (
 from session_log_extractors.session_model import (
     AssistantMessage,
     AuthorshipRange,
+    AuthorshipSource,
     Event,
     FileActivity,
     FileActivityProvenance,
@@ -753,7 +754,14 @@ class _CopilotSessionBuilder:
             source_markers=markers,
         )
         message["authorship"] = (
-            [AuthorshipRange(start=0, end=len(text), source="harness", markers=markers)]
+            [
+                AuthorshipRange(
+                    start=0,
+                    end=len(text),
+                    source=AuthorshipSource.HARNESS,
+                    markers=markers,
+                )
+            ]
             if text
             else []
         )
@@ -875,7 +883,7 @@ class _CopilotSessionBuilder:
                 {
                     "start": 0,
                     "end": len(command),
-                    "source": "candidate",
+                    "source": AuthorshipSource.CANDIDATE,
                     "markers": message.get("source_markers", []),
                 }
             )
@@ -928,7 +936,7 @@ class _CopilotSessionBuilder:
                 AuthorshipRange(
                     start=0,
                     end=len(command),
-                    source="candidate",
+                    source=AuthorshipSource.CANDIDATE,
                     markers=message["source_markers"],
                 )
             ]

@@ -20,6 +20,7 @@ from session_log_extractors.session_log_envelope import (
 from session_log_extractors.session_model import (
     AuthorshipMarker,
     AuthorshipRange,
+    AuthorshipSource,
     Event,
     Image,
     Session,
@@ -275,9 +276,18 @@ def _native_records(relative_path):
 
 
 @pytest.mark.parametrize(
-    "source", ["candidate", "harness", "ide", "other_agent", "unknown"]
+    ("source", "serialized_source"),
+    [
+        (AuthorshipSource.CANDIDATE, "candidate"),
+        (AuthorshipSource.HARNESS, "harness"),
+        (AuthorshipSource.IDE, "ide"),
+        (AuthorshipSource.OTHER_AGENT, "other_agent"),
+        (AuthorshipSource.UNKNOWN, "unknown"),
+    ],
 )
-def test_authorship_is_independent_of_role_and_preserves_unicode(source):
+def test_authorship_is_independent_of_role_and_preserves_unicode(
+    source, serialized_source
+):
     # Deliberately synthetic: exercise code points, including a combining mark,
     # rather than claiming these source classifications have native evidence.
     text = "é🙂e\u0301\ncontext"
@@ -296,6 +306,7 @@ def test_authorship_is_independent_of_role_and_preserves_unicode(source):
     decoded = json.loads(json.dumps(event))
     assert decoded["text"][span["start"] : span["end"]] == "é🙂e\u0301"
     assert decoded["authorship"] == [span]
+    assert decoded["authorship"][0]["source"] == serialized_source
     assert decoded["text"] == text
     assert decoded["ts"] == "message-time"
     assert span["ts"] == "recorded-span-time"
@@ -461,9 +472,18 @@ def test_authorship_retains_message_structure_through_export():
 
 
 @pytest.mark.parametrize(
-    "source", ["candidate", "harness", "ide", "other_agent", "unknown"]
+    ("source", "serialized_source"),
+    [
+        (AuthorshipSource.CANDIDATE, "candidate"),
+        (AuthorshipSource.HARNESS, "harness"),
+        (AuthorshipSource.IDE, "ide"),
+        (AuthorshipSource.OTHER_AGENT, "other_agent"),
+        (AuthorshipSource.UNKNOWN, "unknown"),
+    ],
 )
-def test_export_preserves_authorship_ranges_and_copies_nested_markers(source):
+def test_export_preserves_authorship_ranges_and_copies_nested_markers(
+    source, serialized_source
+):
     # Illustrative shared-contract boundary: not a native Claude classification.
     text = "Hi 🙂<notice>context</notice>"
     spans = [
@@ -492,6 +512,7 @@ def test_export_preserves_authorship_ranges_and_copies_nested_markers(source):
     assert message["text"] == text
     assert message["ts"] == "message-time"
     assert message["authorship"] == spans
+    assert message["authorship"][0]["source"] == serialized_source
     actual_text_ranges = []
     for span in message["authorship"]:
         actual_text_ranges.append(text[span["start"] : span["end"]])

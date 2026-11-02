@@ -7,6 +7,7 @@ fields in the current JSON schema and preserves nested event payloads. Additiona
 session semantics remain available on the model for other consumers.
 """
 
+from enum import StrEnum
 from typing import Literal, Never, NotRequired, Required, TypeAlias, TypedDict
 
 from session_log_extractors.json_types import JsonValue
@@ -182,9 +183,14 @@ class ToolCall(TypedDict, total=False):
     skill: str
 
 
-AuthorshipSource: TypeAlias = Literal[
-    "candidate", "harness", "ide", "other_agent", "unknown"
-]
+class AuthorshipSource(StrEnum):
+    """Shared contribution sources; values are the stable JSON spellings."""
+
+    CANDIDATE = "candidate"
+    HARNESS = "harness"
+    IDE = "ide"
+    OTHER_AGENT = "other_agent"
+    UNKNOWN = "unknown"
 
 
 class AuthorshipMarker(TypedDict):

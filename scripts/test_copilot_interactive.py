@@ -116,7 +116,7 @@ def test_native_child_messages_keep_their_recorded_agent_identity():
             if message.get("text"):
                 assert message["authorship"]
                 for span in message["authorship"]:
-                    assert span["source"] == "other_agent"
+                    assert span["source"] == "harness"
                     assert {"field": "agentId", "value": message["agent_id"]} in span[
                         "markers"
                     ]
