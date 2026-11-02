@@ -208,6 +208,13 @@ def _tool_calls_in(session):
     return calls
 
 
+def _unmatched_results_in(session):
+    results = []
+    for message in session["events"]:
+        results.extend(message.get("tool_results", []))
+    return results
+
+
 def _plan_decisions_in(session):
     decisions = []
     for call in _tool_calls_in(session):
@@ -1168,7 +1175,7 @@ def test_native_session_keeps_user_write_denial():
     assert denial["message"] == ""
 
 
-def test_build_events_skips_non_dict_assistant_blocks_and_unmatched_calls():
+def test_build_events_retains_unmatched_results_and_skips_invalid_blocks():
     entries = [
         {"type": "summary"},
         {
@@ -1186,9 +1193,13 @@ def test_build_events_skips_non_dict_assistant_blocks_and_unmatched_calls():
             },
         },
     ]
-    # No text/tool calls ever accumulate, and the orphan tool_result has no
-    # matching pending call, so no events are produced.
-    assert build_events(entries) == []
+    # The malformed assistant block is skipped; the orphan result remains in
+    # its own native user-message event without inventing a tool-call owner.
+    (message,) = build_events(entries)
+    assert message["i"] == 0 and message["role"] == "user"
+    (result,) = message["tool_results"]
+    assert result["tool_call_id"] == "unknown"
+    assert result["content"] == "x"
 
 
 # --------------------------------------------------------------------------- #
@@ -1637,8 +1648,14 @@ def test_cli_preserves_native_payloads(transcript, limit, capsys):
     assert envelope["started_at"] == first_timestamp(entries)
     assert envelope["models"] == session_models(entries)
     assert envelope["truncation"] == {"tool_result_max_bytes": limit}
-    assert envelope["interaction_questions"]
-    assert envelope["question_responses"]
+    question_calls = []
+    for call in _tool_calls_in(envelope):
+        if "interaction_questions" in call:
+            question_calls.append(call)
+    assert question_calls
+    assert "interaction_questions" not in envelope
+    assert "question_responses" not in envelope
+    assert "unmatched_tool_results" not in envelope
 
 
 @pytest.mark.parametrize("selector", ["path", "prefix", "newest"])
@@ -2139,7 +2156,7 @@ def test_unmatched_result_retains_content_without_inventing_an_owner():
     )
     assert _single_tool_call_in(session["events"])["result"] is None
     assert "result_record" not in _single_tool_call_in(session["events"])
-    (record,) = session["unmatched_tool_results"]
+    (record,) = _unmatched_results_in(session)
     assert record["tool_call_id"] == "unknown-call"
     assert record["content"] == block["content"]
     assert record["id"] == result["uuid"]
@@ -2176,7 +2193,7 @@ def test_top_level_result_preserves_payload_without_inventing_an_owner(payload):
     call = _single_tool_call_in(session["events"])
     assert call["result"] is None
     assert "result_record" not in call
-    (record,) = session["unmatched_tool_results"]
+    (record,) = _unmatched_results_in(session)
     assert record["tool_call_id"] is None
     assert record["content"] == payload
     assert record["id"] == result["uuid"]
@@ -2191,7 +2208,7 @@ def test_top_level_result_does_not_duplicate_a_recorded_result_block():
     session = eclog.interpret_source(
         ClaudeSource(Path("session.jsonl"), [assistant, result])
     )
-    assert session["unmatched_tool_results"] == []
+    assert _unmatched_results_in(session) == []
     assert "CAPTURE_MULTIBYTE" in _single_tool_call_in(session["events"])["result"]
 
 

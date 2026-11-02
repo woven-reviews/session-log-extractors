@@ -5,7 +5,6 @@ call. Repeated keys, missing IDs, and duplicate call IDs retain ambiguity.
 """
 
 import re
-from collections import Counter
 
 from session_log_extractors.json_types import JsonValue
 from session_log_extractors.session_model import (
@@ -188,10 +187,11 @@ def _denial_evidence(record: ToolResult) -> QuestionEvidence | None:
 
 
 class _ClaudeQuestionInterpreter:
-    """Assemble question occurrences and evidenced responses for one session."""
+    """Interpret responses within one call or one unmatched native result."""
 
-    def __init__(self) -> None:
-        self.questions: list[Question] = []
+    def __init__(self, questions: list[Question], response_scope: str) -> None:
+        self.questions = questions
+        self.response_scope = response_scope
         self.responses: list[QuestionResponse] = []
 
     def answers(
@@ -229,7 +229,7 @@ class _ClaudeQuestionInterpreter:
         activity: QuestionActivityReference | None,
     ) -> None:
         response = QuestionResponse(
-            ref=f"claude/response/{len(self.responses)}",
+            ref=f"{self.response_scope}/{len(self.responses)}",
             question=association,
             outcome=QUESTION_UNKNOWN,
         )
@@ -271,10 +271,8 @@ class _ClaudeQuestionInterpreter:
         questions: list[Question],
         activity: QuestionActivityReference | None,
     ) -> None:
-        payload = record.get("native_result")
-        if isinstance(payload, dict) and (
-            "answers" in payload or "annotations" in payload
-        ):
+        payload = _question_payload(record)
+        if payload is not None:
             self.answers(payload, questions, activity)
             return
         denial = _denial_evidence(record)
@@ -306,7 +304,7 @@ class _ClaudeQuestionInterpreter:
                 question_ref=questions[0]["ref"], evidence=evidence
             )
         response = QuestionResponse(
-            ref=f"claude/response/{len(self.responses)}",
+            ref=f"{self.response_scope}/{len(self.responses)}",
             question=association,
             outcome=QUESTION_REFUSED,
             refusal=refusal,
@@ -353,12 +351,19 @@ class _ClaudeQuestionInterpreter:
             )
 
 
+def _question_payload(record: ToolResult) -> dict[str, JsonValue] | None:
+    payload = record.get("native_result", record.get("content"))
+    if isinstance(payload, dict) and ("answers" in payload or "annotations" in payload):
+        return payload
+    return None
+
+
 def _result_activity(
-    call: ToolCall, activity: QuestionActivityReference, counts: Counter[str | None]
+    call: ToolCall, activity: QuestionActivityReference
 ) -> QuestionActivityReference | None:
     record = call["result_record"]
     call_id = call.get("id")
-    if not call_id or counts[call_id] != 1 or record["tool_call_id"] != call_id:
+    if not call_id or record["tool_call_id"] != call_id:
         return None
     return QuestionActivityReference(
         message_i=activity["message_i"],
@@ -372,48 +377,67 @@ def _result_activity(
     )
 
 
-def _interpret_questions(
-    events: list[Message], unmatched: list[ToolResult]
-) -> tuple[list[Question], list[QuestionResponse]]:
-    interpreter = _ClaudeQuestionInterpreter()
-    counts = Counter(
-        call.get("id") for event in events for call in event.get("tool_calls") or []
+def _attach_call_questions(
+    message: Message,
+    index: int,
+    call: ToolCall,
+    results_with_alternates: list[ToolResult],
+) -> None:
+    activity = QuestionActivityReference(
+        message_i=message["i"],
+        tool_call_index=index,
+        evidence=[
+            QuestionEvidence(field="message.tool_calls containment", value=index)
+        ],
     )
-    alternate_entry_ids = {
-        record["id"]
-        for record in unmatched
-        if record.get("id") and isinstance(record.get("content"), dict)
-    }
+    questions = _offered_questions(call, activity)
+    call["interaction_questions"] = questions
+    interpreter = _ClaudeQuestionInterpreter(
+        questions, f"claude/response/{message['i']}/call/{index}"
+    )
+    record = call.get("result_record")
+    # These exact records came from the same native entry as an unassociated
+    # structured payload. Interpret that alternate once on its source message.
+    has_alternate = any(record is alternate for alternate in results_with_alternates)
+    if record is not None and not has_alternate:
+        result_activity = _result_activity(call, activity)
+        interpreter.result(
+            record, questions if result_activity is not None else [], result_activity
+        )
+    call["question_responses"] = interpreter.responses
+
+
+def _attach_unmatched_questions(message: Message) -> None:
+    records = message.get("tool_results", [])
+    has_structured_payload = any(
+        _question_payload(record) is not None for record in records
+    )
+    for index, record in enumerate(records):
+        if has_structured_payload and _question_payload(record) is None:
+            continue
+        interpreter = _ClaudeQuestionInterpreter(
+            [], f"claude/response/{message['i']}/result/{index}"
+        )
+        if (
+            _question_payload(record) is not None
+            or "native_result" in record
+            or "native_denial_kind" in record
+        ):
+            interpreter.result(record, [], None)
+        elif not record["is_error"]:
+            # A generic rejection/error from an unknown tool does not establish
+            # that a question was refused. Explicit answer pairs still survive.
+            interpreter.text_answers(_result_text(record.get("content")), [], None)
+        if interpreter.responses:
+            record["question_responses"] = interpreter.responses
+
+
+def _attach_questions(
+    events: list[Message], results_with_alternates: list[ToolResult]
+) -> None:
+    """Enrich canonical conversation records without creating session-wide lists."""
     for message in events:
         for index, call in enumerate(message.get("tool_calls") or []):
-            if call["name"] != ASK_USER_QUESTION:
-                continue
-            activity = QuestionActivityReference(
-                message_i=message["i"],
-                tool_call_index=index,
-                evidence=[
-                    QuestionEvidence(
-                        field="message.tool_calls containment", value=index
-                    )
-                ],
-            )
-            questions = _offered_questions(call, activity)
-            interpreter.questions.extend(questions)
-            record = call.get("result_record")
-            if record is None or record.get("id") in alternate_entry_ids:
-                continue
-            result_activity = _result_activity(call, activity, counts)
-            interpreter.result(
-                record,
-                questions if result_activity is not None else [],
-                result_activity,
-            )
-    for record in unmatched:
-        payload = record.get("native_result", record.get("content"))
-        if isinstance(payload, dict) and (
-            "answers" in payload or "annotations" in payload
-        ):
-            interpreter.answers(payload, [], None)
-        elif record.get("id") not in alternate_entry_ids:
-            interpreter.result(record, [], None)
-    return interpreter.questions, interpreter.responses
+            if call["name"] == ASK_USER_QUESTION:
+                _attach_call_questions(message, index, call, results_with_alternates)
+        _attach_unmatched_questions(message)

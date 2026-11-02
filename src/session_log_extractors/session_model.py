@@ -193,6 +193,7 @@ class ToolResult(NativeIdentity):
     content: NotRequired[JsonValue]
     native_result: NotRequired[JsonValue]
     native_denial_kind: NotRequired[str]
+    question_responses: NotRequired[list[QuestionResponse]]
     is_error: bool
 
 
@@ -282,6 +283,8 @@ class ToolCall(TypedDict, total=False):
     result_images: list[Image]
     execution: ToolExecution
     questions: list[QuestionAnswer]
+    interaction_questions: list[Question]
+    question_responses: list[QuestionResponse]
     plan_decision: PlanDecision
     permission_denial: PermissionDenial
     skill: str
@@ -372,6 +375,7 @@ class MessageContent(NativeIdentity, total=False):
     context_attachments: list[ContextAttachment]
     submitted: SubmittedText
     collaboration_mode: str
+    tool_results: list[ToolResult]
     permission_denial: PermissionDenial
 
 
@@ -455,5 +459,3 @@ class Session(TypedDict):
     files_changed: NotRequired[list[str]]
     file_activity: NotRequired[list[FileActivity]]
     patch_results: NotRequired[list[PatchResult]]
-    interaction_questions: NotRequired[list[Question]]
-    question_responses: NotRequired[list[QuestionResponse]]

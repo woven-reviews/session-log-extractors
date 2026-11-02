@@ -141,17 +141,21 @@ proximity.
 
 ## Shared questions and responses contract
 
-`Session.interaction_questions` and `Session.question_responses` are optional,
-ordered lists of separate `Question` and `QuestionResponse` records. These are
-shared-model fields ready for adapter adoption, not production JSON additions.
-The current exporter continues to read only its existing schema and leaves
-these records intact on the source model, even when it truncates raw results.
-`QuestionAnswer` and `ToolCall.questions` remain migration debt for
-QUAL-2523/QUAL-2524/QUAL-2525; do not populate both representations in new consumers.
+`ToolCall.interaction_questions` and `ToolCall.question_responses` are optional,
+ordered lists of separate `Question` and `QuestionResponse` records, nested on
+their owning call in `Session.events`. Claude populates and exports them without
+adding top-level question/response collections. If native evidence cannot identify
+a call owner, the result stays on its original message in `tool_results`, with
+its `question_responses` nested on that result. Containment does not invent a
+question association: an ambiguous response still has `question: null`.
+The exporter preserves these structured facts even when it truncates raw text.
+`QuestionAnswer` and `ToolCall.questions` remain legacy compatibility fields for
+existing callers; they are not exported. New consumers use the inline shared
+records. Remaining harness migrations are QUAL-2524/QUAL-2525.
 
 | Record/field | Meaning |
 | --- | --- |
-| `Question.ref`, `QuestionResponse.ref` | Required local occurrence references, unique within their respective session lists. Never deduplicate repeated text or repeated native IDs. List order preserves occurrences, not a newly inferred chronology. |
+| `Question.ref`, `QuestionResponse.ref` | Required local occurrence references, unique across their respective record types within the session. Never deduplicate repeated text or repeated native IDs. List order preserves occurrences, not a newly inferred chronology. |
 | `native_id` | Optional verbatim source-recorded question, response, or option ID. Omit when absent; never substitute a local ref or tool ID. Native question IDs may be scoped to a call and reused later. |
 | `Question.text`, `header`, `options` | Full question text, optional recorded header, and ordered offered `QuestionChoice` records. `options: []` allows a free-text question. No truncation, label cleanup, or inferred header. |
 | `QuestionChoice.ref`, `label`, `description` | Required local option occurrence ref (unique within its question) and full recorded label, with optional recorded description. Repeated labels remain distinct options. Optional `QuestionChoice.preview` retains the complete recorded offered preview separately from its description. |
@@ -167,7 +171,7 @@ QUAL-2523/QUAL-2524/QUAL-2525; do not populate both representations in new consu
 | `candidate_feedback` | Optional full feedback known to be candidate-authored. Keep harness-generated refusal explanations in `refusal.explanation`; unknown authorship does not justify candidate feedback. |
 
 All optional fields are non-nullable unless explicitly stated above. Missing
-session lists mean this interpretation was not supplied; empty lists mean no
+call/result lists mean this interpretation was not supplied; empty lists mean no
 such records were retained. These are type and semantic contracts, not runtime
 validators; schema/version handling remains QUAL-2533. Response timestamps
 remain QUAL-2499; source timestamps stay on canonical records.
@@ -182,10 +186,11 @@ most recent human message, and shared labels do not establish associations.
 Never pair lists with `zip` to resolve missing evidence. Local addresses identify
 records only after evidence establishes ownership; they are not evidence.
 
-Keep complete raw tool inputs/results on canonical calls and unmatched results
-in `Session.unmatched_tool_results`. Structured facts are an additional semantic
-view, not replacement raw payloads or a second conversation. Preserve all
-unknown payload fields. Questions, selections, refusals, and feedback must be
+Keep complete raw tool inputs/results on canonical calls. Claude preserves
+unmatched results in `MessageContent.tool_results` at their recorded position,
+with no guessed call owner. Other harnesses retain their existing migration
+boundaries. Structured facts enrich these canonical records; they do not replace
+raw payloads or form a second conversation. Preserve all unknown payload fields. Questions, selections, refusals, and feedback must be
 interpreted before applying result limits. Consumers may derive interaction
 groups from the references; they must not reassign canonical messages/tools.
 
@@ -193,35 +198,146 @@ The illustrative JSON below covers repeated questions, a recommended option
 that was not selected, multiple selections plus free text, refusal with separate
 feedback, an unanswered question, unassociated answers, an unknown response,
 and an unrelated tool error. The `native.*` paths are illustrative evidence,
-not claims about any harness's schema. These are proposed model shapes only.
+not claims about any harness's schema. Questions and linked responses are on the
+same tool call; orphan and unknown responses are on their native result message.
 
 ```json
 {
-  "harness": "illustrative", "session_id": "questions-example",
-  "events": [{"i": 0, "role": "assistant", "tool_calls": [
-    {"name": "unrelated-tool", "result": "Tool failed", "is_error": true}
-  ]}],
-  "interaction_questions": [
-    {"ref": "q1", "native_id": "request-a", "text": "Choose?", "multiple_selections": true, "options": [
-      {"ref": "o1", "label": "A (Recommended)", "description": "First option", "recommendation_markers": [
-        {"field": "native.options[0].label", "value": "A (Recommended)"}
-      ]},
-      {"ref": "o2", "label": "B"}, {"ref": "o3", "label": "C"}
-    ]},
-    {"ref": "q2", "native_id": "request-b", "text": "Choose?", "options": []},
-    {"ref": "q3", "text": "Anything else?", "options": []}
-  ],
-  "question_responses": [
-    {"ref": "r1", "outcome": "answered", "question": {"question_ref": "q1", "evidence": [
-      {"field": "native.question.id", "value": "request-a"},
-      {"field": "native.answer.question_id", "value": "request-a"}
-    ]}, "selections": [{"option_ref": "o2", "label": "B"}, {"option_ref": "o3", "label": "C"}], "free_text": "Also keep this text"},
-    {"ref": "r2", "outcome": "refused", "question": {"question_ref": "q2", "evidence": [
-      {"field": "native.question.id", "value": "request-b"},
-      {"field": "native.refusal.question_id", "value": "request-b"}
-    ]}, "refusal": {"by": "candidate", "explanation": "Prompt dismissed"}, "candidate_feedback": "Please ask later"},
-    {"ref": "r3", "outcome": "answered", "question": null, "selections": [], "free_text": "Unassociated answer"},
-    {"ref": "r4", "outcome": "unknown", "question": null}
+  "harness": "illustrative",
+  "session_id": "questions-example",
+  "events": [
+    {
+      "i": 0,
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "name": "question-tool",
+          "interaction_questions": [
+            {
+              "ref": "q1",
+              "native_id": "request-a",
+              "text": "Choose?",
+              "multiple_selections": true,
+              "options": [
+                {
+                  "ref": "o1",
+                  "label": "A (Recommended)",
+                  "description": "First option",
+                  "recommendation_markers": [
+                    {
+                      "field": "native.options[0].label",
+                      "value": "A (Recommended)"
+                    }
+                  ]
+                },
+                {
+                  "ref": "o2",
+                  "label": "B"
+                },
+                {
+                  "ref": "o3",
+                  "label": "C"
+                }
+              ]
+            },
+            {
+              "ref": "q2",
+              "native_id": "request-b",
+              "text": "Choose?",
+              "options": []
+            },
+            {
+              "ref": "q3",
+              "text": "Anything else?",
+              "options": []
+            }
+          ],
+          "question_responses": [
+            {
+              "ref": "r1",
+              "outcome": "answered",
+              "question": {
+                "question_ref": "q1",
+                "evidence": [
+                  {
+                    "field": "native.question.id",
+                    "value": "request-a"
+                  },
+                  {
+                    "field": "native.answer.question_id",
+                    "value": "request-a"
+                  }
+                ]
+              },
+              "selections": [
+                {
+                  "option_ref": "o2",
+                  "label": "B"
+                },
+                {
+                  "option_ref": "o3",
+                  "label": "C"
+                }
+              ],
+              "free_text": "Also keep this text"
+            },
+            {
+              "ref": "r2",
+              "outcome": "refused",
+              "question": {
+                "question_ref": "q2",
+                "evidence": [
+                  {
+                    "field": "native.question.id",
+                    "value": "request-b"
+                  },
+                  {
+                    "field": "native.refusal.question_id",
+                    "value": "request-b"
+                  }
+                ]
+              },
+              "refusal": {
+                "by": "candidate",
+                "explanation": "Prompt dismissed"
+              },
+              "candidate_feedback": "Please ask later"
+            }
+          ]
+        },
+        {
+          "name": "unrelated-tool",
+          "result": "Tool failed",
+          "is_error": true
+        }
+      ]
+    },
+    {
+      "i": 1,
+      "role": "user",
+      "tool_results": [
+        {
+          "tool_call_id": null,
+          "ts": null,
+          "is_error": false,
+          "content": "Recorded response without a call owner",
+          "question_responses": [
+            {
+              "ref": "r3",
+              "outcome": "answered",
+              "question": null,
+              "selections": [],
+              "free_text": "Unassociated answer"
+            },
+            {
+              "ref": "r4",
+              "outcome": "unknown",
+              "question": null
+            }
+          ]
+        }
+      ]
+    }
   ]
 }
 ```
@@ -233,7 +349,7 @@ native parsers or assert adapter conformance. This change generates no paid capt
 
 | Harness | Evidence and interpretation inspected | Fit and gaps |
 | --- | --- | --- |
-| Claude | [Provenance](claude/README.md): the complete `2.1.312/native/` capture, recorded interactively on 2026-10-30 with 2.1.312/2.1.314, supplies `AskUserQuestion` calls, options/descriptions/previews, multi-question/multi-select answers, notes-only and selection-with-notes responses, free text, and cancellation. `tool_use.id` / `tool_result.tool_use_id` scope `toolUseResult.answers` and `annotations` keyed by question text. | Local refs need no invented native question IDs. Capture-backed projections preserve offered previews separately from recorded selected previews and candidate notes separately from free-text answers. Cancellation has `toolDenialKind: user-rejected` as well as `is_error: true`. Parser integration remains QUAL-2523; this contract does not change the current combined-record interpretation. Recommendations, repeated identical questions, and unknown/unassociated responses remain evidence gaps. |
+| Claude | [Provenance](claude/README.md): the complete `2.1.312/native/` capture, recorded interactively on 2026-10-30 with 2.1.312/2.1.314, supplies `AskUserQuestion` calls, options/descriptions/previews, multi-question/multi-select answers, notes-only and selection-with-notes responses, free text, and cancellation. `tool_use.id` / `tool_result.tool_use_id` scope `toolUseResult.answers` and `annotations` keyed by question text. | Local refs need no invented native question IDs. Capture-backed projections preserve offered previews separately from recorded selected previews and candidate notes separately from free-text answers. Cancellation has `toolDenialKind: user-rejected` as well as `is_error: true`. QUAL-2523 integrates these records on canonical calls/results, with native association and export tests. Recommendations, repeated identical questions, and unknown/unassociated responses remain evidence gaps. |
 | Codex | [Provenance](codex/README.md): the complete interactive CLI 0.166.0 capture (2026-10-30) supplies two-question calls, recommendation suffixes, whole-label selections, selection-plus-note, custom Unicode/punctuation and cancellation. Recorded `call_id` scopes answer maps keyed by native question IDs; map order differs from question order. | Contract tests select an explicit whole-label answer using the current `codex_capture.question_interaction` helper, preserving the complete multi-question input/result. They join by question ID, never map position. `user_note:` entries and the Other sentinel remain raw native content for harness-specific interpretation; they are not additional selected options. Multi-select and previews remain unestablished. Adapter migration remains QUAL-2524. |
 | Copilot | [Provenance](copilot/README.md): the complete interactive CLI 1.0.104-3 capture (2026-10-30) supplies `human_response.recorded` answer maps linked by `toolCallId`, single/multiple selections, separate free-text schema answers, selection-plus-note and cancellation. The operator-marked shell exit 7 retains wrapper `success: true`. | Source property keys establish question scope within the call. A separate free-text schema property is another question's answer, not feedback on the preceding question. Shell failure provides no candidate refusal evidence. Native previews/annotation fields remain unavailable. `copilot_fixture.native_records` selects the current source; shared-contract adoption remains QUAL-2525. |
 
