@@ -266,6 +266,10 @@ def export_session(
         ),
         tool_result_max_bytes,
     )
+    if "interaction_questions" in session:
+        envelope["interaction_questions"] = deepcopy(session["interaction_questions"])
+    if "question_responses" in session:
+        envelope["question_responses"] = deepcopy(session["question_responses"])
     return envelope
 
 

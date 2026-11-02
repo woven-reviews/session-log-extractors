@@ -26,10 +26,12 @@ from session_log_extractors.session_model import (
     Question,
     QuestionActivityReference,
     QuestionAssociation,
+    QuestionCancellation,
     QuestionChoice,
     QuestionEvidence,
     QuestionRefusal,
     QuestionResponse,
+    QuestionResponseOutcome,
     QuestionSelection,
     Session,
     ToolCall,
@@ -186,8 +188,8 @@ def test_native_question_facts_survive_export_policy(limit):
     assert recorded_answers == [selection["label"]]
     assert question["native_id"] in json.loads(call["result"])["answers"]
     assert question["activity"]["message_i"] == session["events"][0]["i"]
-    assert "interaction_questions" not in exported
-    assert "question_responses" not in exported
+    assert exported["interaction_questions"] == [question]
+    assert exported["question_responses"] == [response]
     assert session == original
     actual["input"]["questions"].clear()
     assert session == original
@@ -1020,4 +1022,27 @@ def test_export_preserves_authorship_ranges_and_copies_nested_markers(
     exported["events"][0]["authorship"][1]["markers"][0]["value"]["kind"].append(
         "changed"
     )
+    assert session == original
+
+
+@pytest.mark.parametrize("by", ["candidate", "settings", "harness", "unknown"])
+def test_cancellation_is_distinct_from_refusal_and_feedback(by):
+    response = QuestionResponse(
+        ref="r1",
+        question=None,
+        outcome=QuestionResponseOutcome.CANCELLED,
+        cancellation=QuestionCancellation(by=by),
+    )
+    session = Session(
+        harness="test", session_id="s", events=[], question_responses=[response]
+    )
+    original = deepcopy(session)
+    exported = export_session(session, 0)
+    (actual,) = json.loads(json.dumps(exported))["question_responses"]
+    assert actual == {
+        "ref": "r1",
+        "question": None,
+        "outcome": "cancelled",
+        "cancellation": {"by": by},
+    }
     assert session == original
