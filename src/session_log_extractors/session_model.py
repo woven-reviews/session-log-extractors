@@ -450,6 +450,10 @@ class ToolCall(TypedDict, total=False):
     question_result_facts: QuestionResultFacts
     interaction_questions: list[Question]
     question_responses: list[QuestionResponse]
+    permission_refusals: list[PermissionRefusal]
+    plan_versions: list[PlanVersion]
+    plan_presentations: list[PlanPresentation]
+    plan_decisions: list[ObservedPlanDecision]
     plan_decision: PlanDecision
     permission_denial: PermissionDenial
     skill: str

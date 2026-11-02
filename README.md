@@ -291,7 +291,22 @@ multi-question request remains unassociated with an individual question.
 The captured enum format has no option descriptions, recommendation markers,
 or previews: these fields remain absent, while labels and complete raw tool
 inputs/results remain available. Structured question facts survive every raw
-result byte budget, including zero. Permission and plan semantics are unchanged.
+result byte budget, including zero.
+
+Copilot also populates the shared `permission_refusals`, `plan_versions`,
+`plan_presentations`, and `plan_decisions` collections before export. The exporter
+adds those records to their evidenced tool calls in the existing conversation;
+unassociated facts remain internal. A unique same-agent call ID, or a unique
+permission request ID carrying that call ID, establishes ownership. Settings
+rules and content-exclusion refusals remain distinct from candidate refusals;
+candidate feedback requires recorded human provenance. Cancellations, tool
+errors, unfamiliar decision values, and missing decisions never imply approval.
+Complete plan content from responses survives every raw-result cap, including
+editor-modified approved text. Plan-file create inputs preserve proposals;
+execution starts record presentations with unknown displayed versions. Response
+content has unknown version kind unless the source establishes more. No edit
+relationship is inferred from changed text or neighboring records. Legacy
+call summaries remain available on the model.
 
 Copilot authorship is independent of role. Recorded `data.source` and automatic
 continuation evidence distinguish candidate, harness, and other-agent input;
