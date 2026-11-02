@@ -170,9 +170,9 @@ def test_whole_request_cancellation_does_not_guess_a_question_in_a_group():
     session = copilot.interpret_source(source)
     assert len(session["interaction_questions"]) == 2
     (response,) = session["question_responses"]
-    assert response["outcome"] == "refused"
+    assert response["outcome"] == "cancelled"
     assert response["question"] is None
-    assert response["refusal"] == {"by": "candidate"}
+    assert response["cancellation"] == {"by": "candidate"}
 
 
 def test_malformed_native_record_data_is_ignored():
@@ -284,15 +284,16 @@ def test_native_structured_question_facts_survive_export(limit):
             exported_responses.extend(result["responses"])
     assert exported_questions == session["interaction_questions"]
     assert exported_responses == session["question_responses"]
-    refusals = []
+    cancellations = []
     for response in session["question_responses"]:
-        if response["outcome"] == "refused":
-            refusals.append(response)
-    assert len(refusals) == 1, "Required question cancellation is missing"
-    (refusal,) = refusals
-    assert refusal["refusal"]["by"] == "candidate"
-    assert refusal["question"]["evidence"]
-    assert "candidate_feedback" not in refusal
+        if response["outcome"] == "cancelled":
+            cancellations.append(response)
+    assert len(cancellations) == 1, "Required question cancellation is missing"
+    (cancellation,) = cancellations
+    assert cancellation["cancellation"]["by"] == "candidate"
+    assert cancellation["question"]["evidence"]
+    assert "candidate_feedback" not in cancellation
+    assert "refusal" not in cancellation
     exported_questions[0]["options"].clear()
     exported_responses[0]["selections"].clear()
     assert session == original
@@ -518,8 +519,8 @@ def test_cancellation_without_its_request_remains_a_response_only_result():
     (response,) = result["responses"]
     assert response["question"] is None
     assert "activity" not in response
-    assert response["outcome"] == "refused"
-    assert response["refusal"]["by"] == "candidate"
+    assert response["outcome"] == "cancelled"
+    assert response["cancellation"]["by"] == "candidate"
     assert result["questions"] == []
 
 

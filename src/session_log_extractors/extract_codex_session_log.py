@@ -61,6 +61,11 @@ from typing import Dict, List, Optional, Tuple, TypedDict
 
 from session_log_extractors import codex_sources
 from session_log_extractors.codex_authorship import message_authorship
+from session_log_extractors.codex_questions import (
+    REQUEST_USER_INPUT,
+    USER_REFUSAL_PREFIX,
+    _CodexQuestionInterpreter,
+)
 from session_log_extractors.codex_sources import CodexSource, ImageInputs
 from session_log_extractors.extractor_contract import Extractor
 from session_log_extractors.json_types import (
@@ -110,7 +115,7 @@ _IMAGE_EXT = {
 
 # Tools that ask the human for a direct answer. Codex has used both bare and
 # namespaced tool names in logs, so matching is suffix-based during interpretation.
-INTERACTION_TOOLS = {"request_user_input"}
+INTERACTION_TOOLS = {REQUEST_USER_INPUT}
 
 # Retain parsing for update_plan-shaped calls; no current native capture shows
 # this tool in Plan mode or Default mode.
@@ -142,7 +147,7 @@ _DATA_IMAGE_URL = re.compile(r"^data:(image/[A-Za-z0-9.+-]+);base64,(.*)$", re.D
 # This branch recognizes a harness-style assistant rejection message. The
 # current native app-server denial instead appears in a tool result.
 _PERMISSION_DENIAL_PREFIXES = (
-    "The user doesn't want to proceed with this tool use.",
+    USER_REFUSAL_PREFIX,
     "Permission for this tool use was denied.",
 )
 _EXT_AGENT_PREFIX = re.compile(
@@ -863,6 +868,7 @@ class _CodexSessionBuilder:
         )
         if source.parent_session_id is not None:
             self.session["parent_session_id"] = source.parent_session_id
+        self.questions = _CodexQuestionInterpreter(self.session)
         self.pending_calls: dict[str, ToolCall] = {}
         self.pending_user: UserMessage | None = None
         self.mode = ""
@@ -968,6 +974,7 @@ class _CodexSessionBuilder:
         message = assistant_event(0, timestamp, "", [call])
         _copy_identity(message, payload)
         self.append(message)
+        self.questions.register(call, message["i"])
 
     def call_semantics(self, call: ToolCall) -> None:
         name, arguments = call["name"], json_value(call.get("input"))
@@ -999,6 +1006,7 @@ class _CodexSessionBuilder:
             result["content"] = payload["output"]
         _copy_identity(result, payload)
         call = self.pending_calls.pop(call_id, None) if call_id is not None else None
+        self.questions.result(call, result)
         if call is None:
             self.session["unmatched_tool_results"].append(result)
             return

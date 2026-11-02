@@ -26,10 +26,12 @@ from session_log_extractors.session_model import (
     Question,
     QuestionActivityReference,
     QuestionAssociation,
+    QuestionCancellation,
     QuestionChoice,
     QuestionEvidence,
     QuestionRefusal,
     QuestionResponse,
+    QuestionResponseOutcome,
     QuestionSelection,
     Session,
     ToolCall,
@@ -188,6 +190,8 @@ def test_native_question_facts_survive_export_policy(limit):
     assert question["activity"]["message_i"] == session["events"][0]["i"]
     assert "interaction_questions" not in exported
     assert "question_responses" not in exported
+    assert actual["interaction_questions"] == [question]
+    assert actual["question_responses"] == [response]
     assert session == original
     actual["input"]["questions"].clear()
     assert session == original
@@ -1021,3 +1025,104 @@ def test_export_preserves_authorship_ranges_and_copies_nested_markers(
         "changed"
     )
     assert session == original
+
+
+@pytest.mark.parametrize("by", ["candidate", "settings", "harness", "unknown"])
+def test_cancellation_is_distinct_from_refusal_and_feedback(by):
+    response = QuestionResponse(
+        ref="r1",
+        question=None,
+        outcome=QuestionResponseOutcome.CANCELLED,
+        cancellation=QuestionCancellation(by=by),
+    )
+    activity = QuestionActivityReference(
+        message_i=0,
+        tool_call_index=0,
+        evidence=[QuestionEvidence(field="native.call_id", value="call")],
+    )
+    response["activity"] = activity
+    session = Session(
+        harness="test",
+        session_id="s",
+        events=[Event(i=0, role="assistant", tool_calls=[ToolCall(name="question")])],
+        question_responses=[response],
+    )
+    original = deepcopy(session)
+    exported = export_session(session, 0)
+    call = json.loads(json.dumps(exported))["events"][0]["tool_calls"][0]
+    (actual,) = call["question_responses"]
+    assert actual == {
+        "ref": "r1",
+        "question": None,
+        "outcome": "cancelled",
+        "cancellation": {"by": by},
+        "activity": activity,
+    }
+    assert "question_responses" not in exported
+    assert session == original
+
+
+@pytest.mark.parametrize(
+    "activity",
+    [
+        None,
+        {"message_i": 0, "evidence": [{"field": "native.message", "value": "m"}]},
+        {
+            "message_i": 1,
+            "tool_call_index": 0,
+            "evidence": [{"field": "native.call", "value": "c"}],
+        },
+        {
+            "message_i": 0,
+            "tool_call_index": 1,
+            "evidence": [{"field": "native.call", "value": "c"}],
+        },
+    ],
+)
+def test_export_does_not_guess_call_ownership_for_unassociated_facts(activity):
+    question = Question(ref="q", text="Choose?", options=[])
+    response = QuestionResponse(
+        ref="r", question=None, outcome=QuestionResponseOutcome.UNKNOWN
+    )
+    if activity is not None:
+        question["activity"] = activity
+        response["activity"] = activity
+    call = ToolCall(name="question")
+    session = Session(
+        harness="test",
+        session_id="s",
+        events=[Event(i=0, role="assistant", tool_calls=[call])],
+        interaction_questions=[question],
+        question_responses=[response],
+    )
+    original = deepcopy(session)
+    exported = export_session(session)
+    assert "interaction_questions" not in exported
+    assert "question_responses" not in exported
+    assert exported["events"][0]["tool_calls"] == [call]
+    assert session == original
+
+
+def test_export_addresses_message_identity_and_call_index_without_reordering():
+    question, response, call = _codex_question_contract()
+    question["activity"]["message_i"] = 7
+    question["activity"]["tool_call_index"] = 1
+    response["activity"]["message_i"] = 7
+    response["activity"]["tool_call_index"] = 1
+    unrelated = ToolCall(name="other", result="Keep this")
+    session = Session(
+        harness="codex",
+        session_id="s",
+        events=[Event(i=7, role="assistant", tool_calls=[unrelated, call])],
+        interaction_questions=[question],
+        question_responses=[response],
+    )
+    exported = export_session(session)
+    (event,) = exported["events"]
+    first, second = event["tool_calls"]
+    assert event["i"] == 7
+    assert first["name"] == "other" and first["result"] == "Keep this"
+    assert "interaction_questions" not in first and "question_responses" not in first
+    assert second["name"] == call["name"]
+    assert second["interaction_questions"] == [question]
+    assert second["question_responses"] == [response]

@@ -100,6 +100,22 @@ class QuestionSelection(TypedDict):
     option_ref: NotRequired[str]
 
 
+class QuestionResponseOutcome(StrEnum):
+    """Evidence-based response states, independent of native result labels."""
+
+    ANSWERED = "answered"
+    REFUSED = "refused"
+    CANCELLED = "cancelled"
+    UNKNOWN = "unknown"
+
+
+class QuestionCancellation(TypedDict):
+    """An explicit cancellation, without asserting a refusal to answer."""
+
+    by: Literal["candidate", "settings", "harness", "unknown"]
+    explanation: NotRequired[str]
+
+
 class QuestionRefusal(TypedDict):
     """An evidenced refusal, distinct from tool errors and candidate feedback."""
 
@@ -114,19 +130,21 @@ class QuestionResponse(TypedDict):
     Unknown responses preserve ambiguity; tool errors alone are not responses.
     recorded_answer preserves the native answer value before interpretation,
     including unsupported shapes. It is absent for a refusal without an answer.
-    Refused responses carry refusal; free_text is answer content, whereas
+    Refused responses carry refusal; cancelled responses carry cancellation.
+    free_text is answer content, whereas
     candidate_feedback contains only evidenced candidate-authored feedback.
     """
 
     ref: str
     native_id: NotRequired[str]
     question: QuestionAssociation | None
-    outcome: Literal["answered", "refused", "unknown"]
+    outcome: QuestionResponseOutcome
     recorded_answer: NotRequired[JsonValue]
     selections: NotRequired[list[QuestionSelection]]
     selected_preview: NotRequired[str]
     free_text: NotRequired[str]
     refusal: NotRequired[QuestionRefusal]
+    cancellation: NotRequired[QuestionCancellation]
     candidate_feedback: NotRequired[str]
     activity: NotRequired[QuestionActivityReference]
 

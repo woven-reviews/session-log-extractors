@@ -263,7 +263,8 @@ at their native record position, without an invented request ID or input.
 are newline-joined in `free_text`; their original boundaries remain in
 `recorded_answer`. Candidate feedback stays separate from answer text and harness
 explanations. A native `elicitation_action: cancel` establishes a candidate
-refusal; errors and rendered cancellation prose alone do not. Cancellation of a
+cancellation, separate from refusal; errors and rendered cancellation prose
+alone do not establish either. Cancellation of a
 multi-question request remains unassociated with an individual question.
 The captured enum format has no option descriptions, recommendation markers,
 or previews: these fields remain absent, while labels and complete raw tool

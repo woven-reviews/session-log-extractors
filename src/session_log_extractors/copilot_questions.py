@@ -19,6 +19,7 @@ from session_log_extractors.session_model import (
     QuestionChoice,
     QuestionEvidence,
     QuestionResponse,
+    QuestionResponseOutcome,
     QuestionSelection,
     ToolCall,
 )
@@ -138,7 +139,7 @@ class _CopilotQuestionInterpreter:
         response = QuestionResponse(
             ref=f"copilot:r{len(self.interpretation.responses)}",
             question=None,
-            outcome="unknown",
+            outcome=QuestionResponseOutcome.UNKNOWN,
         )
         native_id = string_value(record.get("id"))
         if native_id is not None:
@@ -216,14 +217,14 @@ class _CopilotQuestionInterpreter:
         if group is not None and len(group.questions) == 1:
             question = next(iter(group.questions.values()))
         response = self.response(record, question, group, position)
-        response["outcome"] = "refused"
-        response["refusal"] = {"by": "candidate"}
+        response["outcome"] = QuestionResponseOutcome.CANCELLED
+        response["cancellation"] = {"by": "candidate"}
         result = data.get("result")
         explanation = (
             string_value(result.get("content")) if isinstance(result, dict) else None
         )
         if explanation is not None:
-            response["refusal"]["explanation"] = explanation
+            response["cancellation"]["explanation"] = explanation
         association = response["question"]
         if association is not None:
             association["evidence"].append(
@@ -260,7 +261,7 @@ def _apply_answer(
     values = _answer_values(value)
     if values is None:
         return
-    response["outcome"] = "answered"
+    response["outcome"] = QuestionResponseOutcome.ANSWERED
     selections: list[QuestionSelection] = []
     free_text = []
     for label in values:
