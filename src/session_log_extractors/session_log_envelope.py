@@ -35,6 +35,7 @@ from session_log_extractors.session_model import (
     Event,
     Image,
     Message,
+    QuestionActivityReference,
     Session,
     ToolCall,
     UserMessage,
@@ -266,11 +267,34 @@ def export_session(
         ),
         tool_result_max_bytes,
     )
-    if "interaction_questions" in session:
-        envelope["interaction_questions"] = deepcopy(session["interaction_questions"])
-    if "question_responses" in session:
-        envelope["question_responses"] = deepcopy(session["question_responses"])
+    _export_question_facts(session, envelope)
     return envelope
+
+
+def _export_question_facts(session: Session, envelope: Envelope) -> None:
+    """Project model facts onto their evidenced calls in the linear conversation."""
+    calls: dict[tuple[int, int], ToolCall] = {}
+    for event in envelope["events"]:
+        for index, exported_call in enumerate(event.get("tool_calls") or []):
+            calls[event["i"], index] = exported_call
+    for question in session.get("interaction_questions", []):
+        call = _activity_call(calls, question.get("activity"))
+        if call is not None:
+            call.setdefault("interaction_questions", []).append(deepcopy(question))
+    for response in session.get("question_responses", []):
+        call = _activity_call(calls, response.get("activity"))
+        if call is not None:
+            call.setdefault("question_responses", []).append(deepcopy(response))
+
+
+def _activity_call(
+    calls: dict[tuple[int, int], ToolCall],
+    activity: QuestionActivityReference | None,
+) -> ToolCall | None:
+    """Resolve a recorded call address; message containment alone is insufficient."""
+    if activity is None or "tool_call_index" not in activity:
+        return None
+    return calls.get((activity["message_i"], activity["tool_call_index"]))
 
 
 def _export_event(event: Message, limit: int) -> Event:

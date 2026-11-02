@@ -280,11 +280,24 @@ def test_native_cli_stdout_and_file_agree(tmp_path, capsys):
     assert "unsupported tool input schemas" in stdout.err
     exported = json.loads(stdout.out)
     assert exported == json.loads(destination.read_text())
-    assert len(exported["interaction_questions"]) == 4
-    assert len(exported["question_responses"]) == 4
+    assert set(exported) == {
+        "schema",
+        "harness",
+        "session_id",
+        "cwd",
+        "started_at",
+        "models",
+        "events",
+        "truncation",
+    }
+    questions = []
     outcomes = []
-    for response in exported["question_responses"]:
-        outcomes.append(response["outcome"])
+    for event in exported["events"]:
+        for call in event.get("tool_calls", []):
+            questions.extend(call.get("interaction_questions", []))
+            for response in call.get("question_responses", []):
+                outcomes.append(response["outcome"])
+    assert len(questions) == 4
     assert outcomes.count("answered") == 3
     assert outcomes.count("cancelled") == 1
 

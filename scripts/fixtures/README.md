@@ -143,9 +143,13 @@ proximity.
 
 `Session.interaction_questions` and `Session.question_responses` are optional,
 ordered lists of separate `Question` and `QuestionResponse` records. These are
-exported additively when supplied by an adapter. Missing and empty lists remain
-distinct. The exporter copies these records without truncating structured facts
-or mutating the source model, even when it truncates raw results.
+internal shared-model lists. The JSON envelope keeps its existing top-level
+schema and linear `events` conversation. Structured facts appear only within
+the existing tool-call entries as `interaction_questions` and `question_responses`,
+using their recorded activity addresses. The exporter copies them without
+truncating structured facts or mutating the source model. Facts without an
+evidenced call address remain available on the model; export never guesses a
+call or adds a separate conversation event for them.
 `QuestionAnswer` and `ToolCall.questions` remain migration debt for
 QUAL-2523/QUAL-2524/QUAL-2525; do not populate both representations in new consumers.
 
@@ -194,7 +198,9 @@ The illustrative JSON below covers repeated questions, a recommended option
 that was not selected, multiple selections plus free text, refusal with separate
 feedback, an unanswered question, unassociated answers, an unknown response,
 and an unrelated tool error. The `native.*` paths are illustrative evidence,
-not claims about any harness's schema.
+not claims about any harness's schema. This example shows the internal model,
+not the exported envelope: its question/response lists are projected onto existing
+tool calls for conversation consumers.
 
 ```json
 {
@@ -275,8 +281,9 @@ refusal strings, or claim complete native-format coverage.
 ### Codex production questions and responses
 
 Codex populates both shared lists, including questions with no observed result.
-The existing legacy `ToolCall.questions` interpretation remains for compatibility;
-new consumers should read the shared records. A `request_user_input` call defines
+The existing legacy `ToolCall.questions` interpretation remains for compatibility.
+JSON places the shared facts on their existing conversation tool-call entries;
+consumers continue to traverse `events` in the same order. A `request_user_input` call defines
 question occurrences through its native containment. `call_id` joins results to
 that call, and the `answers` map keys identify questions within the call. Repeated
 IDs across calls remain distinct. Duplicate IDs or question text within a call,
@@ -310,5 +317,23 @@ The native capture verifies whole-label selections, selection-plus-note, custom
 Unicode/punctuation and explicit cancellation independently of generated prose.
 Controlled cases cover repeated/unmatched questions, duplicate labels, malformed
 values, missing identifiers, legacy refusal feedback, and error boundaries. JSON
-exports retain structured facts at zero, short, and unlimited raw-result caps.
+exports retain structured facts within their evidenced tool calls at zero, short,
+and unlimited raw-result caps. Unmatched answers with no recorded call address
+remain unassociated on the internal model, alongside unmatched native results.
 No paid captures or consumer/timestamp changes are part of this adoption.
+
+For example, an exported tool entry contains the facts at the point where the
+interaction occurred, without new envelope-level question/response lists:
+
+```json
+{
+  "name": "request_user_input",
+  "input": {"questions": [{"id": "q", "question": "Choose?", "options": [{"label": "A"}]}]},
+  "result": "A",
+  "interaction_questions": [{"ref": "codex:q0", "native_id": "q", "text": "Choose?", "options": [{"ref": "codex:q0:o0", "label": "A"}]}],
+  "question_responses": [{"ref": "codex:r0", "question": {"question_ref": "codex:q0", "evidence": [{"field": "answers key", "value": "q"}]}, "outcome": "answered", "selections": [{"label": "A", "option_ref": "codex:q0:o0"}]}]
+}
+```
+
+Activity/evidence details and raw-result byte metadata are abbreviated in this
+example; native payload preservation and the existing raw-result cap still apply.

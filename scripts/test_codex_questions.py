@@ -114,15 +114,33 @@ def test_native_answers_and_cancellation_remain_distinct():
 @pytest.mark.parametrize("limit", [0, 8, -1])
 def test_native_structured_facts_survive_export_caps(limit):
     session = _interpret(load_entries(TRANSCRIPT))
-    questions = session["interaction_questions"]
-    responses = session["question_responses"]
+    expected_questions = {}
+    expected_responses = {}
+    for question in session["interaction_questions"]:
+        expected_questions[question["ref"]] = question
+    for response in session["question_responses"]:
+        expected_responses[response["ref"]] = response
     original = deepcopy(session)
     exported = export_session(session, limit)
-    assert exported["interaction_questions"] == questions
-    assert exported["question_responses"] == responses
+    assert "interaction_questions" not in exported
+    assert "question_responses" not in exported
+    actual_questions = {}
+    actual_responses = {}
+    for event in exported["events"]:
+        for call in event.get("tool_calls", []):
+            for question in call.get("interaction_questions", []):
+                assert question["activity"]["message_i"] == event["i"]
+                actual_questions[question["ref"]] = question
+            for response in call.get("question_responses", []):
+                assert response["activity"]["message_i"] == event["i"]
+                actual_responses[response["ref"]] = response
+    assert actual_questions == expected_questions
+    assert actual_responses == expected_responses
     assert session == original
-    exported["interaction_questions"][0]["options"].clear()
-    exported["question_responses"][0].clear()
+    for question in actual_questions.values():
+        question["options"].clear()
+    for response in actual_responses.values():
+        response.clear()
     assert session == original
 
 
