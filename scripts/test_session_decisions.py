@@ -661,3 +661,89 @@ def test_codex_native_cancellations_stay_distinct_from_settings_refusal():
         assert canonical_call["result_record"]["content"] == result["output"]
         assert "permission_denial" not in canonical_call
         assert "plan_decision" not in canonical_call
+
+
+@pytest.mark.parametrize("on_call", [False, True])
+@pytest.mark.parametrize("limit", [0, 17, -1])
+def test_shared_decision_projection_preserves_records_on_evidenced_activity(
+    on_call, limit
+):
+    session = _illustrative_plan_session()
+    session["events"] = [
+        {
+            "i": 7,
+            "role": "assistant",
+            "text": "Conversation before review",
+            "tool_calls": [
+                {"name": "review", "input": {"complete": True}, "result": "雪" * 50}
+            ],
+        },
+        {"i": 9, "role": "user", "text": "Unrelated conversation"},
+    ]
+    evidence = [DecisionEvidence(field="controlled.review_id", value="review-1")]
+    activity = DecisionActivityReference(message_i=7, evidence=evidence)
+    if on_call:
+        activity["tool_call_index"] = 0
+    for collection in (
+        session["plan_versions"],
+        session["plan_presentations"],
+        session["plan_decisions"],
+    ):
+        for record in collection:
+            record["activity"] = deepcopy(activity)
+    original = deepcopy(session)
+
+    envelope = export_session(session, limit)
+
+    assert session == original
+    assert envelope["events"][0]["text"] == session["events"][0]["text"]
+    assert envelope["events"][1] == session["events"][1]
+    target = envelope["events"][0]
+    if on_call:
+        target = target["tool_calls"][0]
+    assert target["plan_versions"] == session["plan_versions"]
+    assert target["plan_presentations"] == session["plan_presentations"]
+    assert target["plan_decisions"] == session["plan_decisions"]
+    target["plan_versions"][0]["text"] = "Edited export"
+    assert session == original
+
+
+@pytest.mark.parametrize(
+    "activity",
+    [
+        None,
+        {"message_i": 7, "evidence": []},
+        {"message_i": 8, "evidence": [{"field": "id", "value": "missing"}]},
+        {
+            "message_i": 7,
+            "tool_call_index": -1,
+            "evidence": [{"field": "id", "value": "missing"}],
+        },
+        {
+            "message_i": 7,
+            "tool_call_index": 2,
+            "evidence": [{"field": "id", "value": "missing"}],
+        },
+    ],
+)
+def test_invalid_decision_addresses_never_fall_back_to_nearest_message(activity):
+    session = _illustrative_plan_session()
+    session["events"] = [
+        {
+            "i": 7,
+            "role": "assistant",
+            "text": "Existing",
+            "tool_calls": [{"name": "review"}],
+        }
+    ]
+    for collection in (
+        session["plan_versions"],
+        session["plan_presentations"],
+        session["plan_decisions"],
+    ):
+        for record in collection:
+            record["activity"] = activity
+
+    envelope = export_session(session, 0)
+
+    assert envelope["events"] == session["events"]
