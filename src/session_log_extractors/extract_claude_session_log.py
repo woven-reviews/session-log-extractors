@@ -34,6 +34,10 @@ from session_log_extractors.claude_authorship import (
     _queued_authorship,
     _user_authorship,
 )
+from session_log_extractors.claude_questions import (
+    ASK_USER_QUESTION,
+    _interpret_questions,
+)
 from session_log_extractors.claude_sources import (
     ClaudeSource,
     read_source,
@@ -58,7 +62,6 @@ from session_log_extractors.session_log_envelope import (
 from session_log_extractors.session_model import (
     Event,
     Message,
-    MessageContent,
     NativeIdentity,
     PermissionDenial,
     PlanDecision,
@@ -82,7 +85,7 @@ FILE_WRITING_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "Create"}
 # Tools that prompt the human for a direct answer (pop-up questions, etc.). Their
 # tool_result carries the human's selection, so we surface it as a user
 # interaction rather than folding it into the generic result notes.
-INTERACTION_TOOLS = {"AskUserQuestion"}
+INTERACTION_TOOLS = {ASK_USER_QUESTION}
 
 # Plan mode: the assistant presents a plan via ExitPlanMode and the human either
 # approves it (optionally after editing it in the approval dialog) or rejects it
@@ -638,7 +641,7 @@ def _message_identity(entry: Dict[str, JsonValue]) -> NativeIdentity:
     return identity
 
 
-def _attach_identity(message: MessageContent, identity: NativeIdentity) -> None:
+def _attach_identity(message: NativeIdentity, identity: NativeIdentity) -> None:
     if "id" in identity:
         message["id"] = identity["id"]
     if "parent_id" in identity:
@@ -673,6 +676,23 @@ def _questions(tool_input: object) -> List[QuestionAnswer]:
         return []
     questions = tool_input.get("questions")
     return _question_records(questions) if isinstance(questions, list) else []
+
+
+def _attach_question_result(
+    record: ToolResult, entry: Dict[str, JsonValue], call: ToolCall | None
+) -> None:
+    """Keep the entry's alternate question result alongside its result block."""
+    payload = entry.get("toolUseResult")
+    has_question_data = isinstance(payload, dict) and (
+        "answers" in payload or "annotations" in payload
+    )
+    if not has_question_data and (call is None or call["name"] != ASK_USER_QUESTION):
+        return
+    if "toolUseResult" in entry:
+        record["native_result"] = payload
+    denial_kind = entry.get("toolDenialKind")
+    if isinstance(denial_kind, str):
+        record["native_denial_kind"] = denial_kind
 
 
 class _ClaudeInterpreter:
@@ -832,18 +852,17 @@ class _ClaudeInterpreter:
             for block in _content_blocks(entry)
             if isinstance(block, dict) and block.get("type") == "tool_result"
         ]
-        if not blocks and entry.get("toolUseResult") is not None:
-            # Older records have no call ID. Retain the complete payload without
-            # assigning it to a nearby call or duplicating a recorded block.
-            self.unmatched_tool_results.append(
-                ToolResult(
-                    tool_call_id=None,
-                    ts=string_value(entry.get("timestamp")),
-                    content=entry["toolUseResult"],
-                    is_error=False,
-                    **_message_identity(entry),
-                )
+        if len(blocks) != 1 and entry.get("toolUseResult") is not None:
+            # An entry-level alternate result cannot identify one of several
+            # result blocks. Keep it unassociated, as with older ID-less records.
+            record = ToolResult(
+                tool_call_id=None,
+                ts=string_value(entry.get("timestamp")),
+                content=entry["toolUseResult"],
+                is_error=False,
             )
+            _attach_identity(record, _message_identity(entry))
+            self.unmatched_tool_results.append(record)
         for block in blocks:
             tool_id = block.get("tool_use_id")
             record = ToolResult(
@@ -851,13 +870,15 @@ class _ClaudeInterpreter:
                 ts=string_value(entry.get("timestamp")),
                 content=block.get("content"),
                 is_error=bool(block.get("is_error")),
-                **_message_identity(entry),
             )
+            _attach_identity(record, _message_identity(entry))
             call = (
                 self.pending_calls.pop(tool_id, None)
                 if isinstance(tool_id, str)
                 else None
             )
+            if len(blocks) == 1:
+                _attach_question_result(record, entry, call)
             if call is None:
                 self.unmatched_tool_results.append(record)
                 continue
@@ -948,10 +969,15 @@ def interpret_source(
     if not adapter.events:
         return None
     _attribute_command_outputs(source.entries, adapter.events)
+    questions, responses = _interpret_questions(
+        adapter.events, adapter.unmatched_tool_results
+    )
     return Session(
         harness="claude",
         session_id=source.path.stem,
         events=adapter.events,
+        interaction_questions=questions,
+        question_responses=responses,
         skills_used=adapter.skills_used,
         subagent_count=adapter.subagent_count,
         unmatched_tool_results=adapter.unmatched_tool_results,

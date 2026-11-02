@@ -37,6 +37,7 @@ from session_log_extractors.session_model import (
     Message,
     Session,
     ToolCall,
+    ToolResult,
     UserMessage,
 )
 
@@ -266,6 +267,15 @@ def export_session(
         ),
         tool_result_max_bytes,
     )
+    if "interaction_questions" in session:
+        envelope["interaction_questions"] = deepcopy(session["interaction_questions"])
+    if "question_responses" in session:
+        envelope["question_responses"] = deepcopy(session["question_responses"])
+    if session.get("unmatched_tool_results"):
+        envelope["unmatched_tool_results"] = [
+            _export_result(record, tool_result_max_bytes)
+            for record in session["unmatched_tool_results"]
+        ]
     return envelope
 
 
@@ -319,12 +329,28 @@ def _export_call(call: ToolCall, limit: int) -> ToolCall:
         exported["is_error"] = call["is_error"]
     if "error" in call:
         exported["error"] = call["error"]
+    record = call.get("result_record")
+    if record is not None and (
+        "native_result" in record or "native_denial_kind" in record
+    ):
+        exported["result_record"] = _export_result(record, limit)
     result = call.get("result")
     if "result" in call and (result is None or isinstance(result, str)):
         capped = truncate_result(result, limit)
         capped["result_bytes"] = call.get("result_bytes", capped["result_bytes"])
         capped["result_truncated"] |= call.get("result_truncated", False)
         attach_result(exported, capped)
+    return exported
+
+
+def _export_result(record: ToolResult, limit: int) -> ToolResult:
+    """Retain native structured payloads; apply the text cap to textual copies."""
+    exported = deepcopy(record)
+    content, native_result = record.get("content"), record.get("native_result")
+    if isinstance(content, str):
+        exported["content"] = truncate_result(content, limit)["result"]
+    if isinstance(native_result, str):
+        exported["native_result"] = truncate_result(native_result, limit)["result"]
     return exported
 
 

@@ -52,6 +52,24 @@ project root. Use a session id or `--transcript PATH` for one session, with
 `--output PATH` for an explicit JSON destination or `--output -` for stdout.
 `--tool-result-bytes N` sets the tool-result cap (negative for no cap).
 Recorded Markdown, inline images, and tool results remain in the JSON.
+
+Claude JSON also includes `interaction_questions` and `question_responses` from
+the shared question contract. Each occurrence has a local `ref`; response links
+carry native call-ID and question-key evidence. Repeated question text within a
+call, duplicate call IDs, and unmatched results keep `question: null` rather than
+guessing. A question with no response remains unanswered. Options retain exact
+labels, descriptions, previews, and recorded `(Recommended)` markers separately
+from selected options. Responses distinguish selections, custom `free_text`,
+`candidate_feedback` notes, selected previews, and refusals with their evidenced
+source. A generic tool error does not create a refusal.
+
+Claude prefers complete `toolUseResult.answers` and `annotations` over display
+text, retaining the alternate payload in `result_record.native_result` alongside
+the original input and result. Older text-only records require explicit question
+and answer pairs. Unmatched native results remain in `unmatched_tool_results`.
+Structured decision facts and payloads survive short text caps; textual result
+copies use the configured cap. Export leaves the interpreted model unchanged.
+
 Claude user-message text now retains wrappers, whitespace, and injected skill
 and command expansions verbatim. Nonempty user text carries Unicode code-point
 `authorship` ranges. Consistent `promptSource: typed/queued`, `turnOrigin: human`,

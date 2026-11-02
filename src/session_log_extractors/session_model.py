@@ -8,11 +8,18 @@ session semantics remain available on the model for other consumers.
 """
 
 from enum import StrEnum
-from typing import Literal, Never, NotRequired, Required, TypeAlias, TypedDict
+from typing import Final, Literal, Never, NotRequired, Required, TypeAlias, TypedDict
 
 from session_log_extractors.json_types import JsonValue
 from session_log_extractors.question_types import QuestionOption
 from session_log_extractors.tool_inputs import ToolInput, ToolInputSchema
+
+QUESTION_ANSWERED: Final = "answered"
+QUESTION_REFUSED: Final = "refused"
+QUESTION_UNKNOWN: Final = "unknown"
+REFUSAL_CANDIDATE: Final = "candidate"
+REFUSAL_SETTINGS: Final = "settings"
+REFUSAL_UNKNOWN: Final = "unknown"
 
 
 class Image(TypedDict, total=False):
@@ -174,11 +181,18 @@ class NativeIdentity(TypedDict, total=False):
 
 
 class ToolResult(NativeIdentity):
-    """A recorded result, associated by native call ID when available."""
+    """A recorded result, associated by native call ID when available.
+
+    content retains the result block; native_result retains an alternate native
+    representation. native_denial_kind is a recorded protocol value, not a
+    normalized refusal source.
+    """
 
     tool_call_id: str | None
     ts: str | None
     content: NotRequired[JsonValue]
+    native_result: NotRequired[JsonValue]
+    native_denial_kind: NotRequired[str]
     is_error: bool
 
 
