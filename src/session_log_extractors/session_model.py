@@ -8,11 +8,15 @@ session semantics remain available on the model for other consumers.
 """
 
 from enum import StrEnum
-from typing import Literal, Never, NotRequired, Required, TypeAlias, TypedDict
+from typing import Final, Literal, Never, NotRequired, Required, TypeAlias, TypedDict
 
 from session_log_extractors.json_types import JsonValue
 from session_log_extractors.question_types import QuestionOption
 from session_log_extractors.tool_inputs import ToolInput, ToolInputSchema
+
+REFUSAL_CANDIDATE: Final = "candidate"
+REFUSAL_SETTINGS: Final = "settings"
+REFUSAL_UNKNOWN: Final = "unknown"
 
 
 class Image(TypedDict, total=False):
@@ -192,11 +196,19 @@ class NativeIdentity(TypedDict, total=False):
 
 
 class ToolResult(NativeIdentity):
-    """A recorded result, associated by native call ID when available."""
+    """A recorded result, associated by native call ID when available.
+
+    content retains the result block; native_result retains an alternate native
+    representation. native_denial_kind is a recorded protocol value, not a
+    normalized refusal source.
+    """
 
     tool_call_id: str | None
     ts: str | None
     content: NotRequired[JsonValue]
+    native_result: NotRequired[JsonValue]
+    native_denial_kind: NotRequired[str]
+    question_responses: NotRequired[list[QuestionResponse]]
     is_error: bool
 
 
@@ -378,6 +390,7 @@ class MessageContent(NativeIdentity, total=False):
     context_attachments: list[ContextAttachment]
     submitted: SubmittedText
     collaboration_mode: str
+    tool_results: list[ToolResult]
     permission_denial: PermissionDenial
 
 
@@ -461,5 +474,6 @@ class Session(TypedDict):
     files_changed: NotRequired[list[str]]
     file_activity: NotRequired[list[FileActivity]]
     patch_results: NotRequired[list[PatchResult]]
+    # Codex stages these facts for projection onto evidenced calls at export.
     interaction_questions: NotRequired[list[Question]]
     question_responses: NotRequired[list[QuestionResponse]]

@@ -89,6 +89,23 @@ def _read_contract_source(extractor, selection, harness):
     return source
 
 
+def _assert_claude_decisions_exported(session, exported):
+    question_count = 0
+    response_count = 0
+    for message in session["events"]:
+        for index, call in enumerate(message.get("tool_calls", [])):
+            if "interaction_questions" not in call:
+                continue
+            actual = exported["events"][message["i"]]["tool_calls"][index]
+            assert actual["interaction_questions"] == call["interaction_questions"]
+            assert actual["question_responses"] == call["question_responses"]
+            question_count += len(call["interaction_questions"])
+            response_count += len(call["question_responses"])
+    assert question_count > 0 and response_count > 0
+    assert "interaction_questions" not in exported
+    assert "question_responses" not in exported
+
+
 # Extend this native-fixture matrix as other harnesses adopt Extractor.
 @pytest.mark.parametrize(
     ("extractor", "selection", "harness", "full_result"),
@@ -127,6 +144,8 @@ def test_public_interpretation_is_source_free_and_export_is_non_mutating(
         exported = export_session(session, limit)
         assert exported["events"]
         assert session == original
+        if harness == "claude":
+            _assert_claude_decisions_exported(session, exported)
     if full_result:
         large_results = []
         for event in session["events"]:
