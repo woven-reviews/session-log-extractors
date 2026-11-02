@@ -1077,6 +1077,7 @@ def interpret_source(source: CopilotSource) -> Session | None:
         event
         for event in conversation
         if event.get("text")
+        or event.get("submitted", {}).get("text")
         or event.get("images")
         or event.get("tool_calls")
         or event.get("context_attachments")

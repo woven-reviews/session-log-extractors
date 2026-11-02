@@ -1127,6 +1127,29 @@ def test_owned_images_keep_distinct_paths_and_deduplicate_tokens():
     assert user["data"]["transformedContent"] == message["text"]
 
 
+def test_empty_transformation_retains_submitted_user_input():
+    source = native_prose_source()
+    users = []
+    for record in source.state_records:
+        if record["type"] == "user.message":
+            users.append(record)
+    [user] = users
+    # Keep only the native input and record an empty transformation, without attachments.
+    user["data"]["transformedContent"] = ""
+    user["data"]["attachments"] = []
+    source.state_records = [user]
+    submitted_text = user["data"]["content"]
+    assert submitted_text
+
+    session = copilot_log.interpret_source(source)
+
+    assert session is not None
+    [message] = session["events"]
+    assert message["role"] == "user"
+    assert message["text"] == ""
+    assert message["submitted"]["text"] == submitted_text
+
+
 def test_attachment_shape_boundaries_and_shell_input():
     assert copilot_log._attachment_ref({"path": "/tmp/shot.png"}) == {
         "name": "shot.png",
