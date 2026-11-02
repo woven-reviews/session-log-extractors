@@ -32,6 +32,7 @@ from typing import List, Optional, TypedDict
 from session_log_extractors.json_types import JsonValue, json_value
 from session_log_extractors.session_model import (
     AssistantMessage,
+    DecisionFacts,
     Event,
     Image,
     Message,
@@ -318,6 +319,7 @@ def _export_event(event: Message, limit: int) -> Event:
     if "images" in event:
         exported["images"] = event["images"]
     _export_provenance(event, exported)
+    _export_decision_facts(event, exported)
     if "tool_results" in event:
         exported["tool_results"] = [
             _export_result(record, limit) for record in event["tool_results"]
@@ -360,7 +362,7 @@ def _export_call(call: ToolCall, limit: int) -> ToolCall:
         exported["is_error"] = call["is_error"]
     if "error" in call:
         exported["error"] = call["error"]
-    _export_question_records(call, exported, limit)
+    _export_call_records(call, exported, limit)
     result = call.get("result")
     if "result" in call and (result is None or isinstance(result, str)):
         capped = truncate_result(result, limit)
@@ -387,7 +389,8 @@ def _export_question_result(call: ToolCall, exported: ToolCall) -> None:
     )
 
 
-def _export_question_records(call: ToolCall, exported: ToolCall, limit: int) -> None:
+def _export_call_records(call: ToolCall, exported: ToolCall, limit: int) -> None:
+    _export_decision_facts(call, exported)
     if "interaction_questions" in call:
         exported["interaction_questions"] = call["interaction_questions"]
     if "question_responses" in call:
@@ -397,6 +400,18 @@ def _export_question_records(call: ToolCall, exported: ToolCall, limit: int) -> 
         "native_result" in record or "native_denial_kind" in record
     ):
         exported["result_record"] = _export_result(record, limit)
+
+
+def _export_decision_facts(source: DecisionFacts, target: DecisionFacts) -> None:
+    """Explicitly export complete semantic facts independently of the text cap."""
+    if "permission_refusals" in source:
+        target["permission_refusals"] = source["permission_refusals"]
+    if "plan_versions" in source:
+        target["plan_versions"] = source["plan_versions"]
+    if "plan_presentations" in source:
+        target["plan_presentations"] = source["plan_presentations"]
+    if "plan_decisions" in source:
+        target["plan_decisions"] = source["plan_decisions"]
 
 
 def _export_result(record: ToolResult, limit: int) -> ToolResult:

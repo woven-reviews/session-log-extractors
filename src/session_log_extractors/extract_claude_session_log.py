@@ -35,6 +35,17 @@ from session_log_extractors.claude_authorship import (
     _queued_authorship,
     _user_authorship,
 )
+from session_log_extractors.claude_decisions import (
+    _PERMISSION_DENIED_TOOL,
+    PLAN_TOOLS,
+    _attach_decisions,
+)
+from session_log_extractors.claude_decisions import (
+    parse_permission_denial as parse_permission_denial,
+)
+from session_log_extractors.claude_decisions import (
+    parse_plan_decision as parse_plan_decision,
+)
 from session_log_extractors.claude_questions import (
     ASK_USER_QUESTION,
     _attach_questions,
@@ -88,11 +99,6 @@ FILE_WRITING_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "Create"}
 # interaction rather than folding it into the generic result notes.
 INTERACTION_TOOLS = {ASK_USER_QUESTION}
 
-# Plan mode: the assistant presents a plan via ExitPlanMode and the human either
-# approves it (optionally after editing it in the approval dialog) or rejects it
-# with a steering message. Both the plan and the decision are surfaced.
-PLAN_TOOLS = {"ExitPlanMode", "exit_plan_mode"}
-
 # Keys that, across tool versions, hold a target file path.
 FILE_PATH_KEYS = ("file_path", "path", "notebook_path", "filePath")
 
@@ -130,70 +136,6 @@ _COMMAND_NAME = re.compile(
 _COMMAND_ARGS = re.compile(
     r"<command-args>\s*(.*?)\s*</command-args>", re.DOTALL | re.IGNORECASE
 )
-
-# When the human denies a permission prompt, the harness feeds the assistant a
-# canned tool_result (is_error) whose content opens with one of these preambles.
-# An approval leaves no distinct record — the tool just runs — so denials are the
-# only permission *decision* we can observe.
-# ponytail: denials only; there is no approval marker in the transcript to parse.
-_PERMISSION_DENIAL_PREFIXES = (
-    "The user doesn't want to proceed with this tool use.",
-    "Permission for this tool use was denied.",
-)
-# Settings-driven denials (e.g. don't-ask mode) name the tool instead. Anchored on
-# "has been denied" so reading an ISC LICENSE ("Permission to use, copy…") can't match.
-_PERMISSION_DENIED_TOOL = re.compile(
-    r"Permission to use \S+(?: with command [^\r\n]+)? has been denied\b"
-)
-# Optional steering message the human typed when denying, e.g.
-# "…the user said:\nWe need a new branch for this". A plan sent back in plan mode
-# uses a different lead-in ("…reason for the rejection: …") for the same thing.
-# Captured up to the trailing "Note:" hint block (or end of string).
-_DENIAL_MESSAGE = re.compile(
-    r"(?:the user said|reason for the rejection):\s*\n?(.*?)(?:\n\nNote:|\Z)",
-    re.DOTALL | re.IGNORECASE,
-)
-
-
-def parse_permission_denial(content: str) -> Optional[str]:
-    """If ``content`` is a permission-denial tool_result, return the human's
-    steering message (``""`` if they just denied). Return ``None`` otherwise."""
-    if not isinstance(content, str) or not (
-        content.startswith(_PERMISSION_DENIAL_PREFIXES)
-        or _PERMISSION_DENIED_TOOL.match(content)
-    ):
-        return None
-    m = _DENIAL_MESSAGE.search(content)
-    return m.group(1).strip() if m else ""
-
-
-# An approved plan comes back as a tool_result opening with this preamble. When
-# the human edited the plan in the approval dialog, the *edited* text follows an
-# "## Approved Plan (edited by user):" heading — that version is what the
-# assistant actually works from, so it supersedes the proposed one.
-_PLAN_APPROVAL_PREFIX = "User has approved your plan"
-_PLAN_EDITED = re.compile(
-    r"^##\s*Approved Plan \(edited by user\):\s*\n(.*)\Z", re.DOTALL | re.MULTILINE
-)
-
-
-def parse_plan_decision(content: str) -> Tuple[str, str, str]:
-    """Classify an ExitPlanMode tool_result.
-
-    Returns ``(decision, edited_plan, message)`` where decision is
-    ``"approved"`` / ``"rejected"`` / ``"unknown"``, ``edited_plan`` is the
-    human's edited plan text (``""`` if they approved as-is), and ``message`` is
-    any steering message they typed when rejecting.
-    """
-    if not isinstance(content, str):
-        return "unknown", "", ""
-    if content.startswith(_PLAN_APPROVAL_PREFIX):
-        m = _PLAN_EDITED.search(content)
-        return "approved", m.group(1).strip() if m else "", ""
-    denial = parse_permission_denial(content)
-    if denial is not None:
-        return "rejected", "", denial
-    return "unknown", "", ""
 
 
 # --------------------------------------------------------------------------- #
@@ -679,16 +621,9 @@ def _questions(tool_input: object) -> List[QuestionAnswer]:
     return _question_records(questions) if isinstance(questions, list) else []
 
 
-def _attach_question_result(
-    record: ToolResult, entry: Dict[str, JsonValue], call: ToolCall | None
-) -> None:
-    """Keep the entry's alternate question result alongside its result block."""
+def _attach_native_result(record: ToolResult, entry: Dict[str, JsonValue]) -> None:
+    """Keep alternate result evidence only when its result-block owner is unique."""
     payload = entry.get("toolUseResult")
-    has_question_data = isinstance(payload, dict) and (
-        "answers" in payload or "annotations" in payload
-    )
-    if not has_question_data and (call is None or call["name"] != ASK_USER_QUESTION):
-        return
     if "toolUseResult" in entry:
         record["native_result"] = payload
     denial_kind = entry.get("toolDenialKind")
@@ -696,9 +631,9 @@ def _attach_question_result(
         record["native_denial_kind"] = denial_kind
 
 
-def _ambiguous_question_ids(entries: List[Dict[str, JsonValue]]) -> set[str]:
+def _ambiguous_call_ids(entries: List[Dict[str, JsonValue]]) -> set[str]:
     counts: Counter[str] = Counter()
-    question_ids: set[str] = set()
+    interaction_ids = _interaction_call_ids(entries)
     for entry in entries:
         if entry.get("type") != "assistant" or entry.get("isSidechain") is True:
             continue
@@ -708,9 +643,37 @@ def _ambiguous_question_ids(entries: List[Dict[str, JsonValue]]) -> set[str]:
             tool_id = block.get("id")
             if isinstance(tool_id, str) and tool_id:
                 counts[tool_id] += 1
-                if block.get("name") == ASK_USER_QUESTION:
-                    question_ids.add(tool_id)
-    return {tool_id for tool_id in question_ids if counts[tool_id] > 1}
+    return {
+        tool_id
+        for tool_id, count in counts.items()
+        if count > 1 and tool_id in interaction_ids
+    }
+
+
+def _interaction_call_ids(entries: List[Dict[str, JsonValue]]) -> set[str]:
+    """Limit stricter ambiguous-ID handling to observed interaction facts."""
+    ids: set[str] = set()
+    for entry in entries:
+        if entry.get("type") not in {"assistant", "user"}:
+            continue
+        for block in _content_blocks(entry):
+            if not isinstance(block, dict):
+                continue
+            if (
+                block.get("type") == "tool_use"
+                and string_value(block.get("name")) in PLAN_TOOLS | INTERACTION_TOOLS
+            ):
+                value = block.get("id")
+            elif (
+                block.get("type") == "tool_result"
+                and parse_permission_denial(_result_block_text(block)) is not None
+            ):
+                value = block.get("tool_use_id")
+            else:
+                continue
+            if isinstance(value, str) and value:
+                ids.add(value)
+    return ids
 
 
 def _tool_result_record(
@@ -730,9 +693,10 @@ def _tool_result_record(
 class _ClaudeInterpreter:
     """Interpret ordered messages and associate tool activity by native call ID."""
 
-    def __init__(self, ambiguous_question_ids: set[str]) -> None:
-        self.ambiguous_question_ids = ambiguous_question_ids
+    def __init__(self, ambiguous_call_ids: set[str]) -> None:
+        self.ambiguous_call_ids = ambiguous_call_ids
         self.results_with_alternates: List[ToolResult] = []
+        self.question_results: List[ToolResult] = []
         self.events: List[Message] = []
         self.files_changed: List[str] = []
         self.skills_used: List[str] = []
@@ -900,6 +864,7 @@ class _ClaudeInterpreter:
                 is_error=False,
             )
             _attach_identity(record, _message_identity(entry))
+            _attach_native_result(record, entry)
             unmatched.append(record)
         for block in blocks:
             record = _tool_result_record(entry, block)
@@ -908,8 +873,10 @@ class _ClaudeInterpreter:
                 self.pending_calls.pop(tool_id, None) if tool_id is not None else None
             )
             if len(blocks) == 1:
-                _attach_question_result(record, entry, call)
-            if tool_id in self.ambiguous_question_ids:
+                _attach_native_result(record, entry)
+                if call is not None and call["name"] == ASK_USER_QUESTION:
+                    self.question_results.append(record)
+            if tool_id in self.ambiguous_call_ids:
                 call = None
             if ambiguous_payload and call is not None:
                 self.results_with_alternates.append(record)
@@ -1012,13 +979,16 @@ def interpret_source(
     source: ClaudeSource,
 ) -> Optional[Session]:
     """Interpret supplied records, inline images and source identity without I/O."""
-    adapter = _ClaudeInterpreter(_ambiguous_question_ids(source.entries))
+    adapter = _ClaudeInterpreter(_ambiguous_call_ids(source.entries))
     for entry in source.entries:
         adapter.consume(entry)
     if not adapter.events:
         return None
     _attribute_command_outputs(source.entries, adapter.events)
-    _attach_questions(adapter.events, adapter.results_with_alternates)
+    _attach_questions(
+        adapter.events, adapter.results_with_alternates, adapter.question_results
+    )
+    _attach_decisions(adapter.events)
     return Session(
         harness="claude",
         session_id=source.path.stem,
