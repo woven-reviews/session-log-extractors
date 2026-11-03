@@ -302,8 +302,15 @@ def _call_result(call: ToolCall, output: JsonValue, is_error: bool) -> None:
     for action in call.get("file_actions", []):
         if is_error:
             action["execution_outcome"] = ToolExecutionOutcome.FAILED
+            action["evidence"].extend(_evidence("result.is_error", True))
         elif isinstance(decoded, dict):
-            action["execution_outcome"] = _outcome(decoded)
+            outcome = _outcome(decoded)
+            if outcome != ToolExecutionOutcome.UNKNOWN:
+                action["execution_outcome"] = outcome
+                for evidence in _record_evidence(decoded):
+                    action["evidence"].extend(
+                        _evidence("result." + evidence["field"], evidence["value"])
+                    )
     for task in call.get("subagent_tasks", []):
         identity = decoded.get("agent_id") if isinstance(decoded, dict) else None
         if isinstance(identity, str):

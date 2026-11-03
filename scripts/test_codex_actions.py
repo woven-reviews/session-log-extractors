@@ -464,3 +464,18 @@ def test_successful_move_to_same_path_is_not_confirmation():
     (action,) = _facts(export_session(session, 0), "file_actions")
 
     assert action["change"] is None
+
+
+def test_result_without_execution_status_keeps_the_native_completion_outcome():
+    session = _interpret(
+        [
+            _call("apply_patch", "*** Delete File: a"),
+            _patch({"a": {"type": "delete"}}, call_id="call", success=True),
+            _result({"details": "No execution status in this result"}),
+        ]
+    )
+
+    (action,) = _facts(export_session(session, 0), "file_actions")
+
+    assert action["execution_outcome"] == "succeeded"
+    assert action["change"]["evidence"]
