@@ -31,6 +31,7 @@ from typing import List, Optional, TypedDict
 
 from session_log_extractors.json_types import JsonValue, json_value
 from session_log_extractors.session_model import (
+    ActionFacts,
     AssistantMessage,
     DecisionFacts,
     Event,
@@ -320,6 +321,7 @@ def _export_event(event: Message, limit: int) -> Event:
         exported["images"] = event["images"]
     _export_provenance(event, exported)
     _export_decision_facts(event, exported)
+    _export_action_facts(event, exported)
     if "tool_results" in event:
         exported["tool_results"] = [
             _export_result(record, limit) for record in event["tool_results"]
@@ -391,6 +393,7 @@ def _export_question_result(call: ToolCall, exported: ToolCall) -> None:
 
 def _export_call_records(call: ToolCall, exported: ToolCall, limit: int) -> None:
     _export_decision_facts(call, exported)
+    _export_action_facts(call, exported)
     if "interaction_questions" in call:
         exported["interaction_questions"] = call["interaction_questions"]
     if "question_responses" in call:
@@ -400,6 +403,16 @@ def _export_call_records(call: ToolCall, exported: ToolCall, limit: int) -> None
         "native_result" in record or "native_denial_kind" in record
     ):
         exported["result_record"] = _export_result(record, limit)
+
+
+def _export_action_facts(source: ActionFacts, target: ActionFacts) -> None:
+    """Preserve established attachments without projecting internal indexes."""
+    if "file_actions" in source:
+        target["file_actions"] = source["file_actions"]
+    if "subagent_tasks" in source:
+        target["subagent_tasks"] = source["subagent_tasks"]
+    if "invocations" in source:
+        target["invocations"] = source["invocations"]
 
 
 def _export_decision_facts(source: DecisionFacts, target: DecisionFacts) -> None:

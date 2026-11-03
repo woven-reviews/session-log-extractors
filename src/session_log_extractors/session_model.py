@@ -332,7 +332,9 @@ class ActionActivityReference(TypedDict):
 
     message_i addresses Message.i, not its list position. tool_call_index
     indexes that message's ordered calls and ID-matched results. Nonempty
-    evidence establishes ownership; ordering and timestamps never do.
+    evidence establishes conversation association, not authorship; ordering
+    and timestamps never do. A null activity on a fact leaves its exact
+    conversation location unknown, even when agent activity is established.
     """
 
     message_i: int
@@ -366,6 +368,9 @@ class FileAction(TypedDict):
     change is null without evidence of an actual change, including successful
     no-ops. Confirmation for one path never confirms other paths in a patch.
     Full edits/patches remain on the canonical call, not in a new diff model.
+    Recognized native file operations include reads and failed attempts.
+    Separate database activity can remain internal with activity=None; opaque
+    shell/code text does not establish file operations.
     """
 
     ref: str
@@ -428,6 +433,9 @@ class Invocation(TypedDict):
     name is null if unknown. slash_text and arguments retain exact source text,
     including empty arguments; omit absent data. Repeated invocations remain
     distinct. Links/definitions preserve recorded order and full content.
+    Multiple records explicitly describing one invocation enrich that occurrence;
+    a link or definition alone does not establish an invocation. Attach definitions
+    only through recorded relationships; otherwise retain them as source content.
     """
 
     ref: str
@@ -440,6 +448,20 @@ class Invocation(TypedDict):
     definitions: NotRequired[list[InvocationDefinition]]
     evidence: list[ActionEvidence]
     activity: ActionActivityReference | None
+
+
+class ActionFacts(TypedDict, total=False):
+    """Facts attached by interpretation to their evidenced message or call.
+
+    Export preserves these attachments without resolving session collections.
+    Session collections are internal indexes of the same facts, including
+    unassociated facts with activity=None; those facts are never attached or
+    exported as top-level collections. Association does not establish authorship.
+    """
+
+    file_actions: list[FileAction]
+    subagent_tasks: list[SubagentTask]
+    invocations: list[Invocation]
 
 
 class DecisionFacts(TypedDict, total=False):
@@ -557,7 +579,7 @@ class PatchResult(NativeIdentity):
     stderr: JsonValue
 
 
-class ToolCall(DecisionFacts, total=False):
+class ToolCall(DecisionFacts, ActionFacts, total=False):
     """A complete call and the decisions/results belonging to that call."""
 
     name: Required[str]
@@ -659,7 +681,7 @@ class SubmittedText(TypedDict):
     authorship: AuthorshipSource
 
 
-class MessageContent(NativeIdentity, DecisionFacts, total=False):
+class MessageContent(NativeIdentity, DecisionFacts, ActionFacts, total=False):
     """Content and native identity shared by ordered conversation messages."""
 
     i: Required[int]
@@ -755,6 +777,8 @@ class Session(TypedDict):
     files_changed: NotRequired[list[str]]
     file_activity: NotRequired[list[FileActivity]]
     patch_results: NotRequired[list[PatchResult]]
+    # Internal indexes of canonical attached facts and unassociated occurrences.
+    # Derive these from the same records; export never projects these lists.
     file_actions: NotRequired[list[FileAction]]
     subagent_tasks: NotRequired[list[SubagentTask]]
     invocations: NotRequired[list[Invocation]]

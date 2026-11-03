@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 from codex_capture import TRANSCRIPT as CODEX_TRANSCRIPT
-from copilot_fixture import native_records
+from copilot_fixture import native_records, native_source
 
 from session_log_extractors.claude_sources import read_source
 from session_log_extractors.codex_sources import load_entries
@@ -14,6 +14,7 @@ from session_log_extractors.session_log_envelope import export_session
 from session_log_extractors.session_model import (
     ActionActivityReference,
     ActionEvidence,
+    AssistantMessage,
     FileAction,
     FileChangeConfirmation,
     Invocation,
@@ -24,6 +25,7 @@ from session_log_extractors.session_model import (
     SubagentTask,
     ToolCall,
     ToolExecutionOutcome,
+    UserMessage,
 )
 
 ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312"
@@ -133,7 +135,7 @@ def _illustrative_invocation():
 
 
 @pytest.mark.parametrize("limit", [0, 17, 8192, -1])
-def test_complete_facts_and_patch_survive_export_policy_without_mutation(limit):
+def test_internal_indexes_survive_export_without_projection_or_mutation(limit):
     session = _illustrative_session()
     original = deepcopy(session)
 
@@ -148,6 +150,10 @@ def test_complete_facts_and_patch_survive_export_policy_without_mutation(limit):
     for field in ("file_actions", "subagent_tasks", "invocations"):
         assert field not in exported
         assert decoded[field] == original[field]
+        for message in exported["events"]:
+            assert field not in message
+            for exported_call in message.get("tool_calls", []):
+                assert field not in exported_call
     (call,) = exported["events"][0]["tool_calls"]
     assert call["input"] == original["events"][0]["tool_calls"][0]["input"]
     assert call["result_truncated"] is (limit >= 0)
@@ -156,6 +162,216 @@ def test_complete_facts_and_patch_survive_export_policy_without_mutation(limit):
     else:
         assert call["result"] == original["events"][0]["tool_calls"][0]["result"]
     assert session["files_changed"] == ["legacy.py"]
+
+
+def _session_with_attached_facts():
+    session = _illustrative_session()
+    (patch_message,) = session["events"]
+    (patch_call,) = patch_message["tool_calls"]
+    patch_call["file_actions"] = session["file_actions"]
+
+    (task,) = session["subagent_tasks"]
+    task["activity"] = ActionActivityReference(
+        message_i=9,
+        tool_call_index=0,
+        evidence=[ActionEvidence(field="example.task.call_id", value="task-call")],
+    )
+    task_call = ToolCall(
+        name="spawn_agent",
+        id="task-call",
+        input={"message": task["prompt"], "description": task["description"]},
+        result="Raw task result",
+        subagent_tasks=[task],
+    )
+    session["events"].append(
+        AssistantMessage(i=9, role="assistant", tool_calls=[task_call])
+    )
+
+    (invocation,) = session["invocations"]
+    invocation["activity"] = ActionActivityReference(
+        message_i=11,
+        evidence=invocation["evidence"],
+    )
+    session["events"].append(
+        UserMessage(
+            i=11,
+            role="user",
+            text=invocation["slash_text"],
+            invocations=[invocation],
+        )
+    )
+    return session
+
+
+@pytest.mark.parametrize("limit", [0, 17, 8192, -1])
+def test_attached_facts_export_complete_at_evidenced_locations(limit):
+    session = _session_with_attached_facts()
+    original = deepcopy(session)
+
+    exported = export_session(session, limit)
+    patch_message, task_message, invocation_message = exported["events"]
+    (patch_call,) = patch_message["tool_calls"]
+    (task_call,) = task_message["tool_calls"]
+
+    assert session == original
+    assert patch_call["file_actions"] == original["file_actions"]
+    assert task_call["subagent_tasks"] == original["subagent_tasks"]
+    assert invocation_message["invocations"] == original["invocations"]
+    assert "invocations" not in task_call
+    assert "subagent_tasks" not in patch_call
+    assert "file_actions" not in invocation_message
+    for field in ("file_actions", "subagent_tasks", "invocations"):
+        assert field not in exported
+    actual_order = []
+    for message in exported["events"]:
+        actual_order.append(message["i"])
+    assert actual_order == [7, 9, 11]
+    # Mutating exported structured facts must not mutate internal records.
+    task_call["subagent_tasks"][0]["prompt"] = "Changed exported copy"
+    assert session == original
+
+
+def test_message_file_and_task_facts_and_tool_invocations_share_attachment_shape():
+    # Controlled native containment: one message records file/task activity,
+    # while an explicit Skill call carries its own invocation.
+    evidence = [ActionEvidence(field="example.message.activity", value="recorded")]
+    activity = ActionActivityReference(message_i=7, evidence=evidence)
+    session = _illustrative_session()
+    (message,) = session["events"]
+    message["file_actions"] = session["file_actions"]
+    message["subagent_tasks"] = session["subagent_tasks"]
+    for action in message["file_actions"]:
+        action["activity"] = activity
+    for task in message["subagent_tasks"]:
+        task["activity"] = activity
+    (invocation,) = session["invocations"]
+    invocation.pop("slash_text")
+    invocation.pop("arguments")
+    invocation["activity"] = ActionActivityReference(
+        message_i=7, tool_call_index=1, evidence=evidence
+    )
+    message["tool_calls"].append(
+        ToolCall(
+            name="Skill", input={"skill": invocation["name"]}, invocations=[invocation]
+        )
+    )
+    original = deepcopy(session)
+
+    exported = export_session(session, 0)
+
+    (exported_message,) = exported["events"]
+    _, skill_call = exported_message["tool_calls"]
+    assert exported_message["file_actions"] == original["file_actions"]
+    assert exported_message["subagent_tasks"] == original["subagent_tasks"]
+    assert skill_call["invocations"] == original["invocations"]
+    assert session == original
+
+
+def test_unlinked_definition_remains_content_without_creating_an_invocation():
+    # Explicitly controlled definition-only message: content is not invocation proof.
+    definition = "<skill><name>review</name>Recorded instructions</skill>"
+    session = Session(
+        harness="illustrative",
+        session_id="s",
+        events=[UserMessage(i=3, role="user", text=definition)],
+        invocations=[],
+    )
+
+    exported = export_session(session, 0)
+
+    (message,) = exported["events"]
+    assert message["text"] == definition
+    assert "invocations" not in message
+    assert session["invocations"] == []
+
+
+def test_native_database_file_activity_remains_internal_without_a_call_association():
+    source = native_source()
+    assert source.files, "Capture must supply database file activity"
+    actions = []
+    for row in source.files:
+        actions.append(
+            FileAction(
+                ref=f"a{len(actions)}",
+                action_name=row["tool_name"],
+                path=row["file_path"],
+                execution_outcome=ToolExecutionOutcome.UNKNOWN,
+                change=None,
+                activity=None,
+                evidence=[ActionEvidence(field="session_files", value=row)],
+            )
+        )
+    # Project only the separate DB evidence; a turn index is not a call ID.
+    session = Session(
+        harness="copilot",
+        session_id=source.session["id"],
+        events=[],
+        file_actions=actions,
+    )
+    original = deepcopy(session)
+
+    exported = export_session(session, 0)
+
+    assert session == original
+    assert exported["events"] == []
+    assert "file_actions" not in exported
+    for action, row in zip(session["file_actions"], source.files, strict=True):
+        assert action["activity"] is None
+        assert action["evidence"][0]["value"] == row
+
+
+def test_linked_definition_enriches_one_invocation_and_repeats_remain_distinct():
+    session = _session_with_attached_facts()
+    invocation_message = session["events"][-1]
+    (first_invocation,) = invocation_message["invocations"]
+    # Controlled native relationship between invocation and definition messages.
+    definition = first_invocation["definitions"][0]
+    definition_evidence = ActionEvidence(
+        field="example.definition.parent_id", value="invocation-message"
+    )
+    first_invocation["evidence"].append(definition_evidence)
+    definition_message = UserMessage(
+        i=12, role="user", text=definition["text"], parent_id="invocation-message"
+    )
+    invocation_message["id"] = "invocation-message"
+    session["events"].append(definition_message)
+    first_invocation["native_id"] = "reused-native-id"
+    repeat_evidence = [
+        ActionEvidence(
+            field="example.repeat.text", value=first_invocation["slash_text"]
+        )
+    ]
+    repeated_invocation = Invocation(
+        ref="v2",
+        native_id="reused-native-id",
+        kind=first_invocation["kind"],
+        name=first_invocation["name"],
+        slash_text=first_invocation["slash_text"],
+        arguments=first_invocation["arguments"],
+        evidence=repeat_evidence,
+        activity=ActionActivityReference(message_i=13, evidence=repeat_evidence),
+    )
+    session["events"].append(
+        UserMessage(
+            i=13,
+            role="user",
+            text=repeated_invocation["slash_text"],
+            invocations=[repeated_invocation],
+        )
+    )
+    session["invocations"].append(repeated_invocation)
+
+    exported = export_session(session, 0)
+
+    actual_invocations = []
+    for message in exported["events"]:
+        actual_invocations.extend(message.get("invocations", []))
+        if message["i"] == 12:
+            assert message["text"] == definition["text"]
+            assert "invocations" not in message
+    assert actual_invocations == [first_invocation, repeated_invocation]
+    assert len(actual_invocations[0]["definitions"]) == 1
+    assert "definitions" not in actual_invocations[1]
 
 
 @pytest.mark.parametrize("kind", list(InvocationKind))
@@ -247,7 +463,7 @@ def test_native_tasks_preserve_full_recorded_prompt_and_nested_input(
         )
         if "description" in payload:
             task["description"] = payload["description"]
-        call = ToolCall(name=name, id=call_id, input=payload)
+        call = ToolCall(name=name, id=call_id, input=payload, subagent_tasks=[task])
         session = Session(
             harness=harness,
             session_id="s",
@@ -260,6 +476,8 @@ def test_native_tasks_preserve_full_recorded_prompt_and_nested_input(
 
         assert decoded["subagent_tasks"][0]["prompt"] == payload[prompt_field]
         assert exported["events"][0]["tool_calls"][0]["input"] == payload
+        (exported_call,) = exported["events"][0]["tool_calls"]
+        assert exported_call["subagent_tasks"][0]["prompt"] == payload[prompt_field]
         assert (
             decoded["subagent_tasks"][0]["activity"]["evidence"][0]["value"] == call_id
         )
@@ -333,7 +551,13 @@ def test_native_claude_edit_confirmation_retains_complete_edit_and_patch_evidenc
                 message_i=0, tool_call_index=0, evidence=evidence
             ),
         )
-        call = ToolCall(name="Edit", id=call_id, input=payload, result=block["content"])
+        call = ToolCall(
+            name="Edit",
+            id=call_id,
+            input=payload,
+            result=block["content"],
+            file_actions=[action],
+        )
         session = Session(
             harness="claude",
             session_id="s",
@@ -346,6 +570,10 @@ def test_native_claude_edit_confirmation_retains_complete_edit_and_patch_evidenc
 
         assert exported["events"][0]["tool_calls"][0]["input"] == payload
         assert decoded["file_actions"][0]["change"]["evidence"][0]["value"] == result
+        (exported_call,) = exported["events"][0]["tool_calls"]
+        assert (
+            exported_call["file_actions"][0]["change"]["evidence"][0]["value"] == result
+        )
 
 
 @pytest.mark.parametrize("arguments", ["", "  café 雪 --mode=full  "])
@@ -364,11 +592,14 @@ def test_command_text_and_message_ownership_preserve_recorded_arguments(argument
     session = Session(
         harness="illustrative",
         session_id="s",
-        events=[{"i": 3, "role": "user", "text": slash_text}],
+        events=[
+            UserMessage(i=3, role="user", text=slash_text, invocations=[invocation])
+        ],
         invocations=[invocation],
     )
 
     decoded = json.loads(json.dumps(session))
+    exported = export_session(session, 0)
 
     (actual,) = decoded["invocations"]
     assert actual["kind"] == "command"
@@ -376,6 +607,7 @@ def test_command_text_and_message_ownership_preserve_recorded_arguments(argument
     assert actual["arguments"] == arguments
     assert actual["activity"]["message_i"] == decoded["events"][0]["i"]
     assert "tool_call_index" not in actual["activity"]
+    assert exported["events"][0]["invocations"] == [invocation]
 
 
 def test_unsupported_nested_input_and_result_remain_complete_alongside_facts():

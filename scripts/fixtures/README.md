@@ -572,11 +572,16 @@ rejection, or claim that all plan presentations and decisions are recoverable.
 
 `Session.file_actions`, `subagent_tasks`, and `invocations` are optional ordered
 lists of typed facts for adapter adoption in QUAL-2529/QUAL-2530/QUAL-2531.
-This is a shared-model contract only: it changes neither native parsing nor
-production JSON. The exporter continues reading its existing fields and leaves
-these complete facts on the source model independently of raw-result caps.
-Future envelope enrichment belongs on the evidenced canonical message/call,
-not automatically in top-level parallel lists.
+Native parsing and adapter adoption remain in those harness tickets. Shared
+export supports optional `file_actions`, `subagent_tasks`, and `invocations`
+attachments on messages and tool calls; existing adapters do not yet supply them.
+Interpretation establishes the associations and attaches the facts. Export
+preserves those attachments independently of raw-result caps; it never resolves
+associations or projects these session-level lists onto the conversation.
+The ordered conversation and its attachments are canonical. Session collections
+are internal indexes derived from the same fact records, including unassociated
+occurrences, not independently maintained interpretations. They are never
+exported as top-level parallel lists.
 
 Every fact has a session-local occurrence `ref`, optional verbatim `native_id`,
 required nonempty `evidence` (`ActionEvidence`: native `field` path and complete
@@ -587,10 +592,29 @@ position, turn index, or native message ID. Optional `tool_call_index` indexes
 that message's ordered calls and ID-matched results. Its nonempty evidence must
 establish ownership through native containment, recorded IDs with call scope,
 or explicit native relationships. A message-only reference is valid for slash
-text or loaded definitions recorded in a message. Null preserves unknown
-ownership, including unmatched results. Nearest timestamps, most recent human
-messages, matching names/counts, textual similarity and assistant claims never
-establish associations.
+text when the message establishes an invocation. Null preserves unknown exact
+conversation location, including unmatched results; this does not imply unknown
+authorship. For example, Copilot's database can establish agent file activity
+without identifying the corresponding conversation call. Preserve that fact
+internally with `activity: null` and do not attach or export it as a structured
+fact. Existing recorded conversation content remains intact. Nearest timestamps,
+most recent human messages, matching names/counts, textual similarity and assistant
+claims never establish associations.
+
+Recognized native file operations include reads, writes, edits, searches with
+evidenced paths, and failed attempts. Each harness adoption documents and tests
+its supported native operations. Preserve separately recorded database file
+activity even without a conversation association. Opaque shell/code text does
+not establish file operations, paths, or changes.
+
+An invocation occurrence is an evidenced act of invoking a skill or command, not
+each record describing it. Multiple records explicitly describing the same
+invocation enrich one fact; a repeated invocation creates a separate fact even
+if its name, arguments, or native ID repeat. Attach definitions and links only
+when recorded evidence establishes their relationship to the invocation. A
+standalone definition or link never establishes an invocation by itself. Keep
+unlinked definitions as ordinary recorded content, without inventing another
+invocation or associating them by matching skill names or proximity.
 
 | Record/field | Meaning |
 | --- | --- |
@@ -608,9 +632,9 @@ establish associations.
 Missing session lists mean interpretation was not supplied; empty lists mean no
 such facts were retained. Optional fields are non-nullable unless explicitly
 stated. The records describe semantics, not runtime validators; reference
-integrity, schema versioning and final serialization remain QUAL-2533. Types do
-not themselves reject empty evidence or inconsistent associations. Preserve
-complete edit/patch inputs, nested payloads, native success fields, and complete
+integrity, schema versioning and serialization validation remain QUAL-2533.
+Types do not themselves reject empty evidence or inconsistent associations.
+Preserve complete edit/patch inputs, nested payloads, native success fields, and complete
 results on their canonical records; retain unmatched native records separately.
 Facts supplement those payloads rather than filtering them or replacing them
 with display summaries. Existing `files_changed`, `FileActivity`, `PatchResult`,
@@ -618,6 +642,55 @@ with display summaries. Existing `files_changed`, `FileActivity`, `PatchResult`,
 compatible. In particular, legacy `files_changed` may include attempted writes
 and must not be treated as modification confirmation. New consumers should use
 these facts without duplicating legacy summaries.
+
+The harness tickets must exercise these shared acceptance examples through their
+production interpretation and JSON paths wherever native evidence supports them:
+
+- A successful edit without modification evidence has `change: null`.
+- File/task facts appear on their evidenced message or call; invocation facts
+  appear on their evidenced invocation message or call. Full prompts, definitions,
+  and structured evidence survive a zero-byte raw textual result cap.
+- One invocation and its explicitly linked definition produce one invocation fact.
+  A second actual invocation remains a separate occurrence.
+- A standalone definition remains recorded content without creating an invocation.
+- Unlinked database file activity remains internal with `activity: null`; export
+  does not guess a conversation location or attach the structured fact.
+- Enrichment preserves existing message/call order and complete inputs, and export
+  leaves the source model unchanged. Session indexes never cause duplicate JSON
+  attachments or exporter-side association.
+
+Shared contract tests construct these attachment shapes explicitly; they do not
+claim that adapters already implement invocation recognition or association.
+The shared field names and placement are settled here. Harness-owned recognition
+and evidence mapping remain in QUAL-2529/2530/2531; schema-version handling and
+runtime validation remain in QUAL-2533. No frontend changes, child-conversation
+graphs, external definition loading, or separate diff models are introduced.
+
+For example, this controlled message attachment is the agreed JSON placement.
+The definition's parent ID proves it describes the invocation; it is not a second
+invocation. Both messages keep their recorded content and order. File actions
+and subagent tasks use their same-named arrays on the evidenced message or call.
+The invocation's `activity` addresses `Message.i = 7`, not array position zero.
+
+```json
+{
+  "events": [
+    {"i": 7, "id": "m1", "role": "user", "text": "/review",
+     "invocations": [{
+       "ref": "v1", "kind": "command", "name": "review", "slash_text": "/review",
+       "definitions": [{"text": "Recorded review instructions"}],
+       "evidence": [
+         {"field": "example.invocation.text", "value": "/review"},
+         {"field": "example.definition.parent_id", "value": "m1"}
+       ],
+       "activity": {"message_i": 7, "evidence": [
+         {"field": "example.invocation.id", "value": "m1"}
+       ]}
+     }]},
+    {"i": 9, "parent_id": "m1", "role": "user", "text": "Recorded review instructions"}
+  ]
+}
+```
 
 This illustrative JSON is an internal model example, not native coverage or a
 production export. `example.*` paths are explicitly controlled source fields.
@@ -671,11 +744,16 @@ execute opaque code, load external definitions, or invoke paid fixture generator
 | Copilot | [Provenance](copilot/README.md), CLI 1.0.104-3: `tool.execution_start` create/edit arguments, ID-matched completions, `task.arguments.prompt`/`description`, `subagent.started.toolCallId`, `skill.invoked` full `content`/`path`, transformed command text and original submission. Inspected `_file_activity`, command recognition and `copilot_interactions.subagent_summaries`. | Tests project full task prompts and recorded skill definitions without filesystem loading. Native DB file activity establishes a touched path, not a confirmed modification. The existing child summary uses a description rather than the full task prompt; the new record can retain both. Custom slash invocation is a workspace skill, not a separate command mechanism. Native notebook editing is unavailable. |
 
 Controlled tests cover successful execution without confirmation, failed/unknown
-outcomes, per-path confirmation, unknown paths/names/ownership, independent
+outcomes, per-path confirmation, unknown paths/names/conversation locations, independent
 prompt/description absence, slash arguments, skill links, long definitions and
 full prompts, nested opaque evidence, full patch input preservation and
-non-mutating export at zero, short, default and unlimited raw-result caps.
+non-mutating export at zero, short, representative and unlimited raw-result caps.
+They also exercise complete message/call attachments, internal indexes without
+exporter-side projection, linked definitions on a single invocation, repeated
+invocations, and standalone definition content without invocation inference.
+Separate Copilot database file rows are projected as internal unassociated facts.
 Generated prose is compared directly with recorded fields rather than pinned
 wording. Missing required native task/edit/definition evidence fails explicitly.
 Link/argument boundaries and unsupported facts are illustrative, not additional
-native-format coverage. Production JSON enrichment remains the harness tickets.
+native-format coverage. Native recognition and production adapter adoption remain
+in the harness tickets; the shared exporter supports the agreed attachment fields.
