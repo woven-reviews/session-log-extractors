@@ -61,6 +61,15 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, TypedDict
 
 from session_log_extractors import codex_sources
+from session_log_extractors.codex_actions import (
+    COMMAND_EXECUTION,
+    FILE_CHANGE,
+    SUBAGENT_ACTIVITY,
+    populate_action_results,
+    populate_call_actions,
+    populate_file_event,
+    populate_subagent_identity,
+)
 from session_log_extractors.codex_authorship import message_authorship
 from session_log_extractors.codex_decisions import (
     is_process_rejection,
@@ -69,6 +78,7 @@ from session_log_extractors.codex_decisions import (
 from session_log_extractors.codex_decisions import (
     parse_permission_denial as parse_permission_denial,
 )
+from session_log_extractors.codex_invocations import populate_invocations
 from session_log_extractors.codex_questions import (
     REQUEST_USER_INPUT,
     _CodexQuestionInterpreter,
@@ -96,6 +106,8 @@ from session_log_extractors.session_log_envelope import (
     write_envelope,
 )
 from session_log_extractors.session_model import (
+    AuthorshipMarker,
+    Event,
     FileChange,
     Image,
     Message,
@@ -844,6 +856,7 @@ class _CodexSessionBuilder:
             self.session["parent_session_id"] = source.parent_session_id
         self.questions = _CodexQuestionInterpreter(self.session)
         self.pending_calls: dict[str, ToolCall] = {}
+        self.calls_by_id: dict[str, ToolCall] = {}
         self.pending_user: UserMessage | None = None
         self.mode = ""
         self.active_user: UserMessage | None = None
@@ -944,11 +957,18 @@ class _CodexSessionBuilder:
         call = _new_tool_call(payload)
         if "id" in call:
             self.pending_calls[call["id"]] = call
+            self.calls_by_id[call["id"]] = call
         self.call_semantics(call)
         message = assistant_event(0, timestamp, "", [call])
         _copy_identity(message, payload)
         self.append(message)
         self.questions.register(call, message["i"])
+        populate_call_actions(call, message)
+        for action in call.get("file_actions", []):
+            if action["path"] is not None:
+                append_unique_path(
+                    self.session["files_changed"], self.files_seen, action["path"]
+                )
 
     def call_semantics(self, call: ToolCall) -> None:
         name, arguments = call["name"], json_value(call.get("input"))
@@ -965,9 +985,6 @@ class _CodexSessionBuilder:
             and name not in self.session["unsupported_tools"]
         ):
             self.session["unsupported_tools"].append(name)
-        if name.endswith("apply_patch"):
-            for path in patch_paths(arguments):
-                append_unique_path(self.session["files_changed"], self.files_seen, path)
 
     def result(self, payload: dict[str, JsonValue], timestamp: str | None) -> None:
         call_id = _string(payload.get("call_id"))
@@ -1019,6 +1036,7 @@ class _CodexSessionBuilder:
         )
         _copy_identity(result, payload)
         self.session["patch_results"].append(result)
+        self.file_event(payload, timestamp)
 
     def entry(self, entry: dict[str, JsonValue]) -> None:
         payload = entry.get("payload")
@@ -1044,12 +1062,32 @@ class _CodexSessionBuilder:
             self.patch(payload, timestamp)
         elif payload.get("type") == "item_completed":
             item = payload.get("item")
-            if (
-                isinstance(item, dict)
-                and item.get("type") == "FileChange"
-                and item.get("status") == "completed"
-            ):
+            if not isinstance(item, dict):
+                return
+            if item.get("type") == FILE_CHANGE:
                 self.patch(item, timestamp)
+            elif item.get("type") == COMMAND_EXECUTION:
+                self.file_event(item, timestamp)
+            elif item.get("type") == SUBAGENT_ACTIVITY:
+                call_id = _string(item.get("id"))
+                call = self.calls_by_id.get(call_id) if call_id else None
+                if call is not None:
+                    populate_subagent_identity(call, item)
+
+    def file_event(self, payload: dict[str, JsonValue], timestamp: str | None) -> None:
+        """Keep independently evidenced native activity in conversation order."""
+        self.flush_user()
+        message = Event(i=len(self.session["events"]), role="harness", ts=timestamp)
+        _copy_identity(message, payload)
+        message["source_markers"] = [
+            AuthorshipMarker(field="record.type", value="event_msg"),
+            AuthorshipMarker(field="payload.type", value=payload.get("type")),
+        ]
+        call_id = _string(payload.get("call_id"))
+        call = self.calls_by_id.get(call_id) if call_id is not None else None
+        populate_file_event(message, payload, call)
+        if message.get("file_actions"):
+            self.append(message)
 
     def response(self, payload: dict[str, JsonValue], timestamp: str | None) -> None:
         kind = payload.get("type")
@@ -1072,6 +1110,8 @@ def interpret_source(source: CodexSource) -> Session | None:
     for entry in _conversation_entries(source):
         interpreter.entry(entry)
     interpreter.flush_user()
+    populate_action_results(interpreter.session)
+    populate_invocations(interpreter.session)
     populate_decision_facts(interpreter.session)
     session = interpreter.session
     return (

@@ -55,7 +55,7 @@ untracked at `captures/codex/0.166.0/20261030T194718Z/`.
 | Images | Two same-message PNG attachments, later JPEG/GIF/WebP attachments, and a separate tool-returned image. GIF converted to PNG at persistence. |
 | Continuation | Queued input, stopped background terminal, permission/question cancellation, model change, exact-session resume, and manual compaction/recall. |
 | Child | One actual read-only subagent, complete sidecar, recorded parent ID/history boundary, separate child interpretation/export. Explicit `agent_message` deliveries retain sender/recipient markers and become assistant contributions with other-agent authorship. There is no dedicated summary API. |
-| Export | Complete recorded inputs/results checked by call IDs; budgets 0/17/4096/unlimited plus an actual split multibyte boundary; non-mutation and CLI file/stdout parity. Model-only identities, invocation/patch details, and relationships are intentional JSON omissions. |
+| Export | Complete recorded inputs/results checked by call IDs; budgets 0/17/4096/unlimited plus an actual split multibyte boundary; non-mutation and CLI file/stdout parity. Action facts, full task text, and invocation definitions now survive JSON export (QUAL-2530); remaining model-only identities and parent relationships are intentional omissions. |
 
 ## Post-generation test audit
 
@@ -122,3 +122,19 @@ Decision facts attach to canonical messages, calls, and unmatched result records
 during interpretation. Shared export tests verify that session-level collections
 are never projected onto the conversation, while attached facts remain complete
 and independent of the raw-result cap.
+
+## Structured action and invocation interpretation
+
+QUAL-2530 uses this capture for independent `FileChange` completions, structured
+`CommandExecution.parsed_cmd` reads/searches, the actual `spawn_agent` request,
+its ID-matched activity, and both selected-skill expansions. The recorded task
+prompt is opaque and is preserved unchanged; it is not decoded into invented
+text. Outer code-mode JavaScript remains unsupported and is never expanded into
+nested calls. File completions keep their native order and IDs without guessing
+which outer call caused them.
+
+Controlled tests cover direct patch requests, multi-path/partial confirmation,
+moves, failed/missing/no-op completions, legacy slash commands, explicit skill
+links, and tool-recorded definitions unavailable in this capture. They do not
+claim those workflows were captured natively. Existing image, content, ownership,
+source-free interpretation, and export non-mutation checks remain in place.

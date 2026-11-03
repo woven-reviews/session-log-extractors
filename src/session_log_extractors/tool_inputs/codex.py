@@ -46,12 +46,22 @@ class ApplyPatchInput(TypedDict, total=False):
     content: str
 
 
+class SpawnAgentInput(TypedDict, total=False):
+    message: str
+    description: str
+    task_name: str
+    agent_type: str
+    agent_id: str
+    fork_turns: str
+
+
 class ReadSkillInput(TypedDict, total=False):
     skill: str
     name: str
     args: str
     package: str
     resource: str
+    definition: str
 
 
 KnownToolInput: TypeAlias = (
@@ -60,6 +70,7 @@ KnownToolInput: TypeAlias = (
     | ApplyPatchInput
     | ReadSkillInput
     | RequestUserInput
+    | SpawnAgentInput
 )
 ToolInputSchema: TypeAlias = Literal[
     "exec_command",
@@ -67,6 +78,7 @@ ToolInputSchema: TypeAlias = Literal[
     "update_plan",
     "apply_patch",
     "skills.read",
+    "spawn_agent",
     "unsupported",
 ]
 
@@ -76,6 +88,7 @@ _INPUT_SCHEMAS: dict[str, ToolInputSchema] = {
     "update_plan": "update_plan",
     "apply_patch": "apply_patch",
     "skills.read": "skills.read",
+    "spawn_agent": "spawn_agent",
 }
 
 
