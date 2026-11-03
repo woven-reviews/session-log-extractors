@@ -122,14 +122,14 @@ def _activity(message: Message) -> DecisionActivityReference:
     return DecisionActivityReference(message_i=message["i"], evidence=evidence)
 
 
-def _plan_facts(session: Session, message: Message) -> None:
+def _plan_facts(message: Message) -> None:
     text = message.get("text") or ""
     activity = _activity(message)
     match = _PLAN.fullmatch(text) if message["role"] == "assistant" else None
     if match is not None:
-        session["plan_versions"].append(
+        message.setdefault("plan_versions", []).append(
             PlanVersion(
-                ref=f"codex:v{len(session['plan_versions'])}",
+                ref=f"codex:message/{message['i']}/version",
                 kind=PlanVersionKind.PROPOSED,
                 text=match.group(1),
                 evidence=activity["evidence"],
@@ -145,7 +145,7 @@ def _plan_facts(session: Session, message: Message) -> None:
     if not spans or any(span["source"] != AuthorshipSource.CANDIDATE for span in spans):
         return
     decision = ObservedPlanDecision(
-        ref=f"codex:p{len(session['plan_decisions'])}",
+        ref=f"codex:message/{message['i']}/decision",
         outcome=(
             PlanOutcome.APPROVED if statement == _APPROVAL else PlanOutcome.REJECTED
         ),
@@ -157,35 +157,32 @@ def _plan_facts(session: Session, message: Message) -> None:
     )
     if separator and feedback:
         decision["candidate_feedback"] = feedback
-    session["plan_decisions"].append(decision)
+    message.setdefault("plan_decisions", []).append(decision)
 
 
 def _result_refusal(
-    session: Session,
     result: ToolResult,
     call: ToolCall | None,
     activity: DecisionActivityReference | None,
+    ref: str,
 ) -> None:
     refusal = _refusal(
         result.get("content"),
         activity,
         call,
-        f"codex:d{len(session['permission_refusals'])}",
+        ref,
     )
     if refusal is not None:
         if "id" in result:
             refusal["native_id"] = result["id"]
-        session["permission_refusals"].append(refusal)
+        target = call if call is not None else result
+        target.setdefault("permission_refusals", []).append(refusal)
 
 
 def populate_decision_facts(session: Session) -> None:
-    """Project canonical content; results already belong to ID-matched calls."""
-    session["permission_refusals"] = []
-    session["plan_versions"] = []
-    session["plan_presentations"] = []
-    session["plan_decisions"] = []
+    """Attach facts to canonical activity before the shared exporter copies it."""
     for message in session["events"]:
-        _plan_facts(session, message)
+        _plan_facts(message)
         for index, call in enumerate(message.get("tool_calls") or []):
             result = call.get("result_record")
             if result is None:
@@ -197,16 +194,21 @@ def populate_decision_facts(session: Session) -> None:
                     DecisionEvidence(field="call_id", value=result["tool_call_id"])
                 ],
             )
-            _result_refusal(session, result, call, activity)
+            _result_refusal(
+                result,
+                call,
+                activity,
+                f"codex:message/{message['i']}/call/{index}/refusal",
+            )
         if "permission_denial" in message:
             refusal = _refusal(
                 message.get("text"),
                 _activity(message),
                 None,
-                f"codex:d{len(session['permission_refusals'])}",
+                f"codex:message/{message['i']}/refusal",
                 field="message.text",
             )
             if refusal is not None:
-                session["permission_refusals"].append(refusal)
-    for result in session.get("unmatched_tool_results", []):
-        _result_refusal(session, result, None, None)
+                message.setdefault("permission_refusals", []).append(refusal)
+    for index, result in enumerate(session.get("unmatched_tool_results", [])):
+        _result_refusal(result, None, None, f"codex:unmatched/{index}/refusal")

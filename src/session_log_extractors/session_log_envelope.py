@@ -32,11 +32,10 @@ from typing import List, Optional, TypedDict
 from session_log_extractors.json_types import JsonValue, json_value
 from session_log_extractors.session_model import (
     AssistantMessage,
-    DecisionActivityReference,
+    DecisionFacts,
     Event,
     Image,
     Message,
-    MessageContent,
     QuestionActivityReference,
     Session,
     ToolCall,
@@ -271,44 +270,7 @@ def export_session(
         tool_result_max_bytes,
     )
     _export_question_facts(session, envelope)
-    _export_decision_facts(session, envelope)
     return envelope
-
-
-def _decision_target(
-    envelope: Envelope, activity: DecisionActivityReference | None
-) -> MessageContent | ToolCall | None:
-    if activity is None or not activity["evidence"]:
-        return None
-    for message in envelope["events"]:
-        if message["i"] != activity["message_i"]:
-            continue
-        if "tool_call_index" not in activity:
-            return message
-        calls = message.get("tool_calls") or []
-        index = activity["tool_call_index"]
-        return calls[index] if 0 <= index < len(calls) else None
-    return None
-
-
-def _export_decision_facts(session: Session, envelope: Envelope) -> None:
-    """Enrich only the activity supported by recorded evidence."""
-    for refusal in session.get("permission_refusals", []):
-        target = _decision_target(envelope, refusal["activity"])
-        if target is not None:
-            target.setdefault("permission_refusals", []).append(deepcopy(refusal))
-    for version in session.get("plan_versions", []):
-        target = _decision_target(envelope, version["activity"])
-        if target is not None:
-            target.setdefault("plan_versions", []).append(deepcopy(version))
-    for presentation in session.get("plan_presentations", []):
-        target = _decision_target(envelope, presentation["activity"])
-        if target is not None:
-            target.setdefault("plan_presentations", []).append(deepcopy(presentation))
-    for decision in session.get("plan_decisions", []):
-        target = _decision_target(envelope, decision["activity"])
-        if target is not None:
-            target.setdefault("plan_decisions", []).append(deepcopy(decision))
 
 
 def _export_question_facts(session: Session, envelope: Envelope) -> None:
@@ -357,6 +319,7 @@ def _export_event(event: Message, limit: int) -> Event:
     if "images" in event:
         exported["images"] = event["images"]
     _export_provenance(event, exported)
+    _export_decision_facts(event, exported)
     if "tool_results" in event:
         exported["tool_results"] = [
             _export_result(record, limit) for record in event["tool_results"]
@@ -399,7 +362,7 @@ def _export_call(call: ToolCall, limit: int) -> ToolCall:
         exported["is_error"] = call["is_error"]
     if "error" in call:
         exported["error"] = call["error"]
-    _export_question_records(call, exported, limit)
+    _export_call_records(call, exported, limit)
     result = call.get("result")
     if "result" in call and (result is None or isinstance(result, str)):
         capped = truncate_result(result, limit)
@@ -426,7 +389,8 @@ def _export_question_result(call: ToolCall, exported: ToolCall) -> None:
     )
 
 
-def _export_question_records(call: ToolCall, exported: ToolCall, limit: int) -> None:
+def _export_call_records(call: ToolCall, exported: ToolCall, limit: int) -> None:
+    _export_decision_facts(call, exported)
     if "interaction_questions" in call:
         exported["interaction_questions"] = call["interaction_questions"]
     if "question_responses" in call:
@@ -436,6 +400,18 @@ def _export_question_records(call: ToolCall, exported: ToolCall, limit: int) -> 
         "native_result" in record or "native_denial_kind" in record
     ):
         exported["result_record"] = _export_result(record, limit)
+
+
+def _export_decision_facts(source: DecisionFacts, target: DecisionFacts) -> None:
+    """Explicitly export complete semantic facts independently of the text cap."""
+    if "permission_refusals" in source:
+        target["permission_refusals"] = source["permission_refusals"]
+    if "plan_versions" in source:
+        target["plan_versions"] = source["plan_versions"]
+    if "plan_presentations" in source:
+        target["plan_presentations"] = source["plan_presentations"]
+    if "plan_decisions" in source:
+        target["plan_decisions"] = source["plan_decisions"]
 
 
 def _export_result(record: ToolResult, limit: int) -> ToolResult:

@@ -17,11 +17,23 @@ def _interpret(entries):
     return session
 
 
+def _facts(session, field):
+    """Inspect facts on their canonical messages, calls, and unmatched results."""
+    facts = []
+    for message in session["events"]:
+        facts.extend(message.get(field, []))
+        for call in message.get("tool_calls") or []:
+            facts.extend(call.get(field, []))
+    for result in session.get("unmatched_tool_results", []):
+        facts.extend(result.get(field, []))
+    return facts
+
+
 def test_native_proposals_and_approval_keep_unknown_version_ownership():
     entries = load_entries(TRANSCRIPT)
     session = _interpret(entries)
 
-    versions = session["plan_versions"]
+    versions = _facts(session, "plan_versions")
     assert len(versions) == 2, "Both native plan proposals are required"
     for version in versions:
         activity = version["activity"]
@@ -31,23 +43,25 @@ def test_native_proposals_and_approval_keep_unknown_version_ownership():
         assert recorded_block == message["text"].strip()
         assert version["kind"] == "proposed"
         assert "edited_from" not in version
-    (decision,) = session["plan_decisions"]
+        assert message["plan_versions"] == [version]
+    (decision,) = _facts(session, "plan_decisions")
     assert decision["outcome"] == "approved"
     assert decision["version"] is None
     assert decision["presentation"] is None
-    assert not session["plan_presentations"]
+    assert not _facts(session, "plan_presentations")
 
 
 def test_native_settings_refusal_excludes_cancellations_and_assistant_reports():
     session = _interpret(load_entries(TRANSCRIPT))
 
-    (refusal,) = session["permission_refusals"]
+    (refusal,) = _facts(session, "permission_refusals")
     assert refusal["source"] == "settings"
     assert "candidate_feedback" not in refusal
     activity = refusal["activity"]
     call = session["events"][activity["message_i"]]["tool_calls"][0]
     assert refusal["evidence"][0]["value"] == call["result_record"]["content"]
     assert refusal["action"]["tool_name"] == call["name"]
+    assert call["permission_refusals"] == [refusal]
 
 
 @pytest.mark.parametrize("limit", [0, 17, -1])
@@ -59,17 +73,20 @@ def test_native_facts_survive_caps_without_changing_conversation(limit):
 
     assert session == before
     assert len(envelope["events"]) == len(session["events"])
-    for version in session["plan_versions"]:
+    for version in _facts(session, "plan_versions"):
         message = envelope["events"][version["activity"]["message_i"]]
         assert version in message["plan_versions"]
-    for refusal in session["permission_refusals"]:
+    for refusal in _facts(session, "permission_refusals"):
         call = envelope["events"][refusal["activity"]["message_i"]]["tool_calls"][0]
         assert call["permission_refusals"] == [refusal]
-    (decision,) = session["plan_decisions"]
+    (decision,) = _facts(session, "plan_decisions")
     message = envelope["events"][decision["activity"]["message_i"]]
     assert message["plan_decisions"] == [decision]
     assert "permission_refusals" not in envelope
     assert "plan_versions" not in envelope
+    assert "permission_refusals" not in session
+    assert "plan_versions" not in session
+    assert "plan_decisions" not in session
 
 
 @pytest.mark.parametrize(
@@ -99,7 +116,7 @@ def test_controlled_legacy_denials_preserve_source_and_unmatched_evidence(
         entries[-1]["payload"]["call_id"] = "missing-call"
     session = _interpret(entries)
 
-    (refusal,) = session["permission_refusals"]
+    (refusal,) = _facts(session, "permission_refusals")
     assert refusal["source"] == source
     assert refusal.get("candidate_feedback") == feedback
     assert (refusal["activity"] is not None) == matched
@@ -116,8 +133,8 @@ def test_controlled_non_denials_do_not_create_decisions(output):
     entries[-1]["payload"]["is_error"] = True
     session = _interpret(entries)
 
-    assert not session["permission_refusals"]
-    assert not session["plan_decisions"]
+    assert not _facts(session, "permission_refusals")
+    assert not _facts(session, "plan_decisions")
 
 
 def _controlled_user(text):
@@ -141,11 +158,11 @@ def _controlled_user(text):
 def test_explicit_statements_do_not_require_a_previous_plan(text, outcome):
     session = _interpret([_controlled_user(text)])
 
-    (decision,) = session["plan_decisions"]
+    (decision,) = _facts(session, "plan_decisions")
     assert decision["outcome"] == outcome
     assert decision["native_decision"] == text
     assert decision["version"] is None and decision["presentation"] is None
-    assert not session["plan_versions"]
+    assert not _facts(session, "plan_versions")
 
 
 @pytest.mark.parametrize(
@@ -162,8 +179,8 @@ def test_ordinary_user_prose_does_not_invent_plan_facts(text):
     entries = [_controlled_user(text), *exec_interactions()[1:]]
     session = _interpret(entries)
 
-    assert not session["plan_versions"]
-    assert not session["plan_decisions"]
+    assert not _facts(session, "plan_versions")
+    assert not _facts(session, "plan_decisions")
 
 
 def test_unknown_authorship_does_not_create_candidate_approval():
@@ -171,7 +188,7 @@ def test_unknown_authorship_does_not_create_candidate_approval():
     entry["payload"].pop("internal_chat_message_metadata_passthrough")
     session = _interpret([entry])
 
-    assert not session["plan_decisions"]
+    assert not _facts(session, "plan_decisions")
 
 
 def test_legacy_assistant_denial_has_no_invented_action_owner():
@@ -181,7 +198,7 @@ def test_legacy_assistant_denial_has_no_invented_action_owner():
     entry["payload"]["content"][0]["type"] = "output_text"
     session = _interpret([entry])
 
-    (refusal,) = session["permission_refusals"]
+    (refusal,) = _facts(session, "permission_refusals")
     assert refusal["source"] == "unknown"
     assert refusal["action"] is None
     assert "tool_call_index" not in refusal["activity"]
@@ -197,7 +214,10 @@ def test_unmatched_refusal_stays_internal_instead_of_attaching_to_nearest_call()
 
     envelope = export_session(session, 0)
 
-    assert len(session["permission_refusals"]) == 1
+    (unmatched_refusal,) = _facts(session, "permission_refusals")
+    (unmatched_result,) = session["unmatched_tool_results"]
+    assert unmatched_result["permission_refusals"] == [unmatched_refusal]
+    assert unmatched_refusal["activity"] is None
     for message in envelope["events"]:
         assert "permission_refusals" not in message
         for call in message.get("tool_calls") or []:
@@ -236,7 +256,7 @@ def test_explicit_rejection_keeps_candidate_feedback_without_linking_by_proximit
     text = "Reject the plan.\nUse the café design instead.\nKeep the tests."
     session = _interpret([_controlled_user(text)])
 
-    (decision,) = session["plan_decisions"]
+    (decision,) = _facts(session, "plan_decisions")
     assert decision["outcome"] == "rejected"
     assert (
         decision["candidate_feedback"]
@@ -254,7 +274,7 @@ def test_nontext_outputs_do_not_invent_refusals(value):
     entries[-1]["payload"]["output"] = value
     session = _interpret(entries)
 
-    assert not session["permission_refusals"]
+    assert not _facts(session, "permission_refusals")
 
 
 def test_reversed_results_attach_denial_only_to_its_recorded_call():
@@ -267,7 +287,7 @@ def test_reversed_results_attach_denial_only_to_its_recorded_call():
     entries.append(first_result)
     session = _interpret(entries)
 
-    (refusal,) = session["permission_refusals"]
+    (refusal,) = _facts(session, "permission_refusals")
     activity = refusal["activity"]
     call = session["events"][activity["message_i"]]["tool_calls"][
         activity["tool_call_index"]
@@ -290,7 +310,7 @@ def test_full_candidate_feedback_survives_textual_result_cap(limit):
 
     envelope = export_session(session, limit)
 
-    (refusal,) = session["permission_refusals"]
+    (refusal,) = _facts(session, "permission_refusals")
     activity = refusal["activity"]
     call = envelope["events"][activity["message_i"]]["tool_calls"][0]
     assert call["permission_refusals"][0]["candidate_feedback"] == feedback.strip()
@@ -320,10 +340,10 @@ def test_native_generated_plan_wording_can_change_without_changing_ownership():
     session = _interpret(entries)
 
     actual_texts = []
-    for version in session["plan_versions"]:
+    for version in _facts(session, "plan_versions"):
         actual_texts.append(version["text"])
     assert actual_texts == expected_texts
-    (decision,) = session["plan_decisions"]
+    (decision,) = _facts(session, "plan_decisions")
     assert decision["version"] is None
 
 
@@ -335,7 +355,7 @@ def test_settings_createprocess_failure_is_not_a_candidate_denial():
     )
     session = _interpret(entries)
 
-    (refusal,) = session["permission_refusals"]
+    (refusal,) = _facts(session, "permission_refusals")
     assert refusal["source"] == "settings"
     for message in session["events"]:
         for call in message.get("tool_calls") or []:

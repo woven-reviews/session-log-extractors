@@ -117,3 +117,8 @@ proposals remain independent proposed versions, without an inferred edit link.
 The implementation statement likewise has no version/presentation association.
 No edited-plan editor, structured rejection, or explicit presentation-for-approval
 record was captured; no synthetic fixture claims those native workflows exist.
+
+Decision facts attach to canonical messages, calls, and unmatched result records
+during interpretation. Shared export tests verify that session-level collections
+are never projected onto the conversation, while attached facts remain complete
+and independent of the raw-result cap.

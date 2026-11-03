@@ -124,8 +124,12 @@ messages. Refusals retain complete evidence, native variants, denied tool names,
 and separate candidate feedback and harness explanations. Read-only sandbox
 refusals have source `settings`; generic denials without attribution have source
 `unknown`. Native cancellations and ordinary tool errors never imply denial.
-These fields survive zero/short/unlimited result caps without changing the
-interpreted session. Unmatched refusals remain explicitly unassociated internally.
+Codex attaches these facts to their canonical records during interpretation,
+using the same shared `DecisionFacts` export path as Claude. The exporter copies
+facts without reconstructing ownership from session-level collections. These
+fields survive zero/short/unlimited result caps without changing the interpreted
+session. Unmatched refusals stay on their internal unmatched result records,
+with null activity/action associations.
 
 A complete assistant `<proposed_plan>` block records a proposed version, without
 asserting that it was presented for approval. Candidate-authored statements whose
@@ -275,6 +279,20 @@ preserving complete nested input/result payloads. `build_events` remains an
 export convenience wrapper. `Turn`, `Interaction`, and chronological sidecar
 attribution have been removed. Main JSON extraction omits sidecars;
 `load_subagents(path)` retains its timestamp-ordered summaries for existing callers.
+
+Claude JSON includes `permission_refusals`, `plan_versions`,
+`plan_presentations`, and `plan_decisions` on the calls that carry their evidence.
+`claude_decisions.py` interprets these shared records before export, so complete
+plans, native denial variants, source evidence, and candidate feedback survive
+short raw-result limits. Candidate prompt refusals and settings rules have
+separate sources; ordinary tool failures do not become candidate decisions.
+Explicit editor evidence links edited versions to their proposals. Unanswered
+presentations have no decision, and unfamiliar results never imply approval.
+Unmatched results keep their facts on `tool_results` with null activity/action
+or plan associations instead of borrowing a nearby call. Duplicate interaction
+IDs also retain unassociated results. The legacy in-memory summaries and
+`ExitPlanMode` calls remain available; general permission/planning lifecycles
+and response timestamps are outside this enrichment.
 
 Copilot readers and discovery live in `session_log_extractors.copilot_sources`.
 `read_source(connection, session)` loads metadata, required database rows, models,

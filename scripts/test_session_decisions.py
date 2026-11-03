@@ -1,4 +1,4 @@
-"""Permission/plan model contracts; projections are not adapter adoption."""
+"""Shared permission/plan records and canonical conversation export."""
 
 import json
 from copy import deepcopy
@@ -627,35 +627,17 @@ def test_codex_native_cancellations_stay_distinct_from_settings_refusal():
         assert result["call_id"] in calls
     session = interpret_source(CodexSource(CODEX_TRANSCRIPT, entries))
     (settings_result,) = settings
-    native_call = calls[settings_result["call_id"]]
-    session["permission_refusals"] = [
-        PermissionRefusal(
-            ref="d1",
-            action=DeniedAction(
-                description=native_call["name"], tool_name=native_call["name"]
-            ),
-            source=RefusalSource.SETTINGS,
-            native_variant=None,
-            evidence=[
-                DecisionEvidence(
-                    field="custom_tool_call_output.output",
-                    value=settings_result["output"],
-                )
-            ],
-            activity=None,
-        )
-    ]
-
+    assert session is not None
     decoded = json.loads(json.dumps(session))
-
-    (refusal,) = decoded["permission_refusals"]
+    interpreted_calls = {}
+    for event in decoded["events"]:
+        for call in event.get("tool_calls", []):
+            interpreted_calls[call["id"]] = call
+    settings_call = interpreted_calls[settings_result["call_id"]]
+    (refusal,) = settings_call["permission_refusals"]
     assert refusal["source"] == "settings"
     assert refusal["evidence"][0]["value"] == settings_result["output"]
     assert "candidate_feedback" not in refusal
-    interpreted_calls = {}
-    for event in session["events"]:
-        for call in event.get("tool_calls", []):
-            interpreted_calls[call["id"]] = call
     for result in cancellations:
         canonical_call = interpreted_calls[result["call_id"]]
         assert canonical_call["result_record"]["content"] == result["output"]
@@ -665,9 +647,7 @@ def test_codex_native_cancellations_stay_distinct_from_settings_refusal():
 
 @pytest.mark.parametrize("on_call", [False, True])
 @pytest.mark.parametrize("limit", [0, 17, -1])
-def test_shared_decision_projection_preserves_records_on_evidenced_activity(
-    on_call, limit
-):
+def test_shared_export_preserves_facts_on_their_canonical_activity(on_call, limit):
     session = _illustrative_plan_session()
     session["events"] = [
         {
@@ -691,6 +671,12 @@ def test_shared_decision_projection_preserves_records_on_evidenced_activity(
     ):
         for record in collection:
             record["activity"] = deepcopy(activity)
+    target = session["events"][0]
+    if on_call:
+        target = target["tool_calls"][0]
+    target["plan_versions"] = session["plan_versions"]
+    target["plan_presentations"] = session["plan_presentations"]
+    target["plan_decisions"] = session["plan_decisions"]
     original = deepcopy(session)
 
     envelope = export_session(session, limit)
@@ -712,6 +698,7 @@ def test_shared_decision_projection_preserves_records_on_evidenced_activity(
     "activity",
     [
         None,
+        {"message_i": 7, "evidence": [{"field": "id", "value": "valid"}]},
         {"message_i": 7, "evidence": []},
         {"message_i": 8, "evidence": [{"field": "id", "value": "missing"}]},
         {
@@ -726,7 +713,7 @@ def test_shared_decision_projection_preserves_records_on_evidenced_activity(
         },
     ],
 )
-def test_invalid_decision_addresses_never_fall_back_to_nearest_message(activity):
+def test_session_decision_collections_are_not_projected_during_export(activity):
     session = _illustrative_plan_session()
     session["events"] = [
         {

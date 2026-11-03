@@ -106,6 +106,29 @@ def _assert_claude_decisions_exported(session, exported):
     assert "question_responses" not in exported
 
 
+def _assert_claude_plan_refusal_facts_exported(session, exported):
+    required_fields = (
+        "permission_refusals",
+        "plan_versions",
+        "plan_presentations",
+        "plan_decisions",
+    )
+    counts = dict.fromkeys(required_fields, 0)
+    for message in session["events"]:
+        exported_message = exported["events"][message["i"]]
+        assert exported_message["text"] == message["text"]
+        for index, call in enumerate(message.get("tool_calls") or []):
+            exported_call = exported_message["tool_calls"][index]
+            assert exported_call["input"] == call["input"]
+            for field in required_fields:
+                if field in call:
+                    assert exported_call[field] == call[field]
+                    counts[field] += len(call[field])
+    for field in required_fields:
+        assert counts[field] > 0, f"Native capture lacks {field}"
+        assert field not in exported
+
+
 # Extend this native-fixture matrix as other harnesses adopt Extractor.
 @pytest.mark.parametrize(
     ("extractor", "selection", "harness", "full_result"),
@@ -151,6 +174,7 @@ def test_public_interpretation_is_source_free_and_export_is_non_mutating(
         assert session == original
         if harness == "claude":
             _assert_claude_decisions_exported(session, exported)
+            _assert_claude_plan_refusal_facts_exported(session, exported)
     if full_result:
         large_results = []
         for event in session["events"]:
