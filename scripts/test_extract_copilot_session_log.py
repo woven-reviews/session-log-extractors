@@ -699,9 +699,6 @@ def test_copilot_cli_tool_result_cap(tmp_path):
     truncated = []
     for call in exported_calls:
         result = call["result"]
-        if call["name"] == "ask_user":
-            assert isinstance(result, str)
-            result = json.loads(result)["raw_result"]
         if result is None:
             assert call["result_bytes"] == 0
             assert call["result_truncated"] is False

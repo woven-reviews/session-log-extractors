@@ -307,12 +307,13 @@ recorded call ID. Repeated and orphan results remain in `unmatched_tool_results`
 and the complete native result stays in `result_record` beside the compatible
 textual JSON result. Database-only inputs retain file targets by `turn_index`.
 
-Copilot keeps structured questions and responses inside the existing tool
-`result` string as JSON text: `questions`, `responses`, and `raw_result`.
-The envelope and event fields and their value types are unchanged, so consumers
-can display the same linear conversation.
-Only `raw_result` is capped; structured facts remain complete. The session's
-`interaction_questions` and `question_responses` remain internal model views.
+All three harnesses attach structured `interaction_questions` and
+`question_responses` to their evidenced tool calls during interpretation.
+The exporter copies those facts alongside the existing capped `result` string;
+it does not reconstruct ownership from session-level question indexes or wrap
+facts inside result text. Session-level collections remain internal model views.
+Unmatched Codex results and responses remain internal when no displayable
+conversation owner is established.
 Each schema property is a distinct question occurrence with
 the exact request message, title, description, enum options, and selection mode.
 Responses link through a unique same-agent `toolCallId` and the recorded answer

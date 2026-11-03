@@ -197,8 +197,6 @@ def test_native_export_budgets_keep_inputs_and_do_not_mutate(budget):
                 else result.encode()[:budget].decode(errors="ignore")
             )
             actual_result = exported_call["result"]
-            if call["name"] == "ask_user":
-                actual_result = json.loads(actual_result)["raw_result"]
             assert actual_result == expected
             assert exported_call["result_bytes"] == result_bytes
             assert exported_call["result_truncated"] is (

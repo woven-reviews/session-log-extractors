@@ -111,6 +111,37 @@ def test_native_answers_and_cancellation_remain_distinct():
     assert len(notes) == 2 and len(custom) == 1
 
 
+def test_interpretation_attaches_canonical_questions_and_responses_before_export():
+    session = _interpret(load_entries(TRANSCRIPT))
+    questions = []
+    responses = []
+    for message in session["events"]:
+        for call in message.get("tool_calls", []):
+            if call["name"] != "request_user_input":
+                assert "interaction_questions" not in call
+                assert "question_responses" not in call
+                continue
+            questions.extend(call["interaction_questions"])
+            responses.extend(call["question_responses"])
+    assert questions, "Capture lacks questions"
+    assert responses, "Capture lacks responses"
+    assert questions == session["interaction_questions"]
+    assert responses == session["question_responses"]
+    for question, indexed in zip(
+        questions, session["interaction_questions"], strict=True
+    ):
+        assert question is indexed
+    for response, indexed in zip(responses, session["question_responses"], strict=True):
+        assert response is indexed
+
+    expected = export_session(session)
+    del session["interaction_questions"]
+    del session["question_responses"]
+    actual = export_session(session)
+
+    assert actual == expected
+
+
 @pytest.mark.parametrize("limit", [0, 8, -1])
 def test_native_structured_facts_survive_export_caps(limit):
     session = _interpret(load_entries(TRANSCRIPT))
@@ -217,6 +248,12 @@ def test_missing_call_retains_unassociated_native_answers():
     assert (
         session["unmatched_tool_results"][0]["content"] == result["payload"]["output"]
     )
+    exported = export_session(session)
+    assert len(exported["events"]) == len(session["events"]) == 1
+    assert "unmatched_tool_results" not in exported
+    assert "question_responses" not in exported
+    assert "tool_calls" not in exported["events"][0]
+    assert "tool_results" not in exported["events"][0]
 
 
 @pytest.mark.parametrize(
