@@ -3,6 +3,7 @@
 import json
 import re
 from copy import deepcopy
+from dataclasses import dataclass
 from typing import Final
 
 from session_log_extractors.json_types import JsonValue, json_value, parse_json
@@ -165,6 +166,12 @@ def _decision(response: QuestionResponse, output: JsonValue) -> None:
             response["candidate_feedback"] = feedback
 
 
+@dataclass
+class _QuestionGroup:
+    call: ToolCall
+    activity: QuestionActivityReference
+
+
 class _CodexQuestionInterpreter:
     """Track each call's own occurrences; never associate by order or counts."""
 
@@ -173,7 +180,7 @@ class _CodexQuestionInterpreter:
         self.responses: list[QuestionResponse] = []
         session["interaction_questions"] = self.questions
         session["question_responses"] = self.responses
-        self.calls: dict[int, tuple[list[Question], QuestionActivityReference]] = {}
+        self.calls: dict[int, _QuestionGroup] = {}
 
     def register(self, call: ToolCall, message_i: int) -> None:
         if call["name"].rsplit(".", 1)[-1] != REQUEST_USER_INPUT:
@@ -203,7 +210,9 @@ class _CodexQuestionInterpreter:
                     question["activity"] = deepcopy(activity)
                     self.questions.append(question)
                     questions.append(question)
-        self.calls[id(call)] = questions, activity
+        call["interaction_questions"] = questions
+        call["question_responses"] = []
+        self.calls[id(call)] = _QuestionGroup(call, activity)
 
     def result(self, call: ToolCall | None, result: ToolResult) -> None:
         scope = self.calls.get(id(call)) if call is not None else None
@@ -218,11 +227,11 @@ class _CodexQuestionInterpreter:
             and _decision_outcome(output) == QuestionResponseOutcome.UNKNOWN
         ):
             return
-        questions, activity = scope if scope is not None else ([], None)
+        questions = scope.call["interaction_questions"] if scope is not None else []
         if isinstance(answers, dict):
-            self._record_answers(answers, questions, result, activity)
+            self._record_answers(answers, result, scope)
             return
-        response = self._response(result, activity)
+        response = self._response(result, scope)
         _decision(response, output)
         # A call-wide cancellation/refusal has no per-question identifier.
         # With one contained occurrence only, native containment is sufficient.
@@ -238,12 +247,12 @@ class _CodexQuestionInterpreter:
     def _record_answers(
         self,
         answers: dict[str, JsonValue],
-        questions: list[Question],
         result: ToolResult,
-        activity: QuestionActivityReference | None,
+        scope: _QuestionGroup | None,
     ) -> None:
+        questions = scope.call["interaction_questions"] if scope is not None else []
         for key, value in answers.items():
-            response = self._response(result, activity)
+            response = self._response(result, scope)
             evidence = (
                 response["activity"]["evidence"] if "activity" in response else []
             )
@@ -255,7 +264,7 @@ class _CodexQuestionInterpreter:
             _answer(response, value, question)
 
     def _response(
-        self, result: ToolResult, activity: QuestionActivityReference | None
+        self, result: ToolResult, scope: _QuestionGroup | None
     ) -> QuestionResponse:
         response = QuestionResponse(
             ref=f"codex:r{len(self.responses)}",
@@ -264,8 +273,9 @@ class _CodexQuestionInterpreter:
         )
         if "id" in result:
             response["native_id"] = result["id"]
-        if activity is not None:
-            response["activity"] = deepcopy(activity)
+        if scope is not None:
+            scope.call["question_responses"].append(response)
+            response["activity"] = deepcopy(scope.activity)
             response["activity"]["evidence"].append(
                 QuestionEvidence(
                     field="function_call_output.call_id", value=result["tool_call_id"]

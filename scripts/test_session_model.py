@@ -1074,8 +1074,8 @@ def test_cancellation_is_distinct_from_refusal_and_feedback(by):
         harness="test",
         session_id="s",
         events=[Event(i=0, role="assistant", tool_calls=[ToolCall(name="question")])],
-        question_responses=[response],
     )
+    session["events"][0]["tool_calls"][0]["question_responses"] = [response]
     original = deepcopy(session)
     exported = export_session(session, 0)
     call = json.loads(json.dumps(exported))["events"][0]["tool_calls"][0]
@@ -1095,6 +1095,11 @@ def test_cancellation_is_distinct_from_refusal_and_feedback(by):
     "activity",
     [
         None,
+        {
+            "message_i": 0,
+            "tool_call_index": 0,
+            "evidence": [{"field": "native.call", "value": "c"}],
+        },
         {"message_i": 0, "evidence": [{"field": "native.message", "value": "m"}]},
         {
             "message_i": 1,
@@ -1108,7 +1113,7 @@ def test_cancellation_is_distinct_from_refusal_and_feedback(by):
         },
     ],
 )
-def test_export_does_not_guess_call_ownership_for_unassociated_facts(activity):
+def test_export_does_not_project_session_question_indexes(activity):
     question = Question(ref="q", text="Choose?", options=[])
     response = QuestionResponse(
         ref="r", question=None, outcome=QuestionResponseOutcome.UNKNOWN
@@ -1132,12 +1137,14 @@ def test_export_does_not_guess_call_ownership_for_unassociated_facts(activity):
     assert session == original
 
 
-def test_export_addresses_message_identity_and_call_index_without_reordering():
+def test_export_preserves_canonical_question_ownership_without_reordering():
     question, response, call = _codex_question_contract()
     question["activity"]["message_i"] = 7
     question["activity"]["tool_call_index"] = 1
     response["activity"]["message_i"] = 7
     response["activity"]["tool_call_index"] = 1
+    call["interaction_questions"] = [question]
+    call["question_responses"] = [response]
     unrelated = ToolCall(name="other", result="Keep this")
     session = Session(
         harness="codex",

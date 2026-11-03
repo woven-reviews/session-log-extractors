@@ -48,6 +48,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from session_log_extractors import copilot_authorship, copilot_sources
+from session_log_extractors.copilot_decisions import interpret_decisions
 from session_log_extractors.copilot_interactions import (
     apply_configured_refusal,
     apply_human_response,
@@ -1158,15 +1159,13 @@ def interpret_source(source: CopilotSource) -> Session | None:
         event["i"] = index
 
     questions = interpret_questions(events, source.state_records)
-    if not events and not questions.responses:
-        return None
     events = _include_unassociated_question_results(builder, events, questions)
 
     calls = [call for event in events for call in event.get("tool_calls") or []]
     unsupported_tools = {
         call["name"] for call in calls if call.get("input_schema") == "unsupported"
     }
-    return Session(
+    session = Session(
         harness="copilot",
         session_id=output_identifier(source.session),
         events=events,
@@ -1182,6 +1181,24 @@ def interpret_source(source: CopilotSource) -> Session | None:
         interaction_questions=questions.questions,
         question_responses=questions.responses,
     )
+
+    interpret_decisions(
+        session, source.state_records, _string(source.session.get("id"))
+    )
+    if (
+        not events
+        and not questions.responses
+        and not any(
+            (
+                session["permission_refusals"],
+                session["plan_versions"],
+                session["plan_presentations"],
+                session["plan_decisions"],
+            )
+        )
+    ):
+        return None
+    return session
 
 
 class CopilotExtractor:

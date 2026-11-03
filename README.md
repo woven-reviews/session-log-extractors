@@ -307,12 +307,13 @@ recorded call ID. Repeated and orphan results remain in `unmatched_tool_results`
 and the complete native result stays in `result_record` beside the compatible
 textual JSON result. Database-only inputs retain file targets by `turn_index`.
 
-Copilot keeps structured questions and responses inside the existing tool
-`result` string as JSON text: `questions`, `responses`, and `raw_result`.
-The envelope and event fields and their value types are unchanged, so consumers
-can display the same linear conversation.
-Only `raw_result` is capped; structured facts remain complete. The session's
-`interaction_questions` and `question_responses` remain internal model views.
+All three harnesses attach structured `interaction_questions` and
+`question_responses` to their evidenced tool calls during interpretation.
+The exporter copies those facts alongside the existing capped `result` string;
+it does not reconstruct ownership from session-level question indexes or wrap
+facts inside result text. Session-level collections remain internal model views.
+Unmatched Codex results and responses remain internal when no displayable
+conversation owner is established.
 Each schema property is a distinct question occurrence with
 the exact request message, title, description, enum options, and selection mode.
 Responses link through a unique same-agent `toolCallId` and the recorded answer
@@ -331,7 +332,24 @@ multi-question request remains unassociated with an individual question.
 The captured enum format has no option descriptions, recommendation markers,
 or previews: these fields remain absent, while labels and complete raw tool
 inputs/results remain available. Structured question facts survive every raw
-result byte budget, including zero. Permission and plan semantics are unchanged.
+result byte budget, including zero.
+
+Copilot also populates the shared `permission_refusals`, `plan_versions`,
+`plan_presentations`, and `plan_decisions` collections before export. The
+interpreter attaches those records directly to their evidenced tool calls in the
+existing conversation; the shared serializer exports the established ownership.
+Session collections index the same records for internal callers and retain
+unassociated facts. A unique same-agent call ID, or a unique permission request ID
+carrying that call ID, establishes ownership. Settings
+rules and content-exclusion refusals remain distinct from candidate refusals;
+candidate feedback requires recorded human provenance. Cancellations, tool
+errors, unfamiliar decision values, and missing decisions never imply approval.
+Complete plan content from responses survives every raw-result cap, including
+editor-modified approved text. Plan-file create inputs preserve proposals;
+execution starts record presentations with unknown displayed versions. Response
+content has unknown version kind unless the source establishes more. No edit
+relationship is inferred from changed text or neighboring records. Legacy
+call summaries remain available on the model.
 
 Copilot authorship is independent of role. Recorded `data.source` and automatic
 continuation evidence distinguish candidate, harness, and other-agent input;

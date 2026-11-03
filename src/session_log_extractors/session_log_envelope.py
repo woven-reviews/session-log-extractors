@@ -29,7 +29,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import List, Optional, TypedDict
 
-from session_log_extractors.json_types import JsonValue, json_value
+from session_log_extractors.json_types import JsonValue
 from session_log_extractors.session_model import (
     ActionFacts,
     AssistantMessage,
@@ -37,7 +37,6 @@ from session_log_extractors.session_model import (
     Event,
     Image,
     Message,
-    QuestionActivityReference,
     Session,
     ToolCall,
     ToolResult,
@@ -270,42 +269,7 @@ def export_session(
         ),
         tool_result_max_bytes,
     )
-    _export_question_facts(session, envelope)
     return envelope
-
-
-def _export_question_facts(session: Session, envelope: Envelope) -> None:
-    """Project model facts onto their evidenced calls in the linear conversation."""
-    calls: dict[tuple[int, int], ToolCall] = {}
-    for source_event, event in zip(session["events"], envelope["events"], strict=True):
-        source_calls = source_event.get("tool_calls") or []
-        for index, exported_call in enumerate(event.get("tool_calls") or []):
-            source_call = source_calls[index]
-            if (
-                "question_result_facts" in source_call
-                or "interaction_questions" in source_call
-                or "question_responses" in source_call
-            ):
-                continue
-            calls[event["i"], index] = exported_call
-    for question in session.get("interaction_questions", []):
-        call = _activity_call(calls, question.get("activity"))
-        if call is not None:
-            call.setdefault("interaction_questions", []).append(deepcopy(question))
-    for response in session.get("question_responses", []):
-        call = _activity_call(calls, response.get("activity"))
-        if call is not None:
-            call.setdefault("question_responses", []).append(deepcopy(response))
-
-
-def _activity_call(
-    calls: dict[tuple[int, int], ToolCall],
-    activity: QuestionActivityReference | None,
-) -> ToolCall | None:
-    """Resolve a recorded call address; message containment alone is insufficient."""
-    if activity is None or "tool_call_index" not in activity:
-        return None
-    return calls.get((activity["message_i"], activity["tool_call_index"]))
 
 
 def _export_event(event: Message, limit: int) -> Event:
@@ -371,24 +335,7 @@ def _export_call(call: ToolCall, limit: int) -> ToolCall:
         capped["result_bytes"] = call.get("result_bytes", capped["result_bytes"])
         capped["result_truncated"] |= call.get("result_truncated", False)
         attach_result(exported, capped)
-    _export_question_result(call, exported)
     return exported
-
-
-def _export_question_result(call: ToolCall, exported: ToolCall) -> None:
-    """Keep decision facts in the existing result alongside its capped raw text."""
-    facts = call.get("question_result_facts")
-    if facts is None:
-        return
-    exported["result"] = json.dumps(
-        {
-            "raw_result": exported.get("result"),
-            "questions": json_value(facts["questions"]),
-            "responses": json_value(facts["responses"]),
-        },
-        ensure_ascii=False,
-        indent=2,
-    )
 
 
 def _export_call_records(call: ToolCall, exported: ToolCall, limit: int) -> None:

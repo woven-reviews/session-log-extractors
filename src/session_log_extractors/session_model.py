@@ -153,13 +153,6 @@ class QuestionResponse(TypedDict):
     activity: NotRequired[QuestionActivityReference]
 
 
-class QuestionResultFacts(TypedDict):
-    """Question records carried by an existing textual tool result."""
-
-    questions: list[Question]
-    responses: list[QuestionResponse]
-
-
 class PlanDecision(TypedDict):
     """A proposed plan and any recorded approval, edit, or rejection."""
 
@@ -600,7 +593,6 @@ class ToolCall(DecisionFacts, ActionFacts, total=False):
     result_images: list[Image]
     execution: ToolExecution
     questions: list[QuestionAnswer]
-    question_result_facts: QuestionResultFacts
     interaction_questions: list[Question]
     question_responses: list[QuestionResponse]
     plan_decision: PlanDecision
@@ -782,7 +774,7 @@ class Session(TypedDict):
     file_actions: NotRequired[list[FileAction]]
     subagent_tasks: NotRequired[list[SubagentTask]]
     invocations: NotRequired[list[Invocation]]
-    # Codex stages these facts for projection onto evidenced calls at export.
+    # Session-wide indexes of question facts; canonical owners are calls/results.
     interaction_questions: NotRequired[list[Question]]
     question_responses: NotRequired[list[QuestionResponse]]
     permission_refusals: NotRequired[list[PermissionRefusal]]
