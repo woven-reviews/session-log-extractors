@@ -254,6 +254,20 @@ export convenience wrapper. `Turn`, `Interaction`, and chronological sidecar
 attribution have been removed. Main JSON extraction omits sidecars;
 `load_subagents(path)` retains its timestamp-ordered summaries for existing callers.
 
+Claude JSON includes `permission_refusals`, `plan_versions`,
+`plan_presentations`, and `plan_decisions` on the calls that carry their evidence.
+`claude_decisions.py` interprets these shared records before export, so complete
+plans, native denial variants, source evidence, and candidate feedback survive
+short raw-result limits. Candidate prompt refusals and settings rules have
+separate sources; ordinary tool failures do not become candidate decisions.
+Explicit editor evidence links edited versions to their proposals. Unanswered
+presentations have no decision, and unfamiliar results never imply approval.
+Unmatched results keep their facts on `tool_results` with null activity/action
+or plan associations instead of borrowing a nearby call. Duplicate interaction
+IDs also retain unassociated results. The legacy in-memory summaries and
+`ExitPlanMode` calls remain available; general permission/planning lifecycles
+and response timestamps are outside this enrichment.
+
 Copilot readers and discovery live in `session_log_extractors.copilot_sources`.
 `read_source(connection, session)` loads metadata, required database rows, models,
 and ordered state records into `CopilotSource`. The extractor's `read_source`
