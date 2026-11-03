@@ -536,3 +536,75 @@ def test_repeated_slash_submissions_have_separate_invocations():
     assert first["ref"] != second["ref"]
     assert first["slash_text"] == second["slash_text"]
     assert first["activity"]["message_i"] != second["activity"]["message_i"]
+
+
+def test_database_facts_preserve_recorded_empty_names_and_paths():
+    source = native_source()
+    source.state_records = []
+    source.turns = []
+    source.files = [source.files[0]]
+    source.files[0]["tool_name"] = ""
+    source.files[0]["file_path"] = ""
+    session = interpret_source(source)
+    assert session is not None
+
+    (action,) = session["file_actions"]
+    assert action["action_name"] == ""
+    assert action["path"] == ""
+
+
+@pytest.mark.parametrize("separator", [" ", "\t", "\n"])
+def test_slash_arguments_preserve_whitespace_after_the_command_separator(separator):
+    source, record = _slash_source()
+    arguments = ' café 雪 "two words"\nnext line'
+    record["data"]["content"] = "/controlled" + separator + arguments
+    record["data"].pop("transformedContent")
+    session = interpret_source(source)
+    assert session is not None
+
+    (invocation,) = session["invocations"]
+    assert invocation["name"] == "controlled"
+    assert invocation["arguments"] == arguments
+    assert invocation["slash_text"] == record["data"]["content"]
+
+
+@pytest.mark.parametrize(
+    "target", ["skill://review(one)", r"skill://review\)one", "skill://café/雪"]
+)
+def test_invocation_skill_links_preserve_complete_syntax_and_targets(target):
+    source, record = _slash_source()
+    syntax = f"[$review]({target})"
+    record["data"]["content"] = f"/controlled {syntax} {syntax}"
+    record["data"].pop("transformedContent")
+    session = interpret_source(source)
+    assert session is not None
+
+    (invocation,) = session["invocations"]
+    expected = {"syntax": syntax, "target": target}
+    assert invocation["skill_links"] == [expected, expected]
+
+
+@pytest.mark.parametrize("syntax", ["[$review](unfinished(", "[$review](split\nline)"])
+def test_incomplete_skill_links_are_not_exported_as_shortened_links(syntax):
+    source, record = _slash_source()
+    record["data"]["content"] = "/controlled " + syntax
+    record["data"].pop("transformedContent")
+    session = interpret_source(source)
+    assert session is not None
+
+    (invocation,) = session["invocations"]
+    assert "skill_links" not in invocation
+    assert invocation["arguments"] == syntax
+
+
+def test_link_syntax_inside_a_target_is_not_a_second_invocation_link():
+    source, record = _slash_source()
+    target = "skill://[$inner](nested)"
+    syntax = f"[$outer]({target})"
+    record["data"]["content"] = "/controlled " + syntax
+    record["data"].pop("transformedContent")
+    session = interpret_source(source)
+    assert session is not None
+
+    (invocation,) = session["invocations"]
+    assert invocation["skill_links"] == [{"syntax": syntax, "target": target}]

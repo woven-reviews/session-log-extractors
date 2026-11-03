@@ -179,7 +179,7 @@ def _task(session: Session, owner: _CallActivity, records: RecordIndex) -> None:
             agent_type = string_value(data.get("agentType"))
             if agent_type is not None:
                 task["agent_type"] = agent_type
-        task["evidence"].extend(_evidence("subagent.started", child))
+        task["evidence"].extend(_evidence(SUBAGENT_STARTED, child))
     call.setdefault("subagent_tasks", []).append(task)
     session["subagent_tasks"].append(task)
 
@@ -316,41 +316,81 @@ def _native_invocation(
     _definition(invocation, data)
 
 
-_SKILL_LINK = re.compile(r"\[\$[^\]\n]+\]\(([^)\n]+)\)")
+_SKILL_LINK = re.compile(r"\[\$[^\]\n]+\]\(")
+_SLASH_COMMAND = re.compile(r"/([^\s]+)(?:\s([\s\S]*))?\Z")
+
+
+def _link_target_end(text: str, start: int) -> int | None:
+    depth = 1
+    escaped = False
+    for index in range(start, len(text)):
+        character = text[index]
+        if escaped:
+            escaped = False
+            continue
+        if character == "\\":
+            escaped = True
+        elif character == "(":
+            depth += 1
+        elif character == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+        elif character in "\r\n":
+            return None
+    return None
+
+
+def _recorded_skill_links(text: str) -> list[RecordedSkillLink]:
+    links = []
+    consumed = 0
+    for match in _SKILL_LINK.finditer(text):
+        if match.start() < consumed:
+            continue
+        end = _link_target_end(text, match.end())
+        if end is None:
+            continue
+        links.append(
+            RecordedSkillLink(
+                syntax=text[match.start() : end + 1], target=text[match.end() : end]
+            )
+        )
+        consumed = end + 1
+    return links
 
 
 def _slash_invocation(session: Session, message: Message) -> None:
     submitted = message.get("submitted")
     text = submitted["text"] if submitted is not None else ""
-    if not text.startswith("/"):
+    command = _SLASH_COMMAND.fullmatch(text)
+    if command is None:
         return
-    command, separator, arguments = text.partition(" ")
+    name = command.group(1)
     invocations = message.get("invocations", [])
-    if len(invocations) == 1 and invocations[0]["name"] == command[1:]:
+    if len(invocations) == 1 and invocations[0]["name"] == name:
         invocation = invocations[0]
     else:
-        invocation = _new_invocation(session, command[1:])
+        invocation = _new_invocation(session, name)
         invocation["kind"] = InvocationKind.COMMAND
         invocation["activity"] = ActionActivityReference(
             message_i=message["i"], evidence=_evidence("submitted.text", text)
         )
         message.setdefault("invocations", []).append(invocation)
     invocation["slash_text"] = text
-    invocation["arguments"] = arguments if separator else ""
+    invocation["arguments"] = command.group(2) or ""
     invocation["evidence"].extend(_evidence("submitted.text", text))
-    links = []
-    for match in _SKILL_LINK.finditer(text):
-        links.append(RecordedSkillLink(syntax=match.group(), target=match.group(1)))
+    links = _recorded_skill_links(text)
     if links:
         invocation["skill_links"] = links
 
 
 def _database_actions(session: Session, files: list[dict[str, JsonValue]]) -> None:
     for row in files:
+        name = string_value(row.get("tool_name"))
         session["file_actions"].append(
             FileAction(
                 ref=f"copilot:f{len(session['file_actions'])}",
-                action_name=string_value(row.get("tool_name")) or "tool",
+                action_name=name if name is not None else "tool",
                 path=string_value(row.get("file_path")),
                 execution_outcome=ToolExecutionOutcome.UNKNOWN,
                 change=None,
