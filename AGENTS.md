@@ -46,6 +46,27 @@ Their tests replace the CLI with a fake, so their code is still covered.
 Use diff-cover to identify missing coverage; add tests rather than lowering
 the threshold.
 
+## Resolve responsibilities in the layer that owns them
+
+Establish domain meaning near the evidence and context needed to determine it.
+Give each fact one authoritative representation, and make each stage's guarantees
+clear enough that downstream code can trust them. Preserve uncertainty explicitly
+when the evidence cannot resolve it.
+
+Keep boundaries focused on their purpose: serializers represent established
+facts, views display established state, and transport code moves established
+messages. Avoid making these layers reconstruct ownership or repeat domain
+decisions.
+
+Before adding a helper or processing stage, ask whether it performs a distinct
+responsibility or compensates for an incomplete upstream representation. Prefer
+completing the owning layer and deriving secondary views from its canonical
+records.
+
+When related implementations converge, reconcile responsibilities and reuse
+shared mechanisms where their semantics agree. Do not preserve parallel
+mechanisms solely to minimize the diff.
+
 ## Shared model and export boundaries
 
 Import Linter enforces model/exporter dependency directions and the permitted

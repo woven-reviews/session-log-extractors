@@ -1,4 +1,4 @@
-"""Permission/plan model contracts; projections are not adapter adoption."""
+"""Shared permission/plan records and canonical conversation export."""
 
 import json
 from copy import deepcopy
@@ -627,37 +627,110 @@ def test_codex_native_cancellations_stay_distinct_from_settings_refusal():
         assert result["call_id"] in calls
     session = interpret_source(CodexSource(CODEX_TRANSCRIPT, entries))
     (settings_result,) = settings
-    native_call = calls[settings_result["call_id"]]
-    session["permission_refusals"] = [
-        PermissionRefusal(
-            ref="d1",
-            action=DeniedAction(
-                description=native_call["name"], tool_name=native_call["name"]
-            ),
-            source=RefusalSource.SETTINGS,
-            native_variant=None,
-            evidence=[
-                DecisionEvidence(
-                    field="custom_tool_call_output.output",
-                    value=settings_result["output"],
-                )
-            ],
-            activity=None,
-        )
-    ]
-
+    assert session is not None
     decoded = json.loads(json.dumps(session))
-
-    (refusal,) = decoded["permission_refusals"]
+    interpreted_calls = {}
+    for event in decoded["events"]:
+        for call in event.get("tool_calls", []):
+            interpreted_calls[call["id"]] = call
+    settings_call = interpreted_calls[settings_result["call_id"]]
+    (refusal,) = settings_call["permission_refusals"]
     assert refusal["source"] == "settings"
     assert refusal["evidence"][0]["value"] == settings_result["output"]
     assert "candidate_feedback" not in refusal
-    interpreted_calls = {}
-    for event in session["events"]:
-        for call in event.get("tool_calls", []):
-            interpreted_calls[call["id"]] = call
     for result in cancellations:
         canonical_call = interpreted_calls[result["call_id"]]
         assert canonical_call["result_record"]["content"] == result["output"]
         assert "permission_denial" not in canonical_call
         assert "plan_decision" not in canonical_call
+
+
+@pytest.mark.parametrize("on_call", [False, True])
+@pytest.mark.parametrize("limit", [0, 17, -1])
+def test_shared_export_preserves_facts_on_their_canonical_activity(on_call, limit):
+    session = _illustrative_plan_session()
+    session["events"] = [
+        {
+            "i": 7,
+            "role": "assistant",
+            "text": "Conversation before review",
+            "tool_calls": [
+                {"name": "review", "input": {"complete": True}, "result": "雪" * 50}
+            ],
+        },
+        {"i": 9, "role": "user", "text": "Unrelated conversation"},
+    ]
+    evidence = [DecisionEvidence(field="controlled.review_id", value="review-1")]
+    activity = DecisionActivityReference(message_i=7, evidence=evidence)
+    if on_call:
+        activity["tool_call_index"] = 0
+    for collection in (
+        session["plan_versions"],
+        session["plan_presentations"],
+        session["plan_decisions"],
+    ):
+        for record in collection:
+            record["activity"] = deepcopy(activity)
+    target = session["events"][0]
+    if on_call:
+        target = target["tool_calls"][0]
+    target["plan_versions"] = session["plan_versions"]
+    target["plan_presentations"] = session["plan_presentations"]
+    target["plan_decisions"] = session["plan_decisions"]
+    original = deepcopy(session)
+
+    envelope = export_session(session, limit)
+
+    assert session == original
+    assert envelope["events"][0]["text"] == session["events"][0]["text"]
+    assert envelope["events"][1] == session["events"][1]
+    target = envelope["events"][0]
+    if on_call:
+        target = target["tool_calls"][0]
+    assert target["plan_versions"] == session["plan_versions"]
+    assert target["plan_presentations"] == session["plan_presentations"]
+    assert target["plan_decisions"] == session["plan_decisions"]
+    target["plan_versions"][0]["text"] = "Edited export"
+    assert session == original
+
+
+@pytest.mark.parametrize(
+    "activity",
+    [
+        None,
+        {"message_i": 7, "evidence": [{"field": "id", "value": "valid"}]},
+        {"message_i": 7, "evidence": []},
+        {"message_i": 8, "evidence": [{"field": "id", "value": "missing"}]},
+        {
+            "message_i": 7,
+            "tool_call_index": -1,
+            "evidence": [{"field": "id", "value": "missing"}],
+        },
+        {
+            "message_i": 7,
+            "tool_call_index": 2,
+            "evidence": [{"field": "id", "value": "missing"}],
+        },
+    ],
+)
+def test_session_decision_collections_are_not_projected_during_export(activity):
+    session = _illustrative_plan_session()
+    session["events"] = [
+        {
+            "i": 7,
+            "role": "assistant",
+            "text": "Existing",
+            "tool_calls": [{"name": "review"}],
+        }
+    ]
+    for collection in (
+        session["plan_versions"],
+        session["plan_presentations"],
+        session["plan_decisions"],
+    ):
+        for record in collection:
+            record["activity"] = activity
+
+    envelope = export_session(session, 0)
+
+    assert envelope["events"] == session["events"]

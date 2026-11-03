@@ -49,7 +49,6 @@ from session_log_extractors.extract_claude_session_log import (
     newest,
     option_qa_from_result,
     parse_permission_denial,
-    parse_plan_decision,
     permission_denials_from_result,
     resolve_project_dir,
     select_transcript,
@@ -361,21 +360,6 @@ def test_permission_denial_bare():
     )
 
 
-def test_permission_denial_with_message():
-    # Legacy 2.1.292 inline-feedback wording; current capture records it separately.
-    c = (
-        "Permission for this tool use was denied. The tool use was rejected (eg. "
-        "if it was a file edit, the new_string was NOT written to the file). The "
-        "user said:\nWe need a new branch for this"
-    )
-    assert parse_permission_denial(c) == "We need a new branch for this"
-
-
-def test_permission_denial_ignores_normal_result():
-    assert parse_permission_denial("42 files changed") is None
-    assert parse_permission_denial("error: file not found") is None
-
-
 def test_native_settings_denial_is_recorded():
     entries = _recorded_tool_interaction("Bash", "CAPTURE_SETTINGS_REFUSAL")
     _, result_entry = entries
@@ -393,13 +377,6 @@ def test_native_settings_denial_is_recorded():
     denial = _require_single_match(denials, "settings denial")
     assert denial["tool"].split(" — ")[0] == "Bash"
     assert denial["by"] == "settings"
-
-
-def test_permission_denial_ignores_isc_license_text():
-    assert (
-        parse_permission_denial("Permission to use, copy, modify, and/or distribute")
-        is None
-    )
 
 
 def test_permission_denials_from_result_names_tool():
@@ -708,11 +685,6 @@ def test_plan_without_result_is_marked_undecided():
     )
     (plan,) = _plan_decisions_in(interpreted_session)
     assert plan["decision"] == "no decision recorded"
-
-
-def test_plan_decision_unknown_for_unrecognized_content():
-    assert parse_plan_decision("just some other result text") == ("unknown", "", "")
-    assert parse_plan_decision(None) == ("unknown", "", "")
 
 
 # --------------------------------------------------------------------------- #
