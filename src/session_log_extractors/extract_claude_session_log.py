@@ -29,6 +29,15 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from session_log_extractors import session_log_envelope
+from session_log_extractors.claude_actions import (
+    AGENT_TOOLS,
+    FILE_PATH_KEYS,
+    FILE_TOOLS,
+    FILE_WRITING_TOOLS,
+    SKILL_TOOL,
+    _attach_actions,
+    _attach_user_invocations,
+)
 from session_log_extractors.claude_authorship import (
     _assistant_authorship,
     _attribute_command_outputs,
@@ -91,16 +100,10 @@ from session_log_extractors.tool_inputs.claude import input_schema
 
 PROJECTS_ROOT = Path.home() / ".claude" / "projects"
 
-# Tool calls whose inputs touch files we want to collect for "Files changed".
-FILE_WRITING_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "Create"}
-
 # Tools that prompt the human for a direct answer (pop-up questions, etc.). Their
 # tool_result carries the human's selection, so we surface it as a user
 # interaction rather than folding it into the generic result notes.
 INTERACTION_TOOLS = {ASK_USER_QUESTION}
-
-# Keys that, across tool versions, hold a target file path.
-FILE_PATH_KEYS = ("file_path", "path", "notebook_path", "filePath")
 
 # Max length for a condensed tool descriptor before it gets an ellipsis.
 TOOL_DESC_MAX = 100
@@ -743,6 +746,7 @@ class _ClaudeInterpreter:
             args = _COMMAND_ARGS.search(text)
             message["command"] = command
             message["command_args"] = (args.group(1).strip() if args else "") or None
+        _attach_user_invocations(message, entry)
         commands = [c.strip() for c in _BASH_INPUT.findall(text) if c.strip()]
         if commands:
             message["shell_command"] = "\n".join(commands)
@@ -813,6 +817,11 @@ class _ClaudeInterpreter:
         if isinstance(tool_id, str):
             call["id"] = tool_id
             if tool_id:
+                if (
+                    tool_id in self.pending_calls
+                    and name in FILE_TOOLS | AGENT_TOOLS | {SKILL_TOOL}
+                ):
+                    self.ambiguous_call_ids.add(tool_id)
                 self.pending_calls[tool_id] = call
         if name in PLAN_TOOLS:
             call["plan_decision"] = PlanDecision(
@@ -989,7 +998,7 @@ def interpret_source(
         adapter.events, adapter.results_with_alternates, adapter.question_results
     )
     _attach_decisions(adapter.events)
-    return Session(
+    session = Session(
         harness="claude",
         session_id=source.path.stem,
         events=adapter.events,
@@ -1001,6 +1010,8 @@ def interpret_source(
         started_at=first_timestamp(source.entries),
         models=session_models(source.entries),
     )
+    _attach_actions(session, source.entries)
+    return session
 
 
 class ClaudeExtractor:

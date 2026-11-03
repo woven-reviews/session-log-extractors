@@ -144,3 +144,40 @@ hand-authored `plan_modes.jsonl`, `questions.jsonl`, `images.jsonl`, and
 `truncated.jsonl`. They remain historical artifacts, outside the active test
 inputs. `scripts/generate_claude_fixtures.py` manually regenerates the old print-mode
 cases and makes paid calls using the operator's login. It must never run in tests.
+
+## Structured action facts (QUAL-2529)
+
+Production interpretation attaches shared file actions to Read, Write, Edit,
+NotebookEdit, MultiEdit, and Create calls; tasks to Agent/legacy Task calls; and
+invocations to Skill calls and recorded command messages. Internal session lists
+index those same records. Consumers receive the attached facts through JSON,
+including with a zero-byte raw-result cap. Existing inputs, results, images,
+message order, and legacy `files_changed` remain available under their existing
+export policy. Legacy file lists include attempts and never confirm a change.
+
+Modification confirmation requires an ID-associated structured result naming the
+same path: changed patch lines, a native creation record with recorded content,
+or distinct complete notebook before/after contents. Reads, generic success
+flags, free-form success text, errors, missing results, mismatched paths, and
+no-op patches cannot confirm modifications. Overlapping pending calls sharing
+an ID leave their results unassociated. Reusing an ID after its prior result
+retains the existing completed-call associations.
+
+The 2.1.312 capture supplies Read/Write/Edit/NotebookEdit, full Agent inputs and
+its recorded agent identity, repeated Skill calls, `sourceToolUseID`-linked skill
+expansions, and a `parentUuid`-linked command expansion. Definitions enrich only
+a unique invocation using these relationships and the native `isMeta` and
+`turnCompanion` expansion markers. They never load external files. Command
+wrappers retain their exact slash text and arguments, including empty values;
+the plain CLI `/compact` form uses the existing native control recognition.
+Standalone links, definitions, and quoted command examples remain source text
+without creating invocations. Structured facts do not assert authorship.
+
+`scripts/test_claude_actions.py` documents controlled cases for MultiEdit/Create,
+no-op and incomplete results, missing/empty paths and task fields, overlapping
+call IDs, repeated command wrappers, whitespace, recorded skill links, and
+ambiguous/unlinked definitions. These cases are boundary specifications, not
+claims that those native variants have been captured. QUAL-2786 owns additional
+native capture coverage. Tests compare generated prose with its recorded source,
+rather than prescribing model wording, and verify export preservation and
+non-mutation with zero, short, and unlimited result caps.
