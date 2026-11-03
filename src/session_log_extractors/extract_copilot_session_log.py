@@ -1182,7 +1182,9 @@ def interpret_source(source: CopilotSource) -> Session | None:
         question_responses=questions.responses,
     )
 
-    interpret_decisions(session, source.state_records)
+    interpret_decisions(
+        session, source.state_records, _string(source.session.get("id"))
+    )
     if (
         not events
         and not questions.responses

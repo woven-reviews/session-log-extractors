@@ -58,8 +58,9 @@ class _CallActivity:
 class _CopilotDecisionInterpreter:
     """Resolve unique, same-agent recorded IDs; retain everything else unassociated."""
 
-    def __init__(self, session: Session):
+    def __init__(self, session: Session, native_session_id: str | None):
         self.session = session
+        self.native_session_id = native_session_id
         self.calls: dict[tuple[str | None, str], list[_CallActivity]] = {}
         self.presentations: dict[tuple[str | None, str], list[PlanPresentation]] = {}
         self.refusals: dict[tuple[str | None, str], list[PermissionRefusal]] = {}
@@ -109,7 +110,9 @@ class _CopilotDecisionInterpreter:
         text = string_value(payload.get("file_text"))
         if path is None or text is None:
             return
-        if not path.endswith(f"/session-state/{self.session['session_id']}/plan.md"):
+        if not self.native_session_id or not path.endswith(
+            f"/session-state/{self.native_session_id}/plan.md"
+        ):
             return
         self.version(
             text,
@@ -382,9 +385,13 @@ def _denied_action(
     return action
 
 
-def interpret_decisions(session: Session, records: list[dict[str, JsonValue]]) -> None:
+def interpret_decisions(
+    session: Session,
+    records: list[dict[str, JsonValue]],
+    native_session_id: str | None,
+) -> None:
     """Populate typed facts without I/O, truncation, or inferred edit relationships."""
-    interpreter = _CopilotDecisionInterpreter(session)
+    interpreter = _CopilotDecisionInterpreter(session, native_session_id)
     interpreter.index(records)
     for record in records:
         data = record.get("data")

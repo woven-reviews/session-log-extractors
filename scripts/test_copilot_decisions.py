@@ -3,7 +3,7 @@
 from copy import deepcopy
 
 import pytest
-from copilot_fixture import ASSETS, native_source
+from copilot_fixture import ASSETS, SESSION_ID, native_source
 
 from session_log_extractors.copilot_decisions import interpret_decisions
 from session_log_extractors.extract_copilot_session_log import interpret_source
@@ -88,6 +88,32 @@ def _assert_native_plan_content(session, responses, envelope, limit):
     assert outcomes == {"approved", "rejected"}
     assert (ASSETS / "plan-before-editor.md").read_text() in texts
     assert (ASSETS / "plan-after-editor.md").read_text() in texts
+
+
+def test_native_plan_proposals_use_full_session_id_and_preserve_call_ownership():
+    source = native_source()
+    session = interpret_source(source)
+    assert session is not None
+    assert session["session_id"] != SESSION_ID
+    proposals = []
+    for version in session["plan_versions"]:
+        if version["kind"] == "proposed":
+            proposals.append(version)
+    assert len(proposals) == 2, "Capture must contain both native plan proposals"
+
+    envelope = export_session(session, 0)
+
+    for version in proposals:
+        activity = version["activity"]
+        assert activity is not None
+        call = envelope["events"][activity["message_i"]]["tool_calls"][
+            activity["tool_call_index"]
+        ]
+        assert call["name"] == "create"
+        assert call["input"]["path"].endswith(f"/session-state/{SESSION_ID}/plan.md")
+        assert version["text"] == call["input"]["file_text"]
+        assert version["text"]
+        assert call["plan_versions"] == [version]
 
 
 def _assert_native_refusals(session, envelope):
@@ -202,7 +228,7 @@ def _response_record():
 def test_non_denial_permission_results_do_not_create_refusals(kind):
     session = _controlled_session([{"id": "call", "name": "bash"}])
     record = _permission_record(kind)
-    interpret_decisions(session, [record])
+    interpret_decisions(session, [record], native_session_id="s")
     assert session["permission_refusals"] == []
     assert session["plan_decisions"] == []
 
@@ -212,7 +238,7 @@ def test_denial_source_and_feedback_require_recorded_human_authorship(source):
     session = _controlled_session([{"id": "call", "name": "bash"}])
     record = _permission_record()
     record["data"]["decisionSource"] = source
-    interpret_decisions(session, [record])
+    interpret_decisions(session, [record], native_session_id="s")
     (refusal,) = session["permission_refusals"]
     assert refusal["source"] == "unknown"
     assert "candidate_feedback" not in refusal
@@ -229,7 +255,7 @@ def test_denial_source_and_feedback_require_recorded_human_authorship(source):
 )
 def test_missing_or_ambiguous_calls_leave_refusal_unassociated(calls):
     session = _controlled_session(calls)
-    interpret_decisions(session, [_permission_record()])
+    interpret_decisions(session, [_permission_record()], native_session_id="s")
     (refusal,) = session["permission_refusals"]
     assert refusal["activity"] is None
     assert refusal["action"] is None
@@ -249,7 +275,7 @@ def test_call_and_request_associations_respect_agent_scope():
         },
     }
     record = _permission_record()
-    interpret_decisions(session, [request, record])
+    interpret_decisions(session, [request, record], native_session_id="s")
     (refusal,) = session["permission_refusals"]
     assert refusal["activity"] is None
     assert refusal["action"] is None
@@ -277,7 +303,9 @@ def test_denied_action_uses_only_a_unique_nonconflicting_request(
         "data": {"requestId": "request", "permissionRequest": permission_request},
     }
 
-    interpret_decisions(session, [request_record, _permission_record()])
+    interpret_decisions(
+        session, [request_record, _permission_record()], native_session_id="s"
+    )
 
     (refusal,) = session["permission_refusals"]
     assert refusal["action"]["description"] == expected_description
@@ -293,7 +321,11 @@ def test_duplicate_requests_cannot_supply_action_information():
             "permissionRequest": {"intention": "Unproven action"},
         },
     }
-    interpret_decisions(session, [request, deepcopy(request), _permission_record()])
+    interpret_decisions(
+        session,
+        [request, deepcopy(request), _permission_record()],
+        native_session_id="s",
+    )
     (refusal,) = session["permission_refusals"]
     assert refusal["action"] is None
 
@@ -313,7 +345,7 @@ def test_settings_refusal_can_be_recorded_in_tool_result(result):
         "type": "tool.execution_complete",
         "data": {"toolCallId": "call", "result": result},
     }
-    interpret_decisions(session, [record])
+    interpret_decisions(session, [record], native_session_id="s")
     (refusal,) = session["permission_refusals"]
     assert refusal["source"] == "settings"
     assert refusal["native_variant"] is None
@@ -331,7 +363,7 @@ def test_unknown_tool_denial_is_distinct_from_candidate_feedback(code):
             "error": {"code": code, "message": "Opaque harness error"},
         },
     }
-    interpret_decisions(session, [record])
+    interpret_decisions(session, [record], native_session_id="s")
     if code == "tool_error":
         assert session["permission_refusals"] == []
     else:
@@ -349,7 +381,7 @@ def test_nonhuman_plan_response_preserves_native_value_without_candidate_approva
     session = _controlled_session([])
     record = _response_record()
     record["data"]["actor"] = actor
-    interpret_decisions(session, [record])
+    interpret_decisions(session, [record], native_session_id="s")
     (decision,) = session["plan_decisions"]
     assert decision["outcome"] == "unknown"
     assert decision["native_decision"] is True
@@ -364,7 +396,7 @@ def test_missing_plan_content_or_id_stays_explicit(missing):
         del record["data"][missing]
     else:
         del record["data"]["response"][missing]
-    interpret_decisions(session, [record])
+    interpret_decisions(session, [record], native_session_id="s")
     (decision,) = session["plan_decisions"]
     assert decision["activity"] is None
     assert decision["presentation"] is None
@@ -375,7 +407,7 @@ def test_missing_plan_content_or_id_stays_explicit(missing):
 
 def test_conflicting_call_name_cannot_own_a_plan_response():
     session = _controlled_session([{"name": "bash", "id": "call"}])
-    interpret_decisions(session, [_response_record()])
+    interpret_decisions(session, [_response_record()], native_session_id="s")
     (decision,) = session["plan_decisions"]
     assert decision["activity"] is None
 
@@ -386,7 +418,9 @@ def test_repeated_presentations_have_no_inferred_decision_link():
         "type": "tool.execution_start",
         "data": {"toolCallId": "call", "toolName": "exit_plan_mode"},
     }
-    interpret_decisions(session, [start, deepcopy(start), _response_record()])
+    interpret_decisions(
+        session, [start, deepcopy(start), _response_record()], native_session_id="s"
+    )
     assert len(session["plan_presentations"]) == 2
     (decision,) = session["plan_decisions"]
     assert decision["presentation"] is None
@@ -395,7 +429,9 @@ def test_repeated_presentations_have_no_inferred_decision_link():
 def test_unmatched_presentation_and_malformed_records_are_retained_or_ignored_honestly():
     session = _controlled_session([])
     start = {"type": "tool.execution_start", "data": {"toolName": "exit_plan_mode"}}
-    interpret_decisions(session, [{"type": "malformed", "data": None}, start])
+    interpret_decisions(
+        session, [{"type": "malformed", "data": None}, start], native_session_id="s"
+    )
     (presentation,) = session["plan_presentations"]
     assert presentation["activity"] is None
     assert presentation["version"] is None
@@ -427,7 +463,7 @@ def test_request_id_can_bridge_to_its_recorded_tool_call():
     }
     completion = _permission_record()
     del completion["data"]["toolCallId"]
-    interpret_decisions(session, [completion, request])
+    interpret_decisions(session, [completion, request], native_session_id="s")
     (refusal,) = session["permission_refusals"]
     assert refusal["activity"]["message_i"] == 4
     assert refusal["activity"]["tool_call_index"] == 0
@@ -456,7 +492,7 @@ def test_tool_denial_merges_only_through_same_agent_parent_and_call(
         "agentId": agent,
         "data": {"toolCallId": call_id, "error": {"code": "denied"}},
     }
-    interpret_decisions(session, [permission, result])
+    interpret_decisions(session, [permission, result], native_session_id="s")
     assert len(session["permission_refusals"]) == 2
     candidate, unknown = session["permission_refusals"]
     assert candidate["source"] == "candidate"
@@ -470,11 +506,12 @@ def test_tool_denial_merges_only_through_same_agent_parent_and_call(
 )
 def test_malformed_or_unrelated_file_creation_is_not_a_plan(payload):
     session = _controlled_session([{"name": "create", "id": "call", "input": payload}])
-    interpret_decisions(session, [])
+    interpret_decisions(session, [], native_session_id="s")
     assert session["plan_versions"] == []
 
 
-def test_direct_plan_proposal_needs_no_fabricated_tool_id():
+@pytest.mark.parametrize("native_session_id", ["s", "other", None, ""])
+def test_direct_plan_proposal_needs_matching_native_session_id(native_session_id):
     session = _controlled_session(
         [
             {
@@ -486,7 +523,10 @@ def test_direct_plan_proposal_needs_no_fabricated_tool_id():
             }
         ]
     )
-    interpret_decisions(session, [])
+    interpret_decisions(session, [], native_session_id=native_session_id)
+    if native_session_id != "s":
+        assert session["plan_versions"] == []
+        return
     (version,) = session["plan_versions"]
     assert version["kind"] == "proposed"
     assert version["text"] == "Complete proposal"
@@ -539,7 +579,7 @@ def test_native_noninteractive_denial_variants_never_claim_candidate_feedback(
     session = _controlled_session([])
     record = _permission_record(kind)
     record["data"]["result"]["message"] = "Harness policy explanation"
-    interpret_decisions(session, [record])
+    interpret_decisions(session, [record], native_session_id="s")
     (refusal,) = session["permission_refusals"]
     assert refusal["native_variant"] == kind
     assert refusal["source"] == expected_source
@@ -552,7 +592,7 @@ def test_unsupported_permission_payload_does_not_invent_a_refusal(result):
     session = _controlled_session([])
     record = _permission_record()
     record["data"]["result"] = result
-    interpret_decisions(session, [record])
+    interpret_decisions(session, [record], native_session_id="s")
     assert session["permission_refusals"] == []
 
 
@@ -576,7 +616,7 @@ def test_unsupported_permission_payload_does_not_invent_a_refusal(result):
 )
 def test_export_serializes_established_ownership_without_resolving_addresses(activity):
     session = _controlled_session([{"name": "bash", "id": "call"}])
-    interpret_decisions(session, [_permission_record()])
+    interpret_decisions(session, [_permission_record()], native_session_id="s")
     (refusal,) = session["permission_refusals"]
     refusal["activity"] = activity
     envelope = export_session(session, 0)
@@ -591,7 +631,7 @@ def test_conflicting_native_tool_name_cannot_own_plan_presentation():
         "type": "tool.execution_start",
         "data": {"toolName": "exit_plan_mode", "toolCallId": "call"},
     }
-    interpret_decisions(session, [start])
+    interpret_decisions(session, [start], native_session_id="s")
     (presentation,) = session["plan_presentations"]
     assert presentation["activity"] is None
     envelope = export_session(session, 0)
@@ -626,7 +666,7 @@ def test_native_decision_ownership_is_established_before_export(field):
 
 def test_session_only_decision_index_never_establishes_call_ownership():
     session = _controlled_session([{"name": "bash", "id": "call"}])
-    interpret_decisions(session, [_permission_record()])
+    interpret_decisions(session, [_permission_record()], native_session_id="s")
     (call,) = session["events"][0]["tool_calls"]
     del call["permission_refusals"]
 
