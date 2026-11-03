@@ -59,7 +59,6 @@ from session_log_extractors.extract_codex_session_log import (
     is_startup_context,
     main,
     option_qa_from_output,
-    parse_permission_denial,
     patch_paths,
     session_models,
     skill_names_from_call,
@@ -207,29 +206,6 @@ def test_codex_normalized_mcp_skill_read_is_recorded():
     assert skill_names_from_call("mcp__skills__read", args) == [
         "presentations:Presentations"
     ]
-
-
-def test_codex_permission_denial_strips_external_prefix():
-    c = (
-        "[external_agent_tool_result: error]\nThe user doesn't want to proceed "
-        "with this tool use. The tool use was rejected. STOP what you are doing."
-    )
-    assert parse_permission_denial(c) == ""
-
-
-def test_codex_permission_denial_with_message():
-    c = (
-        "[external_agent_tool_result: error]\nPermission for this tool use was "
-        "denied. The tool use was rejected. The user said:\nuse a branch"
-    )
-    assert parse_permission_denial(c) == "use a branch"
-
-
-def test_codex_permission_denial_ignores_normal_text():
-    assert (
-        parse_permission_denial("[external_agent_tool_result]\nfile contents") is None
-    )
-    assert parse_permission_denial("Sure, I'll do that.") is None
 
 
 def test_codex_handwritten_assistant_denial_branch():
@@ -707,11 +683,6 @@ def test_interpret_events_attaches_output_to_its_function_call():
 
 
 # --- timestamp / formatting helpers ---------------------------------------
-
-
-def test_parse_permission_denial_rejects_non_string():
-    assert parse_permission_denial(None) is None
-    assert parse_permission_denial(123) is None
 
 
 def test_clean_user_text_empty_returns_empty():
