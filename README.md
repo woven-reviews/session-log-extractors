@@ -466,8 +466,29 @@ The current interactive Codex capture also retains native skill expansions as
 `FileChange` records containing recorded content, unified diffs, and move targets.
 Child sources retain the recorded parent ID and history boundary; interpretation
 excludes inherited parent activity and exposes `Session.parent_session_id`.
-These model semantics remain available to consumers while the existing JSON
-schema intentionally omits invocation details, patch records, and parent links.
+Codex now attaches shared `file_actions`, `subagent_tasks`, and `invocations`
+to canonical messages and calls before JSON export. Independent native file
+completions and structured command reads remain ordered `harness` events when
+no originating call ID is established. Shell and code-mode text stay opaque.
+Patch requests retain recorded action names, paths, move destinations, and full
+inputs. Success alone never confirms a modification: confirmation requires
+per-path native change evidence, and identical-content diffs remain unconfirmed.
+Explicit call IDs can enrich a unique attempted path; nearby text and matching
+paths alone cannot establish ownership. Legacy `files_changed` may include
+attempts and is not confirmation evidence.
+
+Subagent tasks retain full, separately recorded prompts and descriptions,
+including opaque prompt strings. Native activity IDs or matched results supply
+agent identities. Invocation occurrences retain exact slash text and arguments,
+skill-link syntax/targets, and complete definitions already recorded in selected
+expansions or known skill-tool payloads. A unique requested skill and selected
+expansion in the same recorded turn can enrich one occurrence; ambiguous or
+unlinked expansions stay separate. Standalone links, incidental skill paths,
+and unselected definitions do not create invocations. No external definitions
+are loaded. Structured facts survive zero/short raw-result caps, and export
+does not mutate the model. Session indexes remain internal; patch compatibility
+records and parent links also remain model-only. These fields supply JSON facts
+without changing the frontend's Agent actions display.
 
 Copilot also implements the public contract and returns uncapped sessions.
 

@@ -1190,7 +1190,7 @@ def test_interpret_patch_apply_end_records_paths_and_stdout():
     assert session["patch_results"][0]["stdout"] == "patched ok"
 
 
-def test_interpret_patch_apply_end_before_any_turn_only_records_path():
+def test_interpret_patch_apply_end_before_any_turn_retains_harness_activity():
     entries = [
         {
             "type": "event_msg",
@@ -1203,7 +1203,12 @@ def test_interpret_patch_apply_end_before_any_turn_only_records_path():
     ]
     session = _interpret(entries)
     assert session["files_changed"] == ["src/a.py"]
-    assert session["events"] == []
+    (message,) = session["events"]
+    assert message["role"] == "harness"
+    (action,) = message["file_actions"]
+    assert action["path"] == "src/a.py"
+    assert action["change"] is None
+    assert action["activity"]["message_i"] == message["i"]
 
 
 def test_interpret_assistant_message_before_any_user_is_preserved():
