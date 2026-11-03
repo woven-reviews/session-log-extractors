@@ -566,3 +566,194 @@ fields or prepared editor assets rather than fixed wording. Selectors use native
 tool names, denial kinds, flags and ID relationships. These tests do not classify
 arbitrary denial text, prove all native variants, enforce malformed-reference
 rejection, or claim that all plan presentations and decisions are recoverable.
+
+
+## Shared file actions, subagent tasks, and invocations contract
+
+`Session.file_actions`, `subagent_tasks`, and `invocations` are optional ordered
+lists of typed facts for adapter adoption in QUAL-2529/QUAL-2530/QUAL-2531.
+Native parsing and adapter adoption remain in those harness tickets. Shared
+export supports optional `file_actions`, `subagent_tasks`, and `invocations`
+attachments on messages and tool calls; existing adapters do not yet supply them.
+Interpretation establishes the associations and attaches the facts. Export
+preserves those attachments independently of raw-result caps; it never resolves
+associations or projects these session-level lists onto the conversation.
+The ordered conversation and its attachments are canonical. Session collections
+are internal indexes derived from the same fact records, including unassociated
+occurrences, not independently maintained interpretations. They are never
+exported as top-level parallel lists.
+
+Every fact has a session-local occurrence `ref`, optional verbatim `native_id`,
+required nonempty `evidence` (`ActionEvidence`: native `field` path and complete
+JSON `value`), and required nullable `activity`. Repeated identical content or
+native IDs remain separate occurrences; refs do not create native evidence.
+`ActionActivityReference.message_i` addresses canonical `Message.i`, not a list
+position, turn index, or native message ID. Optional `tool_call_index` indexes
+that message's ordered calls and ID-matched results. Its nonempty evidence must
+establish ownership through native containment, recorded IDs with call scope,
+or explicit native relationships. A message-only reference is valid for slash
+text when the message establishes an invocation. Null preserves unknown exact
+conversation location, including unmatched results; this does not imply unknown
+authorship. For example, Copilot's database can establish agent file activity
+without identifying the corresponding conversation call. Preserve that fact
+internally with `activity: null` and do not attach or export it as a structured
+fact. Existing recorded conversation content remains intact. Nearest timestamps,
+most recent human messages, matching names/counts, textual similarity and assistant
+claims never establish associations.
+
+Recognized native file operations include reads, writes, edits, searches with
+evidenced paths, and failed attempts. Each harness adoption documents and tests
+its supported native operations. Preserve separately recorded database file
+activity even without a conversation association. Opaque shell/code text does
+not establish file operations, paths, or changes.
+
+An invocation occurrence is an evidenced act of invoking a skill or command, not
+each record describing it. Multiple records explicitly describing the same
+invocation enrich one fact; a repeated invocation creates a separate fact even
+if its name, arguments, or native ID repeat. Attach definitions and links only
+when recorded evidence establishes their relationship to the invocation. A
+standalone definition or link never establishes an invocation by itself. Keep
+unlinked definitions as ordinary recorded content, without inventing another
+invocation or associating them by matching skill names or proximity.
+
+| Record/field | Meaning |
+| --- | --- |
+| `FileAction.action_name` | Exact recorded action/tool name, including unsupported names; no global cross-harness tool-name equivalence. |
+| `path`, `destination_path` | Required path string or null if unknown; optional recorded move target. Preserve spelling, Unicode and relative paths without normalization. A multi-file patch can supply one fact per evidenced path with the same call activity; do not invent paths by executing opaque code. |
+| `execution_outcome` | `ToolExecutionOutcome`: `succeeded`, `failed`, `unknown`. A request alone is unknown; a native success flag/exit code may establish execution outcome but does not confirm a modification. Native status values stay in complete canonical payloads/evidence. |
+| `change` | Required null or `FileChangeConfirmation` with nonempty evidence establishing an actual change to this action's path. Null means no established change, including a successful no-op, read, denied/failed attempt, missing result or unsupported action. It does not assert the file was unchanged. Confirmation for one file never confirms every path in a batch. A success flag, exit code, legacy `files_changed` entry or generated assistant assertion alone is insufficient; a native structured patch or explicit recorded modification result can support confirmation. |
+| `SubagentTask.prompt`, `description` | Optional independent full recorded strings. Preserve both when present; never substitute a shortened description for a prompt. Missing text is omitted and recorded empty text stays empty. Opaque/encrypted recorded strings remain opaque, with evidence of their source; no decoding or reconstructed prompt is claimed. |
+| `agent_id`, `agent_type` | Optional verbatim task identity/type, only when recorded and associated. No child-conversation graph, tool counts, new diff model or task summary is introduced. |
+| `Invocation.kind`, `name` | `InvocationKind`: `skill`, `command`, `unknown`; required name string or null. Unsupported invocation kinds retain evidence rather than inventing a recognized name. Invocation alone does not establish expansion, execution, completion, or human authorship. |
+| `slash_text`, `arguments` | Optional complete recorded slash text and argument string; retain whitespace/Unicode and empty arguments. Do not synthesize slash syntax for a tool-invoked skill or infer arguments from a nearby message. |
+| `skill_links` | Optional ordered `RecordedSkillLink` list: full recorded `syntax` and verbatim `target`. Link syntax is content, not proof of invocation or ownership by itself. |
+| `definitions` | Optional ordered `InvocationDefinition` list containing full recorded `text` and optional recorded `path`. Definitions come only from messages or tool payloads already in the source. A path never authorizes external definition loading. |
+
+Missing session lists mean interpretation was not supplied; empty lists mean no
+such facts were retained. Optional fields are non-nullable unless explicitly
+stated. The records describe semantics, not runtime validators; reference
+integrity, schema versioning and serialization validation remain QUAL-2533.
+Types do not themselves reject empty evidence or inconsistent associations.
+Preserve complete edit/patch inputs, nested payloads, native success fields, and complete
+results on their canonical records; retain unmatched native records separately.
+Facts supplement those payloads rather than filtering them or replacing them
+with display summaries. Existing `files_changed`, `FileActivity`, `PatchResult`,
+`SubagentSummary`, `SkillInvocation`, command fields and `ToolCall.skill` remain
+compatible. In particular, legacy `files_changed` may include attempted writes
+and must not be treated as modification confirmation. New consumers should use
+these facts without duplicating legacy summaries.
+
+The harness tickets must exercise these shared acceptance examples through their
+production interpretation and JSON paths wherever native evidence supports them:
+
+- A successful edit without modification evidence has `change: null`.
+- File/task facts appear on their evidenced message or call; invocation facts
+  appear on their evidenced invocation message or call. Full prompts, definitions,
+  and structured evidence survive a zero-byte raw textual result cap.
+- One invocation and its explicitly linked definition produce one invocation fact.
+  A second actual invocation remains a separate occurrence.
+- A standalone definition remains recorded content without creating an invocation.
+- Unlinked database file activity remains internal with `activity: null`; export
+  does not guess a conversation location or attach the structured fact.
+- Enrichment preserves existing message/call order and complete inputs, and export
+  leaves the source model unchanged. Session indexes never cause duplicate JSON
+  attachments or exporter-side association.
+
+Shared contract tests construct these attachment shapes explicitly; they do not
+claim that adapters already implement invocation recognition or association.
+The shared field names and placement are settled here. Harness-owned recognition
+and evidence mapping remain in QUAL-2529/2530/2531; schema-version handling and
+runtime validation remain in QUAL-2533. No frontend changes, child-conversation
+graphs, external definition loading, or separate diff models are introduced.
+
+For example, this controlled message attachment is the agreed JSON placement.
+The definition's parent ID proves it describes the invocation; it is not a second
+invocation. Both messages keep their recorded content and order. File actions
+and subagent tasks use their same-named arrays on the evidenced message or call.
+The invocation's `activity` addresses `Message.i = 7`, not array position zero.
+
+```json
+{
+  "events": [
+    {"i": 7, "id": "m1", "role": "user", "text": "/review",
+     "invocations": [{
+       "ref": "v1", "kind": "command", "name": "review", "slash_text": "/review",
+       "definitions": [{"text": "Recorded review instructions"}],
+       "evidence": [
+         {"field": "example.invocation.text", "value": "/review"},
+         {"field": "example.definition.parent_id", "value": "m1"}
+       ],
+       "activity": {"message_i": 7, "evidence": [
+         {"field": "example.invocation.id", "value": "m1"}
+       ]}
+     }]},
+    {"i": 9, "parent_id": "m1", "role": "user", "text": "Recorded review instructions"}
+  ]
+}
+```
+
+This illustrative JSON is an internal model example, not native coverage or a
+production export. `example.*` paths are explicitly controlled source fields.
+The first write succeeds without proof of a change; the second has recorded
+modification evidence. The unsupported action and task remain unassociated.
+The invocation's definition and full task prompt are independent of raw results.
+
+```json
+{
+  "harness": "illustrative", "session_id": "actions-example",
+  "events": [{"i": 7, "role": "assistant", "tool_calls": [
+    {"name": "write", "id": "c1", "input": {"path": "café.py", "content": "雪\n", "future": {"nested": [null, true]}}, "result": "Native output"}
+  ]}],
+  "file_actions": [
+    {"ref": "a1", "action_name": "write", "path": "café.py", "execution_outcome": "succeeded", "change": null,
+     "evidence": [{"field": "example.call.success", "value": true}],
+     "activity": {"message_i": 7, "tool_call_index": 0, "evidence": [{"field": "example.call.id", "value": "c1"}]}},
+    {"ref": "a2", "action_name": "edit", "path": "other.py", "execution_outcome": "succeeded",
+     "change": {"evidence": [{"field": "example.modification", "value": {"path": "other.py", "before": "old", "after": "new"}}]},
+     "evidence": [{"field": "example.action", "value": {"name": "edit", "path": "other.py"}}], "activity": null},
+    {"ref": "a3", "action_name": "future-action", "path": null, "execution_outcome": "unknown", "change": null,
+     "evidence": [{"field": "example.action", "value": {"name": "future-action", "unsupported": [1, null]}}], "activity": null}
+  ],
+  "subagent_tasks": [
+    {"ref": "t1", "prompt": "Read café.py.\nPreserve this complete task, including all constraints.", "description": "Inspect file",
+     "evidence": [{"field": "example.task", "value": {"description": "Inspect file", "prompt": "Read café.py.\nPreserve this complete task, including all constraints."}}], "activity": null}
+  ],
+  "invocations": [
+    {"ref": "v1", "kind": "skill", "name": "review", "slash_text": "/review café 雪", "arguments": "café 雪",
+     "skill_links": [{"syntax": "[$review](skill://review)", "target": "skill://review"}],
+     "definitions": [{"text": "Complete recorded review instructions", "path": "SKILL.md"}],
+     "evidence": [{"field": "example.invocation", "value": {"text": "/review café 雪", "link": "[$review](skill://review)", "definition": "Complete recorded review instructions"}}], "activity": null},
+    {"ref": "v2", "kind": "command", "name": "compact", "slash_text": "/compact", "arguments": "",
+     "evidence": [{"field": "example.command", "value": "/compact"}], "activity": null},
+    {"ref": "v3", "kind": "unknown", "name": null,
+     "evidence": [{"field": "example.invocation", "value": {"future": true}}], "activity": null}
+  ]
+}
+```
+
+### Action, task and invocation fixture evidence and limits
+
+`scripts/test_session_actions.py` exercises illustrative boundaries and focused
+projections from existing captures. It does not implement adapter adoption,
+execute opaque code, load external definitions, or invoke paid fixture generators.
+
+| Harness | Evidence and interpretation inspected | Fit and gaps |
+| --- | --- | --- |
+| Claude | [Provenance](claude/README.md), CLI 2.1.312 interactive capture and resumes: `Edit`/`Write`/`NotebookEdit`, ID-matched `tool_result`, `toolUseResult.structuredPatch` and `filePath`; `Agent.input.prompt`/`description`; `Skill` calls and command expansions. Inspected `_ClaudeInterpreter.action`, result processing, command interpretation and `summarize_subagent_source`. | Tests project full Agent text and ID-matched edits with structured native modification evidence, retaining full edit input/patch evidence. `files_changed` is populated from requests, including attempts. Skills and command bodies remain native text/payloads; this contract does not implement new parsing of their links or definitions. No exhaustive action/denial or notebook variant coverage is claimed. |
+| Codex | [Provenance](codex/README.md), CLI 0.166.0 main rollout and child: `spawn_agent.arguments.message`, native call IDs, code-mode `exec` inputs containing tool use/patch text, skill selections/expansions. Inspected `call_semantics`, `patch`, command/skill recognition, `codex_sources` child boundaries and schema support. | Tests project recorded task message strings without shortening, including opaque encrypted content. Code-mode JavaScript is unsupported and stays intact; nested textual `apply_patch` is not a native call and does not establish file paths or changes. Direct patch-call coverage is a controlled boundary elsewhere, not native evidence from this capture. Custom slash arguments were rejected by the TUI; no successful native command-argument coverage is claimed. |
+| Copilot | [Provenance](copilot/README.md), CLI 1.0.104-3: `tool.execution_start` create/edit arguments, ID-matched completions, `task.arguments.prompt`/`description`, `subagent.started.toolCallId`, `skill.invoked` full `content`/`path`, transformed command text and original submission. Inspected `_file_activity`, command recognition and `copilot_interactions.subagent_summaries`. | Tests project full task prompts and recorded skill definitions without filesystem loading. Native DB file activity establishes a touched path, not a confirmed modification. The existing child summary uses a description rather than the full task prompt; the new record can retain both. Custom slash invocation is a workspace skill, not a separate command mechanism. Native notebook editing is unavailable. |
+
+Controlled tests cover successful execution without confirmation, failed/unknown
+outcomes, per-path confirmation, unknown paths/names/conversation locations, independent
+prompt/description absence, slash arguments, skill links, long definitions and
+full prompts, nested opaque evidence, full patch input preservation and
+non-mutating export at zero, short, representative and unlimited raw-result caps.
+They also exercise complete message/call attachments, internal indexes without
+exporter-side projection, linked definitions on a single invocation, repeated
+invocations, and standalone definition content without invocation inference.
+Separate Copilot database file rows are projected as internal unassociated facts.
+Generated prose is compared directly with recorded fields rather than pinned
+wording. Missing required native task/edit/definition evidence fails explicitly.
+Link/argument boundaries and unsupported facts are illustrative, not additional
+native-format coverage. Native recognition and production adapter adoption remain
+in the harness tickets; the shared exporter supports the agreed attachment fields.

@@ -313,6 +313,150 @@ class ObservedPlanDecision(TypedDict):
     candidate_feedback: NotRequired[str]
 
 
+class ActionEvidence(TypedDict):
+    """Native field path and unchanged value supporting an action fact."""
+
+    field: str
+    value: JsonValue
+
+
+class ActionActivityReference(TypedDict):
+    """Canonical activity proven by recorded IDs or native containment.
+
+    message_i addresses Message.i, not its list position. tool_call_index
+    indexes that message's ordered calls and ID-matched results. Nonempty
+    evidence establishes conversation association, not authorship; ordering
+    and timestamps never do. A null activity on a fact leaves its exact
+    conversation location unknown, even when agent activity is established.
+    """
+
+    message_i: int
+    tool_call_index: NotRequired[int]
+    evidence: list[ActionEvidence]
+
+
+class ToolExecutionOutcome(StrEnum):
+    """Observed execution outcome, independent of whether a file changed."""
+
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    UNKNOWN = "unknown"
+
+
+class FileChangeConfirmation(TypedDict):
+    """Nonempty evidence that this action actually changed its named path.
+
+    A success flag, exit code, attempted write, or legacy files_changed entry
+    alone is insufficient. Retain complete native results on canonical activity.
+    """
+
+    evidence: list[ActionEvidence]
+
+
+class FileAction(TypedDict):
+    """One evidenced action on one path; an attempt is not a confirmed change.
+
+    action_name preserves the recorded name, including unsupported names.
+    path is null when unknown; destination_path retains a recorded move target.
+    change is null without evidence of an actual change, including successful
+    no-ops. Confirmation for one path never confirms other paths in a patch.
+    Full edits/patches remain on the canonical call, not in a new diff model.
+    Recognized native file operations include reads and failed attempts.
+    Separate database activity can remain internal with activity=None; opaque
+    shell/code text does not establish file operations.
+    """
+
+    ref: str
+    native_id: NotRequired[str]
+    action_name: str
+    path: str | None
+    destination_path: NotRequired[str]
+    execution_outcome: ToolExecutionOutcome
+    change: FileChangeConfirmation | None
+    evidence: list[ActionEvidence]
+    activity: ActionActivityReference | None
+
+
+class SubagentTask(TypedDict):
+    """A recorded task occurrence with complete, separately recorded text.
+
+    Omit missing prompt/description rather than substituting one for the other.
+    agent_id is a recorded identity, never a child graph or inferred call ID.
+    Inputs/results stay complete on canonical activity or unmatched records.
+    """
+
+    ref: str
+    native_id: NotRequired[str]
+    prompt: NotRequired[str]
+    description: NotRequired[str]
+    agent_id: NotRequired[str]
+    agent_type: NotRequired[str]
+    evidence: list[ActionEvidence]
+    activity: ActionActivityReference | None
+
+
+class InvocationKind(StrEnum):
+    """Interpreted invocation kind, separate from the recorded name/syntax."""
+
+    SKILL = "skill"
+    COMMAND = "command"
+    UNKNOWN = "unknown"
+
+
+class RecordedSkillLink(TypedDict):
+    """Complete recorded link syntax and its verbatim target."""
+
+    syntax: str
+    target: str
+
+
+class InvocationDefinition(TypedDict):
+    """Full definition already recorded in a message or native tool payload.
+
+    path is optional recorded provenance, never an instruction to load a file.
+    """
+
+    text: str
+    path: NotRequired[str]
+
+
+class Invocation(TypedDict):
+    """One recorded invocation, without inventing expansion or execution.
+
+    name is null if unknown. slash_text and arguments retain exact source text,
+    including empty arguments; omit absent data. Repeated invocations remain
+    distinct. Links/definitions preserve recorded order and full content.
+    Multiple records explicitly describing one invocation enrich that occurrence;
+    a link or definition alone does not establish an invocation. Attach definitions
+    only through recorded relationships; otherwise retain them as source content.
+    """
+
+    ref: str
+    native_id: NotRequired[str]
+    kind: InvocationKind
+    name: str | None
+    slash_text: NotRequired[str]
+    arguments: NotRequired[str]
+    skill_links: NotRequired[list[RecordedSkillLink]]
+    definitions: NotRequired[list[InvocationDefinition]]
+    evidence: list[ActionEvidence]
+    activity: ActionActivityReference | None
+
+
+class ActionFacts(TypedDict, total=False):
+    """Facts attached by interpretation to their evidenced message or call.
+
+    Export preserves these attachments without resolving session collections.
+    Session collections are internal indexes of the same facts, including
+    unassociated facts with activity=None; those facts are never attached or
+    exported as top-level collections. Association does not establish authorship.
+    """
+
+    file_actions: list[FileAction]
+    subagent_tasks: list[SubagentTask]
+    invocations: list[Invocation]
+
+
 class DecisionFacts(TypedDict, total=False):
     """Decision facts attached to the canonical activity carrying their evidence."""
 
@@ -428,7 +572,7 @@ class PatchResult(NativeIdentity):
     stderr: JsonValue
 
 
-class ToolCall(DecisionFacts, total=False):
+class ToolCall(DecisionFacts, ActionFacts, total=False):
     """A complete call and the decisions/results belonging to that call."""
 
     name: Required[str]
@@ -529,7 +673,7 @@ class SubmittedText(TypedDict):
     authorship: AuthorshipSource
 
 
-class MessageContent(NativeIdentity, DecisionFacts, total=False):
+class MessageContent(NativeIdentity, DecisionFacts, ActionFacts, total=False):
     """Content and native identity shared by ordered conversation messages."""
 
     i: Required[int]
@@ -599,7 +743,7 @@ class FileActivity(TypedDict):
     """Evidence that a named tool touched a path, retaining its native provenance.
 
     Activity alone establishes neither a read/write action nor a modification.
-    files_changed holds modification facts established separately by adapters.
+    Legacy files_changed may include attempts; it is not confirmation evidence.
     """
 
     file_path: str
@@ -625,6 +769,11 @@ class Session(TypedDict):
     files_changed: NotRequired[list[str]]
     file_activity: NotRequired[list[FileActivity]]
     patch_results: NotRequired[list[PatchResult]]
+    # Internal indexes of canonical attached facts and unassociated occurrences.
+    # Derive these from the same records; export never projects these lists.
+    file_actions: NotRequired[list[FileAction]]
+    subagent_tasks: NotRequired[list[SubagentTask]]
+    invocations: NotRequired[list[Invocation]]
     # Session-wide indexes of question facts; canonical owners are calls/results.
     interaction_questions: NotRequired[list[Question]]
     question_responses: NotRequired[list[QuestionResponse]]
