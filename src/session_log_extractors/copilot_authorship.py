@@ -4,6 +4,12 @@ from dataclasses import dataclass
 from pathlib import PurePath
 from typing import Literal, TypeAlias
 
+from session_log_extractors.copilot_protocol import (
+    HOOK_END,
+    HOOK_START,
+    SKILL_INVOKED,
+    USER_INVOKED,
+)
 from session_log_extractors.json_types import JsonValue, string_value
 from session_log_extractors.session_model import (
     AuthorshipMarker,
@@ -210,9 +216,10 @@ class _UserCommand:
     invocation: dict[str, JsonValue]
 
 
-def _linked_invocation(
+def linked_skill_invocation(
     record: dict[str, JsonValue], indexed: RecordIndex
 ) -> dict[str, JsonValue] | None:
+    """Find the unique same-agent skill ancestor through native hook records."""
     parent = string_value(record.get("parentId"))
     visited: set[str] = set()
     while parent and parent not in visited:
@@ -220,9 +227,9 @@ def _linked_invocation(
         ancestor = indexed.get(parent)
         if ancestor is None or ancestor.get("agentId") != record.get("agentId"):
             return None
-        if ancestor.get("type") == "skill.invoked":
+        if ancestor.get("type") == SKILL_INVOKED:
             return ancestor
-        if ancestor.get("type") not in ("hook.start", "hook.end"):
+        if ancestor.get("type") not in (HOOK_START, HOOK_END):
             return None
         parent = string_value(ancestor.get("parentId"))
     return None
@@ -233,7 +240,7 @@ def _user_command(
 ) -> _UserCommand | None:
     if indexed is None:
         return None
-    invocation = _linked_invocation(record, indexed)
+    invocation = linked_skill_invocation(record, indexed)
     if invocation is None:
         return None
     invoked = invocation.get("data")
@@ -242,7 +249,7 @@ def _user_command(
     command, _, arguments = original.partition(" ")
     name = string_value(invoked.get("name"))
     body = string_value(invoked.get("content"))
-    if invoked.get("trigger") != "user-invoked" or not name or not body:
+    if invoked.get("trigger") != USER_INVOKED or not name or not body:
         return None
     if command != "/" + name:
         return None

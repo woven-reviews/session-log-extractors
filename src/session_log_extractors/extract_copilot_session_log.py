@@ -48,6 +48,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from session_log_extractors import copilot_authorship, copilot_sources
+from session_log_extractors.copilot_actions import interpret_actions
 from session_log_extractors.copilot_decisions import interpret_decisions
 from session_log_extractors.copilot_interactions import (
     apply_configured_refusal,
@@ -681,6 +682,7 @@ class _CopilotSessionBuilder:
         self.events: list[Message] = []
         self.event_positions: dict[int, int] = {}
         self.calls: dict[str, ToolCall] = {}
+        self.native_calls: list[ToolCall] = []
         self.messages: dict[str, AssistantMessage] = {}
         self.unmatched: list[ToolResult] = []
         self.user_shells: dict[str, UserMessage] = {}
@@ -782,6 +784,7 @@ class _CopilotSessionBuilder:
             _string(data.get("name")) or "tool", _json_value(data.get("arguments"))
         )
         call_id = _string(data.get("toolCallId"))
+        self.native_calls.append(call)
         if call_id:
             call["id"] = call_id
             self.calls[call_id] = call
@@ -1185,6 +1188,7 @@ def interpret_source(source: CopilotSource) -> Session | None:
     interpret_decisions(
         session, source.state_records, _string(source.session.get("id"))
     )
+    interpret_actions(session, source.state_records, source.files, builder.native_calls)
     if (
         not events
         and not questions.responses
@@ -1194,6 +1198,9 @@ def interpret_source(source: CopilotSource) -> Session | None:
                 session["plan_versions"],
                 session["plan_presentations"],
                 session["plan_decisions"],
+                session["file_actions"],
+                session["subagent_tasks"],
+                session["invocations"],
             )
         )
     ):
