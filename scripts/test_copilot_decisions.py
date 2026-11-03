@@ -32,10 +32,11 @@ def _assert_conversation_preserved(session, envelope, limit):
     )
     for field in fields:
         original.pop(field)
-    for message in actual["events"]:
-        for call in message.get("tool_calls") or []:
-            for field in fields:
-                call.pop(field, None)
+    for conversation in (original, actual):
+        for message in conversation["events"]:
+            for call in message.get("tool_calls") or []:
+                for field in fields:
+                    call.pop(field, None)
     expected = export_session(original, limit)
     assert actual == expected
 
@@ -573,14 +574,14 @@ def test_unsupported_permission_payload_does_not_invent_a_refusal(result):
         },
     ],
 )
-def test_export_omits_decision_facts_without_an_evidenced_call_address(activity):
+def test_export_serializes_established_ownership_without_resolving_addresses(activity):
     session = _controlled_session([{"name": "bash", "id": "call"}])
     interpret_decisions(session, [_permission_record()])
     (refusal,) = session["permission_refusals"]
     refusal["activity"] = activity
     envelope = export_session(session, 0)
     (call,) = envelope["events"][0]["tool_calls"]
-    assert "permission_refusals" not in call
+    assert call["permission_refusals"] == [refusal]
     assert envelope["events"][0]["i"] == 4
 
 
@@ -596,3 +597,41 @@ def test_conflicting_native_tool_name_cannot_own_plan_presentation():
     envelope = export_session(session, 0)
     (call,) = envelope["events"][0]["tool_calls"]
     assert "plan_presentations" not in call
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["permission_refusals", "plan_versions", "plan_presentations", "plan_decisions"],
+)
+def test_native_decision_ownership_is_established_before_export(field):
+    session = interpret_source(native_source())
+    assert session is not None
+    canonical = {}
+    for message in session["events"]:
+        for call in message.get("tool_calls") or []:
+            for fact in call.get(field, []):
+                canonical[fact["ref"]] = fact
+    assert canonical, f"Native capture must contain canonical {field}"
+    for fact in session[field]:
+        if fact["activity"] is not None:
+            assert canonical[fact["ref"]] is fact
+
+    # Internal indexes are secondary views; serialization uses canonical calls.
+    expected = export_session(session, 0)
+    del session[field]
+    actual = export_session(session, 0)
+
+    assert actual == expected
+
+
+def test_session_only_decision_index_never_establishes_call_ownership():
+    session = _controlled_session([{"name": "bash", "id": "call"}])
+    interpret_decisions(session, [_permission_record()])
+    (call,) = session["events"][0]["tool_calls"]
+    del call["permission_refusals"]
+
+    envelope = export_session(session, 0)
+
+    (exported_call,) = envelope["events"][0]["tool_calls"]
+    assert session["permission_refusals"]
+    assert "permission_refusals" not in exported_call

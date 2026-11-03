@@ -102,3 +102,23 @@ retain the ranges, markers, timestamps, image ownership, and tool ownership.
 Controlled mutations cover Unicode/mixed blocks, malformed or conflicting
 provenance, legacy duplicate views, and missing evidence. No fixture text is
 rewritten to make a missing native workflow appear successful.
+
+## Structured refusal and plan interpretation
+
+QUAL-2527 uses this capture directly for the settings refusal, proposal contents,
+and the explicit implementation statement. It preserves the two cancellations as
+results and keeps later feedback separate. Legacy CreateProcess/assistant denials,
+explicit rejection statements with feedback, unknown attribution, missing owners,
+and malformed/unsupported payloads use controlled boundary cases.
+
+The capture's stay-in-Plan rejection is ordinary candidate feedback, without a
+recorded decision label or target plan ID. It remains message content. Revised
+proposals remain independent proposed versions, without an inferred edit link.
+The implementation statement likewise has no version/presentation association.
+No edited-plan editor, structured rejection, or explicit presentation-for-approval
+record was captured; no synthetic fixture claims those native workflows exist.
+
+Decision facts attach to canonical messages, calls, and unmatched result records
+during interpretation. Shared export tests verify that session-level collections
+are never projected onto the conversation, while attached facts remain complete
+and independent of the raw-result cap.

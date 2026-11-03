@@ -425,7 +425,9 @@ def _attach_call_questions(
     call["question_responses"] = interpreter.responses
 
 
-def _attach_unmatched_questions(message: Message) -> None:
+def _attach_unmatched_questions(
+    message: Message, known_results: list[ToolResult]
+) -> None:
     records = message.get("tool_results", [])
     has_structured_payload = any(
         _question_payload(record) is not None for record in records
@@ -436,10 +438,8 @@ def _attach_unmatched_questions(message: Message) -> None:
         interpreter = _ClaudeQuestionInterpreter(
             [], f"claude/response/{message['i']}/result/{index}"
         )
-        if (
-            _question_payload(record) is not None
-            or "native_result" in record
-            or "native_denial_kind" in record
+        if _question_payload(record) is not None or any(
+            record is known for known in known_results
         ):
             interpreter.result(record, [], None)
         elif not record["is_error"]:
@@ -451,11 +451,13 @@ def _attach_unmatched_questions(message: Message) -> None:
 
 
 def _attach_questions(
-    events: list[Message], results_with_alternates: list[ToolResult]
+    events: list[Message],
+    results_with_alternates: list[ToolResult],
+    known_results: list[ToolResult],
 ) -> None:
     """Enrich canonical conversation records without creating session-wide lists."""
     for message in events:
         for index, call in enumerate(message.get("tool_calls") or []):
             if call["name"] == ASK_USER_QUESTION:
                 _attach_call_questions(message, index, call, results_with_alternates)
-        _attach_unmatched_questions(message)
+        _attach_unmatched_questions(message, known_results)

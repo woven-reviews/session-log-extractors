@@ -320,6 +320,15 @@ class ObservedPlanDecision(TypedDict):
     candidate_feedback: NotRequired[str]
 
 
+class DecisionFacts(TypedDict, total=False):
+    """Decision facts attached to the canonical activity carrying their evidence."""
+
+    permission_refusals: list[PermissionRefusal]
+    plan_versions: list[PlanVersion]
+    plan_presentations: list[PlanPresentation]
+    plan_decisions: list[ObservedPlanDecision]
+
+
 class SubagentSummary(TypedDict, total=False):
     """Recorded sidecar activity available independently of JSON export."""
 
@@ -344,7 +353,7 @@ class NativeIdentity(TypedDict, total=False):
     parent_agent_task_id: str
 
 
-class ToolResult(NativeIdentity):
+class ToolResult(NativeIdentity, DecisionFacts):
     """A recorded result, associated by native call ID when available.
 
     content retains the result block; native_result retains an alternate native
@@ -426,7 +435,7 @@ class PatchResult(NativeIdentity):
     stderr: JsonValue
 
 
-class ToolCall(TypedDict, total=False):
+class ToolCall(DecisionFacts, total=False):
     """A complete call and the decisions/results belonging to that call."""
 
     name: Required[str]
@@ -450,10 +459,6 @@ class ToolCall(TypedDict, total=False):
     question_result_facts: QuestionResultFacts
     interaction_questions: list[Question]
     question_responses: list[QuestionResponse]
-    permission_refusals: list[PermissionRefusal]
-    plan_versions: list[PlanVersion]
-    plan_presentations: list[PlanPresentation]
-    plan_decisions: list[ObservedPlanDecision]
     plan_decision: PlanDecision
     permission_denial: PermissionDenial
     skill: str
@@ -532,7 +537,7 @@ class SubmittedText(TypedDict):
     authorship: AuthorshipSource
 
 
-class MessageContent(NativeIdentity, total=False):
+class MessageContent(NativeIdentity, DecisionFacts, total=False):
     """Content and native identity shared by ordered conversation messages."""
 
     i: Required[int]

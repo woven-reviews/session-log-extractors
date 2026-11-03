@@ -64,6 +64,8 @@ class _CopilotDecisionInterpreter:
         self.presentations: dict[tuple[str | None, str], list[PlanPresentation]] = {}
         self.refusals: dict[tuple[str | None, str], list[PermissionRefusal]] = {}
         self.requests: dict[tuple[str | None, str], list[dict[str, JsonValue]]] = {}
+        # These internal indexes reference the same canonical call facts and
+        # also retain records whose ownership could not be established.
         session["permission_refusals"] = []
         session["plan_versions"] = []
         session["plan_presentations"] = []
@@ -112,7 +114,7 @@ class _CopilotDecisionInterpreter:
         self.version(
             text,
             PlanVersionKind.PROPOSED,
-            activity,
+            _CallActivity(call, activity),
             _evidence("arguments", json_value(payload)),
         )
 
@@ -120,7 +122,7 @@ class _CopilotDecisionInterpreter:
         self,
         text: str,
         kind: PlanVersionKind,
-        activity: DecisionActivityReference | None,
+        owner: _CallActivity | None,
         evidence: list[DecisionEvidence],
     ) -> PlanVersionAssociation:
         versions = self.session["plan_versions"]
@@ -129,8 +131,10 @@ class _CopilotDecisionInterpreter:
             kind=kind,
             text=text,
             evidence=evidence,
-            activity=activity,
+            activity=owner.activity if owner is not None else None,
         )
+        if owner is not None:
+            owner.call.setdefault("plan_versions", []).append(version)
         versions.append(version)
         return PlanVersionAssociation(version_ref=version["ref"], evidence=evidence)
 
@@ -147,6 +151,8 @@ class _CopilotDecisionInterpreter:
             evidence=_evidence("tool.execution_start.data", data),
             activity=owner.activity if owner is not None else None,
         )
+        if owner is not None:
+            owner.call.setdefault("plan_presentations", []).append(presentation)
         presentations.append(presentation)
         scope = _scope(record, data.get("toolCallId"))
         if scope is not None:
@@ -167,7 +173,7 @@ class _CopilotDecisionInterpreter:
         version = None
         text = string_value(response.get("planContent"))
         if text is not None:
-            version = self.version(text, PlanVersionKind.UNKNOWN, activity, evidence)
+            version = self.version(text, PlanVersionKind.UNKNOWN, owner, evidence)
         decisions = self.session["plan_decisions"]
         decision = ObservedPlanDecision(
             ref=f"copilot:d{len(decisions)}",
@@ -183,6 +189,8 @@ class _CopilotDecisionInterpreter:
             feedback = string_value(response.get("feedback"))
             if feedback is not None:
                 decision["candidate_feedback"] = feedback
+        if owner is not None:
+            owner.call.setdefault("plan_decisions", []).append(decision)
         decisions.append(decision)
 
     def review(
@@ -254,6 +262,8 @@ class _CopilotDecisionInterpreter:
         native_id = string_value(record.get("id"))
         if native_id:
             refusal["native_id"] = native_id
+        if owner is not None:
+            owner.call.setdefault("permission_refusals", []).append(refusal)
         refusals.append(refusal)
         scope = _scope(record, record.get("id"))
         if scope is not None:
