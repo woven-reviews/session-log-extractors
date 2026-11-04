@@ -174,6 +174,22 @@ zero clips nonempty text; negative means no cap).
 Tool inputs and results remain structured, and available images are inlined as
 base64; unavailable image references remain explicit in the JSON.
 
+Valid empty Copilot sessions write a normal JSON envelope with `events: []`,
+retain available metadata, and exit 0. A missing `events.jsonl` supports
+database-only extraction; an existing blank sidecar also permits database fallback.
+Malformed/non-object records are skipped when at least one valid object remains,
+with at most five source/line warnings on stderr plus a total for larger counts.
+An existing nonblank sidecar with no valid objects, or an unreadable sidecar,
+fails even when database conversation text is available. Unrelated JSON objects
+are accepted without requiring recognized native event types.
+
+Database, required-schema, selection, and output failures report errors on stderr
+and exit 1. Batch extraction attempts every selected session, retains successful
+files, and exits 1 if any session fails; all successful exports exit 0. Selecting
+no sessions exits 1. Diagnostics remain separate from JSON, and missing images
+retain unavailable markers. Consuming-application handling is coordinated in
+[QUAL-2500](https://linear.app/andela/issue/QUAL-2500/handle-invalid-and-empty-json-only-session-logs-explicitly).
+
 Extraction uses recorded skill/command invocations and payloads without reading
 local definitions. Recorded Markdown remains message content; the extractors do
 not generate Markdown or image descriptions.
@@ -318,7 +334,8 @@ Copilot readers and discovery live in `session_log_extractors.copilot_sources`.
 `read_source(connection, session)` loads metadata, required database rows, models,
 and ordered state records into `CopilotSource`. The extractor's `read_source`
 also snapshots referenced external image bytes, following the Codex reader pattern.
-`EXTRACTOR: Extractor[CopilotRequest, CopilotSource]` exposes the production stages.
+`CopilotExtractor(Extractor[CopilotRequest, CopilotSource])` exposes the production
+stages through `EXTRACTOR`.
 `CopilotRequest` holds the selected metadata and caller-owned connection.
 `interpret_source(source)` returns an uncapped shared `Session` without database
 or filesystem access; `build_raw_envelope(source)` applies `export_session`.
