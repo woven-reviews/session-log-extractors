@@ -91,7 +91,7 @@ def _interpret(entries, image_inputs=None):
     source = mod.CodexSource(
         Path("unused.jsonl"), entries, image_inputs=image_inputs or {}
     )
-    return mod.interpret_source(source) or {"events": [], "files_changed": []}
+    return mod.interpret_source(source)
 
 
 def _events(
@@ -709,32 +709,6 @@ def test_newest_returns_none_for_empty_and_picks_max_mtime():
         os.utime(old, (1, 1))
         os.utime(new, (1000, 1000))
         assert newest([old, new]) == new
-
-
-def test_load_entries_skips_blank_and_malformed_lines():
-    with tempfile.TemporaryDirectory() as tmp_name:
-        path = Path(tmp_name) / "log.jsonl"
-        path.write_text(
-            "\n".join(
-                [
-                    "",
-                    "not json",
-                    json.dumps({"type": "a"}),
-                    "[1, 2]",
-                ]
-            )
-        )
-        entries = load_entries(path)
-        assert entries == [{"type": "a"}]
-
-
-def test_load_entries_warns_once_past_five_bad_lines():
-    with tempfile.TemporaryDirectory() as tmp_name:
-        path = Path(tmp_name) / "log.jsonl"
-        bad_lines = ["not json"] * 7
-        path.write_text("\n".join(bad_lines))
-        entries = load_entries(path)
-        assert entries == []
 
 
 def test_session_id_from_file_handles_malformed_line_and_missing_id():
@@ -1549,12 +1523,14 @@ def test_extract_transcript_raises_for_no_parseable_entries():
             extract_transcript(path)
 
 
-def test_build_raw_envelope_returns_none_for_no_events():
+def test_build_raw_envelope_exports_no_events():
     with tempfile.TemporaryDirectory() as tmp_name:
         tmp = Path(tmp_name)
         transcript = tmp / "t.jsonl"
         transcript.write_text(json.dumps({"type": "session_meta", "payload": {}}))
-        assert build_raw_envelope(mod.read_source(transcript)) is None
+        envelope = build_raw_envelope(mod.read_source(transcript))
+        assert envelope["events"] == []
+        assert envelope["session_id"] == "t"
 
 
 def test_extract_all_reports_error_when_nothing_matches():
@@ -1566,7 +1542,7 @@ def test_extract_all_reports_error_when_nothing_matches():
         assert rc == 1
 
 
-def test_extract_all_skips_unparseable_transcript_and_still_succeeds(monkeypatch):
+def test_extract_all_retains_success_but_reports_partial_failure(monkeypatch):
     with tempfile.TemporaryDirectory() as tmp_name:
         tmp = Path(tmp_name)
         project = tmp / "project"
@@ -1595,7 +1571,7 @@ def test_extract_all_skips_unparseable_transcript_and_still_succeeds(monkeypatch
         monkeypatch.chdir(project)
         rc = mod._extract_all(str(sessions), str(out))
 
-        assert rc == 0
+        assert rc == 1
         output_names = []
         for p in out.glob("codex_session_log_raw_*.json"):
             output_names.append(p.name)
@@ -1886,24 +1862,6 @@ def test_cli_rejects_removed_flags(flag):
     with pytest.raises(SystemExit) as exc:
         main(flag)
     assert exc.value.code == 2
-
-
-@pytest.mark.parametrize("batch", [False, True])
-def test_cli_no_events_writes_no_json(batch, tmp_path, monkeypatch, capsys):
-    monkeypatch.chdir(tmp_path)
-    transcript = tmp_path / "empty.jsonl"
-    _write_jsonl(transcript, _session_entries("empty", tmp_path, "")[:1])
-    args = (
-        ["--sessions-root", str(tmp_path), "--output", str(tmp_path / "out")]
-        if batch
-        else ["--transcript", str(transcript), "--output", "-"]
-    )
-    status = main(args)
-    assert status == (1 if batch else 0)
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert "no exportable events" in captured.err
-    assert not list(tmp_path.rglob("*.json"))
 
 
 @pytest.mark.parametrize("stdout", [False, True])

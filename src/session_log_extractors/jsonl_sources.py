@@ -18,15 +18,27 @@ def load_jsonl_objects(path: Path) -> List[Dict[str, JsonValue]]:
     Diagnose skipped malformed/non-object records on stderr, at most five
     individually plus a total. Blank input is a valid empty source.
     """
+    return [entry for _, entry in load_records(path)]
+
+
+def load_records(path: Path) -> list[tuple[int, dict[str, JsonValue]]]:
+    """Read objects with physical line numbers for bounded native metadata lookup."""
     with path.open("r", encoding="utf-8", errors="replace") as lines:
-        return parse_jsonl_objects(lines, str(path))
+        return _parse_records(lines, str(path))
 
 
 def parse_jsonl_objects(
     lines: Iterable[str], source: str
 ) -> List[Dict[str, JsonValue]]:
     """Retain ordered objects and diagnose malformed records at their source."""
-    entries: List[Dict[str, JsonValue]] = []
+    return [entry for _, entry in _parse_records(lines, source)]
+
+
+def _parse_records(
+    lines: Iterable[str], source: str
+) -> list[tuple[int, dict[str, JsonValue]]]:
+    """Classify input once while retaining each accepted record's source line."""
+    entries: list[tuple[int, dict[str, JsonValue]]] = []
     bad = 0
     for lineno, line in enumerate(lines, 1):
         line = line.strip()
@@ -40,7 +52,7 @@ def parse_jsonl_objects(
         else:
             reason = "non-object JSON"
         if isinstance(obj, dict):
-            entries.append(obj)
+            entries.append((lineno, obj))
             continue
         bad += 1
         if bad <= _WARNING_LIMIT:

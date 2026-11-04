@@ -1106,7 +1106,7 @@ class _CodexSessionBuilder:
             self.result(payload, timestamp)
 
 
-def interpret_source(source: CodexSource) -> Session | None:
+def interpret_source(source: CodexSource) -> Session:
     """Interpret supplied native data without I/O or export policy."""
     interpreter = _CodexSessionBuilder(source)
     for entry in _conversation_entries(source):
@@ -1115,39 +1115,27 @@ def interpret_source(source: CodexSource) -> Session | None:
     populate_action_results(interpreter.session)
     populate_invocations(interpreter.session)
     populate_decision_facts(interpreter.session)
-    session = interpreter.session
-    return (
-        session
-        if session["events"]
-        or session["unmatched_tool_results"]
-        or session["patch_results"]
-        else None
-    )
+    return interpreter.session
 
 
 def build_raw_envelope(
     source: CodexSource, tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES
-) -> Envelope | None:
+) -> Envelope:
     """Compatibility entry point; production uses the public adapter."""
-    session = interpret_source(source)
-    return (
-        export_session(session, tool_result_max_bytes)
-        if session and session["events"]
-        else None
-    )
+    return export_session(interpret_source(source), tool_result_max_bytes)
 
 
-class CodexExtractor:
+class CodexExtractor(Extractor[Path, CodexSource]):
     """Public Codex reader/interpreter adapter."""
 
     def read_source(self, request: Path) -> CodexSource:
         return read_source(request)
 
-    def interpret_source(self, source: CodexSource) -> Session | None:
+    def interpret_source(self, source: CodexSource) -> Session:
         return interpret_source(source)
 
 
-EXTRACTOR: Extractor[Path, CodexSource] = CodexExtractor()
+EXTRACTOR = CodexExtractor()
 
 
 def _decode_image(
@@ -1215,7 +1203,11 @@ def build_arg_parser(project_root: Optional[Path] = None) -> argparse.ArgumentPa
             "  --transcript PATH > positional file path > positional session id/prefix\n"
             "  > newest transcript whose recorded cwd overlaps the current cwd\n"
             "  > newest transcript anywhere under ~/.codex/sessions.\n"
-            "Use --output - without a selector to print only that newest session."
+            "Use --output - without a selector to print only that newest session.\n"
+            "Blank files and objects with no events export events: []; no format gate.\n"
+            "Skipped malformed/non-object records are diagnosed on stderr.\n"
+            "Nonblank input with no JSON objects, read errors and output failures exit 1.\n"
+            "Batch mode attempts every selected session and exits 0 only if all succeed."
         ),
     )
     parser.add_argument(
@@ -1278,9 +1270,6 @@ def build_arg_parser(project_root: Optional[Path] = None) -> argparse.ArgumentPa
     return parser
 
 
-NO_EVENTS_NOTE = "no exportable events (no user or assistant messages); no JSON written"
-
-
 def read_source(path: Path) -> CodexSource:
     """Load native records, metadata, and optional path image inputs."""
     source = codex_sources.read_source(path)
@@ -1298,26 +1287,20 @@ def read_source(path: Path) -> CodexSource:
 def extract_transcript(
     transcript: Path,
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
-) -> Envelope | None:
+) -> Envelope:
     """Read one transcript directly into its JSON envelope."""
     return _extract_source(EXTRACTOR.read_source(transcript), tool_result_max_bytes)
 
 
-def _extract_source(source: CodexSource, tool_result_max_bytes: int) -> Envelope | None:
-    if not source.entries:
-        raise ValueError(f"no parseable JSON entries found in {source.path}")
+def _extract_source(source: CodexSource, tool_result_max_bytes: int) -> Envelope:
     session = EXTRACTOR.interpret_source(source)
-    if session and session["unsupported_tools"]:
+    if session["unsupported_tools"]:
         print(
             "warning: unsupported tool input schemas: "
             + ", ".join(session["unsupported_tools"]),
             file=sys.stderr,
         )
-    return (
-        export_session(session, tool_result_max_bytes)
-        if session and session["events"]
-        else None
-    )
+    return export_session(session, tool_result_max_bytes)
 
 
 def _unique_identifier(base: str, used: set[str]) -> str:
@@ -1358,7 +1341,14 @@ def _extract_all(
         return 1
 
     out_dir = Path(output).expanduser() if output else project_root
-    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(
+            f"error: could not create output directory {out_dir}: {exc}",
+            file=sys.stderr,
+        )
+        return 1
     print(f"extracting {len(files)} Codex session(s) from {root}", file=sys.stderr)
 
     written = 0
@@ -1375,9 +1365,6 @@ def _extract_all(
             continue
 
         ident = _unique_identifier(ident, used_ids)
-        if envelope is None:
-            print(f"  skip {ident}: {NO_EVENTS_NOTE}", file=sys.stderr)
-            continue
         out_path = out_dir / raw_filename("codex", ident)
         try:
             write_envelope(out_path, envelope, TOOL_RESULT_BYTES_FLAG)
@@ -1389,7 +1376,7 @@ def _extract_all(
         print(f"  wrote {out_path}", file=sys.stderr)
 
     print(f"done: {written}/{len(files)} session(s) written", file=sys.stderr)
-    return 0 if written else 1
+    return 0 if written == len(files) else 1
 
 
 def main(
@@ -1416,7 +1403,7 @@ def main(
             sessions_root=args.sessions_root,
             strict=args.strict,
         )
-    except FileNotFoundError as exc:
+    except OSError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
@@ -1428,9 +1415,6 @@ def main(
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    if envelope is None:
-        print(f"note: {transcript.stem}: {NO_EVENTS_NOTE}", file=sys.stderr)
-        return 0
     if args.output == "-":
         payload = serialize_envelope(envelope)
         sys.stdout.write(payload)

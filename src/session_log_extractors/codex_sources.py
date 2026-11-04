@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import json
 import re
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from session_log_extractors.json_types import JsonValue, parse_json
+from session_log_extractors.jsonl_sources import load_records
 
 CODEX_SESSIONS_ROOT = Path.home() / ".codex" / "sessions"
 
@@ -51,33 +51,6 @@ def newest(paths: Iterable[Path]) -> Optional[Path]:
     if not paths:
         return None
     return max(paths, key=lambda p: p.stat().st_mtime)
-
-
-def _load_records(path: Path) -> List[Tuple[int, Dict[str, JsonValue]]]:
-    entries: List[Tuple[int, Dict[str, JsonValue]]] = []
-    bad = 0
-    with path.open("r", encoding="utf-8", errors="replace") as fh:
-        for lineno, line in enumerate(fh, 1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = parse_json(line)
-            except json.JSONDecodeError:
-                bad += 1
-                if bad <= 5:
-                    print(
-                        f"warning: skipping malformed JSON on line {lineno}",
-                        file=sys.stderr,
-                    )
-                continue
-            if isinstance(obj, dict):
-                entries.append((lineno, obj))
-            else:
-                bad += 1
-    if bad > 5:
-        print(f"warning: skipped {bad} malformed/blank lines total", file=sys.stderr)
-    return entries
 
 
 def session_id_from_file(path: Path) -> Optional[str]:
@@ -246,12 +219,12 @@ def _select_prefix(files: List[Path], selector: str) -> Path:
 
 def load_entries(path: Path) -> List[Dict[str, JsonValue]]:
     """Load records with the same diagnostics as a complete source read."""
-    return [entry for _, entry in _load_records(path)]
+    return [entry for _, entry in load_records(path)]
 
 
 def read_source(path: Path) -> CodexSource:
     """Read once, retaining metadata's historical physical-line windows."""
-    records = _load_records(path)
+    records = load_records(path)
     source = CodexSource(path, [entry for _, entry in records])
     id_seen = False
     for line, entry in records:
