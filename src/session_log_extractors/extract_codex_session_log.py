@@ -101,6 +101,7 @@ from session_log_extractors.session_log_envelope import (
     image_from_bytes,
     media_type_for_ext,
     raw_filename,
+    serialize_envelope,
     unavailable_image,
     user_event,
     warn_if_oversized,
@@ -1431,8 +1432,8 @@ def main(
         print(f"note: {transcript.stem}: {NO_EVENTS_NOTE}", file=sys.stderr)
         return 0
     if args.output == "-":
-        payload = json.dumps(envelope, ensure_ascii=False)
-        print(payload)
+        payload = serialize_envelope(envelope)
+        sys.stdout.write(payload)
         warn_if_oversized("stdout JSON", payload, TOOL_RESULT_BYTES_FLAG)
     else:
         out_path = (

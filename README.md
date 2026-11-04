@@ -69,7 +69,7 @@ also exit 1. Missing-image unavailable markers remain unchanged.
 
 This implements the Claude input boundary in QUAL-2534. Consuming-application
 handling remains in [QUAL-2500](https://linear.app/andela/issue/QUAL-2500/handle-invalid-and-empty-json-only-session-logs-explicitly);
-shared serialization validation remains in QUAL-2533.
+shared serialization and schema compatibility are documented below.
 
 Claude tool calls include `interaction_questions` and `question_responses` from
 the shared question contract, directly under `events[].tool_calls[]`. Each
@@ -560,6 +560,18 @@ no additional content is dropped. The model has no presentation state, adapter
 base class, or runtime validation.
 
 All three harnesses apply limits through `export_session` with an 8192-byte default.
+
+File and stdout outputs use `serialize_envelope`: UTF-8 JSON with unescaped
+Unicode, the existing default JSON spacing, recorded key and array order, and
+one trailing newline. Fixed recorded inputs and identical options produce
+identical JSON bytes across repeated runs and destinations. Diagnostics stay on
+stderr; serialized-size warnings count the trailing newline too.
+
+The schema remains `raw-session-log/1` when fields are added, including structured
+fields attached to conversation records. Removing an existing field or changing
+its type or meaning incompatibly requires a new schema version. This policy
+does not introduce version negotiation. Serialization preserves established
+facts and unknown associations; it does not validate or repair relationships.
 
 ## Ownership
 

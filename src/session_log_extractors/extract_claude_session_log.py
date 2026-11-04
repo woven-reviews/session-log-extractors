@@ -77,6 +77,7 @@ from session_log_extractors.session_log_envelope import (
     assistant_event,
     image_from_base64,
     raw_filename,
+    serialize_envelope,
     user_event,
     warn_if_oversized,
     write_envelope,
@@ -1296,8 +1297,8 @@ def main(
         return 1
 
     if args.output == "-":
-        payload = json.dumps(envelope, ensure_ascii=False)
-        print(payload)
+        payload = serialize_envelope(envelope)
+        sys.stdout.write(payload)
         warn_if_oversized("stdout JSON", payload, TOOL_RESULT_BYTES_FLAG)
     else:
         out_path = (
