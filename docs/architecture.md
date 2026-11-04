@@ -54,7 +54,14 @@ and plan versions from complete results before truncation. The exporter centrall
 applies the **8,192-byte default raw-result limit**, configured overrides, and
 unlimited mode. It preserves original byte counts, truncation indicators, and valid
 UTF-8. It also warns when the complete serialized JSON exceeds **8 MiB**, including
-images; the result cap is not a whole-file size guarantee.
+images and complete structured payloads; the result cap is not a whole-file size
+guarantee. Native objects/lists and their nested strings remain complete. Each
+exported string representation has independent byte accounting: tool calls use
+`result_bytes`/`result_truncated`, and result records use
+`content_bytes`/`content_truncated` and
+`native_result_bytes`/`native_result_truncated`. These latter fields are generated
+at export, including for empty strings, and are absent for missing/null/nontext
+representations. Zero clips nonempty text; any negative cap retains all text.
 
 Validate both JSON structure and semantic invariants, such as the validity of
 asserted relationships. Unreadable or unsupported input produces an actionable

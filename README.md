@@ -50,7 +50,8 @@ Claude extraction produces JSON. Run
 resolved project directory to `claude_session_log_raw_<session-id>.json` in the
 project root. Use a session id or `--transcript PATH` for one session, with
 `--output PATH` for an explicit JSON destination or `--output -` for stdout.
-`--tool-result-bytes N` sets the tool-result cap (negative for no cap).
+`--tool-result-bytes N` sets the raw-text result cap (default: 8192 bytes;
+zero clips nonempty text; negative means no cap).
 Recorded Markdown, inline images, and tool results remain in the JSON.
 
 Claude exports the normal envelope with `events: []` for blank files and object
@@ -168,7 +169,8 @@ id or unique prefix to select one session, `--output PATH` for its JSON file,
 or `--output -` for the selected or newest session on stdout. With `--all`,
 `--output DIR` selects the destination directory. `--strict` requires an exact
 working-directory match during discovery; `--db PATH` selects a database.
-`--tool-result-bytes N` sets the tool-result cap (negative for no cap).
+`--tool-result-bytes N` sets the raw-text result cap (default: 8192 bytes;
+zero clips nonempty text; negative means no cap).
 Tool inputs and results remain structured, and available images are inlined as
 base64; unavailable image references remain explicit in the JSON.
 
@@ -539,14 +541,25 @@ Copilot also implements the public contract and returns uncapped sessions.
 
 Adapters can supply `Session`, `Event`, `ToolCall`, and `Image` dictionaries from
 `session_log_extractors.session_model` directly to
-`session_log_extractors.session_log_envelope.export_session(session, tool_result_max_bytes=4096)`.
+`session_log_extractors.session_log_envelope.export_session(session, tool_result_max_bytes=8192)`.
 Supply complete interpreted content: export copies it before applying the existing
 UTF-8 byte cap to textual tool results, retaining original byte counts and
 truncation flags. Negative limits retain full text. Structured results, nested
 payloads, images, ordering, and missing/null/empty values pass through unchanged.
-The model has no presentation state, adapter base class, or runtime validation.
+Standalone `tool_results` and attached `result_record` text carry independent
+`content_bytes`/`content_truncated` and
+`native_result_bytes`/`native_result_truncated` fields. These export-generated
+fields are present for strings, including empty strings; missing, null, objects,
+and lists do not acquire text accounting. Native objects and lists retain all
+nested strings even when a parallel textual result is capped. Existing original
+counts and truncation provenance survive re-export.
 
-All three harnesses apply limits through `export_session`; CLI defaults are unchanged.
+The complete serialized JSON, including images and structured results, produces
+a warning on stderr above 8 MiB. The per-result cap is not a whole-file limit;
+no additional content is dropped. The model has no presentation state, adapter
+base class, or runtime validation.
+
+All three harnesses apply limits through `export_session` with an 8192-byte default.
 
 ## Ownership
 

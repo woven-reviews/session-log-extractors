@@ -502,6 +502,11 @@ class ToolResult(NativeIdentity, DecisionFacts):
     ts: str | None
     content: NotRequired[JsonValue]
     native_result: NotRequired[JsonValue]
+    # Export-generated accounting; adapters retain complete text without these fields.
+    content_bytes: NotRequired[int]
+    content_truncated: NotRequired[bool]
+    native_result_bytes: NotRequired[int]
+    native_result_truncated: NotRequired[bool]
     native_denial_kind: NotRequired[str]
     question_responses: NotRequired[list[QuestionResponse]]
     is_error: bool

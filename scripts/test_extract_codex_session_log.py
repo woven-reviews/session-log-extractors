@@ -94,7 +94,12 @@ def _interpret(entries, image_inputs=None):
     return mod.interpret_source(source) or {"events": [], "files_changed": []}
 
 
-def _events(entries, tool_result_max_bytes=4096, *, image_inputs=None):
+def _events(
+    entries,
+    tool_result_max_bytes=session_log_envelope.DEFAULT_TOOL_RESULT_MAX_BYTES,
+    *,
+    image_inputs=None,
+):
     return session_log_envelope.export_session(
         {"harness": "codex", "session_id": "test", **_interpret(entries, image_inputs)},
         tool_result_max_bytes,
