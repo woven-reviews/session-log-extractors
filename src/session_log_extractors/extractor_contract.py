@@ -22,5 +22,5 @@ class Extractor(Protocol[RequestT, SourceT]):
         ...
 
     def interpret_source(self, source: SourceT) -> Session | None:
-        """Interpret without source I/O or caps; return None for no exportable events."""
+        """Interpret without I/O or caps; harnesses may return None for no events."""
         ...
