@@ -190,20 +190,17 @@ def test_public_stage_propagates_reader_errors_and_handles_no_events(tmp_path):
     extractor = claude.EXTRACTOR
     with pytest.raises(FileNotFoundError):
         extractor.read_source(tmp_path / "missing.jsonl")
-    assert extractor.interpret_source(ClaudeSource(tmp_path / "s.jsonl", [])) is None
+    empty = extractor.interpret_source(ClaudeSource(tmp_path / "s.jsonl", []))
+    assert empty["events"] == []
     system_entries = []
     for entry in claude.read_source(TRANSCRIPT).entries:
         if entry.get("type") == "system":
             system_entries.append(entry)
-    assert (
-        extractor.interpret_source(
-            ClaudeSource(
-                tmp_path / "s.jsonl",
-                system_entries,
-            )
-        )
-        is None
+    assert system_entries
+    session = extractor.interpret_source(
+        ClaudeSource(tmp_path / "s.jsonl", system_entries)
     )
+    assert session["events"] == []
 
 
 @pytest.mark.parametrize(

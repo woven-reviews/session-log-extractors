@@ -25,10 +25,10 @@ class ClaudeSource:
 
 
 def load_entries(path: Path) -> List[Dict[str, JsonValue]]:
-    """Load a JSONL transcript, skipping blank/malformed lines.
+    """Load object records; reject nonblank input with no valid objects.
 
-    A single bad line never aborts the run; it is reported to stderr (rate
-    limited) and skipped.
+    Diagnose skipped malformed/non-object records on stderr, at most five
+    individually plus a total. Blank input is a valid empty source.
     """
     entries: List[Dict[str, JsonValue]] = []
     bad = 0
@@ -40,21 +40,28 @@ def load_entries(path: Path) -> List[Dict[str, JsonValue]]:
             try:
                 obj = parse_json(line)
             except json.JSONDecodeError:
-                bad += 1
-                if bad <= 5:
-                    print(
-                        f"warning: skipping malformed JSON on line {lineno}",
-                        file=sys.stderr,
-                    )
-                continue
+                obj = None
+                reason = "malformed JSON"
+            else:
+                reason = "non-object JSON"
             if isinstance(obj, dict):
                 entries.append(obj)
-            else:
-                bad += 1
+                continue
+            bad += 1
+            if bad <= 5:
+                print(
+                    f"warning: {path}: skipping {reason} on line {lineno}",
+                    file=sys.stderr,
+                )
     if bad > 5:
         print(
-            f"warning: skipped {bad} malformed/blank lines total",
+            f"warning: {path}: skipped {bad} malformed/non-object records total",
             file=sys.stderr,
+        )
+    if bad and not entries:
+        raise ValueError(
+            f"no parseable JSON entries found in {path}; "
+            "expected at least one JSON object on a nonblank line"
         )
     return entries
 

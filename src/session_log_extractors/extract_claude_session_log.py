@@ -934,7 +934,7 @@ def build_events(
 ) -> List[Message]:
     """Compatibility export helper; native interpretation is shared with the CLI."""
     envelope = build_raw_envelope(Path("session.jsonl"), entries, tool_result_max_bytes)
-    return envelope["events"] if envelope is not None else []
+    return envelope["events"]
 
 
 def first_timestamp(entries: List[Dict[str, JsonValue]]) -> Optional[str]:
@@ -977,23 +977,19 @@ def build_raw_envelope(
     transcript: Path,
     entries: List[Dict[str, JsonValue]],
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
-) -> Optional[Envelope]:
-    """Build the JSON envelope, or None when there are no exportable events."""
+) -> Envelope:
+    """Build the normal JSON envelope, including sessions with no events."""
     session = EXTRACTOR.interpret_source(ClaudeSource(transcript, entries))
-    if session is None:
-        return None
     return session_log_envelope.export_session(session, tool_result_max_bytes)
 
 
 def interpret_source(
     source: ClaudeSource,
-) -> Optional[Session]:
+) -> Session:
     """Interpret supplied records, inline images and source identity without I/O."""
     adapter = _ClaudeInterpreter(_ambiguous_call_ids(source.entries))
     for entry in source.entries:
         adapter.consume(entry)
-    if not adapter.events:
-        return None
     _attribute_command_outputs(source.entries, adapter.events)
     _attach_questions(
         adapter.events, adapter.results_with_alternates, adapter.question_results
@@ -1015,17 +1011,17 @@ def interpret_source(
     return session
 
 
-class ClaudeExtractor:
+class ClaudeExtractor(Extractor[Path, ClaudeSource]):
     """Claude implementation of the shared public extraction stages."""
 
     def read_source(self, request: Path) -> ClaudeSource:
         return read_source(request)
 
-    def interpret_source(self, source: ClaudeSource) -> Session | None:
+    def interpret_source(self, source: ClaudeSource) -> Session:
         return interpret_source(source)
 
 
-EXTRACTOR: Extractor[Path, ClaudeSource] = ClaudeExtractor()
+EXTRACTOR = ClaudeExtractor()
 
 
 # --------------------------------------------------------------------------- #
@@ -1109,7 +1105,9 @@ def build_arg_parser(project_root: Optional[Path] = None) -> argparse.ArgumentPa
         description=(
             "Extract a Claude Code session transcript (JSONL) into a JSON "
             "conversation envelope. Mechanical extraction "
-            "only — no LLM, no summarization."
+            "only — no LLM, no summarization. Empty sessions produce events: []. "
+            "Skipped malformed/non-object records are diagnosed on stderr. "
+            "Exit 1 on input/output failure, including any batch failure."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
@@ -1183,23 +1181,13 @@ def build_arg_parser(project_root: Optional[Path] = None) -> argparse.ArgumentPa
     return p
 
 
-NO_EVENTS_NOTE = "no exportable events (no user or assistant messages); no JSON written"
-
-
 def extract_transcript(
     transcript: Path,
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
-) -> Optional[Envelope]:
-    """Read one transcript directly into its JSON envelope.
-
-    Keep the existing parse-error and no-exportable-events behavior.
-    """
+) -> Envelope:
+    """Read one valid transcript into its JSON envelope, including empty sessions."""
     source = EXTRACTOR.read_source(transcript)
-    if not source.entries:
-        raise ValueError(f"no parseable JSON entries found in {transcript}")
     session = EXTRACTOR.interpret_source(source)
-    if session is None:
-        return None
     if session["unsupported_tools"]:
         print(
             "warning: unsupported tool input schemas: "
@@ -1239,7 +1227,14 @@ def _extract_all(
         return 1
 
     out_dir = Path(output).expanduser() if output else project_root
-    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(
+            f"error: could not create output directory {out_dir}: {exc}",
+            file=sys.stderr,
+        )
+        return 1
     print(f"extracting {len(files)} session(s) from {proj}", file=sys.stderr)
 
     written = 0
@@ -1248,10 +1243,7 @@ def _extract_all(
         try:
             envelope = extract_transcript(transcript, tool_result_max_bytes)
         except (OSError, ValueError) as exc:
-            print(f"  skip {session_id}: {exc}", file=sys.stderr)
-            continue
-        if envelope is None:
-            print(f"  skip {session_id}: {NO_EVENTS_NOTE}", file=sys.stderr)
+            print(f"  skip {session_id} ({transcript}): {exc}", file=sys.stderr)
             continue
         out_path = out_dir / raw_filename("claude", session_id)
         try:
@@ -1263,7 +1255,7 @@ def _extract_all(
         print(f"  wrote {out_path}", file=sys.stderr)
 
     print(f"done: {written}/{len(files)} session(s) written", file=sys.stderr)
-    return 0 if written else 1
+    return 0 if written == len(files) else 1
 
 
 def main(
@@ -1303,9 +1295,6 @@ def main(
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    if envelope is None:
-        print(f"note: {transcript.stem}: {NO_EVENTS_NOTE}", file=sys.stderr)
-        return 0
     if args.output == "-":
         payload = json.dumps(envelope, ensure_ascii=False)
         print(payload)
