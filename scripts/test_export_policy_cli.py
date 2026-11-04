@@ -42,6 +42,32 @@ def _text_calls(exported):
     return calls
 
 
+@pytest.mark.parametrize("limit", [0, 17, -1])
+def test_production_serialization_is_repeatable_across_destinations(
+    production_cli, limit, tmp_path, capsys
+):
+    module, args = production_cli
+    options = [*args, "--tool-result-bytes", str(limit)]
+    stdout_payloads = []
+    for _ in range(2):
+        status = module.main([*options, "--output", "-"])
+        assert status == 0
+        stdout_payloads.append(capsys.readouterr().out.encode("utf-8"))
+    file_payloads = []
+    for name in ("first.json", "second.json"):
+        path = tmp_path / name
+        status = module.main([*options, "--output", str(path)])
+        assert status == 0
+        assert capsys.readouterr().out == ""
+        file_payloads.append(path.read_bytes())
+    expected = stdout_payloads[0]
+    assert json.loads(expected)["events"], "Capture must include conversation events"
+    assert expected.endswith(b"\n")
+    assert not expected.endswith(b"\n\n")
+    assert stdout_payloads == [expected, expected]
+    assert file_payloads == [expected, expected]
+
+
 @pytest.mark.parametrize("limit", [None, 0, 17, -1])
 @pytest.mark.parametrize("stdout", [False, True])
 def test_production_limits(production_cli, limit, stdout, tmp_path, capsys):
