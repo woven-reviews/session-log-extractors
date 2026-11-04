@@ -53,6 +53,23 @@ project root. Use a session id or `--transcript PATH` for one session, with
 `--tool-result-bytes N` sets the tool-result cap (negative for no cap).
 Recorded Markdown, inline images, and tool results remain in the JSON.
 
+Claude exports the normal envelope with `events: []` for blank files and object
+records that produce no conversation events, retaining available session metadata.
+No Claude-format recognition gate is applied: unrelated JSON objects can therefore
+produce a successful empty export. Blank lines are ignored. Malformed JSON and
+non-object records are skipped with source/line diagnostics on stderr (up to five
+individual warnings plus a total). Nonblank input with no valid object records,
+missing/unreadable input, and output failures exit 1. Tolerated skipped records
+alone do not fail extraction. JSON goes only to the selected destination.
+Batch extraction attempts every selected transcript, writes valid empty sessions,
+and retains successful files; it exits 0 only if every selected session exports
+successfully, otherwise 1. Missing project directories and no selected transcripts
+also exit 1. Missing-image unavailable markers remain unchanged.
+
+This implements the Claude input boundary in QUAL-2534. Consuming-application
+handling remains in [QUAL-2500](https://linear.app/andela/issue/QUAL-2500/handle-invalid-and-empty-json-only-session-logs-explicitly);
+shared serialization validation remains in QUAL-2533.
+
 Claude tool calls include `interaction_questions` and `question_responses` from
 the shared question contract, directly under `events[].tool_calls[]`. Each
 occurrence has a local `ref`; response links carry native call-ID and question-key
@@ -256,7 +273,8 @@ access, construct `ClaudeSource(path, entries, metadata)` directly and call
 `summarize_subagent_source(source)`. Images remain inline in the recorded entries.
 Claude interprets main records once into the shared session and exports with
 `export_session`; byte limits apply only at export. `interpret_source` accepts
-no result cap. `Session.events` holds ordered `UserMessage` and
+no result cap and always returns a `Session`, including when events are empty.
+`Session.events` holds ordered `UserMessage` and
 `AssistantMessage` records. User messages retain recognized commands and shell
 actions; tool calls retain native IDs, results, questions, plan decisions,
 permission denials, and skill invocations. Results and decisions attach to their
