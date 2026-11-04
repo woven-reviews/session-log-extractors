@@ -198,3 +198,17 @@ def test_write_envelope_round_trips_through_json():
 def test_user_event_omits_images_key_when_there_are_none():
     assert "images" not in user_event(0, None, "text")
     assert "images" in user_event(0, None, "text", [unavailable_image("x")])
+
+
+def test_write_preserves_unicode_spacing_and_recorded_order(tmp_path):
+    # Controlled serialization boundary; deliberately use nonalphabetical keys.
+    envelope = {"z": ["雪", {"b": None, "a": [2, 1]}], "a": "€\n"}
+    original = deepcopy(envelope)
+    path = tmp_path / "session.json"
+
+    size = write_envelope(path, envelope)
+
+    expected = '{"z": ["雪", {"b": null, "a": [2, 1]}], "a": "€\\n"}\n'.encode()
+    assert path.read_bytes() == expected
+    assert size == len(expected)
+    assert envelope == original

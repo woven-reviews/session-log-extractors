@@ -11,7 +11,9 @@ from pathlib import Path
 from typing import Dict, List
 
 from session_log_extractors.json_types import JsonValue, parse_json
-from session_log_extractors.jsonl_sources import load_records
+from session_log_extractors.jsonl_sources import load_jsonl_objects
+
+load_entries = load_jsonl_objects
 
 
 @dataclass
@@ -21,11 +23,6 @@ class ClaudeSource:
     path: Path
     entries: List[Dict[str, JsonValue]]
     metadata: Dict[str, JsonValue] = field(default_factory=dict)
-
-
-def load_entries(path: Path) -> List[Dict[str, JsonValue]]:
-    """Load object records with shared JSONL input classification/diagnostics."""
-    return [entry for _, entry in load_records(path)]
 
 
 def _read_metadata(path: Path) -> Dict[str, JsonValue]:

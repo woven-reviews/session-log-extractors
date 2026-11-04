@@ -310,12 +310,10 @@ def test_copilot_public_reader_errors_and_empty_source():
     conn.close()
     with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
         copilot.EXTRACTOR.read_source(copilot.CopilotRequest(conn, {"id": "missing"}))
-    assert (
-        copilot.EXTRACTOR.interpret_source(
-            copilot_sources.CopilotSource({"id": "empty"}, [])
-        )
-        is None
+    session = copilot.EXTRACTOR.interpret_source(
+        copilot_sources.CopilotSource({"id": "empty"}, [])
     )
+    assert session["events"] == []
 
 
 @pytest.mark.parametrize("harness", ["claude", "copilot", "codex"])

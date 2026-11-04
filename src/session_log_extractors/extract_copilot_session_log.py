@@ -18,6 +18,13 @@ are retained as session records (the tool asked about, the decision, and feedbac
 human typed when denying) -- unlike the Claude/Codex logs, where only denials are
 observable.
 
+Valid empty sessions export JSON with events: [] and exit 0. Missing events.jsonl
+supports database-only extraction. Existing blank sidecars are valid; existing
+unreadable or wholly invalid sidecars fail. Mixed malformed/non-object records
+are skipped with bounded source/line warnings on stderr. Database, selection,
+and output errors exit 1. Batch attempts every session and exits 1 if any fail.
+Diagnostics stay on stderr, separate from JSON.
+
 Examples
 --------
 Every transcript for the current repository, one file per session (the default
@@ -79,6 +86,7 @@ from session_log_extractors.session_log_envelope import (
     image_from_bytes,
     media_type_for_ext,
     raw_filename,
+    serialize_envelope,
     unavailable_image,
     user_event,
     warn_if_oversized,
@@ -1144,7 +1152,7 @@ def _reindex_question_activity(
             }
 
 
-def interpret_source(source: CopilotSource) -> Session | None:
+def interpret_source(source: CopilotSource) -> Session:
     """Interpret complete supplied activity without I/O or export limits."""
     builder = _CopilotSessionBuilder(source)
     builder.build()
@@ -1190,52 +1198,36 @@ def interpret_source(source: CopilotSource) -> Session | None:
         session, source.state_records, _string(source.session.get("id"))
     )
     interpret_actions(session, source.state_records, source.files, builder.native_calls)
-    if (
-        not events
-        and not questions.responses
-        and not any(
-            (
-                session["permission_refusals"],
-                session["plan_versions"],
-                session["plan_presentations"],
-                session["plan_decisions"],
-                session["file_actions"],
-                session["subagent_tasks"],
-                session["invocations"],
-            )
-        )
-    ):
-        return None
     return session
 
 
-class CopilotExtractor:
+class CopilotExtractor(Extractor[CopilotRequest, CopilotSource]):
     """Public Copilot stage adapter; connection ownership stays with orchestration."""
 
     def read_source(self, request: CopilotRequest) -> CopilotSource:
         return read_source(request.connection, request.session)
 
-    def interpret_source(self, source: CopilotSource) -> Session | None:
+    def interpret_source(self, source: CopilotSource) -> Session:
         return interpret_source(source)
 
 
-EXTRACTOR: Extractor[CopilotRequest, CopilotSource] = CopilotExtractor()
+EXTRACTOR = CopilotExtractor()
 
 
 def build_raw_envelope(
     source: CopilotSource,
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
-) -> Optional[Envelope]:
+) -> Envelope:
     """Apply output policy only at the shared exporter boundary."""
     session = EXTRACTOR.interpret_source(source)
-    return None if session is None else export_session(session, tool_result_max_bytes)
+    return export_session(session, tool_result_max_bytes)
 
 
 def extract_session(
     conn: sqlite3.Connection,
     session: Dict[str, JsonValue],
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
-) -> Optional[Envelope]:
+) -> Envelope:
     """Run the public stages, preserving caller-owned connection lifetime."""
     source = EXTRACTOR.read_source(CopilotRequest(conn, session))
     return build_raw_envelope(source, tool_result_max_bytes)
@@ -1303,9 +1295,6 @@ def build_arg_parser(project_root: Optional[Path] = None) -> argparse.ArgumentPa
     return parser
 
 
-NO_EVENTS_NOTE = "no exportable events; no JSON written"
-
-
 def _extract_all(
     conn: sqlite3.Connection,
     output: Optional[str],
@@ -1327,21 +1316,19 @@ def _extract_all(
     written = 0
     used_ids: set[str] = set()
     for session in sessions:
-        ident = _unique_identifier(output_identifier(session), used_ids)
-        out_path = out_dir / raw_filename("copilot", ident)
+        ident = str(session.get("id"))
         try:
+            ident = _unique_identifier(output_identifier(session), used_ids)
+            out_path = out_dir / raw_filename("copilot", ident)
             envelope = extract_session(conn, session, tool_result_max_bytes)
-            if envelope is None:
-                print(f"  skip {ident}: {NO_EVENTS_NOTE}", file=sys.stderr)
-                continue
             write_envelope(out_path, envelope, TOOL_RESULT_BYTES_FLAG)
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, TypeError, sqlite3.Error) as exc:
             print(f"  skip {ident}: {exc}", file=sys.stderr)
             continue
         written += 1
         print(f"  wrote {out_path}", file=sys.stderr)
     print(f"done: {written}/{len(sessions)} session(s) written", file=sys.stderr)
-    return 0 if written else 1
+    return 0 if written == len(sessions) else 1
 
 
 def _select_session(
@@ -1371,13 +1358,10 @@ def _extract_selected(
     print(f"using session: {session['id']}", file=sys.stderr)
     try:
         envelope = extract_session(conn, session, args.tool_result_bytes)
-        if envelope is None:
-            print(f"skip {session['id']}: {NO_EVENTS_NOTE}", file=sys.stderr)
-            return 1
         if args.output == "-":
-            payload = json.dumps(envelope, ensure_ascii=False)
+            payload = serialize_envelope(envelope)
             warn_if_oversized("stdout", payload, TOOL_RESULT_BYTES_FLAG)
-            sys.stdout.write(payload + "\n")
+            sys.stdout.write(payload)
         else:
             out_path = (
                 Path(args.output).expanduser()
@@ -1386,7 +1370,7 @@ def _extract_selected(
             )
             write_envelope(out_path, envelope, TOOL_RESULT_BYTES_FLAG)
             print(f"wrote {out_path}", file=sys.stderr)
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, TypeError, sqlite3.Error) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     return 0
@@ -1400,8 +1384,8 @@ def main(
     db_path = Path(args.db).expanduser() if args.db else copilot_sources.COPILOT_DB
     try:
         conn = copilot_sources.get_db_connection(db_path)
-    except FileNotFoundError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+    except (OSError, sqlite3.Error) as exc:
+        print(f"error: {db_path}: {exc}", file=sys.stderr)
         return 1
     try:
         if args.all or (not args.session and args.output != "-"):
@@ -1414,5 +1398,8 @@ def main(
                 project_root=project_root,
             )
         return _extract_selected(conn, args, project_root)
+    except (OSError, ValueError, TypeError, sqlite3.Error) as exc:
+        print(f"error: {db_path}: {exc}", file=sys.stderr)
+        return 1
     finally:
         conn.close()

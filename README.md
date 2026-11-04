@@ -69,7 +69,7 @@ also exit 1. Missing-image unavailable markers remain unchanged.
 
 This implements the Claude input boundary in QUAL-2534. Consuming-application
 handling remains in [QUAL-2500](https://linear.app/andela/issue/QUAL-2500/handle-invalid-and-empty-json-only-session-logs-explicitly);
-shared serialization validation remains in QUAL-2533.
+shared serialization and schema compatibility are documented below.
 
 Claude tool calls include `interaction_questions` and `question_responses` from
 the shared question contract, directly under `events[].tool_calls[]`. Each
@@ -149,8 +149,8 @@ attempts every selected transcript, retains successful outputs, and exits 0 only
 when every selected transcript exports successfully; no matches exits 1.
 Discovery still requires recorded cwd information; blank files can be selected
 explicitly but do not gain automatic project matching. Missing-image unavailable
-markers remain preserved. Consumer handling belongs to QUAL-2500 and shared
-serialization validation to QUAL-2533.
+markers remain preserved. Consumer handling belongs to QUAL-2500; shared
+serialization and schema compatibility are documented below.
 
 Codex exports shared `permission_refusals` on the evidenced tool call (or legacy
 harness message), and `plan_versions` / `plan_decisions` on their recorded
@@ -189,6 +189,22 @@ working-directory match during discovery; `--db PATH` selects a database.
 zero clips nonempty text; negative means no cap).
 Tool inputs and results remain structured, and available images are inlined as
 base64; unavailable image references remain explicit in the JSON.
+
+Valid empty Copilot sessions write a normal JSON envelope with `events: []`,
+retain available metadata, and exit 0. A missing `events.jsonl` supports
+database-only extraction; an existing blank sidecar also permits database fallback.
+Malformed/non-object records are skipped when at least one valid object remains,
+with at most five source/line warnings on stderr plus a total for larger counts.
+An existing nonblank sidecar with no valid objects, or an unreadable sidecar,
+fails even when database conversation text is available. Unrelated JSON objects
+are accepted without requiring recognized native event types.
+
+Database, required-schema, selection, and output failures report errors on stderr
+and exit 1. Batch extraction attempts every selected session, retains successful
+files, and exits 1 if any session fails; all successful exports exit 0. Selecting
+no sessions exits 1. Diagnostics remain separate from JSON, and missing images
+retain unavailable markers. Consuming-application handling is coordinated in
+[QUAL-2500](https://linear.app/andela/issue/QUAL-2500/handle-invalid-and-empty-json-only-session-logs-explicitly).
 
 Extraction uses recorded skill/command invocations and payloads without reading
 local definitions. Recorded Markdown remains message content; the extractors do
@@ -334,7 +350,8 @@ Copilot readers and discovery live in `session_log_extractors.copilot_sources`.
 `read_source(connection, session)` loads metadata, required database rows, models,
 and ordered state records into `CopilotSource`. The extractor's `read_source`
 also snapshots referenced external image bytes, following the Codex reader pattern.
-`EXTRACTOR: Extractor[CopilotRequest, CopilotSource]` exposes the production stages.
+`CopilotExtractor(Extractor[CopilotRequest, CopilotSource])` exposes the production
+stages through `EXTRACTOR`.
 `CopilotRequest` holds the selected metadata and caller-owned connection.
 `interpret_source(source)` returns an uncapped shared `Session` without database
 or filesystem access; `build_raw_envelope(source)` applies `export_session`.
@@ -473,8 +490,8 @@ CLI. All implementations use the shared exporter rather than overriding export.
 
 Claude, Codex, and Copilot implement this protocol in their public extractor adapters;
 their typed `EXTRACTOR` instances are used by single-session and batch extraction.
-Claude and Codex interpreters always return a `Session`, including empty sessions;
-Copilot currently also permits `None`. Mypy checks conformance in CI, and `scripts/test_extractor_contract.py`
+All three interpreters always return a `Session`, including empty sessions.
+Mypy checks conformance in CI, and `scripts/test_extractor_contract.py`
 checks signature rejection, source-free interpretation, full results, and
 non-mutating export using native fixtures. The package includes `py.typed` so
 imports retain their annotations when checked outside the source directory.
@@ -577,6 +594,18 @@ no additional content is dropped. The model has no presentation state, adapter
 base class, or runtime validation.
 
 All three harnesses apply limits through `export_session` with an 8192-byte default.
+
+File and stdout outputs use `serialize_envelope`: UTF-8 JSON with unescaped
+Unicode, the existing default JSON spacing, recorded key and array order, and
+one trailing newline. Fixed recorded inputs and identical options produce
+identical JSON bytes across repeated runs and destinations. Diagnostics stay on
+stderr; serialized-size warnings count the trailing newline too.
+
+The schema remains `raw-session-log/1` when fields are added, including structured
+fields attached to conversation records. Removing an existing field or changing
+its type or meaning incompatibly requires a new schema version. This policy
+does not introduce version negotiation. Serialization preserves established
+facts and unknown associations; it does not validate or repair relationships.
 
 ## Ownership
 
