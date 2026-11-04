@@ -136,6 +136,22 @@ removes `--raw`, `--no-raw`, and `--raw-tool-result-bytes`. Upload the JSON file
 with inline images; no generated Markdown or image description pass is needed.
 Recorded Markdown, inline images, and tool results remain in the JSON.
 
+Codex uses the same input outcomes as Claude: blank files and object records
+with no conversation events export the normal envelope with `events: []`,
+retaining available metadata and filename/session identity. Unrelated objects
+are accepted; there is no native-format recognition gate. Blank lines are ignored.
+Malformed JSON and non-object records are skipped with source/line warnings on
+stderr (at most five individual warnings plus a total). Nonblank files with no
+valid objects, missing/unreadable input, and output failures exit 1 without a
+successful export. Partial malformed input retains its usable records and exits 0.
+JSON goes only to the selected destination. Batch mode writes valid empty sessions,
+attempts every selected transcript, retains successful outputs, and exits 0 only
+when every selected transcript exports successfully; no matches exits 1.
+Discovery still requires recorded cwd information; blank files can be selected
+explicitly but do not gain automatic project matching. Missing-image unavailable
+markers remain preserved. Consumer handling belongs to QUAL-2500 and shared
+serialization validation to QUAL-2533.
+
 Codex exports shared `permission_refusals` on the evidenced tool call (or legacy
 harness message), and `plan_versions` / `plan_decisions` on their recorded
 messages. Refusals retain complete evidence, native variants, denied tool names,
@@ -182,8 +198,8 @@ Codex filesystem discovery, selection, transcript loading, and optional image
 asset reads live in `session_log_extractors.codex_sources`. The extractor's
 `read_source(path)` loads a `CodexSource` with records, bounded session metadata,
 and image inputs. `interpret_source(source)` returns an uncapped shared `Session`
-without filesystem access; `build_raw_envelope(source)` exports it. Missing
-path inputs retain unavailable-image markers. Export reuses loaded metadata;
+without filesystem access, including empty sessions; `build_raw_envelope(source)`
+always exports it. Missing path inputs retain unavailable-image markers. Export reuses loaded metadata;
 discovery retains the original 50-line ID and 80-line cwd lookup windows.
 
 ## Running the installed package
@@ -457,7 +473,8 @@ CLI. All implementations use the shared exporter rather than overriding export.
 
 Claude, Codex, and Copilot implement this protocol in their public extractor adapters;
 their typed `EXTRACTOR` instances are used by single-session and batch extraction.
-The public reader and envelope functions remain compatible. Mypy checks conformance in CI, and `scripts/test_extractor_contract.py`
+Claude and Codex interpreters always return a `Session`, including empty sessions;
+Copilot currently also permits `None`. Mypy checks conformance in CI, and `scripts/test_extractor_contract.py`
 checks signature rejection, source-free interpretation, full results, and
 non-mutating export using native fixtures. The package includes `py.typed` so
 imports retain their annotations when checked outside the source directory.

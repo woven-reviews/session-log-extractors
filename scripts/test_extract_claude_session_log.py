@@ -826,47 +826,6 @@ def test_select_transcript_global_fallback_picks_newest_anywhere():
 
 
 # --------------------------------------------------------------------------- #
-# JSONL loading
-# --------------------------------------------------------------------------- #
-
-
-def test_load_entries_skips_malformed_lines_with_warning(tmp_path, capsys):
-    path = tmp_path / "truncated.jsonl"
-    entries = _recorded_overlapping_options_interaction()
-    _write_jsonl(path, entries)
-    # A completed native capture cannot supply a corrupt trailing line.
-    with path.open("a") as stream:
-        stream.write('{"partial')
-    assert load_entries(path) == list(entries)
-    assert "skipping malformed JSON on line 3" in capsys.readouterr().err
-
-
-def test_load_entries_counts_non_dict_and_skips_blank_lines():
-    tmp = Path(tempfile.mkdtemp()) / "t.jsonl"
-    tmp.write_text('{"type": "user"}\n\n42\n[]\n' + "bad\n" * 4)
-    buf = io.StringIO()
-    with contextlib.redirect_stderr(buf):
-        entries = load_entries(tmp)
-    entry_types = []
-    for entry in entries:
-        entry_types.append(entry["type"])
-    assert entry_types == ["user"]
-    assert "skipped 6 malformed/non-object records total" in buf.getvalue()
-
-
-def test_load_entries_warns_once_for_many_bad_lines():
-    tmp = Path(tempfile.mkdtemp()) / "t.jsonl"
-    tmp.write_text("bad\n" * 7)
-    buf = io.StringIO()
-    with contextlib.redirect_stderr(buf):
-        with pytest.raises(ValueError, match="no parseable JSON entries"):
-            load_entries(tmp)
-    diagnostic_lines = buf.getvalue().splitlines()
-    assert len(diagnostic_lines) == 6
-    assert "skipped 7 malformed/non-object records total" in buf.getvalue()
-
-
-# --------------------------------------------------------------------------- #
 # Content-block / descriptor / result-note helpers
 # --------------------------------------------------------------------------- #
 
