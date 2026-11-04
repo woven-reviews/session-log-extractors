@@ -92,6 +92,19 @@ selected-source CLI stdout/file parity are tested.
 
 ## Tests and focused boundaries
 
+`scripts/test_copilot_actions.py` exercises the production JSON path for native
+reads, failed creates, edits, search paths, the full task prompt/description and
+ID-linked child identity, repeated skills, and the linked slash definition.
+Structured `fileEdits` confirm only their recorded paths; all other attempts
+retain unknown change. The capture records a definition for the first repeated
+skill call, not the second; no definition is borrowed by matching names.
+Zero-byte and short caps preserve these facts. Controlled modifications exercise
+missing/duplicate/cross-agent identifiers, additional or unmatched paths,
+orphan subagent activity, empty/missing task text, and standalone skill links.
+Database file rows stay internal and unassociated even in database-only fallback.
+Compatibility tests compare existing model and JSON content with enrichment
+disabled; no generated prose baseline is required.
+
 `scripts/copilot_fixture.py` pins this version and discovers its single transcript.
 Integration, source-free contract and smoke tests use the complete capture.
 Focused boundary tests select unchanged ID-linked tool evidence; the single-image

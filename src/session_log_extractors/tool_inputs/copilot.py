@@ -6,7 +6,16 @@ fields nor validate inputs at runtime. Unknown payloads remain complete JSON.
 
 from typing import Literal, TypeAlias, TypedDict
 
-from session_log_extractors.copilot_protocol import ASK_USER
+from session_log_extractors.copilot_protocol import (
+    ASK_USER,
+    CREATE,
+    EDIT,
+    GLOB,
+    GREP,
+    SKILL,
+    TASK,
+    VIEW,
+)
 from session_log_extractors.json_types import JsonValue
 
 
@@ -113,16 +122,16 @@ ToolInputSchema: TypeAlias = Literal[
 
 _INPUT_SCHEMAS: dict[str, ToolInputSchema] = {
     "bash": "CopilotBash",
-    "skill": "CopilotSkill",
-    "view": "CopilotView",
-    "edit": "CopilotEdit",
-    "create": "CopilotCreate",
+    SKILL: "CopilotSkill",
+    VIEW: "CopilotView",
+    EDIT: "CopilotEdit",
+    CREATE: "CopilotCreate",
     ASK_USER: "CopilotAskUser",
     "exit_plan_mode": "CopilotExitPlan",
-    "glob": "CopilotGlob",
-    "grep": "CopilotGrep",
+    GLOB: "CopilotGlob",
+    GREP: "CopilotGrep",
     "sql": "CopilotSql",
-    "task": "CopilotTask",
+    TASK: "CopilotTask",
     "task_complete": "CopilotTaskComplete",
     "read_bash": "CopilotReadBash",
 }

@@ -386,6 +386,31 @@ source turn index and first-seen time. Source indices never index `Session.event
 and first-seen times do not assert modification times. File activity alone does
 not populate `files_changed` or infer read/write actions.
 
+Copilot also exports shared `file_actions`, `subagent_tasks`, and `invocations`
+on their evidenced messages or tool calls. `copilot_actions.py` establishes these
+facts during interpretation; internal session collections index the same records.
+Native `view`, `create`, `edit`, `glob`, and `grep` calls retain action names and
+verbatim paths (null when absent). Execution success is separate from change
+confirmation: only structured completion `fileEdits` with a matching path and a
+recognized create/edit kind confirms a modification. Requests, database rows,
+success flags, and rendered diffs alone do not. Additional completion paths are
+separate actions. Missing, duplicate, or cross-agent IDs never supply ownership;
+unmatched modifications and database rows remain internal with null activity.
+
+Native `task` calls retain full prompt and description independently, including
+empty strings; absent or invalid text is not replaced with another field. A
+unique subagent start linked to the task's execution start supplies child identity.
+Native `skill` calls remain distinct occurrences. A `skill.invoked` record linked
+to a call completion or user submission enriches that occurrence with the full
+recorded definition and path. Slash submissions retain exact text and arguments,
+including recorded `[$name](target)` links. Standalone links, definition paths,
+matching names, and timestamps do not establish invocation or ownership. Unknown
+owners remain internal; definitions are never loaded externally. All structured
+facts survive raw-result caps, including zero, without changing existing JSON
+content or adding parallel top-level collections. Other tool vocabularies remain
+unsupported. Unrecognized modification kinds retain their recorded names and
+evidence with unknown change confirmation.
+
 `PermissionDecision.status` records whether a completion was observed (`pending`
 or `completed`). `native_decision` retains the harness's result label verbatim;
 a missing label stays `None`, and a pending request has no result label.
