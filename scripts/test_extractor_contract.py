@@ -17,6 +17,7 @@ from session_log_extractors import extract_claude_session_log as claude
 from session_log_extractors import extract_codex_session_log as codex
 from session_log_extractors import extract_copilot_session_log as copilot
 from session_log_extractors.claude_sources import ClaudeSource
+from session_log_extractors.codex_sources import CodexSource
 from session_log_extractors.session_log_envelope import export_session
 
 ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312"
@@ -186,20 +187,33 @@ def test_public_interpretation_is_source_free_and_export_is_non_mutating(
         assert large_results, "Interpretation must retain a native result over 10 KB"
 
 
-def test_public_stage_propagates_reader_errors_and_handles_no_events(tmp_path):
-    extractor = claude.EXTRACTOR
+@pytest.mark.parametrize(
+    ("extractor", "source_type", "transcript", "bookkeeping_types"),
+    [
+        (claude.EXTRACTOR, ClaudeSource, TRANSCRIPT, {"system"}),
+        (
+            codex.EXTRACTOR,
+            CodexSource,
+            CODEX_TRANSCRIPT,
+            {"session_meta", "turn_context"},
+        ),
+    ],
+)
+def test_public_stage_propagates_reader_errors_and_handles_no_events(
+    extractor, source_type, transcript, bookkeeping_types, tmp_path
+):
     with pytest.raises(FileNotFoundError):
         extractor.read_source(tmp_path / "missing.jsonl")
-    empty = extractor.interpret_source(ClaudeSource(tmp_path / "s.jsonl", []))
+    empty = extractor.interpret_source(source_type(tmp_path / "s.jsonl", []))
     assert empty["events"] == []
-    system_entries = []
-    for entry in claude.read_source(TRANSCRIPT).entries:
-        if entry.get("type") == "system":
-            system_entries.append(entry)
-    assert system_entries
-    session = extractor.interpret_source(
-        ClaudeSource(tmp_path / "s.jsonl", system_entries)
-    )
+    source = extractor.read_source(transcript)
+    bookkeeping_entries = []
+    for entry in source.entries:
+        if entry.get("type") in bookkeeping_types:
+            bookkeeping_entries.append(entry)
+    assert bookkeeping_entries
+    source.entries = bookkeeping_entries
+    session = extractor.interpret_source(source)
     assert session["events"] == []
 
 

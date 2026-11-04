@@ -147,8 +147,9 @@ def test_reader_preserves_diagnostics_and_source_order(tmp_path, capsys):
     source = sources.read_source(path)
     assert source.entries == sources.load_entries(TRANSCRIPT)
     assert capsys.readouterr().err == (
-        "warning: skipping malformed JSON on line 1\n"
-        "warning: skipping malformed JSON on line 5\n"
+        f"warning: {path}: skipping malformed JSON on line 1\n"
+        f"warning: {path}: skipping non-object JSON on line 3\n"
+        f"warning: {path}: skipping malformed JSON on line 5\n"
     )
 
 
