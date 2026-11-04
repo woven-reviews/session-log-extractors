@@ -14,8 +14,11 @@ from typing import Dict, Iterable, List, Optional
 from session_log_extractors.json_types import (
     JsonValue,
     json_value,
-    parse_json,
     string_value,
+)
+from session_log_extractors.jsonl_sources import (
+    load_jsonl_objects,
+    parse_jsonl_objects,
 )
 
 COPILOT_DB = Path.home() / ".copilot" / "session-store.db"
@@ -252,27 +255,17 @@ def get_session_attachments(
 
 def parse_state_records(lines: List[str]) -> List[Dict[str, JsonValue]]:
     """Decode state JSONL once, retaining object records in source order."""
-    records = []
-    for line in lines:
-        try:
-            obj = parse_json(line)
-        except ValueError:
-            continue
-        if isinstance(obj, dict):
-            records.append(obj)
-    return records
+    return parse_jsonl_objects(lines, "Copilot state records")
 
 
 def load_state_records(session_id: str) -> List[Dict[str, JsonValue]]:
-    """Read optional state input, preserving the missing/unreadable fallback."""
+    """Read an optional transcript; existing invalid/unreadable evidence fails."""
     events_path = COPILOT_STATE_ROOT / session_id / "events.jsonl"
-    if not events_path.is_file():
-        return []
     try:
-        lines = events_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
+        return load_jsonl_objects(events_path)
+    except FileNotFoundError:
+        # A missing sidecar is supported; other read failures must propagate.
         return []
-    return parse_state_records(lines)
 
 
 def get_session_models(conn: sqlite3.Connection, session_id: str) -> List[str]:

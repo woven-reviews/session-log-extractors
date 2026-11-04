@@ -293,21 +293,22 @@ def test_copilot_loaded_inputs_interpret_without_io(with_state, monkeypatch):
 def test_copilot_extraction_reads_and_parses_state_once(monkeypatch):
     _install_native_events()
     # Count reads on the concrete state path, leaving fixture setup outside.
-    original_read = Path.read_text
+    original_open = Path.open
     reads = []
 
     def read(path, *args, **kwargs):
-        reads.append(path)
-        return original_read(path, *args, **kwargs)
+        if path.name == "events.jsonl":
+            reads.append(path)
+        return original_open(path, *args, **kwargs)
 
     loads = Mock(wraps=json.loads)
-    monkeypatch.setattr(Path, "read_text", read)
+    monkeypatch.setattr(Path, "open", read)
     monkeypatch.setattr(json, "loads", loads)
     with _native_db() as conn:
         session = sources.get_session_by_id(conn, SESSION_ID)
         copilot.extract_session(conn, session)
     assert len(reads) == 1
-    assert loads.call_count == len(original_read(reads[0]).splitlines())
+    assert loads.call_count == len(_native_lines())
 
 
 @pytest.mark.parametrize("inline", ["data_url", "data", "invalid", "path"])
@@ -368,3 +369,23 @@ def test_copilot_preloaded_image_extension_is_per_reference():
     for image in images:
         actual_media_types.append(image["media_type"])
     assert actual_media_types == ["image/png", "image/jpeg"]
+
+
+def test_empty_loaded_source_interprets_without_io(monkeypatch):
+    captured = native_source()
+    # Remove conversation evidence, retaining native metadata and model history.
+    source = sources.CopilotSource(captured.session, [], models=captured.models)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Empty interpretation attempted source access")
+
+    monkeypatch.setattr(sqlite3, "connect", forbidden)
+    monkeypatch.setattr(Path, "open", forbidden)
+    session = copilot.EXTRACTOR.interpret_source(source)
+    envelope = copilot.build_raw_envelope(source)
+    assert session["events"] == []
+    assert session["models"] == captured.models
+    assert session["cwd"] == captured.session["cwd"]
+    assert session["started_at"] == captured.session["created_at"]
+    assert envelope["events"] == []
+    assert envelope["models"] == captured.models

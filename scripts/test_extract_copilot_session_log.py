@@ -367,16 +367,20 @@ def test_copilot_get_state_attachments_skips_malformed_and_irrelevant_lines():
     assert rec["media_type"] == "image/png"
 
 
-def test_copilot_state_log_readers_return_empty_on_os_error(monkeypatch):
+def test_copilot_state_log_readers_propagate_os_error(monkeypatch):
     _write_events_log("sess-oserr", ["{}"])
 
     def unreadable(*args, **kwargs):
         raise OSError("boom")
 
-    monkeypatch.setattr(Path, "read_text", unreadable)
-    assert copilot_log.get_state_attachments("sess-oserr") == []
-    assert copilot_log.get_state_permissions("sess-oserr") == []
-    assert copilot_log.get_state_skills("sess-oserr") == []
+    monkeypatch.setattr(Path, "open", unreadable)
+    for reader in (
+        copilot_log.get_state_attachments,
+        copilot_log.get_state_permissions,
+        copilot_log.get_state_skills,
+    ):
+        with pytest.raises(OSError, match="boom"):
+            reader("sess-oserr")
 
 
 def test_copilot_permissions_from_events_skips_malformed_lines():
@@ -712,18 +716,37 @@ def test_copilot_cli_tool_result_cap(tmp_path):
     assert list(tmp_path.glob("*.json")) == [output]
 
 
-@pytest.mark.parametrize("selector", [True, False])
-def test_copilot_empty_session_writes_no_json(tmp_path, capsys, selector):
+@pytest.mark.parametrize("destination", ["stdout", "file", "default", "batch"])
+@pytest.mark.parametrize("contents", [None, "", "  \n\t", "{}\n42\n"])
+def test_copilot_empty_session_exports_json(tmp_path, capsys, destination, contents):
     db_path = _make_test_db(tmp_path, "empty", [])
+    if contents is not None:
+        _write_events_log("empty", [contents])
+    output = tmp_path / "output"
+    output.mkdir()
     args = ["--db", str(db_path)]
-    if selector:
-        args = ["empty", "--output", "-", *args]
-    status = copilot_log.main(args, project_root=tmp_path / "output")
-    assert status == 1
+    if destination != "batch":
+        args.insert(0, "empty")
+    if destination == "stdout":
+        args.extend(["--output", "-"])
+    elif destination == "file":
+        args.extend(["--output", str(output / "custom.json")])
+
+    status = copilot_log.main(args, project_root=output)
+
     captured = capsys.readouterr()
-    assert captured.out == ""
-    assert "no exportable events" in captured.err
-    assert not list(tmp_path.rglob("*.json"))
+    assert status == 0
+    if destination == "stdout":
+        envelope = json.loads(captured.out)
+        assert list(output.iterdir()) == []
+    else:
+        assert captured.out == ""
+        [written] = output.iterdir()
+        envelope = json.loads(written.read_text())
+    assert envelope["events"] == []
+    assert envelope["harness"] == "copilot"
+    assert envelope["cwd"] == str(Path.cwd())
+    assert envelope["started_at"] == "2026-01-01T12:00:00Z"
 
 
 def test_copilot_db_file_fallback_preserves_names_and_targets(tmp_path):
@@ -836,8 +859,8 @@ def test_main_closes_connection(monkeypatch, fail):
     extract = Mock(return_value=0, side_effect=ValueError("failure") if fail else None)
     monkeypatch.setattr(copilot_log, "_extract_selected", extract)
     if fail:
-        with pytest.raises(ValueError, match="failure"):
-            copilot_log.main(["selected"])
+        status = copilot_log.main(["selected"])
+        assert status == 1
     else:
         status = copilot_log.main(["selected"])
         assert status == 0
@@ -1366,3 +1389,262 @@ def test_response_only_results_preserve_supplemental_file_activity_order():
         file_activity["tool_calls"][0]["input"]["target"]
         == source.files[0]["file_path"]
     )
+
+
+@pytest.mark.parametrize("destination", ["stdout", "file", "batch"])
+@pytest.mark.parametrize("contents", ["bad\n" * 7, "42\n[]\n", "directory"])
+def test_copilot_cli_rejects_invalid_existing_sidecar(
+    tmp_path, capsys, destination, contents
+):
+    # Keep the populated native database: corrupt sidecars must not use fallback.
+    db_path = _native_db_copy(tmp_path, "UPDATE sessions SET cwd=?", (str(Path.cwd()),))
+    path = _write_events_log(SESSION_ID, [contents])
+    if contents == "directory":
+        path.unlink()
+        path.mkdir()
+    output = tmp_path / "output"
+    args = ["--db", str(db_path)]
+    if destination != "batch":
+        args.insert(0, SESSION_ID)
+        args.extend(["--output", "-" if destination == "stdout" else str(output)])
+
+    status = copilot_log.main(args, project_root=output)
+
+    captured = capsys.readouterr()
+    assert status == 1
+    assert captured.out == ""
+    assert str(path) in captured.err
+    assert not list(tmp_path.rglob("*.json"))
+    if contents != "directory":
+        assert "no parseable JSON entries" in captured.err
+
+
+@pytest.mark.parametrize("destination", ["stdout", "file", "batch"])
+def test_copilot_cli_reports_unreadable_sidecar(
+    tmp_path, monkeypatch, capsys, destination
+):
+    db_path = _native_db_copy(tmp_path, "UPDATE sessions SET cwd=?", (str(Path.cwd()),))
+    path = _write_events_log(SESSION_ID, _native_lines())
+    original_open = Path.open
+
+    def unreadable(self, *args, **kwargs):
+        if self == path:
+            raise PermissionError(f"access denied: {path}")
+        return original_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", unreadable)
+    output = tmp_path / "output"
+    args = ["--db", str(db_path)]
+    if destination != "batch":
+        args.insert(0, SESSION_ID)
+        args.extend(["--output", "-" if destination == "stdout" else str(output)])
+    status = copilot_log.main(args, project_root=output)
+    captured = capsys.readouterr()
+    assert status == 1
+    assert captured.out == ""
+    assert "access denied" in captured.err
+    assert str(path) in captured.err
+
+
+def test_copilot_cli_preserves_native_content_with_bounded_diagnostics(capsys):
+    expected = copilot_log.build_raw_envelope(native_source())
+    # Retain the complete capture, adding blank and malformed/non-object lines.
+    path = _write_events_log(SESSION_ID, ["", "42", *_native_lines(), *(["bad"] * 6)])
+    status = copilot_log.main([SESSION_ID, "--db", str(DATABASE), "--output", "-"])
+    captured = capsys.readouterr()
+    assert status == 0
+    assert json.loads(captured.out) == expected
+    warnings = []
+    for line in captured.err.splitlines():
+        if line.startswith("warning:"):
+            warnings.append(line)
+    assert len(warnings) == 6
+    assert f"{path}: skipping non-object JSON on line 2" in warnings[0]
+    assert "skipped 7 malformed/non-object records total" in warnings[-1]
+
+
+@pytest.mark.parametrize("contents", [None, "", " \n", "{}\n"])
+def test_copilot_cli_preserves_database_fallback(contents, capsys):
+    with get_db_connection(DATABASE) as conn:
+        metadata = get_session_by_id(conn, SESSION_ID)
+        expected = copilot_log.extract_session(conn, metadata)
+    if contents is not None:
+        _write_events_log(SESSION_ID, [contents])
+    status = copilot_log.main([SESSION_ID, "--db", str(DATABASE), "--output", "-"])
+    captured = capsys.readouterr()
+    assert status == 0
+    actual = json.loads(captured.out)
+    assert actual == expected
+    assert actual["events"]
+    assert "warning:" not in captured.err
+
+
+@pytest.mark.parametrize("failure", ["sidecar", "database", "output"])
+def test_copilot_batch_attempts_all_and_retains_successes(
+    tmp_path, monkeypatch, capsys, failure
+):
+    db_path = _make_test_db(tmp_path, "first", [])
+    # Duplicate only session identity; all three are valid empty sessions.
+    with sqlite3.connect(db_path) as conn:
+        for session_id in ("broken", "last"):
+            conn.execute(
+                "INSERT INTO sessions (id,cwd,created_at,updated_at) "
+                "SELECT ?,cwd,created_at,updated_at FROM sessions WHERE id='first'",
+                (session_id,),
+            )
+    if failure == "sidecar":
+        _write_events_log("broken", ["bad"])
+    elif failure == "database":
+        original = sources.get_session_turns
+
+        def failed_turns(conn, session_id):
+            if session_id == "broken":
+                raise sqlite3.OperationalError("cannot read turns")
+            return original(conn, session_id)
+
+        monkeypatch.setattr(sources, "get_session_turns", failed_turns)
+    output = tmp_path / "output"
+    output.mkdir()
+    broken_path = output / "copilot_session_log_raw_2026-01-01_broken.json"
+    if failure == "output":
+        broken_path.mkdir()
+    status = copilot_log.main(["--db", str(db_path)], project_root=output)
+    captured = capsys.readouterr()
+    assert status == 1
+    assert captured.out == ""
+    assert "done: 2/3 session(s) written" in captured.err
+    for session_id in ("first", "last"):
+        path = output / f"copilot_session_log_raw_2026-01-01_{session_id}.json"
+        assert json.loads(path.read_text())["events"] == []
+    assert not broken_path.is_file()
+
+
+@pytest.mark.parametrize("mode", ["selected", "newest", "batch"])
+@pytest.mark.parametrize("problem", ["corrupt", "schema", "turns", "unreadable"])
+def test_copilot_cli_reports_database_failure(
+    tmp_path, monkeypatch, capsys, mode, problem
+):
+    db_path = tmp_path / "input.db"
+    if problem == "corrupt":
+        db_path.write_bytes(b"not sqlite")
+    elif problem == "schema":
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("CREATE TABLE sessions (id TEXT)")
+    elif problem == "turns":
+        db_path = _native_db_copy(
+            tmp_path, "UPDATE sessions SET cwd=?", (str(Path.cwd()),)
+        )
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("DROP TABLE turns")
+    else:
+
+        def denied(path):
+            raise sqlite3.OperationalError("unable to open database file")
+
+        monkeypatch.setattr(sources, "get_db_connection", denied)
+    args = ["--db", str(db_path)]
+    if mode != "batch":
+        args.extend(["--output", "-"])
+    if mode == "selected":
+        args.insert(0, SESSION_ID)
+    status = copilot_log.main(args, project_root=tmp_path / "output")
+    captured = capsys.readouterr()
+    assert status == 1
+    assert captured.out == ""
+    assert "error:" in captured.err or "skip" in captured.err
+    assert not list(tmp_path.rglob("*.json"))
+
+
+def test_copilot_cli_reports_output_directory_failure(tmp_path, capsys):
+    db_path = _make_test_db(tmp_path, "empty", [])
+    output = tmp_path / "file"
+    output.touch()
+    status = copilot_log.main(["--db", str(db_path)], project_root=output)
+    captured = capsys.readouterr()
+    assert status == 1
+    assert "error:" in captured.err
+    assert captured.out == ""
+
+
+def test_copilot_cli_help_explains_outcomes(capsys):
+    with pytest.raises(SystemExit, match="0"):
+        copilot_log.main(["--help"])
+    help_text = capsys.readouterr().out
+    assert "events: []" in help_text
+    assert "exit 1" in help_text
+    assert "malformed/non-object" in help_text
+
+
+def test_copilot_cli_reports_stdout_failure(monkeypatch, capsys):
+    output = Mock()
+    output.write.side_effect = BrokenPipeError("closed stdout")
+    monkeypatch.setattr(copilot_log.sys, "stdout", output)
+    status = copilot_log.main([SESSION_ID, "--db", str(DATABASE), "--output", "-"])
+    captured = capsys.readouterr()
+    assert status == 1
+    assert "closed stdout" in captured.err
+
+
+def test_copilot_batch_without_selected_sessions_fails(tmp_path, capsys):
+    db_path = _native_db_copy(tmp_path, "DELETE FROM sessions")
+    status = copilot_log.main(["--db", str(db_path)], project_root=tmp_path / "output")
+    captured = capsys.readouterr()
+    assert status == 1
+    assert "no Copilot sessions" in captured.err
+    assert captured.out == ""
+    assert not (tmp_path / "output").exists()
+
+
+def test_copilot_batch_exports_populated_and_empty_sessions(tmp_path, capsys):
+    db_path = _native_db_copy(tmp_path, "UPDATE sessions SET cwd=?", (str(Path.cwd()),))
+    # Add one identity without turns; retain the populated native session intact.
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO sessions (id,cwd,created_at) SELECT 'empty',cwd,NULL FROM sessions WHERE id=?",
+            (SESSION_ID,),
+        )
+    _install_native_events()
+    output = tmp_path / "output"
+    status = copilot_log.main(["--db", str(db_path)], project_root=output)
+    captured = capsys.readouterr()
+    assert status == 0
+    assert "done: 2/2" in captured.err
+    assert captured.out == ""
+    paths = sorted(output.iterdir())
+    assert len(paths) == 2
+    empty = json.loads((output / "copilot_session_log_raw_empty.json").read_text())
+    assert empty["events"] == []
+    populated_paths = []
+    for path in paths:
+        if path.name != "copilot_session_log_raw_empty.json":
+            populated_paths.append(path)
+    [populated_path] = populated_paths
+    actual = json.loads(populated_path.read_text())
+    expected = copilot_log.build_raw_envelope(native_source())
+    expected["cwd"] = str(Path.cwd())
+    assert actual == expected
+
+
+@pytest.mark.parametrize("batch", [False, True])
+def test_copilot_cli_rejects_non_string_database_identity(tmp_path, capsys, batch):
+    db_path = _native_db_copy(tmp_path)
+    # Remove SQLite's TEXT affinity to simulate an incompatible required schema.
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("ALTER TABLE sessions RENAME TO original_sessions")
+        conn.execute(
+            "CREATE TABLE sessions (id,cwd,repository,branch,summary,created_at,updated_at)"
+        )
+        conn.execute(
+            "INSERT INTO sessions SELECT 42,?,repository,branch,summary,created_at,updated_at "
+            "FROM original_sessions",
+            (str(Path.cwd()),),
+        )
+    args = ["--db", str(db_path)]
+    if not batch:
+        args.extend(["42", "--output", "-"])
+    status = copilot_log.main(args, project_root=tmp_path / "output")
+    captured = capsys.readouterr()
+    assert status == 1
+    assert "session id must be a string" in captured.err
+    assert captured.out == ""
+    assert not list(tmp_path.rglob("*.json"))
