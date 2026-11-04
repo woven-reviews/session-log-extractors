@@ -71,6 +71,7 @@ from session_log_extractors.json_types import json_value as _json_value
 from session_log_extractors.json_types import string_value as _string
 from session_log_extractors.session_log_envelope import (
     DEFAULT_TOOL_RESULT_MAX_BYTES,
+    TOOL_RESULT_BYTES_FLAG,
     Envelope,
     assistant_event,
     export_session,
@@ -1289,12 +1290,12 @@ def build_arg_parser(project_root: Optional[Path] = None) -> argparse.ArgumentPa
         ),
     )
     parser.add_argument(
-        "--tool-result-bytes",
+        TOOL_RESULT_BYTES_FLAG,
         metavar="N",
         type=int,
         default=DEFAULT_TOOL_RESULT_MAX_BYTES,
         help=(
-            "cap each tool result in the JSON envelope at N bytes; the original "
+            "cap each textual tool result in the JSON envelope at N bytes; the original "
             "size is always recorded. Use a negative value for no cap "
             f"(default: {DEFAULT_TOOL_RESULT_MAX_BYTES})"
         ),
@@ -1302,7 +1303,6 @@ def build_arg_parser(project_root: Optional[Path] = None) -> argparse.ArgumentPa
     return parser
 
 
-CAP_FLAG = "--tool-result-bytes"
 NO_EVENTS_NOTE = "no exportable events; no JSON written"
 
 
@@ -1334,7 +1334,7 @@ def _extract_all(
             if envelope is None:
                 print(f"  skip {ident}: {NO_EVENTS_NOTE}", file=sys.stderr)
                 continue
-            write_envelope(out_path, envelope, CAP_FLAG)
+            write_envelope(out_path, envelope, TOOL_RESULT_BYTES_FLAG)
         except (OSError, ValueError) as exc:
             print(f"  skip {ident}: {exc}", file=sys.stderr)
             continue
@@ -1376,7 +1376,7 @@ def _extract_selected(
             return 1
         if args.output == "-":
             payload = json.dumps(envelope, ensure_ascii=False)
-            warn_if_oversized("stdout", payload, CAP_FLAG)
+            warn_if_oversized("stdout", payload, TOOL_RESULT_BYTES_FLAG)
             sys.stdout.write(payload + "\n")
         else:
             out_path = (
@@ -1384,7 +1384,7 @@ def _extract_selected(
                 if args.output
                 else project_root / raw_filename("copilot", output_identifier(session))
             )
-            write_envelope(out_path, envelope, CAP_FLAG)
+            write_envelope(out_path, envelope, TOOL_RESULT_BYTES_FLAG)
             print(f"wrote {out_path}", file=sys.stderr)
     except (OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)

@@ -94,6 +94,7 @@ from session_log_extractors.json_types import (
 from session_log_extractors.question_types import is_question_option
 from session_log_extractors.session_log_envelope import (
     DEFAULT_TOOL_RESULT_MAX_BYTES,
+    TOOL_RESULT_BYTES_FLAG,
     Envelope,
     assistant_event,
     export_session,
@@ -1263,12 +1264,12 @@ def build_arg_parser(project_root: Optional[Path] = None) -> argparse.ArgumentPa
         ),
     )
     parser.add_argument(
-        "--tool-result-bytes",
+        TOOL_RESULT_BYTES_FLAG,
         metavar="N",
         type=int,
         default=DEFAULT_TOOL_RESULT_MAX_BYTES,
         help=(
-            "cap each tool result in the JSON envelope at N bytes; the original "
+            "cap each textual tool result in the JSON envelope at N bytes; the original "
             "size is always recorded. Use a negative value for no cap "
             f"(default: {DEFAULT_TOOL_RESULT_MAX_BYTES})"
         ),
@@ -1276,7 +1277,6 @@ def build_arg_parser(project_root: Optional[Path] = None) -> argparse.ArgumentPa
     return parser
 
 
-CAP_FLAG = "--tool-result-bytes"
 NO_EVENTS_NOTE = "no exportable events (no user or assistant messages); no JSON written"
 
 
@@ -1379,7 +1379,7 @@ def _extract_all(
             continue
         out_path = out_dir / raw_filename("codex", ident)
         try:
-            write_envelope(out_path, envelope, CAP_FLAG)
+            write_envelope(out_path, envelope, TOOL_RESULT_BYTES_FLAG)
         except OSError as exc:
             print(f"  error writing {out_path}: {exc}", file=sys.stderr)
             continue
@@ -1433,7 +1433,7 @@ def main(
     if args.output == "-":
         payload = json.dumps(envelope, ensure_ascii=False)
         print(payload)
-        warn_if_oversized("stdout JSON", payload, CAP_FLAG)
+        warn_if_oversized("stdout JSON", payload, TOOL_RESULT_BYTES_FLAG)
     else:
         out_path = (
             project_root / raw_filename("codex", envelope["session_id"])
@@ -1441,7 +1441,7 @@ def main(
             else Path(args.output).expanduser()
         )
         try:
-            write_envelope(out_path, envelope, CAP_FLAG)
+            write_envelope(out_path, envelope, TOOL_RESULT_BYTES_FLAG)
         except OSError as exc:
             print(f"error: could not write {out_path}: {exc}", file=sys.stderr)
             return 1

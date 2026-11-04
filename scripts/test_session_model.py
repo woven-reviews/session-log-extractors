@@ -600,7 +600,7 @@ def test_shared_session_preserves_complete_content(harness):
     expected = {
         "schema": "raw-session-log/1",
         **session,
-        "truncation": {"tool_result_max_bytes": 4096},
+        "truncation": {"tool_result_max_bytes": 8192},
     }
     assert build_envelope(session) == expected
     assert json.loads(json.dumps(export_session(session))) == expected
@@ -650,7 +650,7 @@ def test_export_default_and_missing_null_empty_distinctions():
         ToolCall(name="missing"),
         ToolCall(name="null", input=None, result=None),
         ToolCall(name="empty", input={}, result=""),
-        ToolCall(name="long", result="x" * 5000),
+        ToolCall(name="long", result="x" * 9000),
     ]
     events = [
         Event(i=0, role="user"),
@@ -680,8 +680,8 @@ def test_export_default_and_missing_null_empty_distinctions():
         "result_bytes": 0,
         "result_truncated": False,
     }
-    assert actual[3]["result"] == "x" * 4096
-    assert actual[3]["result_bytes"] == 5000
+    assert actual[3]["result"] == "x" * 8192
+    assert actual[3]["result_bytes"] == 9000
     assert actual[3]["result_truncated"] is True
 
 
@@ -758,7 +758,7 @@ def test_export_reads_json_fields_without_mutating_session_semantics():
         "started_at": None,
         "models": [],
         "events": [],
-        "truncation": {"tool_result_max_bytes": 4096},
+        "truncation": {"tool_result_max_bytes": 8192},
     }
     assert session == original
 

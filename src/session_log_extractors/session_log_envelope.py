@@ -49,7 +49,8 @@ SCHEMA = "raw-session-log/1"
 # of whole-file Reads dwarfs every prompt in the session. The conversation is
 # what a grader needs, so results are kept but capped, with the original size
 # recorded so a truncation is never mistaken for a short result.
-DEFAULT_TOOL_RESULT_MAX_BYTES = 4096
+DEFAULT_TOOL_RESULT_MAX_BYTES = 8192
+TOOL_RESULT_BYTES_FLAG = "--tool-result-bytes"
 
 # Qualified stores solution files inside a single Mongo document, and MongoDB
 # caps a BSON document at 16 MB. The drag-and-drop upload allows session logs up
@@ -250,8 +251,7 @@ def export_session(
     byte policy. Structured results and other nested payloads pass through
     unchanged; do not stringify them. Read only current JSON schema fields from
     the session; other session semantics remain available to callers. Missing
-    results remain missing. Legacy harnesses still apply their own limits until
-    their interpretation migrations.
+    results remain missing. All production adapters supply uncapped content.
     """
     envelope = build_envelope(
         deepcopy(
@@ -375,20 +375,34 @@ def _export_decision_facts(source: DecisionFacts, target: DecisionFacts) -> None
 
 
 def _export_result(record: ToolResult, limit: int) -> ToolResult:
-    """Retain native structured payloads; apply the text cap to textual copies."""
+    """Retain native structured payloads; account for each capped text copy."""
     exported = deepcopy(record)
     content, native_result = record.get("content"), record.get("native_result")
     if isinstance(content, str):
-        exported["content"] = truncate_result(content, limit)["result"]
+        capped = truncate_result(content, limit)
+        exported["content"] = capped["result"]
+        exported["content_bytes"] = exported.get(
+            "content_bytes", capped["result_bytes"]
+        )
+        exported["content_truncated"] = (
+            exported.get("content_truncated", False) or capped["result_truncated"]
+        )
     if isinstance(native_result, str):
-        exported["native_result"] = truncate_result(native_result, limit)["result"]
+        capped = truncate_result(native_result, limit)
+        exported["native_result"] = capped["result"]
+        exported["native_result_bytes"] = exported.get(
+            "native_result_bytes", capped["result_bytes"]
+        )
+        exported["native_result_truncated"] = (
+            exported.get("native_result_truncated", False) or capped["result_truncated"]
+        )
     return exported
 
 
 def write_envelope(
     path: Path,
     envelope: Mapping[str, object],
-    cap_flag: str = "--raw-tool-result-bytes",
+    cap_flag: str = TOOL_RESULT_BYTES_FLAG,
 ) -> int:
     """Write the envelope and return its size in bytes.
 
@@ -403,7 +417,7 @@ def write_envelope(
 
 
 def warn_if_oversized(
-    label: str, payload: str, cap_flag: str = "--raw-tool-result-bytes"
+    label: str, payload: str, cap_flag: str = TOOL_RESULT_BYTES_FLAG
 ) -> int:
     """Return the payload's size in bytes, warning above SIZE_WARN_BYTES."""
     size = len(payload.encode("utf-8"))
