@@ -399,6 +399,11 @@ def _export_result(record: ToolResult, limit: int) -> ToolResult:
     return exported
 
 
+def serialize_envelope(envelope: Mapping[str, object]) -> str:
+    """Serialize in recorded key/array order, with Unicode and one final newline."""
+    return json.dumps(envelope, ensure_ascii=False) + "\n"
+
+
 def write_envelope(
     path: Path,
     envelope: Mapping[str, object],
@@ -409,9 +414,9 @@ def write_envelope(
     Warns above SIZE_WARN_BYTES so an oversized file is caught while the author
     is still looking at the terminal, not when the upload is rejected.
     """
-    payload = json.dumps(envelope, ensure_ascii=False)
+    payload = serialize_envelope(envelope)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(payload, encoding="utf-8")
+    path.write_text(payload, encoding="utf-8", newline="\n")
 
     return warn_if_oversized(path.name, payload, cap_flag)
 

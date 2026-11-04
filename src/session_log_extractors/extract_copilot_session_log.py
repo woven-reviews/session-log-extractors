@@ -79,6 +79,7 @@ from session_log_extractors.session_log_envelope import (
     image_from_bytes,
     media_type_for_ext,
     raw_filename,
+    serialize_envelope,
     unavailable_image,
     user_event,
     warn_if_oversized,
@@ -1375,9 +1376,9 @@ def _extract_selected(
             print(f"skip {session['id']}: {NO_EVENTS_NOTE}", file=sys.stderr)
             return 1
         if args.output == "-":
-            payload = json.dumps(envelope, ensure_ascii=False)
+            payload = serialize_envelope(envelope)
             warn_if_oversized("stdout", payload, TOOL_RESULT_BYTES_FLAG)
-            sys.stdout.write(payload + "\n")
+            sys.stdout.write(payload)
         else:
             out_path = (
                 Path(args.output).expanduser()
