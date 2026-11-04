@@ -372,7 +372,7 @@ def test_queued_empty_activity_and_malformed_attachment_do_not_create_messages()
     malformed["attachment"] = None
     source = ClaudeSource(TRANSCRIPT, [empty, malformed])
     session = claude.interpret_source(source)
-    assert session is None
+    assert session["events"] == []
 
 
 def _recorded_interruptions():

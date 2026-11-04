@@ -851,7 +851,7 @@ def test_load_entries_counts_non_dict_and_skips_blank_lines():
     for entry in entries:
         entry_types.append(entry["type"])
     assert entry_types == ["user"]
-    assert "skipped 6 malformed/blank lines total" in buf.getvalue()
+    assert "skipped 6 malformed/non-object records total" in buf.getvalue()
 
 
 def test_load_entries_warns_once_for_many_bad_lines():
@@ -859,9 +859,11 @@ def test_load_entries_warns_once_for_many_bad_lines():
     tmp.write_text("bad\n" * 7)
     buf = io.StringIO()
     with contextlib.redirect_stderr(buf):
-        entries = load_entries(tmp)
-    assert entries == []
-    assert "skipped 7 malformed/blank lines total" in buf.getvalue()
+        with pytest.raises(ValueError, match="no parseable JSON entries"):
+            load_entries(tmp)
+    diagnostic_lines = buf.getvalue().splitlines()
+    assert len(diagnostic_lines) == 6
+    assert "skipped 7 malformed/non-object records total" in buf.getvalue()
 
 
 # --------------------------------------------------------------------------- #
@@ -1267,8 +1269,10 @@ def test_build_raw_envelope_preserves_metadata_and_events():
     assert envelope["events"] == build_events(entries)
 
 
-def test_build_raw_envelope_returns_none_when_no_events():
-    assert build_raw_envelope(Path("/x/sess.jsonl"), []) is None
+def test_build_raw_envelope_retains_empty_session():
+    envelope = build_raw_envelope(Path("/x/sess.jsonl"), [])
+    assert envelope["events"] == []
+    assert envelope["session_id"] == "sess"
 
 
 # --------------------------------------------------------------------------- #
@@ -1352,11 +1356,11 @@ def _write_jsonl(path, entries):
     path.write_text("\n".join(lines) + "\n")
 
 
-def test_extract_transcript_raises_for_empty_file(tmp_path):
+def test_extract_transcript_exports_empty_file(tmp_path):
     transcript = tmp_path / "empty.jsonl"
     transcript.write_text("")
-    with pytest.raises(ValueError, match="no parseable JSON entries found"):
-        extract_transcript(transcript)
+    envelope = extract_transcript(transcript)
+    assert envelope["events"] == []
 
 
 def test_extract_transcript_preserves_native_conversation():
@@ -1452,7 +1456,7 @@ def test_extract_all_reports_error_for_no_jsonl_files():
 
 def test_extract_all_skips_unparseable_file():
     proj = Path(tempfile.mkdtemp())
-    (proj / "bad.jsonl").write_text("")
+    (proj / "bad.jsonl").write_text("invalid")
     out_dir = Path(tempfile.mkdtemp())
     err = io.StringIO()
     with contextlib.redirect_stderr(err):
@@ -1658,16 +1662,23 @@ def test_cli_reports_write_errors(mode, tmp_path, capsys):
     assert "error" in captured.err
 
 
-@pytest.mark.parametrize("contents", ["", "not JSON\n"])
-def test_cli_reports_parse_errors(contents, tmp_path, capsys):
+@pytest.mark.parametrize("destination", ["stdout", "file"])
+@pytest.mark.parametrize("contents", ["[]\n", "not JSON\n", "null\n42\nbad\n"])
+def test_cli_reports_parse_errors(destination, contents, tmp_path, capsys):
     transcript = tmp_path / "session.jsonl"
     transcript.write_text(contents)
-    assert main(["--transcript", str(transcript), "--output", "-"]) == 1
+    target = tmp_path / "result.json"
+    output = "-" if destination == "stdout" else str(target)
+
+    status = main(["--transcript", str(transcript), "--output", output])
+
     captured = capsys.readouterr()
+    assert status == 1
+    assert not target.exists()
     assert captured.out == ""
+    assert str(transcript) in captured.err
     assert "no parseable JSON entries" in captured.err
-    if contents:
-        assert "skipping malformed JSON" in captured.err
+    assert "skipping" in captured.err
 
 
 def test_cli_retains_malformed_line_diagnostics(tmp_path, capsys):
@@ -1704,25 +1715,46 @@ def test_cli_stdout_keeps_size_warning(monkeypatch, capsys):
     assert "session-log uploads are capped" in captured.err
 
 
-@pytest.mark.parametrize("mode", ["single", "batch"])
-def test_cli_no_event_input_keeps_existing_envelope_omission(mode, tmp_path, capsys):
+@pytest.mark.parametrize("destination", ["stdout", "explicit", "default", "batch"])
+@pytest.mark.parametrize("contents", ["", " \n\t", '{"unrelated":true}\n', "native"])
+def test_cli_exports_empty_sessions(destination, contents, tmp_path, capsys):
     transcript = tmp_path / "session.jsonl"
-    system_entries = []
-    for entry in _recorded_session_entries():
-        if entry.get("type") == "system":
-            system_entries.append(entry)
-    _write_jsonl(transcript, system_entries)
-    output = tmp_path / "output"
-    if mode == "single":
-        args = ["--transcript", str(transcript), "--output", "-"]
+    entries = []
+    if contents == "native":
+        for entry in _recorded_session_entries():
+            if entry.get("type") == "system":
+                entries.append(entry)
+        assert entries, "Capture must contain bookkeeping records"
+        _write_jsonl(transcript, entries)
     else:
+        transcript.write_text(contents)
+    output = tmp_path / "output"
+    args = ["--transcript", str(transcript)]
+    target = output / "claude_session_log_raw_session.json"
+    if destination == "stdout":
+        args += ["--output", "-"]
+    elif destination == "explicit":
+        target = output / "custom.json"
+        args += ["--output", str(target)]
+    elif destination == "batch":
         args = ["--all", "--project-dir", str(tmp_path), "--output", str(output)]
-    assert main(args) == (0 if mode == "single" else 1)
+
+    status = main(args, project_root=output)
+
     captured = capsys.readouterr()
-    assert captured.out == ""
-    assert "session: no exportable events" in captured.err
-    assert "no JSON written" in captured.err
-    assert not list(tmp_path.rglob("*.json"))
+    assert status == 0
+    if destination == "stdout":
+        envelope = json.loads(captured.out)
+    else:
+        assert captured.out == ""
+        envelope = json.loads(target.read_text())
+    assert envelope["schema"] == "raw-session-log/1"
+    assert envelope["session_id"] == "session"
+    assert envelope["events"] == []
+    assert envelope["cwd"] == session_cwd(entries)
+    assert envelope["started_at"] == first_timestamp(entries)
+    assert envelope["models"] == session_models(entries)
+    assert "warning:" not in captured.err
 
 
 @pytest.mark.parametrize("batch", [False, True])
@@ -1770,7 +1802,8 @@ def test_interpret_supplied_source_without_filesystem(limit, fixture, monkeypatc
         assert session["cwd"] == session_cwd(entries)
         assert session["started_at"] == first_timestamp(entries)
         assert session["models"] == session_models(entries)
-        assert eclog.interpret_source(ClaudeSource(source.path, [])) is None
+        empty_session = eclog.interpret_source(ClaudeSource(source.path, []))
+        assert empty_session["events"] == []
 
 
 @pytest.mark.parametrize("with_metadata", [False, True])
@@ -2480,3 +2513,143 @@ def test_fixture_user_selection_rejects_missing_or_ambiguous_messages(
     monkeypatch.setattr(__name__ + "._recorded_session_entries", lambda: entries)
     with pytest.raises(AssertionError, match="Expected one user message"):
         _recorded_user_message("CAPTURE_IMAGES_SAME:")
+
+
+@pytest.mark.parametrize("failure", ["input", "write", "read"])
+def test_cli_batch_retains_successes_after_failure(
+    failure, tmp_path, monkeypatch, capsys
+):
+    project = tmp_path / "project"
+    project.mkdir()
+    shutil.copyfile(TRANSCRIPT, project / "populated.jsonl")
+    (project / "empty.jsonl").touch()
+    broken = project / "broken.jsonl"
+    broken.write_text("invalid" if failure == "input" else "{}")
+    output = tmp_path / "output"
+    output.mkdir()
+    if failure == "write":
+        (output / "claude_session_log_raw_broken.json").mkdir()
+    elif failure == "read":
+        original_open = Path.open
+
+        def open_transcript(path, *args, **kwargs):
+            if path == broken:
+                raise PermissionError("unreadable transcript")
+            return original_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", open_transcript)
+
+    status = main(["--all", "--project-dir", str(project), "--output", str(output)])
+
+    captured = capsys.readouterr()
+    assert status == 1
+    assert captured.out == ""
+    failed_path = (
+        output / "claude_session_log_raw_broken.json" if failure == "write" else broken
+    )
+    assert str(failed_path) in captured.err
+    assert "2/3" in captured.err
+    empty = json.loads((output / "claude_session_log_raw_empty.json").read_text())
+    populated = json.loads(
+        (output / "claude_session_log_raw_populated.json").read_text()
+    )
+    assert empty["events"] == []
+    assert populated["events"] == build_events(_recorded_session_entries())
+
+
+def test_cli_batch_reports_output_directory_failure(tmp_path, capsys):
+    (tmp_path / "empty.jsonl").touch()
+    output = tmp_path / "output"
+    output.touch()
+
+    status = main(["--all", "--project-dir", str(tmp_path), "--output", str(output)])
+
+    captured = capsys.readouterr()
+    assert status == 1
+    assert captured.out == ""
+    assert str(output) in captured.err
+    assert "error" in captured.err
+
+
+@pytest.mark.parametrize("destination", ["stdout", "file"])
+def test_cli_reports_unreadable_input(destination, tmp_path, monkeypatch, capsys):
+    transcript = tmp_path / "session.jsonl"
+    transcript.touch()
+
+    def unreadable(*args, **kwargs):
+        raise PermissionError(f"unreadable: {transcript}")
+
+    monkeypatch.setattr(Path, "open", unreadable)
+    output = "-" if destination == "stdout" else str(tmp_path / "result.json")
+
+    status = main(["--transcript", str(transcript), "--output", output])
+
+    captured = capsys.readouterr()
+    assert status == 1
+    assert captured.out == ""
+    assert str(transcript) in captured.err
+    assert "unreadable" in captured.err
+
+
+def test_cli_diagnoses_non_objects_without_losing_valid_records(tmp_path, capsys):
+    transcript = tmp_path / "partial.jsonl"
+    entries = _recorded_overlapping_options_interaction()
+    _write_jsonl(transcript, entries)
+    with transcript.open("a") as stream:
+        stream.write("\n[]\nnull\n")
+
+    status = main(["--transcript", str(transcript), "--output", "-"])
+
+    captured = capsys.readouterr()
+    assert status == 0
+    assert json.loads(captured.out)["events"] == build_events(entries)
+    assert str(transcript) in captured.err
+    assert "line 4" in captured.err
+    assert "line 5" in captured.err
+    assert "line 3" not in captured.err
+
+
+def test_cli_tolerates_skipped_records_in_empty_session(tmp_path, capsys):
+    transcript = tmp_path / "session.jsonl"
+    transcript.write_text("{}\ninvalid\n[]\n")
+
+    status = main(["--transcript", str(transcript), "--output", "-"])
+
+    captured = capsys.readouterr()
+    assert status == 0
+    assert json.loads(captured.out)["events"] == []
+    assert str(transcript) in captured.err
+    assert "line 2" in captured.err
+    assert "line 3" in captured.err
+
+
+def test_cli_batch_exports_every_empty_session(tmp_path, capsys):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "blank.jsonl").touch()
+    (project / "object.jsonl").write_text("{}")
+    output = tmp_path / "output"
+
+    status = main(["--all", "--project-dir", str(project), "--output", str(output)])
+
+    captured = capsys.readouterr()
+    assert status == 0
+    assert captured.out == ""
+    assert "done: 2/2" in captured.err
+    for session_id in ["blank", "object"]:
+        envelope = json.loads(
+            (output / f"claude_session_log_raw_{session_id}.json").read_text()
+        )
+        assert envelope["session_id"] == session_id
+        assert envelope["events"] == []
+
+
+def test_cli_help_explains_empty_and_failure_outcomes(capsys):
+    with pytest.raises(SystemExit) as result:
+        main(["--help"])
+
+    captured = capsys.readouterr()
+    assert result.value.code == 0
+    assert "events: []" in captured.out
+    assert "malformed/non-object records" in captured.out
+    assert "any batch failure" in captured.out
