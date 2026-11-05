@@ -208,49 +208,6 @@ def test_codex_normalized_mcp_skill_read_is_recorded():
     ]
 
 
-def test_codex_handwritten_assistant_denial_branch():
-    entries = [
-        {
-            "type": "event_msg",
-            "timestamp": "2026-07-17T10:00:00Z",
-            "payload": {"type": "user_message", "message": "do the thing"},
-        },
-        {
-            "type": "response_item",
-            "payload": {
-                "type": "function_call",
-                "name": "external_agent",
-                "call_id": "c1",
-                "arguments": "{}",
-            },
-        },
-        {
-            "type": "response_item",
-            "payload": {
-                "type": "message",
-                "role": "assistant",
-                "content": [
-                    {
-                        "type": "output_text",
-                        "text": (
-                            "[external_agent_tool_result: error]\nThe user doesn't "
-                            "want to proceed with this tool use. The tool use was "
-                            "rejected. The user said:\nnot like that"
-                        ),
-                    }
-                ],
-            },
-        },
-    ]
-    messages = _interpret(entries)["events"]
-    (refusal,) = messages[-1]["permission_refusals"]
-    assert refusal["action"] is None
-    assert refusal["candidate_feedback"] == "not like that"
-    assert refusal["source"] == "candidate"
-    assert "permission_denial" not in _calls(entries)[0]
-    assert "not like that" in messages[-1]["text"]
-
-
 def test_legacy_process_rejection_records_user_denial():
     # Current cancellation says "aborted by user"; retain the older CreateProcess
     # rejection as a focused, controlled compatibility boundary.

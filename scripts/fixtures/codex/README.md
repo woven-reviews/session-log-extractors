@@ -78,7 +78,7 @@ overlapping labels, answers, and assistant prose are checked separately.
 Focused controlled cases remain for malformed/missing records/files, filesystem
 failures, platform/discovery arrangements, byte limits, unknown tools, unmatched
 or reverse-ordered results, missing/null/empty data, older bare/tagged commands,
-CreateProcess/assistant denials, legacy event views, direct patch calls, and
+CreateProcess denials, legacy event views, direct patch calls, and
 `update_plan` variants unavailable in this capture. These are explicit compatibility
 or boundary tests and do not read retired fixtures. Native fixtures are not altered
 to manufacture malformed data, unavailable workflows, or successful outcomes.
@@ -107,9 +107,12 @@ rewritten to make a missing native workflow appear successful.
 
 QUAL-2527 uses this capture directly for the settings refusal, proposal contents,
 and the explicit implementation statement. It preserves the two cancellations as
-results and keeps later feedback separate. Legacy CreateProcess/assistant denials,
+results and keeps later feedback separate. Legacy CreateProcess denials,
 explicit rejection statements with feedback, unknown attribution, missing owners,
 and malformed/unsupported payloads use controlled boundary cases.
+
+Assistant prose remains message content and does not establish a permission
+refusal, including text that resembles a refusal notice.
 
 The capture's stay-in-Plan rejection is ordinary candidate feedback, without a
 recorded decision label or target plan ID. It remains message content. Revised

@@ -77,7 +77,6 @@ def _refusal(
     activity: DecisionActivityReference | None,
     call: ToolCall | None,
     ref: str,
-    field: str = "output",
 ) -> PermissionRefusal | None:
     text = _result_text(value)
     variant = _denial_variant(text)
@@ -89,7 +88,7 @@ def _refusal(
         action=None,
         source=source,
         native_variant=native_variant,
-        evidence=[DecisionEvidence(field=field, value=value)],
+        evidence=[DecisionEvidence(field="output", value=value)],
         activity=activity,
         explanation=text,
     )
@@ -168,25 +167,6 @@ def _result_refusal(
         target.setdefault("permission_refusals", []).append(refusal)
 
 
-def _message_refusal(message: Message) -> None:
-    """Recognize canned legacy messages without interpreting assistant reports."""
-    text = message.get("text") or ""
-    stripped = _EXTERNAL.sub("", text).lstrip()
-    if message["role"] != "assistant" or not stripped.startswith(
-        (USER_REFUSAL_PREFIX, _GENERIC_DENIAL)
-    ):
-        return
-    refusal = _refusal(
-        text,
-        _activity(message),
-        None,
-        f"codex:message/{message['i']}/refusal",
-        field="message.text",
-    )
-    if refusal is not None:
-        message.setdefault("permission_refusals", []).append(refusal)
-
-
 def populate_decision_facts(session: Session) -> None:
     """Attach facts to canonical activity before the shared exporter copies it."""
     for message in session["events"]:
@@ -208,6 +188,5 @@ def populate_decision_facts(session: Session) -> None:
                 activity,
                 f"codex:message/{message['i']}/call/{index}/refusal",
             )
-        _message_refusal(message)
     for index, result in enumerate(session.get("unmatched_tool_results", [])):
         _result_refusal(result, None, None, f"codex:unmatched/{index}/refusal")

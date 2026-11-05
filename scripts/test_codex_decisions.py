@@ -190,25 +190,6 @@ def test_unknown_authorship_does_not_create_candidate_approval():
     assert not _facts(session, "plan_decisions")
 
 
-@pytest.mark.parametrize("limit", [0, 17, -1])
-def test_legacy_assistant_denial_has_no_invented_action_owner(limit):
-    # This legacy harness message has no recorded tool reference.
-    entry = _controlled_user("Permission for this tool use was denied.")
-    entry["payload"]["role"] = "assistant"
-    entry["payload"]["content"][0]["type"] = "output_text"
-    session = _interpret([entry])
-
-    (refusal,) = _facts(session, "permission_refusals")
-    assert refusal["source"] == "unknown"
-    assert refusal["action"] is None
-    assert "tool_call_index" not in refusal["activity"]
-    original = deepcopy(session)
-    envelope = export_session(session, limit)
-    assert envelope["events"][0]["permission_refusals"] == [refusal]
-    assert session == original
-    assert "permission_denial" not in session["events"][0]
-
-
 def test_unmatched_refusal_stays_internal_instead_of_attaching_to_nearest_call():
     entries = exec_interactions()
     entries[-1]["payload"]["output"] = "Permission for this tool use was denied."
