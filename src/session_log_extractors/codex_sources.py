@@ -30,6 +30,7 @@ class CodexSource:
 
     @property
     def identifier(self) -> str:
+        """Filename label; the recorded session ID remains unchanged."""
         raw = self.session_id or self.path.stem
         ident = re.sub(r"[^A-Za-z0-9_.-]+", "-", raw).strip("-")
         return ident or self.path.stem

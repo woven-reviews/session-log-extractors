@@ -94,7 +94,7 @@ def test_native_plan_proposals_use_full_session_id_and_preserve_call_ownership()
     source = native_source()
     session = interpret_source(source)
     assert session is not None
-    assert session["session_id"] != SESSION_ID
+    assert session["session_id"] == SESSION_ID
     proposals = []
     for version in session["plan_versions"]:
         if version["kind"] == "proposed":

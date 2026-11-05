@@ -984,6 +984,18 @@ def build_raw_envelope(
     return session_log_envelope.export_session(session, tool_result_max_bytes)
 
 
+def _recorded_session_id(source: ClaudeSource) -> str:
+    identifiers: set[str] = set()
+    for entry in source.entries:
+        identifier = entry.get("sessionId")
+        if isinstance(identifier, str) and identifier:
+            identifiers.add(identifier)
+    if len(identifiers) > 1:
+        conflicting = ", ".join(repr(value) for value in sorted(identifiers))
+        raise ValueError(f"Conflicting Claude session IDs: {conflicting}")
+    return next(iter(identifiers), source.path.stem)
+
+
 def interpret_source(
     source: ClaudeSource,
 ) -> Session:
@@ -998,7 +1010,7 @@ def interpret_source(
     _attach_decisions(adapter.events)
     session = Session(
         harness="claude",
-        session_id=source.path.stem,
+        session_id=_recorded_session_id(source),
         events=adapter.events,
         skills_used=adapter.skills_used,
         subagent_count=adapter.subagent_count,
