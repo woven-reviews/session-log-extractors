@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from codex_capture import ASSETS, TRANSCRIPT, image_message
 
+from session_log_extractors import codex_protocol
 from session_log_extractors import codex_sources as sources
 from session_log_extractors import extract_codex_session_log as codex
 
@@ -35,11 +36,11 @@ def test_supplied_path_images_are_portable(monkeypatch):
     payload = user["payload"]
     text_blocks = []
     for block in payload["content"]:
-        if block.get("type") != "input_image":
+        if block.get("type") != codex_protocol.INPUT_IMAGE:
             text_blocks.append(block)
     payload["content"] = text_blocks + [
-        {"type": "input_image", "image_url": "/supplied.png"},
-        {"type": "input_image", "image_url": "/missing.png"},
+        {"type": codex_protocol.INPUT_IMAGE, "image_url": "/supplied.png"},
+        {"type": codex_protocol.INPUT_IMAGE, "image_url": "/missing.png"},
     ]
     raw = (ASSETS / "red.png").read_bytes()
 
@@ -72,8 +73,10 @@ def test_metadata_uses_physical_line_limits(line, tmp_path):
     record = TRANSCRIPT.read_text().splitlines()[0]
     path.write_text("\n" * (line - 1) + record + "\n")
     source = codex.read_source(path)
-    assert source.session_id == (sources.session_id_from_file(path))
-    assert source.cwd == sources.session_cwd_from_file(path)
+    recorded_id = sources.session_id_from_file(path)
+    assert source.session_id == (recorded_id)
+    recorded_cwd = sources.session_cwd_from_file(path)
+    assert source.cwd == recorded_cwd
     assert (source.session_id is not None) == (line <= 50)
     assert (source.cwd is not None) == (line <= 80)
 
@@ -123,10 +126,13 @@ def test_reader_uses_first_id_and_first_valid_cwd(tmp_path):
     # An invalid ID in the first session_meta prevents later IDs from winning;
     # cwd instead falls through to the first nonempty string, including context.
     entries = [
-        {"type": "session_meta", "payload": {"id": 123, "cwd": ""}},
-        {"type": "turn_context", "payload": {"cwd": 123}},
-        {"type": "turn_context", "payload": {"cwd": "/first"}},
-        {"type": "session_meta", "payload": {"id": "later", "cwd": "/later"}},
+        {"type": codex_protocol.SESSION_META, "payload": {"id": 123, "cwd": ""}},
+        {"type": codex_protocol.TURN_CONTEXT, "payload": {"cwd": 123}},
+        {"type": codex_protocol.TURN_CONTEXT, "payload": {"cwd": "/first"}},
+        {
+            "type": codex_protocol.SESSION_META,
+            "payload": {"id": "later", "cwd": "/later"},
+        },
     ]
     encoded_records = []
     for entry in entries:
@@ -145,8 +151,10 @@ def test_reader_preserves_diagnostics_and_source_order(tmp_path, capsys):
     # Insert malformed/non-record lines around native records, without reordering.
     path.write_text("\n".join(["bad", "", "null", lines[0], "bad"] + lines[1:]))
     source = sources.read_source(path)
-    assert source.entries == sources.load_entries(TRANSCRIPT)
-    assert capsys.readouterr().err == (
+    actual_load_entries = sources.load_entries(TRANSCRIPT)
+    assert source.entries == actual_load_entries
+    captured = capsys.readouterr()
+    assert captured.err == (
         f"warning: {path}: skipping malformed JSON on line 1\n"
         f"warning: {path}: skipping non-object JSON on line 3\n"
         f"warning: {path}: skipping malformed JSON on line 5\n"
@@ -166,7 +174,9 @@ def test_reader_propagates_transcript_failures(tmp_path, monkeypatch):
         sources.read_source(path)
 
 
-@pytest.mark.parametrize("record_type", ["event_msg", "response_item"])
+@pytest.mark.parametrize(
+    "record_type", [codex_protocol.EVENT_MSG, codex_protocol.RESPONSE_ITEM]
+)
 def test_reader_loads_native_path_images(record_type, tmp_path, monkeypatch):
     entries = sources.load_entries(TRANSCRIPT)
     image = tmp_path / "snapshot.png"
@@ -176,10 +186,10 @@ def test_reader_loads_native_path_images(record_type, tmp_path, monkeypatch):
     entries = [message]
     user = message["payload"]
     # The capture has inline content only; replace its image block with paths.
-    if record_type == "response_item":
+    if record_type == codex_protocol.RESPONSE_ITEM:
         text_blocks = []
         for block in user["content"]:
-            if block.get("type") != "input_image":
+            if block.get("type") != codex_protocol.INPUT_IMAGE:
                 text_blocks.append(block)
         image_blocks = []
         for path in (image, missing):
@@ -212,7 +222,8 @@ def test_reader_loads_native_path_images(record_type, tmp_path, monkeypatch):
         pytest.fail("interpretation tried to reopen a loaded asset")
 
     monkeypatch.setattr(Path, "open", forbidden)
-    assert codex.build_raw_envelope(source) == expected
+    actual_envelope = codex.build_raw_envelope(source)
+    assert actual_envelope == expected
 
 
 @pytest.mark.parametrize("batch", [False, True])

@@ -6,6 +6,7 @@ import pytest
 from copilot_fixture import native_source
 
 from session_log_extractors import copilot_authorship as authorship
+from session_log_extractors import copilot_protocol
 from session_log_extractors import extract_copilot_session_log as copilot
 from session_log_extractors.session_log_envelope import export_session
 
@@ -13,7 +14,7 @@ from session_log_extractors.session_log_envelope import export_session
 def _first_user_record():
     source = native_source()
     for record in source.state_records:
-        if record["type"] == "user.message":
+        if record["type"] == copilot_protocol.USER_MESSAGE:
             return record
     pytest.fail("Missing native human input")
 
@@ -37,7 +38,7 @@ def test_native_human_child_and_steering_inputs_keep_recorded_provenance():
     sources_seen = set()
     steering_seen = False
     for record in source.state_records:
-        if record["type"] != "user.message":
+        if record["type"] != copilot_protocol.USER_MESSAGE:
             continue
         data = record["data"]
         message = messages[record["id"]]
@@ -72,7 +73,7 @@ def test_native_slash_expansion_retains_candidate_invocation_and_arguments():
     source = native_source()
     expanded = []
     for record in source.state_records:
-        if record["type"] != "user.message":
+        if record["type"] != copilot_protocol.USER_MESSAGE:
             continue
         data = record["data"]
         transformed = data.get("transformedContent")
@@ -97,8 +98,8 @@ def test_native_slash_expansion_retains_candidate_invocation_and_arguments():
     harness_text = "".join(_text_from_source(message, "harness"))
     for record in source.state_records:
         if (
-            record["type"] == "skill.invoked"
-            and record["data"].get("trigger") == "user-invoked"
+            record["type"] == copilot_protocol.SKILL_INVOKED
+            and record["data"].get("trigger") == copilot_protocol.USER_INVOKED
         ):
             assert record["data"]["content"] in harness_text
 
@@ -327,7 +328,8 @@ def test_unknown_context_fields_and_malformed_coordinates_are_preserved():
 
 
 def test_context_container_boundaries_keep_non_image_context():
-    assert authorship.context_attachments({"attachments": None}) == []
+    actual_context_attachments = authorship.context_attachments({"attachments": None})
+    assert actual_context_attachments == []
     contexts = authorship.context_attachments(
         {
             "attachments": [
@@ -356,13 +358,15 @@ def test_context_container_boundaries_keep_non_image_context():
 
 
 def test_missing_record_data_has_no_invented_text_or_submission():
-    record = {"type": "user.message", "data": None}
-    assert authorship.user_content(record) == ("", [])
-    assert authorship.submitted_text(record) is None
-    assert authorship.source_markers(record) == [
-        {"field": "type", "value": "user.message"}
-    ]
-    assert authorship.submitted_text({"data": {"content": None}}) is None
+    record = {"type": copilot_protocol.USER_MESSAGE, "data": None}
+    actual_user_content = authorship.user_content(record)
+    assert actual_user_content == ("", [])
+    actual_submitted_text = authorship.submitted_text(record)
+    assert actual_submitted_text is None
+    actual_source_markers = authorship.source_markers(record)
+    assert actual_source_markers == [{"field": "type", "value": "user.message"}]
+    actual_submitted_text = authorship.submitted_text({"data": {"content": None}})
+    assert actual_submitted_text is None
 
 
 def test_database_fallback_keeps_literal_text_without_inferred_authorship():
@@ -390,7 +394,9 @@ def test_native_assistant_prose_is_harness_with_recorded_model_provenance():
         messages[message["id"]] = message
     checked = 0
     for record in source.state_records:
-        if record["type"] != "assistant.message" or not record["data"].get("content"):
+        if record["type"] != copilot_protocol.ASSISTANT_MESSAGE or not record[
+            "data"
+        ].get("content"):
             continue
         data = record["data"]
         assert data["model"] and data["apiCallId"]
@@ -431,7 +437,7 @@ def test_native_user_shell_output_is_a_candidate_action_outcome():
     for record in source.state_records:
         if record["type"] == "tool.user_requested":
             requests.append(record)
-        if record["type"] == "tool.execution_complete":
+        if record["type"] == copilot_protocol.TOOL_EXECUTION_COMPLETE:
             completions[record["data"]["toolCallId"]] = record
     assert len(requests) == 1
     (request,) = requests
@@ -460,15 +466,15 @@ def _native_command_records():
     invocations = []
     for record in source.state_records:
         if (
-            record["type"] == "skill.invoked"
-            and record["data"].get("trigger") == "user-invoked"
+            record["type"] == copilot_protocol.SKILL_INVOKED
+            and record["data"].get("trigger") == copilot_protocol.USER_INVOKED
         ):
             invocations.append(record)
     assert len(invocations) == 1, "Missing deliberate skill invocation"
     (invocation,) = invocations
     submissions = []
     for record in source.state_records:
-        if record["type"] == "user.message":
+        if record["type"] == copilot_protocol.USER_MESSAGE:
             command = record["data"]["content"].partition(" ")[0]
             if command == "/" + invocation["data"]["name"]:
                 submissions.append(record)
@@ -503,14 +509,15 @@ def test_command_attribution_requires_an_unambiguous_same_agent_parent_chain(bre
     elif breakage == "other agent":
         invocation["agentId"] = "different recipient"
     else:
-        hook["type"] = "assistant.message"
+        hook["type"] = copilot_protocol.ASSISTANT_MESSAGE
     index = authorship.record_index(source.state_records)
 
     text, spans = authorship.user_content(submission, index)
     actual = _text_from_source({"text": text, "authorship": spans}, "unknown")
 
     assert actual == [submission["data"]["transformedContent"]]
-    assert authorship.submitted_text(submission)["authorship"] == "candidate"
+    actual_submitted_text = authorship.submitted_text(submission)
+    assert actual_submitted_text["authorship"] == "candidate"
 
 
 @pytest.mark.parametrize(
@@ -628,7 +635,9 @@ def test_no_argument_command_still_keeps_the_deliberate_invocation_visible():
 def test_assistant_role_without_consistent_model_evidence_remains_unknown(field, value):
     record = None
     for native in native_source().state_records:
-        if native["type"] == "assistant.message" and native["data"].get("content"):
+        if native["type"] == copilot_protocol.ASSISTANT_MESSAGE and native["data"].get(
+            "content"
+        ):
             record = native
             break
     assert record is not None
@@ -652,7 +661,7 @@ def _native_shell_records():
     completions = []
     for record in source.state_records:
         if (
-            record["type"] == "tool.execution_complete"
+            record["type"] == copilot_protocol.TOOL_EXECUTION_COMPLETE
             and record["data"]["toolCallId"] == request["data"]["toolCallId"]
         ):
             completions.append(record)
@@ -738,7 +747,9 @@ def test_missing_request_record_id_does_not_create_a_null_provenance_marker():
 def test_api_eligibility_flag_does_not_determine_authorship(eligibility):
     record = None
     for native in native_source().state_records:
-        if native["type"] == "assistant.message" and native["data"].get("content"):
+        if native["type"] == copilot_protocol.ASSISTANT_MESSAGE and native["data"].get(
+            "content"
+        ):
             record = native
             break
     assert record is not None

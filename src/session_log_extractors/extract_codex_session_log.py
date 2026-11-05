@@ -75,6 +75,27 @@ from session_log_extractors.codex_decisions import (
     populate_decision_facts,
 )
 from session_log_extractors.codex_invocations import populate_invocations
+from session_log_extractors.codex_protocol import (
+    AGENT_MESSAGE,
+    CUSTOM_TOOL_CALL,
+    CUSTOM_TOOL_CALL_OUTPUT,
+    EVENT_MSG,
+    FUNCTION_CALL,
+    FUNCTION_CALL_OUTPUT,
+    INPUT_IMAGE,
+    MESSAGE,
+    PLAN_STEP_PENDING,
+    READ_SKILL,
+    RESPONSE_ITEM,
+    ROLE_ASSISTANT,
+    ROLE_USER,
+    SELECTED_SKILL_INSTRUCTIONS,
+    SKILL,
+    SKILLS_READ,
+    UPDATE_PLAN,
+    USER_MESSAGE,
+    USER_SHELL_COMMAND,
+)
 from session_log_extractors.codex_questions import (
     _CodexQuestionInterpreter,
 )
@@ -103,6 +124,7 @@ from session_log_extractors.session_log_envelope import (
 )
 from session_log_extractors.session_model import (
     AuthorshipMarker,
+    CollaborationMode,
     Event,
     FileChange,
     Image,
@@ -116,6 +138,9 @@ from session_log_extractors.session_model import (
     ToolResult,
     UserMessage,
 )
+from session_log_extractors.session_output import (
+    unique_identifier as _unique_identifier,
+)
 from session_log_extractors.tool_inputs.codex import input_schema as codex_input_schema
 
 _IMAGE_EXT = {
@@ -128,7 +153,7 @@ _IMAGE_EXT = {
 
 # Retain parsing for update_plan-shaped calls; no current native capture shows
 # this tool in Plan mode or Default mode.
-PLAN_TOOLS = {"update_plan"}
+PLAN_TOOLS = {UPDATE_PLAN}
 
 _NOISE_TAG_BLOCK = re.compile(
     r"<(system-reminder|local-command-stdout|local-command-stderr|command-stdout|"
@@ -266,7 +291,7 @@ def image_refs_from_user_message_payload(
         return refs
 
     for block in content:
-        if not isinstance(block, dict) or block.get("type") != "input_image":
+        if not isinstance(block, dict) or block.get("type") != INPUT_IMAGE:
             continue
         image_url = block.get("image_url")
         if isinstance(image_url, str):
@@ -290,8 +315,8 @@ def _skill_name(name: str, args: object) -> str | None:
     normalized = name.lower().replace("__", ".")
     if not isinstance(args, dict):
         return None
-    keys = ("skill", "name", "package") if short_name in ("skill", "read_skill") else ()
-    if normalized.endswith("skills.read"):
+    keys = ("skill", "name", "package") if short_name in (SKILL, READ_SKILL) else ()
+    if normalized.endswith(SKILLS_READ):
         keys = ("package", "skill", "name")
     value = next((args.get(key) for key in keys if args.get(key)), None)
     return value if isinstance(value, str) else None
@@ -369,7 +394,7 @@ def _plan_update(arguments: JsonValue) -> Optional[PlanUpdate]:
         steps.append(
             {
                 "step": str(item["step"]),
-                "status": item.get("status", "pending"),
+                "status": item.get("status", PLAN_STEP_PENDING),
             }
         )
     if not steps:
@@ -381,17 +406,8 @@ def _plan_update(arguments: JsonValue) -> Optional[PlanUpdate]:
     }
 
 
-def _decode_jsonish(value: JsonValue) -> JsonValue:
-    if isinstance(value, str):
-        try:
-            return parse_json(value)
-        except json.JSONDecodeError:
-            return value
-    return value
-
-
 def _flatten_result_text(output: JsonValue) -> str:
-    output = _decode_jsonish(output)
+    output = _decode_arguments(output)
     if isinstance(output, str):
         return output
     if isinstance(output, (int, float, bool)):
@@ -470,10 +486,6 @@ def envelope_images(
     return images
 
 
-def _string(value: JsonValue) -> str | None:
-    return value if isinstance(value, str) else None
-
-
 def _copy_identity(
     target: Message | ToolResult | PatchResult, payload: Mapping[str, object]
 ) -> None:
@@ -545,11 +557,11 @@ def _user_message(
     message["authorship"] = message_authorship(
         payload, raw_text, timestamp, record_type
     )
-    if kinds == ["skills.selected_skill_instructions"]:
+    if kinds == [SELECTED_SKILL_INSTRUCTIONS]:
         invocation = _selected_skill(raw_text)
         if invocation is not None:
             message["skill_invocation"] = invocation
-    if kinds == ["shell.user_command"]:
+    if kinds == [USER_SHELL_COMMAND]:
         shell = re.match(
             r"<user_shell_command>\s*<command>\n(.*?)\n</command>", raw_text, re.DOTALL
         )
@@ -568,8 +580,8 @@ def _new_tool_call(payload: dict[str, JsonValue]) -> ToolCall:
     call = ToolCall(
         name=name, input=decoded, input_schema=codex_input_schema(name, decoded)
     )
-    call_id = _string(payload.get("call_id"))
-    native_id = _string(payload.get("id"))
+    call_id = string_value(payload.get("call_id"))
+    native_id = string_value(payload.get("id"))
     if call_id is not None:
         call["id"] = call_id
     if native_id is not None:
@@ -579,7 +591,7 @@ def _new_tool_call(payload: dict[str, JsonValue]) -> ToolCall:
 
 def _file_change(path: str, value: JsonValue) -> FileChange:
     record = value if isinstance(value, dict) else {}
-    change = FileChange(path=path, change_type=_string(record.get("type")))
+    change = FileChange(path=path, change_type=string_value(record.get("type")))
     content = record.get("content")
     if isinstance(content, str):
         change["content"] = content
@@ -659,7 +671,7 @@ class _CodexSessionBuilder:
         images = envelope_images(
             image_refs_from_user_message_payload(payload), self.source.image_inputs
         )
-        message = _user_message(payload, timestamp, raw_text, images, "response_item")
+        message = _user_message(payload, timestamp, raw_text, images, RESPONSE_ITEM)
         self.flush_user()
         if message["text"] or images:
             self.pending_user = message
@@ -669,8 +681,8 @@ class _CodexSessionBuilder:
         images = envelope_images(
             image_refs_from_event(payload), self.source.image_inputs
         )
-        raw_text = _string(payload.get("message")) or ""
-        message = _user_message(payload, timestamp, raw_text, images, "event_msg")
+        raw_text = string_value(payload.get("message")) or ""
+        message = _user_message(payload, timestamp, raw_text, images, EVENT_MSG)
         self.merge_pending_user(message)
         if message["text"] or message.get("images") or message.get("command"):
             self.append_user(message)
@@ -711,7 +723,7 @@ class _CodexSessionBuilder:
         message = assistant_event(0, timestamp, text)
         _copy_identity(message, payload)
         message["authorship"] = message_authorship(
-            payload, text, timestamp, "response_item"
+            payload, text, timestamp, RESPONSE_ITEM
         )
         self.append(message)
 
@@ -735,7 +747,7 @@ class _CodexSessionBuilder:
 
     def call_semantics(self, call: ToolCall) -> None:
         name, arguments = call["name"], json_value(call.get("input"))
-        if self.mode == "plan" and _is_plan_tool(name):
+        if self.mode == CollaborationMode.PLAN and _is_plan_tool(name):
             plan = _plan_update(arguments)
             if plan is not None:
                 call["plan_update"] = plan
@@ -750,7 +762,7 @@ class _CodexSessionBuilder:
             self.session["unsupported_tools"].append(name)
 
     def result(self, payload: dict[str, JsonValue], timestamp: str | None) -> None:
-        call_id = _string(payload.get("call_id"))
+        call_id = string_value(payload.get("call_id"))
         result = ToolResult(
             tool_call_id=call_id,
             ts=timestamp,
@@ -798,7 +810,7 @@ class _CodexSessionBuilder:
         payload = entry.get("payload")
         if not isinstance(payload, dict):
             return
-        timestamp = _string(entry.get("timestamp"))
+        timestamp = string_value(entry.get("timestamp"))
         mode = _collaboration_mode(payload)
         if mode:
             self.mode = mode
@@ -806,13 +818,13 @@ class _CodexSessionBuilder:
                 "collaboration_mode"
             ):
                 self.active_user["collaboration_mode"] = mode
-        if entry.get("type") == "event_msg":
+        if entry.get("type") == EVENT_MSG:
             self.event(payload, timestamp)
-        elif entry.get("type") == "response_item":
+        elif entry.get("type") == RESPONSE_ITEM:
             self.response(payload, timestamp)
 
     def event(self, payload: dict[str, JsonValue], timestamp: str | None) -> None:
-        if payload.get("type") == "user_message":
+        if payload.get("type") == USER_MESSAGE:
             self.event_user(payload, timestamp)
         elif payload.get("type") == "patch_apply_end":
             self.patch(payload, timestamp)
@@ -825,7 +837,7 @@ class _CodexSessionBuilder:
             elif item.get("type") == COMMAND_EXECUTION:
                 self.file_event(item, timestamp)
             elif item.get("type") == SUBAGENT_ACTIVITY:
-                call_id = _string(item.get("id"))
+                call_id = string_value(item.get("id"))
                 call = self.calls_by_id.get(call_id) if call_id else None
                 if call is not None:
                     populate_subagent_identity(call, item)
@@ -836,10 +848,10 @@ class _CodexSessionBuilder:
         message = Event(i=len(self.session["events"]), role="harness", ts=timestamp)
         _copy_identity(message, payload)
         message["source_markers"] = [
-            AuthorshipMarker(field="record.type", value="event_msg"),
+            AuthorshipMarker(field="record.type", value=EVENT_MSG),
             AuthorshipMarker(field="payload.type", value=payload.get("type")),
         ]
-        call_id = _string(payload.get("call_id"))
+        call_id = string_value(payload.get("call_id"))
         call = self.calls_by_id.get(call_id) if call_id is not None else None
         populate_file_event(message, payload, call)
         if message.get("file_actions"):
@@ -847,16 +859,16 @@ class _CodexSessionBuilder:
 
     def response(self, payload: dict[str, JsonValue], timestamp: str | None) -> None:
         kind = payload.get("type")
-        if kind == "message":
-            if payload.get("role") == "user":
+        if kind == MESSAGE:
+            if payload.get("role") == ROLE_USER:
                 self.response_user(payload, timestamp)
-            elif payload.get("role") == "assistant":
+            elif payload.get("role") == ROLE_ASSISTANT:
                 self.assistant(payload, timestamp)
-        elif kind == "agent_message":
+        elif kind == AGENT_MESSAGE:
             self.assistant(payload, timestamp)
-        elif kind in ("function_call", "custom_tool_call"):
+        elif kind in (FUNCTION_CALL, CUSTOM_TOOL_CALL):
             self.call(payload, timestamp)
-        elif kind in ("function_call_output", "custom_tool_call_output"):
+        elif kind in (FUNCTION_CALL_OUTPUT, CUSTOM_TOOL_CALL_OUTPUT):
             self.result(payload, timestamp)
 
 
@@ -1030,9 +1042,9 @@ def read_source(path: Path) -> CodexSource:
     refs = []
     for entry in source.entries:
         payload = _payload(entry)
-        if entry.get("type") == "event_msg" and payload.get("type") == "user_message":
+        if entry.get("type") == EVENT_MSG and payload.get("type") == USER_MESSAGE:
             refs.extend(image_refs_from_event(payload))
-        if entry.get("type") == "response_item" and payload.get("role") == "user":
+        if entry.get("type") == RESPONSE_ITEM and payload.get("role") == ROLE_USER:
             refs.extend(image_refs_from_user_message_payload(payload))
     source.image_inputs = codex_sources.load_image_inputs(refs)
     return source
@@ -1055,16 +1067,6 @@ def _extract_source(source: CodexSource, tool_result_max_bytes: int) -> Envelope
             file=sys.stderr,
         )
     return export_session(session, tool_result_max_bytes)
-
-
-def _unique_identifier(base: str, used: set[str]) -> str:
-    ident = base
-    suffix = 2
-    while ident in used:
-        ident = f"{base}-{suffix}"
-        suffix += 1
-    used.add(ident)
-    return ident
 
 
 def _extract_all(

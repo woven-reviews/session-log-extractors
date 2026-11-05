@@ -12,7 +12,12 @@ from codex_capture import CHILD_TRANSCRIPT, question_interaction
 from codex_capture import TRANSCRIPT as CODEX_TRANSCRIPT
 from copilot_fixture import DATABASE, SESSION_ID, native_source, native_tool_source
 
-from session_log_extractors import copilot_sources
+from session_log_extractors import (
+    claude_protocol,
+    codex_protocol,
+    copilot_protocol,
+    copilot_sources,
+)
 from session_log_extractors import extract_claude_session_log as claude
 from session_log_extractors import extract_codex_session_log as codex
 from session_log_extractors import extract_copilot_session_log as copilot
@@ -31,33 +36,34 @@ def _recorded_claude_read_interaction():
     entries = claude.read_source(TRANSCRIPT).entries
     read_interactions = []
     for entry in entries:
-        if entry.get("type") == "assistant":
+        if entry.get("type") == claude_protocol.ASSISTANT_RECORD:
             for block in claude._content_blocks(entry):
                 if (
                     isinstance(block, dict)
-                    and block.get("type") == "tool_use"
-                    and (block.get("name") == "Read")
+                    and block.get("type") == claude_protocol.TOOL_USE_BLOCK
+                    and (block.get("name") == claude_protocol.READ_TOOL)
                     and (
                         Path(block["input"].get("file_path", "")).name
                         == "multibyte.txt"
                     )
                 ):
                     read_interactions.append((entry, block))
-    matches = read_interactions
-    assert len(matches) == 1, "Expected one multibyte.txt Read"
-    ((assistant, call),) = matches
+    assert len(read_interactions) == 1, "Expected one multibyte.txt Read"
+    ((assistant, call),) = read_interactions
     result_messages = []
     for entry in entries:
-        if entry.get("type") != "user":
+        if entry.get("type") != claude_protocol.USER_RECORD:
             continue
         for block in claude._content_blocks(entry):
-            if isinstance(block, dict) and block.get("type") == "tool_result":
+            if (
+                isinstance(block, dict)
+                and block.get("type") == claude_protocol.TOOL_RESULT_BLOCK
+            ):
                 if block.get("tool_use_id") == call["id"]:
                     result_messages.append(entry)
                     break
-    results = result_messages
-    assert len(results) == 1, "Expected one result for the selected Read"
-    (result,) = results
+    assert len(result_messages) == 1, "Expected one result for the selected Read"
+    (result,) = result_messages
     return ClaudeSource(TRANSCRIPT, [assistant, result]), call
 
 
@@ -75,8 +81,9 @@ def test_cli_uses_the_public_extractor_stages(monkeypatch, capsys):
 
     monkeypatch.setattr(claude, "EXTRACTOR", RecordingExtractor(), raising=False)
     status = claude.main(["--transcript", str(TRANSCRIPT), "--output", "-"])
+    captured = capsys.readouterr()
     assert status == 0
-    assert json.loads(capsys.readouterr().out)["events"]
+    assert json.loads(captured.out)["events"]
     assert stages == ["read", "interpret"]
 
 
@@ -195,7 +202,7 @@ def test_public_interpretation_is_source_free_and_export_is_non_mutating(
             codex.EXTRACTOR,
             CodexSource,
             CODEX_TRANSCRIPT,
-            {"session_meta", "turn_context"},
+            {codex_protocol.SESSION_META, codex_protocol.TURN_CONTEXT},
         ),
     ],
 )
@@ -300,8 +307,9 @@ def test_copilot_cli_uses_public_stages_and_shared_export(monkeypatch, capsys):
             "7",
         ]
     )
+    captured = capsys.readouterr()
     assert status == 0
-    assert json.loads(capsys.readouterr().out)["events"]
+    assert json.loads(captured.out)["events"]
     assert stages == ["read", "interpret", ("export", 7)]
 
 
@@ -328,7 +336,7 @@ def test_native_tool_payloads_keep_unknown_fields_through_export(harness, unsupp
         source = native_tool_source()
         requests = []
         for record in source.state_records:
-            if record["type"] == "assistant.message":
+            if record["type"] == copilot_protocol.ASSISTANT_MESSAGE:
                 requests.extend(record["data"].get("toolRequests", []))
         assert len(requests) == 1
         (request,) = requests
@@ -395,7 +403,9 @@ def test_recorded_primary_assistant_text_is_harness_activity(
     native_ids = set()
     if harness == "copilot":
         for record in source.state_records:
-            if record["type"] == "assistant.message" and not record.get("agentId"):
+            if record["type"] == copilot_protocol.ASSISTANT_MESSAGE and not record.get(
+                "agentId"
+            ):
                 native_ids.add(record["id"])
     else:
         for record in source.entries:

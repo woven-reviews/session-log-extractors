@@ -2,6 +2,14 @@
 
 from typing import Literal, TypeAlias, TypedDict
 
+from session_log_extractors.codex_protocol import (
+    APPLY_PATCH,
+    EXEC_COMMAND,
+    REQUEST_USER_INPUT,
+    SKILLS_READ,
+    SPAWN_AGENT,
+    UPDATE_PLAN,
+)
 from session_log_extractors.json_types import JsonValue
 from session_log_extractors.question_types import QuestionOption
 
@@ -83,12 +91,12 @@ ToolInputSchema: TypeAlias = Literal[
 ]
 
 _INPUT_SCHEMAS: dict[str, ToolInputSchema] = {
-    "exec_command": "exec_command",
-    "request_user_input": "request_user_input",
-    "update_plan": "update_plan",
-    "apply_patch": "apply_patch",
-    "skills.read": "skills.read",
-    "spawn_agent": "spawn_agent",
+    EXEC_COMMAND: EXEC_COMMAND,
+    REQUEST_USER_INPUT: REQUEST_USER_INPUT,
+    UPDATE_PLAN: UPDATE_PLAN,
+    APPLY_PATCH: APPLY_PATCH,
+    SKILLS_READ: SKILLS_READ,
+    SPAWN_AGENT: SPAWN_AGENT,
 }
 
 
@@ -96,8 +104,8 @@ def input_schema(name: str, payload: JsonValue) -> ToolInputSchema:
     """Recognize Codex names without validating or filtering native payloads."""
     normalized = name.replace("__", ".")
     canonical = (
-        "skills.read"
-        if normalized.endswith("skills.read")
+        SKILLS_READ
+        if normalized.endswith(SKILLS_READ)
         else normalized.rsplit(".", 1)[-1]
     )
     return (

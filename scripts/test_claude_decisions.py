@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from session_log_extractors import claude_protocol
 from session_log_extractors.claude_decisions import parse_permission_denial
 from session_log_extractors.claude_sources import ClaudeSource, load_entries
 from session_log_extractors.extract_claude_session_log import (
@@ -20,13 +21,13 @@ def _interaction(name, marker="", input_marker=""):
     entries = load_entries(TRANSCRIPT)
     matches = []
     for entry in entries:
-        if entry.get("type") != "assistant":
+        if entry.get("type") != claude_protocol.ASSISTANT_RECORD:
             continue
         for block in entry.get("message", {}).get("content", []):
             if block.get("name") != name or input_marker not in str(block.get("input")):
                 continue
             for result in entries:
-                if result.get("type") != "user":
+                if result.get("type") != claude_protocol.USER_RECORD:
                     continue
                 for native in result.get("message", {}).get("content", []):
                     if not isinstance(native, dict):
@@ -56,12 +57,12 @@ def _call(session):
 @pytest.mark.parametrize(
     ("name", "marker", "source"),
     [
-        ("Write", "The user doesn't", "candidate"),
-        ("Bash", "CAPTURE_SETTINGS_REFUSAL", "settings"),
+        (claude_protocol.WRITE_TOOL, "The user doesn't", "candidate"),
+        (claude_protocol.BASH_TOOL, "CAPTURE_SETTINGS_REFUSAL", "settings"),
     ],
 )
 def test_native_refusal_survives_cap(name, marker, source):
-    input_marker = "denied-feedback.txt" if name == "Write" else ""
+    input_marker = "denied-feedback.txt" if name == claude_protocol.WRITE_TOOL else ""
     pair = list(_interaction(name, marker, input_marker))
     session = _session(pair)
     before = deepcopy(session)
@@ -78,7 +79,11 @@ def test_native_refusal_survives_cap(name, marker, source):
 
 
 def test_native_edited_plan_preserves_versions_and_links():
-    pair = list(_interaction("ExitPlanMode", "## Approved Plan (edited by user):"))
+    pair = list(
+        _interaction(
+            claude_protocol.EXIT_PLAN_MODE, "## Approved Plan (edited by user):"
+        )
+    )
     session = _session(pair)
     envelope = export_session(session, 1)
     call = _call(envelope)
@@ -96,7 +101,7 @@ def test_native_edited_plan_preserves_versions_and_links():
 
 
 def test_rejection_preserves_explicit_feedback():
-    pair = list(_interaction("ExitPlanMode", "CAPTURE_PLAN_REJECT_1:"))
+    pair = list(_interaction(claude_protocol.EXIT_PLAN_MODE, "CAPTURE_PLAN_REJECT_1:"))
     envelope = export_session(_session(pair), 1)
     call = _call(envelope)
     (decision,) = call["plan_decisions"]
@@ -110,7 +115,9 @@ def test_rejection_preserves_explicit_feedback():
 
 
 def test_silence_does_not_create_plan_decision():
-    assistant, _ = _interaction("ExitPlanMode", "CAPTURE_PLAN_REJECT_1:")
+    assistant, _ = _interaction(
+        claude_protocol.EXIT_PLAN_MODE, "CAPTURE_PLAN_REJECT_1:"
+    )
     envelope = export_session(_session([assistant]), 1)
     call = _call(envelope)
     assert call["plan_presentations"]
@@ -120,7 +127,7 @@ def test_silence_does_not_create_plan_decision():
 def _plan_call_block(entry):
     matches = []
     for block in entry["message"]["content"]:
-        if block.get("name") == "ExitPlanMode":
+        if block.get("name") == claude_protocol.EXIT_PLAN_MODE:
             matches.append(block)
     assert len(matches) == 1
     return matches[0]
@@ -129,7 +136,7 @@ def _plan_call_block(entry):
 def _result_block(entry):
     blocks = []
     for block in entry["message"]["content"]:
-        if block.get("type") == "tool_result":
+        if block.get("type") == claude_protocol.TOOL_RESULT_BLOCK:
             blocks.append(block)
     assert len(blocks) == 1
     return blocks[0]
@@ -138,7 +145,7 @@ def _result_block(entry):
 @pytest.mark.parametrize("variant", ["missing-id", "wrong-id", "duplicate-call"])
 def test_orphan_approval_keeps_content_without_association(variant):
     assistant, result = _interaction(
-        "ExitPlanMode", "## Approved Plan (edited by user):"
+        claude_protocol.EXIT_PLAN_MODE, "## Approved Plan (edited by user):"
     )
     # Alter only the call ownership evidence, retaining native editor data.
     entries = [assistant, result]
@@ -166,7 +173,9 @@ def test_orphan_approval_keeps_content_without_association(variant):
 
 
 def test_unmatched_refusal_never_borrows_a_nearby_call():
-    assistant, result = _interaction("Bash", "CAPTURE_SETTINGS_REFUSAL")
+    assistant, result = _interaction(
+        claude_protocol.BASH_TOOL, "CAPTURE_SETTINGS_REFUSAL"
+    )
     _result_block(result)["tool_use_id"] = "unrecorded"
     envelope = export_session(_session([assistant, result]), 1)
     assert "permission_refusals" not in _call(envelope)
@@ -181,7 +190,9 @@ def test_unmatched_refusal_never_borrows_a_nearby_call():
     "text", ["error: file not found", "User has approved your plan"]
 )
 def test_plan_tool_errors_are_not_candidate_decisions(text):
-    assistant, result = _interaction("ExitPlanMode", "CAPTURE_PLAN_REJECT_1:")
+    assistant, result = _interaction(
+        claude_protocol.EXIT_PLAN_MODE, "CAPTURE_PLAN_REJECT_1:"
+    )
     _result_block(result)["content"] = text
     # Retain is_error but remove stale refusal evidence from the original capture.
     result.pop("toolDenialKind")
@@ -194,8 +205,10 @@ def test_plan_tool_errors_are_not_candidate_decisions(text):
 
 @pytest.mark.parametrize("limit", [0, 17, -1])
 def test_settings_plan_refusal_does_not_imply_candidate_rejection(limit):
-    assistant, _ = _interaction("ExitPlanMode", "CAPTURE_PLAN_REJECT_1:")
-    _, result = _interaction("Bash", "CAPTURE_SETTINGS_REFUSAL")
+    assistant, _ = _interaction(
+        claude_protocol.EXIT_PLAN_MODE, "CAPTURE_PLAN_REJECT_1:"
+    )
+    _, result = _interaction(claude_protocol.BASH_TOOL, "CAPTURE_SETTINGS_REFUSAL")
     _result_block(result)["tool_use_id"] = _plan_call_block(assistant)["id"]
     session = _session([assistant, result])
     original = deepcopy(session)
@@ -209,7 +222,9 @@ def test_settings_plan_refusal_does_not_imply_candidate_rejection(limit):
 
 @pytest.mark.parametrize("text", ["", "Unrecognized result"])
 def test_empty_or_unknown_plan_result_never_becomes_approval(text):
-    assistant, result = _interaction("ExitPlanMode", "CAPTURE_PLAN_REJECT_1:")
+    assistant, result = _interaction(
+        claude_protocol.EXIT_PLAN_MODE, "CAPTURE_PLAN_REJECT_1:"
+    )
     block = _result_block(result)
     block["content"] = text
     block["is_error"] = False
@@ -225,7 +240,9 @@ def test_empty_or_unknown_plan_result_never_becomes_approval(text):
 
 
 def test_unfamiliar_kind_alone_does_not_establish_a_refusal():
-    assistant, result = _interaction("Bash", "CAPTURE_SETTINGS_REFUSAL")
+    assistant, result = _interaction(
+        claude_protocol.BASH_TOOL, "CAPTURE_SETTINGS_REFUSAL"
+    )
     result["toolDenialKind"] = "future-classifier-value"
     result["toolUseResult"] = "error: process failed"
     _result_block(result)["content"] = "error: process failed"
@@ -235,7 +252,9 @@ def test_unfamiliar_kind_alone_does_not_establish_a_refusal():
 
 
 def test_legacy_candidate_denial_without_native_kind():
-    assistant, result = _interaction("Bash", "CAPTURE_SETTINGS_REFUSAL")
+    assistant, result = _interaction(
+        claude_protocol.BASH_TOOL, "CAPTURE_SETTINGS_REFUSAL"
+    )
     # Controlled legacy candidate refusal; source is the recognized native variant.
     result.pop("toolDenialKind")
     result.pop("toolUseResult")
@@ -263,13 +282,13 @@ def test_native_capture_has_no_unresolved_refusal_sources():
 
 def test_text_blocks_preserve_plan_approval_and_legacy_edited_version():
     assistant, result = _interaction(
-        "ExitPlanMode", "## Approved Plan (edited by user):"
+        claude_protocol.EXIT_PLAN_MODE, "## Approved Plan (edited by user):"
     )
     result.pop("toolUseResult")
     original = _result_block(result)["content"]
     _result_block(result)["content"] = [
-        {"type": "text", "text": original},
-        {"type": "image", "source": {}},
+        {"type": claude_protocol.TEXT_BLOCK, "text": original},
+        {"type": claude_protocol.IMAGE_BLOCK, "source": {}},
     ]
     call = _call(export_session(_session([assistant, result]), 1))
     assert call["plan_decisions"][0]["outcome"] == "approved"
@@ -280,7 +299,9 @@ def test_text_blocks_preserve_plan_approval_and_legacy_edited_version():
 
 
 def test_plan_presentation_without_content_preserves_unknown_version():
-    assistant, _ = _interaction("ExitPlanMode", "CAPTURE_PLAN_REJECT_1:")
+    assistant, _ = _interaction(
+        claude_protocol.EXIT_PLAN_MODE, "CAPTURE_PLAN_REJECT_1:"
+    )
     _plan_call_block(assistant)["input"].pop("plan")
     call = _call(export_session(_session([assistant]), 1))
     assert "plan_versions" not in call
@@ -294,23 +315,28 @@ def test_permission_denial_with_message():
         "if it was a file edit, the new_string was NOT written to the file). The "
         "user said:\nWe need a new branch for this"
     )
-    assert parse_permission_denial(c) == "We need a new branch for this"
+    actual_parse_permission_denial = parse_permission_denial(c)
+    assert actual_parse_permission_denial == "We need a new branch for this"
 
 
 def test_permission_denial_ignores_normal_result():
-    assert parse_permission_denial("42 files changed") is None
-    assert parse_permission_denial("error: file not found") is None
+    actual_parse_permission_denial = parse_permission_denial("42 files changed")
+    assert actual_parse_permission_denial is None
+    actual_parse_permission_denial = parse_permission_denial("error: file not found")
+    assert actual_parse_permission_denial is None
 
 
 def test_permission_denial_ignores_isc_license_text():
-    assert (
-        parse_permission_denial("Permission to use, copy, modify, and/or distribute")
-        is None
+    actual_parse_permission_denial = parse_permission_denial(
+        "Permission to use, copy, modify, and/or distribute"
     )
+    assert actual_parse_permission_denial is None
 
 
 def test_legacy_settings_variant_retains_source_without_native_kind():
-    assistant, result = _interaction("Bash", "CAPTURE_SETTINGS_REFUSAL")
+    assistant, result = _interaction(
+        claude_protocol.BASH_TOOL, "CAPTURE_SETTINGS_REFUSAL"
+    )
     result.pop("toolDenialKind")
     result.pop("toolUseResult")
     call = _call(export_session(_session([assistant, result]), 1))
@@ -323,7 +349,7 @@ def test_legacy_settings_variant_retains_source_without_native_kind():
 
 def test_alternate_rejection_establishes_refusal_when_text_is_unavailable():
     assistant, result = _interaction(
-        "ExitPlanMode", "The user doesn't", "CAPTURE_PLAN_SECOND"
+        claude_protocol.EXIT_PLAN_MODE, "The user doesn't", "CAPTURE_PLAN_SECOND"
     )
     _result_block(result)["content"] = None
     result.pop("toolDenialKind")
@@ -335,7 +361,7 @@ def test_alternate_rejection_establishes_refusal_when_text_is_unavailable():
 @pytest.mark.parametrize("edited", [False, True])
 def test_ambiguous_alternate_plan_keeps_content_without_inventing_approval(edited):
     assistant, result = _interaction(
-        "ExitPlanMode", "## Approved Plan (edited by user):"
+        claude_protocol.EXIT_PLAN_MODE, "## Approved Plan (edited by user):"
     )
     # A second result makes the entry-level payload's result owner ambiguous.
     second = deepcopy(_result_block(result))
@@ -361,7 +387,9 @@ def test_ambiguous_alternate_plan_keeps_content_without_inventing_approval(edite
 
 
 def test_native_as_is_approval_has_one_complete_proposal():
-    assistant, result = _interaction("ExitPlanMode", "## Approved Plan:")
+    assistant, result = _interaction(
+        claude_protocol.EXIT_PLAN_MODE, "## Approved Plan:"
+    )
     call = _call(export_session(_session([assistant, result]), 1))
     (version,) = call["plan_versions"]
     assert isinstance(version["text"], str) and version["text"]
@@ -371,7 +399,7 @@ def test_native_as_is_approval_has_one_complete_proposal():
 
 
 def test_orphan_as_is_approval_retains_complete_returned_plan():
-    _, result = _interaction("ExitPlanMode", "## Approved Plan:")
+    _, result = _interaction(claude_protocol.EXIT_PLAN_MODE, "## Approved Plan:")
     record = export_session(_session([result]), 1)["events"][0]["tool_results"][0]
     (version,) = record["plan_versions"]
     assert version["kind"] == "unknown"

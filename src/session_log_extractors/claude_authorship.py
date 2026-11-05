@@ -1,8 +1,18 @@
 """Claude-native provenance and exact text boundaries, independent of role."""
 
 import re
-from typing import Literal, TypeAlias
+from enum import StrEnum
 
+from session_log_extractors.claude_protocol import (
+    ASSISTANT_RECORD,
+    HUMAN_ORIGIN,
+    PROMPT_QUEUED,
+    PROMPT_TYPED,
+    ROLE_ASSISTANT,
+    ROLE_USER,
+    TEXT_BLOCK,
+    USER_RECORD,
+)
 from session_log_extractors.json_types import JsonValue, string_value
 from session_log_extractors.session_model import (
     AuthorshipMarker,
@@ -76,7 +86,7 @@ def _assistant_authorship(
     markers = _markers(entry) + [AuthorshipMarker(field="message.role", value=role)]
     source: AuthorshipSource = (
         AuthorshipSource.HARNESS
-        if entry.get("type") == "assistant" and role == "assistant"
+        if entry.get("type") == ASSISTANT_RECORD and role == ROLE_ASSISTANT
         else AuthorshipSource.UNKNOWN
     )
     return [_span(entry, text, source, markers)]
@@ -115,10 +125,10 @@ def _is_user_interruption(entry: dict[str, JsonValue]) -> bool:
     if not isinstance(message, dict):
         return False
     return (
-        entry.get("type") == "user"
-        and message.get("role") == "user"
+        entry.get("type") == USER_RECORD
+        and message.get("role") == ROLE_USER
         and message.get("content")
-        == [{"type": "text", "text": "[Request interrupted by user for tool use]"}]
+        == [{"type": TEXT_BLOCK, "text": "[Request interrupted by user for tool use]"}]
     )
 
 
@@ -126,9 +136,9 @@ def _native_user_text(entry: dict[str, JsonValue]) -> str | None:
     """Read standalone string content from a native user-message record."""
     message = entry.get("message")
     if (
-        entry.get("type") != "user"
+        entry.get("type") != USER_RECORD
         or not isinstance(message, dict)
-        or message.get("role") != "user"
+        or message.get("role") != ROLE_USER
     ):
         return None
     content = message.get("content")
@@ -158,8 +168,8 @@ def _is_human_command_invocation(entry: dict[str, JsonValue]) -> bool:
     content = _native_user_text(entry)
     return (
         content is not None
-        and _origin(entry).get("kind") == "human"
-        and entry.get("turnOrigin") == "human"
+        and _origin(entry).get("kind") == HUMAN_ORIGIN
+        and entry.get("turnOrigin") == HUMAN_ORIGIN
         and _COMMAND_INVOCATION.fullmatch(content) is not None
     )
 
@@ -209,9 +219,9 @@ def _user_action_marker(
 
 def _is_human_input(entry: dict[str, JsonValue]) -> bool:
     return (
-        _origin(entry).get("kind") == "human"
-        and entry.get("promptSource") in ("typed", "queued")
-        and entry.get("turnOrigin") == "human"
+        _origin(entry).get("kind") == HUMAN_ORIGIN
+        and entry.get("promptSource") in (PROMPT_TYPED, PROMPT_QUEUED)
+        and entry.get("turnOrigin") == HUMAN_ORIGIN
     )
 
 
@@ -256,7 +266,7 @@ def _queued_authorship(
     markers = _markers(entry) + _markers(attachment, "attachment.")
     wrapper = _span(entry, text, AuthorshipSource.HARNESS, markers)
     if (
-        _origin(attachment).get("kind") == "human"
+        _origin(attachment).get("kind") == HUMAN_ORIGIN
         and attachment.get("humanTurn") is True
     ):
         return _split_content(
@@ -275,14 +285,18 @@ _SHELL_OUTPUT = re.compile(
 _LOCAL_COMMAND_OUTPUT = re.compile(
     r"<local-command-stdout>.*?</local-command-stdout>", re.DOTALL
 )
-_OutputKind: TypeAlias = Literal["shell", "local"]
+
+
+class _OutputKind(StrEnum):
+    SHELL = "shell"
+    LOCAL = "local"
 
 
 def _input_output_kind(entry: dict[str, JsonValue]) -> _OutputKind | None:
     if _is_user_shell_input(entry):
-        return "shell"
+        return _OutputKind.SHELL
     if _is_model_invocation(entry) or _is_compact_invocation(entry):
-        return "local"
+        return _OutputKind.LOCAL
     return None
 
 
@@ -291,9 +305,9 @@ def _output_kind(entry: dict[str, JsonValue]) -> _OutputKind | None:
     if content is None:
         return None
     if _SHELL_OUTPUT.fullmatch(content) is not None:
-        return "shell"
+        return _OutputKind.SHELL
     if _LOCAL_COMMAND_OUTPUT.fullmatch(content) is not None:
-        return "local"
+        return _OutputKind.LOCAL
     return None
 
 

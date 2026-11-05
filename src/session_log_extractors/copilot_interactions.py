@@ -1,5 +1,10 @@
 """Summarize recorded Copilot child activity within its agent scope."""
 
+from session_log_extractors.copilot_protocol import (
+    ASSISTANT_MESSAGE,
+    SUBAGENT_STARTED,
+    TOOL_EXECUTION_START,
+)
 from session_log_extractors.json_types import JsonValue, string_value
 from session_log_extractors.session_model import (
     SubagentSummary,
@@ -15,7 +20,7 @@ def subagent_summaries(
         data = record.get("data")
         agent_id = string_value(record.get("agentId"))
         if (
-            record.get("type") == "subagent.started"
+            record.get("type") == SUBAGENT_STARTED
             and agent_id
             and isinstance(data, dict)
         ):
@@ -33,12 +38,12 @@ def subagent_summaries(
         if agent_id is None or agent_id not in summaries or not isinstance(data, dict):
             continue
         summary = summaries[agent_id]
-        if record.get("type") == "tool.execution_start":
+        if record.get("type") == TOOL_EXECUTION_START:
             summary["tool_count"] += 1
             name = string_value(data.get("toolName"))
             if name and name not in summary["tool_names"]:
                 summary["tool_names"].append(name)
-        if record.get("type") == "assistant.message":
+        if record.get("type") == ASSISTANT_MESSAGE:
             text = string_value(data.get("content"))
             if text:
                 summary["result"] = text

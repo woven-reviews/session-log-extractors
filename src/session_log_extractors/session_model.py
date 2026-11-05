@@ -490,6 +490,20 @@ class ToolExecution(NativeIdentity, total=False):
     input: ToolInput
 
 
+class CollaborationMode(StrEnum):
+    """Known normalized modes; messages may retain unfamiliar recorded modes."""
+
+    PLAN = "plan"
+    DEFAULT = "default"
+
+
+class PermissionStatus(StrEnum):
+    """Whether a recorded permission request has completed."""
+
+    PENDING = "pending"
+    COMPLETED = "completed"
+
+
 class PermissionDecision(TypedDict):
     """A permission request's lifecycle, independent of normalized denial facts.
 
@@ -503,7 +517,7 @@ class PermissionDecision(TypedDict):
 
     tool: str
     request_id: str | None
-    status: Literal["pending", "completed"]
+    status: PermissionStatus
     native_decision: str | None
     feedback: str
     ts: str | None

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from session_log_extractors import claude_protocol
 from session_log_extractors.claude_sources import ClaudeSource, read_source
 from session_log_extractors.extract_claude_session_log import interpret_source
 from session_log_extractors.session_log_envelope import export_session
@@ -21,10 +22,15 @@ def _session(entries):
 
 def _call(name, payload, call_id="call"):
     return {
-        "type": "assistant",
+        "type": claude_protocol.ASSISTANT_RECORD,
         "message": {
             "content": [
-                {"type": "tool_use", "name": name, "id": call_id, "input": payload}
+                {
+                    "type": claude_protocol.TOOL_USE_BLOCK,
+                    "name": name,
+                    "id": call_id,
+                    "input": payload,
+                }
             ]
         },
     }
@@ -32,12 +38,12 @@ def _call(name, payload, call_id="call"):
 
 def _result(payload, *, failed=False):
     return {
-        "type": "user",
+        "type": claude_protocol.USER_RECORD,
         "toolUseResult": payload,
         "message": {
             "content": [
                 {
-                    "type": "tool_result",
+                    "type": claude_protocol.TOOL_RESULT_BLOCK,
                     "tool_use_id": "call",
                     "content": "File updated",
                     "is_error": failed,
@@ -94,7 +100,15 @@ def test_native_actions_tasks_and_invocations_survive_production_export(limit):
 
 
 @pytest.mark.parametrize(
-    "name", ["Read", "Write", "Edit", "NotebookEdit", "MultiEdit", "Create"]
+    "name",
+    [
+        claude_protocol.READ_TOOL,
+        claude_protocol.WRITE_TOOL,
+        claude_protocol.EDIT_TOOL,
+        claude_protocol.NOTEBOOK_EDIT_TOOL,
+        claude_protocol.MULTI_EDIT_TOOL,
+        claude_protocol.CREATE_TOOL,
+    ],
 )
 @pytest.mark.parametrize("result_kind", ["missing", "success", "failure"])
 def test_controlled_attempts_never_confirm_from_success_or_prose(name, result_kind):
@@ -127,8 +141,8 @@ def test_controlled_attempts_never_confirm_from_success_or_prose(name, result_ki
 
 def test_duplicate_call_ids_leave_results_unassociated():
     entries = [
-        _call("Edit", {"file_path": "a"}),
-        _call("Edit", {"file_path": "b"}),
+        _call(claude_protocol.EDIT_TOOL, {"file_path": "a"}),
+        _call(claude_protocol.EDIT_TOOL, {"file_path": "b"}),
         _result({"filePath": "b", "structuredPatch": [{"lines": ["-x", "+y"]}]}),
     ]
     session = _session(entries)
@@ -141,14 +155,22 @@ def test_duplicate_call_ids_leave_results_unassociated():
 
 def _user(text, native_id="message", **fields):
     return {
-        "type": "user",
+        "type": claude_protocol.USER_RECORD,
         "uuid": native_id,
         "message": {"role": "user", "content": text},
         **fields,
     }
 
 
-@pytest.mark.parametrize("name", ["Edit", "MultiEdit", "Write", "Create"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        claude_protocol.EDIT_TOOL,
+        claude_protocol.MULTI_EDIT_TOOL,
+        claude_protocol.WRITE_TOOL,
+        claude_protocol.CREATE_TOOL,
+    ],
+)
 @pytest.mark.parametrize(
     "patch", [[], [{"lines": ["-same", "+same"]}], [{"lines": ["-before", "+after"]}]]
 )
@@ -176,14 +198,16 @@ def test_controlled_patch_confirmation_requires_actual_path_change(name, patch):
     ],
 )
 def test_controlled_incomplete_change_evidence_stays_unconfirmed(payload):
-    session = _session([_call("Edit", {"file_path": "file"}), _result(payload)])
+    session = _session(
+        [_call(claude_protocol.EDIT_TOOL, {"file_path": "file"}), _result(payload)]
+    )
 
     assert session["file_actions"][0]["change"] is None
 
 
 @pytest.mark.parametrize("payload", [None, {}, {"file_path": None}, {"path": ""}])
 def test_missing_and_empty_paths_remain_distinct(payload):
-    session = _session([_call("Create", payload)])
+    session = _session([_call(claude_protocol.CREATE_TOOL, payload)])
 
     expected_path = "" if payload == {"path": ""} else None
     assert session["file_actions"][0]["path"] == expected_path
@@ -199,7 +223,10 @@ def test_missing_and_empty_paths_remain_distinct(payload):
 )
 def test_controlled_notebook_confirmation_requires_distinct_complete_versions(payload):
     session = _session(
-        [_call("NotebookEdit", {"notebook_path": "file"}), _result(payload)]
+        [
+            _call(claude_protocol.NOTEBOOK_EDIT_TOOL, {"notebook_path": "file"}),
+            _result(payload),
+        ]
     )
 
     expected_confirmation = (
@@ -289,14 +316,17 @@ def test_ambiguous_or_unmarked_definitions_do_not_enrich_invocations(relationshi
         assert "definitions" not in invocation
 
 
-@pytest.mark.parametrize("name", ["Agent", "Task", "Skill"])
+@pytest.mark.parametrize(
+    "name",
+    [claude_protocol.AGENT_TOOL, claude_protocol.TASK_TOOL, claude_protocol.SKILL_TOOL],
+)
 @pytest.mark.parametrize(
     "payload", [None, {}, {"prompt": "", "description": "", "skill": "", "args": ""}]
 )
 def test_empty_and_absent_task_and_skill_fields_are_not_substituted(name, payload):
     session = _session([_call(name, payload)])
 
-    if name == "Skill":
+    if name == claude_protocol.SKILL_TOOL:
         (invocation,) = session["invocations"]
         assert invocation["name"] == ("" if payload else None)
         assert ("arguments" in invocation) is bool(payload)
@@ -320,9 +350,9 @@ def _native_tool_records(source):
         if not isinstance(content, list):
             continue
         for block in content:
-            if block.get("type") == "tool_use":
+            if block.get("type") == claude_protocol.TOOL_USE_BLOCK:
                 recorded_calls[block["id"]] = block
-            elif block.get("type") == "tool_result":
+            elif block.get("type") == claude_protocol.TOOL_RESULT_BLOCK:
                 recorded_results[block["tool_use_id"]] = (entry, block)
     return recorded_calls, recorded_results
 
@@ -359,7 +389,7 @@ def test_native_inputs_results_and_fact_owners_retain_recorded_content():
 
 def test_skill_definition_uses_explicit_tool_id_over_unrelated_parent():
     entries = [
-        _call("Skill", {"name": "review", "args": "  "}),
+        _call(claude_protocol.SKILL_TOOL, {"name": "review", "args": "  "}),
         _user("<command-name>/other</command-name>", "parent"),
         _user(
             "Base directory for this skill: /recorded/path\n\nFull instructions",
@@ -381,7 +411,7 @@ def test_skill_definition_uses_explicit_tool_id_over_unrelated_parent():
 
 @pytest.mark.parametrize("source_id", ["missing", "duplicate"])
 def test_skill_definitions_with_missing_or_ambiguous_call_ids_remain_content(source_id):
-    entries = [_call("Skill", {"skill": "review"})]
+    entries = [_call(claude_protocol.SKILL_TOOL, {"skill": "review"})]
     if source_id == "duplicate":
         entries.append(_call("Skill", {"skill": "review"}))
     entries.append(
@@ -435,7 +465,7 @@ def test_legacy_task_uses_the_agent_input_schema_without_filtering():
         "subagent_type": "Explore",
         "future": {"nested": [None, True]},
     }
-    session = _session([_call("Task", payload)])
+    session = _session([_call(claude_protocol.TASK_TOOL, payload)])
 
     (message,) = session["events"]
     (call,) = message["tool_calls"]
@@ -448,7 +478,10 @@ def test_legacy_task_uses_the_agent_input_schema_without_filtering():
 def test_error_result_cannot_confirm_a_structured_patch():
     result = {"filePath": "file", "structuredPatch": [{"lines": ["-x", "+y"]}]}
     session = _session(
-        [_call("Edit", {"file_path": "file"}), _result(result, failed=True)]
+        [
+            _call(claude_protocol.EDIT_TOOL, {"file_path": "file"}),
+            _result(result, failed=True),
+        ]
     )
 
     (action,) = session["file_actions"]
@@ -457,8 +490,8 @@ def test_error_result_cannot_confirm_a_structured_patch():
 
 
 def test_multiple_result_blocks_do_not_assign_the_shared_native_patch():
-    first = _call("Edit", {"file_path": "file"})
-    second = _call("Edit", {"file_path": "other"}, "other-call")
+    first = _call(claude_protocol.EDIT_TOOL, {"file_path": "file"})
+    second = _call(claude_protocol.EDIT_TOOL, {"file_path": "other"}, "other-call")
     patch = {"filePath": "file", "structuredPatch": [{"lines": ["-x", "+y"]}]}
     result = _result(patch)
     result["message"]["content"].append(

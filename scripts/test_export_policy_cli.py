@@ -57,8 +57,9 @@ def test_production_serialization_is_repeatable_across_destinations(
     for name in ("first.json", "second.json"):
         path = tmp_path / name
         status = module.main([*options, "--output", str(path)])
+        captured = capsys.readouterr()
         assert status == 0
-        assert capsys.readouterr().out == ""
+        assert captured.out == ""
         file_payloads.append(path.read_bytes())
     expected = stdout_payloads[0]
     assert json.loads(expected)["events"], "Capture must include conversation events"
@@ -86,8 +87,8 @@ def test_production_limits(production_cli, limit, stdout, tmp_path, capsys):
     if limit is not None:
         options.extend(["--tool-result-bytes", str(limit)])
     status = module.main(options)
-    assert status == 0
     captured = capsys.readouterr()
+    assert status == 0
     exported = json.loads(captured.out if stdout else path.read_text())
     actual_limit = 8192 if limit is None else limit
     assert exported["truncation"]["tool_result_max_bytes"] == actual_limit
@@ -142,8 +143,8 @@ def test_production_warning_counts_all_fields(
     status = module.main(
         [*args, "--output", "-" if stdout else str(path), "--tool-result-bytes", "0"]
     )
-    assert status == 0
     captured = capsys.readouterr()
+    assert status == 0
     payload = captured.out if stdout else path.read_text()
     exported = json.loads(payload)
     assert len(payload.encode()) > 8 * 1024 * 1024
@@ -162,7 +163,8 @@ def test_cli_help_exposes_shared_default(production_cli, capsys):
     with pytest.raises(SystemExit) as raised:
         module.main(["--help"])
     assert raised.value.code == 0
-    assert "default: 8192" in capsys.readouterr().out
+    captured = capsys.readouterr()
+    assert "default: 8192" in captured.out
 
 
 def test_native_edited_plan_beyond_cap_remains_structured():

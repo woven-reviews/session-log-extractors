@@ -8,12 +8,17 @@ from typing import Literal, TypeAlias, TypedDict
 
 from session_log_extractors.copilot_protocol import (
     ASK_USER,
+    BASH,
     CREATE,
     EDIT,
+    EXIT_PLAN_MODE,
     GLOB,
     GREP,
+    READ_BASH,
     SKILL,
+    SQL,
     TASK,
+    TASK_COMPLETE,
     VIEW,
 )
 from session_log_extractors.json_types import JsonValue
@@ -121,19 +126,19 @@ ToolInputSchema: TypeAlias = Literal[
 ]
 
 _INPUT_SCHEMAS: dict[str, ToolInputSchema] = {
-    "bash": "CopilotBash",
+    BASH: "CopilotBash",
     SKILL: "CopilotSkill",
     VIEW: "CopilotView",
     EDIT: "CopilotEdit",
     CREATE: "CopilotCreate",
     ASK_USER: "CopilotAskUser",
-    "exit_plan_mode": "CopilotExitPlan",
+    EXIT_PLAN_MODE: "CopilotExitPlan",
     GLOB: "CopilotGlob",
     GREP: "CopilotGrep",
-    "sql": "CopilotSql",
+    SQL: "CopilotSql",
     TASK: "CopilotTask",
-    "task_complete": "CopilotTaskComplete",
-    "read_bash": "CopilotReadBash",
+    TASK_COMPLETE: "CopilotTaskComplete",
+    READ_BASH: "CopilotReadBash",
 }
 
 

@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 
 from session_log_extractors.copilot_protocol import (
+    CREATE,
     DENIED_BY_USER,
     DENIED_ERROR,
     EXIT_PLAN_MODE,
@@ -104,7 +105,7 @@ class _CopilotDecisionInterpreter:
 
     def proposal(self, call: ToolCall, activity: DecisionActivityReference) -> None:
         payload = call.get("input")
-        if call["name"] != "create" or not isinstance(payload, dict):
+        if call["name"] != CREATE or not isinstance(payload, dict):
             return
         path = string_value(payload.get("path"))
         text = string_value(payload.get("file_text"))

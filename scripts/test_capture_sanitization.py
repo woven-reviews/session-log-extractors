@@ -30,19 +30,20 @@ def test_literal_replacements_are_longest_first_and_do_not_cascade():
     rules = SanitizationRules(literal_replacements=replacements)
     result = sanitize_capture(text, rules)
     assert result.text == "/workspace/a /Users/PILOT_USER/b"
-    assert {item.rule: item.matches for item in result.redactions} == {
+    redaction_counts = {}
+    for item in result.redactions:
+        redaction_counts[item.rule] = item.matches
+    assert redaction_counts == {
         "home": 1,
         "workspace": 1,
         "placeholder": 0,
         "email": 0,
         "api_key": 0,
     }
-    assert (
-        sanitize_capture(
-            text, SanitizationRules(literal_replacements=tuple(reversed(replacements)))
-        )
-        == result
+    sanitized = sanitize_capture(
+        text, SanitizationRules(literal_replacements=tuple(reversed(replacements)))
     )
+    assert sanitized == result
 
 
 def test_patterns_redact_only_actual_matches_and_report_no_secret_values():
@@ -53,12 +54,16 @@ def test_patterns_redact_only_actual_matches_and_report_no_secret_values():
     assert result.text == (
         "café 雪 [REDACTED_EMAIL] [REDACTED_EMAIL] [REDACTED_API_KEY]"
     )
-    assert [(item.rule, item.matches) for item in result.redactions] == [
+    redaction_counts = []
+    for item in result.redactions:
+        redaction_counts.append((item.rule, item.matches))
+    assert redaction_counts == [
         ("api_key", 1),
         ("email", 2),
     ]
     assert "private@example.org" not in repr(result.redactions)
-    assert sanitize_capture(result.text, SanitizationRules()).text == result.text
+    sanitized = sanitize_capture(result.text, SanitizationRules())
+    assert sanitized.text == result.text
 
 
 def test_configured_secret_does_not_depend_on_the_environment(monkeypatch):
@@ -74,9 +79,10 @@ def test_configured_secret_does_not_depend_on_the_environment(monkeypatch):
         "listed-sensitive-value environment-only-value person@example.org", rules
     )
     assert result.text == "[SECRET] environment-only-value person@example.org"
-    assert [(item.rule, item.matches) for item in result.redactions] == [
-        ("known_secret", 1)
-    ]
+    redaction_counts = []
+    for item in result.redactions:
+        redaction_counts.append((item.rule, item.matches))
+    assert redaction_counts == [("known_secret", 1)]
 
 
 @pytest.mark.parametrize(
@@ -101,25 +107,34 @@ def test_native_records_keep_structure_identities_and_payloads(transcript):
 
 def test_image_data_is_not_redacted_even_when_a_literal_matches_base64():
     original = TRANSCRIPT.read_text()
-    entries = [json.loads(line) for line in original.splitlines()]
-    image_data = {
-        block["source"]["data"]
-        for entry in entries
-        for block in entry.get("message", {}).get("content", [])
-        if isinstance(block, dict) and block.get("type") == "image"
-    }
-    assert image_data
-    rules = SanitizationRules(
-        literal_replacements=tuple(
+    entries = []
+    image_data = set()
+    for line in original.splitlines():
+        entry = json.loads(line)
+        entries.append(entry)
+        for block in entry.get("message", {}).get("content", []):
+            if isinstance(block, dict) and block.get("type") == "image":
+                image_data.add(block["source"]["data"])
+    assert image_data, "Capture must include native image bytes"
+    replacements = []
+    for index, data in enumerate(sorted(image_data)):
+        replacements.append(
             LiteralReplacement(f"base64_collision_{index}", data, "[REDACTED]")
-            for index, data in enumerate(sorted(image_data))
-        ),
+        )
+    rules = SanitizationRules(
+        literal_replacements=tuple(replacements),
         redact_emails=False,
         redact_api_keys=False,
     )
+
     result = sanitize_capture(original, rules, format="jsonl")
-    assert [json.loads(line) for line in result.text.splitlines()] == entries
-    assert all(item.matches == 0 for item in result.redactions)
+
+    actual_records = []
+    for line in result.text.splitlines():
+        actual_records.append(json.loads(line))
+    assert actual_records == entries
+    for item in result.redactions:
+        assert item.matches == 0
 
 
 def test_json_redaction_handles_escapes_without_changing_keys_or_scalar_types():
@@ -205,16 +220,21 @@ def test_jsonl_unicode_in_strings_is_not_a_record_boundary(
 ):
     # These legal JSON string characters are also recognized by str.splitlines().
     records = [{"text": f"before{separator}after"}, {"text": "second"}]
-    original = (
-        newline.join(
-            json.dumps(record, ensure_ascii=ensure_ascii) for record in records
-        )
-        + newline
-    )
+    encoded_records = []
+    for record in records:
+        encoded_records.append(json.dumps(record, ensure_ascii=ensure_ascii))
+    original = newline.join(encoded_records) + newline
     rules = SanitizationRules()
+
     result = sanitize_capture(original, rules, format="jsonl")
-    assert [json.loads(line) for line in result.text.split("\n") if line] == records
-    assert sanitize_capture(result.text, rules, format="jsonl") == result
+    repeated = sanitize_capture(result.text, rules, format="jsonl")
+
+    actual_records = []
+    for line in result.text.split("\n"):
+        if line:
+            actual_records.append(json.loads(line))
+    assert actual_records == records
+    assert repeated == result
 
 
 def test_jsonl_preserves_record_order_and_blank_lines():
@@ -226,7 +246,8 @@ def test_jsonl_preserves_record_order_and_blank_lines():
     assert result.text == (
         '{"id": "first", "email": "[REDACTED_EMAIL]"}\n\n{"id": "second"}\n'
     )
-    assert sanitize_capture("", SanitizationRules(), format="jsonl").text == ""
+    sanitized = sanitize_capture("", SanitizationRules(), format="jsonl")
+    assert sanitized.text == ""
 
 
 @pytest.mark.parametrize("format", ["json", "jsonl"])
@@ -248,9 +269,10 @@ def test_credential_organization_is_redacted_by_field_without_literal_rules(form
     expected["attachment"]["organizationUuid"] = "[REDACTED_ORGANIZATION_ID]"
     assert json.loads(result.text) == expected
     assert original["attachment"]["organizationUuid"] == organization
-    assert [(item.rule, item.matches) for item in result.redactions] == [
-        ("organization_id", 1)
-    ]
+    redaction_counts = []
+    for item in result.redactions:
+        redaction_counts.append((item.rule, item.matches))
+    assert redaction_counts == [("organization_id", 1)]
     repeated = sanitize_capture(result.text, rules, format=format)
     assert repeated.text == result.text
     assert repeated.redactions[0].matches == 0
@@ -285,8 +307,10 @@ def test_rules_are_explicitly_loaded_from_json():
         "redact_api_keys": true
     }""")
     )
-    assert sanitize_capture("private-host", rules).text == "PILOT_HOST"
-    assert rules_from_json({}) == SanitizationRules()
+    sanitized = sanitize_capture("private-host", rules)
+    assert sanitized.text == "PILOT_HOST"
+    loaded_rules = rules_from_json({})
+    assert loaded_rules == SanitizationRules()
 
 
 @pytest.mark.parametrize(

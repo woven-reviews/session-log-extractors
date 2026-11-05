@@ -3,7 +3,16 @@
 import re
 from typing import Optional
 
-from session_log_extractors.json_types import JsonValue
+from session_log_extractors.claude_content import result_text as _text
+from session_log_extractors.claude_protocol import (
+    PLAN_TOOLS as PLAN_TOOLS,
+)
+from session_log_extractors.claude_protocol import (
+    REJECTED_PREFIX,
+    REJECTED_RESULT,
+    SETTINGS_RULE,
+    USER_REJECTED,
+)
 from session_log_extractors.session_model import (
     DecisionActivityReference,
     DecisionEvidence,
@@ -23,17 +32,12 @@ from session_log_extractors.session_model import (
     ToolResult,
 )
 
-PLAN_TOOLS = {"ExitPlanMode", "exit_plan_mode"}
-_USER_REJECTED = "user-rejected"
-_SETTINGS_RULE = "permission-rule"
-_NATIVE_USER_REJECTED = "User rejected tool use"
-
 # When the human denies a permission prompt, the harness feeds the assistant a
 # canned tool_result (is_error) whose content opens with one of these preambles.
 # An approval leaves no distinct record — the tool just runs — so denials are the
 # only permission *decision* we can observe.
 _PERMISSION_DENIAL_PREFIXES = (
-    "The user doesn't want to proceed with this tool use.",
+    REJECTED_PREFIX,
     "Permission for this tool use was denied.",
 )
 # Settings-driven denials (e.g. don't-ask mode) name the tool instead. Anchored on
@@ -73,24 +77,11 @@ _PLAN_EDITED = re.compile(
 )
 
 
-def _text(content: JsonValue) -> str:
-    if isinstance(content, str):
-        return content
-    parts: list[str] = []
-    if isinstance(content, list):
-        for block in content:
-            if isinstance(block, dict) and block.get("type") == "text":
-                value = block.get("text")
-                if isinstance(value, str):
-                    parts.append(value)
-    return " ".join(parts)
-
-
 def _refusal_source(record: ToolResult, text: str) -> RefusalSource:
     kind = record.get("native_denial_kind")
-    if kind == _SETTINGS_RULE:
+    if kind == SETTINGS_RULE:
         return RefusalSource.SETTINGS
-    if kind == _USER_REJECTED:
+    if kind == USER_REJECTED:
         return RefusalSource.CANDIDATE
     if kind:
         return RefusalSource.UNKNOWN
@@ -98,7 +89,7 @@ def _refusal_source(record: ToolResult, text: str) -> RefusalSource:
         return RefusalSource.SETTINGS
     if (
         text.startswith(_PERMISSION_DENIAL_PREFIXES)
-        or record.get("native_result") == _NATIVE_USER_REJECTED
+        or record.get("native_result") == REJECTED_RESULT
     ):
         return RefusalSource.CANDIDATE
     return RefusalSource.UNKNOWN
@@ -128,7 +119,7 @@ def _refusal(
     text = _text(record.get("content"))
     feedback = parse_permission_denial(text)
     # A native classification alone does not establish an observed refusal.
-    if feedback is None and record.get("native_result") != _NATIVE_USER_REJECTED:
+    if feedback is None and record.get("native_result") != REJECTED_RESULT:
         return None
     evidence = [
         DecisionEvidence(field="tool_result.content", value=record.get("content"))

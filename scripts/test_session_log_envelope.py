@@ -75,9 +75,12 @@ def test_export_preserves_authorship_presence_and_nested_values(ranges):
 def test_raw_filename_prefixes_every_harness():
     # Unlike the markdown log, whose Claude variant is unprefixed, every raw
     # envelope carries its harness so the consumer never has to infer it.
-    assert raw_filename("claude", "abc") == "claude_session_log_raw_abc.json"
-    assert raw_filename("codex", "abc") == "codex_session_log_raw_abc.json"
-    assert raw_filename("copilot", "abc") == "copilot_session_log_raw_abc.json"
+    filename = raw_filename("claude", "abc")
+    assert filename == "claude_session_log_raw_abc.json"
+    filename = raw_filename("codex", "abc")
+    assert filename == "codex_session_log_raw_abc.json"
+    filename = raw_filename("copilot", "abc")
+    assert filename == "copilot_session_log_raw_abc.json"
 
 
 def test_image_from_bytes_round_trips():
@@ -106,12 +109,16 @@ def test_unavailable_image_records_the_ref():
 
 
 def test_media_type_for_ext():
-    assert media_type_for_ext("png") == "image/png"
-    assert media_type_for_ext(".JPG") == "image/jpeg"
+    media_type = media_type_for_ext("png")
+    assert media_type == "image/png"
+    media_type = media_type_for_ext(".JPG")
+    assert media_type == "image/jpeg"
     # Unknown extensions return None rather than a guess: a wrong media type
     # renders as a broken image downstream.
-    assert media_type_for_ext("img") is None
-    assert media_type_for_ext(None) is None
+    media_type = media_type_for_ext("img")
+    assert media_type is None
+    media_type = media_type_for_ext(None)
+    assert media_type is None
 
 
 def test_truncate_result_reports_original_size():
@@ -196,8 +203,10 @@ def test_write_envelope_round_trips_through_json():
 
 
 def test_user_event_omits_images_key_when_there_are_none():
-    assert "images" not in user_event(0, None, "text")
-    assert "images" in user_event(0, None, "text", [unavailable_image("x")])
+    event = user_event(0, None, "text")
+    assert "images" not in event
+    event = user_event(0, None, "text", [unavailable_image("x")])
+    assert "images" in event
 
 
 def test_write_preserves_unicode_spacing_and_recorded_order(tmp_path):

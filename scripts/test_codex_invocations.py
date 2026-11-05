@@ -5,19 +5,24 @@ from copy import deepcopy
 import pytest
 from codex_capture import TRANSCRIPT
 
+from session_log_extractors import codex_protocol
 from session_log_extractors.codex_sources import CodexSource, load_entries
 from session_log_extractors.extract_codex_session_log import interpret_source
 from session_log_extractors.session_log_envelope import export_session
 
 
 def _user(text, *, turn_id=None, selected=False):
-    kinds = ["skills.selected_skill_instructions"] if selected else ["user.text"]
+    kinds = (
+        [codex_protocol.SELECTED_SKILL_INSTRUCTIONS]
+        if selected
+        else [codex_protocol.USER_TEXT]
+    )
     return {
-        "type": "response_item",
+        "type": codex_protocol.RESPONSE_ITEM,
         "payload": {
-            "type": "message",
+            "type": codex_protocol.MESSAGE,
             "role": "user",
-            "content": [{"type": "input_text", "text": text}],
+            "content": [{"type": codex_protocol.INPUT_TEXT, "text": text}],
             "internal_chat_message_metadata_passthrough": {
                 "turn_id": turn_id,
                 "content_item_kinds": kinds,
@@ -53,7 +58,9 @@ def test_native_repeated_selections_keep_full_definitions_and_distinct_occurrenc
     for entry in entries:
         payload = entry.get("payload", {})
         metadata = payload.get("internal_chat_message_metadata_passthrough", {})
-        if metadata.get("content_item_kinds") == ["skills.selected_skill_instructions"]:
+        if metadata.get("content_item_kinds") == [
+            codex_protocol.SELECTED_SKILL_INSTRUCTIONS
+        ]:
             definitions.append(payload["content"][0]["text"])
     assert len(definitions) == 2, "Both recorded skill selections are required"
 
@@ -137,9 +144,9 @@ def test_known_skill_tool_keeps_arguments_and_complete_recorded_definitions(limi
     definition = "Full café definition " * 300
     entries = [
         {
-            "type": "response_item",
+            "type": codex_protocol.RESPONSE_ITEM,
             "payload": {
-                "type": "function_call",
+                "type": codex_protocol.FUNCTION_CALL,
                 "name": "mcp__skills__read",
                 "call_id": "skill-call",
                 "arguments": {
@@ -151,9 +158,9 @@ def test_known_skill_tool_keeps_arguments_and_complete_recorded_definitions(limi
             },
         },
         {
-            "type": "response_item",
+            "type": codex_protocol.RESPONSE_ITEM,
             "payload": {
-                "type": "function_call_output",
+                "type": codex_protocol.FUNCTION_CALL_OUTPUT,
                 "call_id": "skill-call",
                 "output": definition,
             },
@@ -176,18 +183,18 @@ def test_known_skill_tool_keeps_arguments_and_complete_recorded_definitions(limi
 def test_failed_skill_read_does_not_turn_error_output_into_a_definition():
     entries = [
         {
-            "type": "response_item",
+            "type": codex_protocol.RESPONSE_ITEM,
             "payload": {
-                "type": "function_call",
-                "name": "skills.read",
+                "type": codex_protocol.FUNCTION_CALL,
+                "name": codex_protocol.SKILLS_READ,
                 "call_id": "skill-call",
                 "arguments": {},
             },
         },
         {
-            "type": "response_item",
+            "type": codex_protocol.RESPONSE_ITEM,
             "payload": {
-                "type": "function_call_output",
+                "type": codex_protocol.FUNCTION_CALL_OUTPUT,
                 "call_id": "skill-call",
                 "output": "Cannot read",
                 "is_error": True,
@@ -248,7 +255,7 @@ def test_harness_instructions_do_not_turn_embedded_skill_tokens_into_invocations
     entry = _user("Use $example in documentation under $CODEX_HOME.")
     entry["payload"]["internal_chat_message_metadata_passthrough"][
         "content_item_kinds"
-    ] = ["agents_md.instructions"]
+    ] = [codex_protocol.AGENTS_MD_INSTRUCTIONS]
 
     envelope = _export([entry])
 
@@ -261,7 +268,7 @@ def test_mixed_harness_and_candidate_text_only_invokes_the_candidate_token():
     entry["payload"]["content"].append({"type": "input_text", "text": "$requested"})
     entry["payload"]["internal_chat_message_metadata_passthrough"][
         "content_item_kinds"
-    ] = ["agents_md.instructions", "user.text"]
+    ] = [codex_protocol.AGENTS_MD_INSTRUCTIONS, codex_protocol.USER_TEXT]
 
     (invocation,) = _invocations(_export([entry]))
 
