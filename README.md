@@ -239,8 +239,8 @@ existing extractor scripts as entrypoints.
 `capture_sanitization.py` contains the capture redaction rules, separately from
 extraction. It reads no environment variables, credentials, home directory, or
 clock. Identical input bytes and explicit rules produce identical sanitized
-bytes and count/hash reports. Existing fixture generators retain their current
-sanitizers; this command is for preparing and reviewing capture copies.
+bytes and count/hash reports. The obsolete fixture generators have been retired;
+use this command to prepare and review copies of native captures.
 
 Create a private rules file outside the repository, for example:
 

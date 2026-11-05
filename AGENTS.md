@@ -41,8 +41,8 @@ When extracting code into a new module, move its existing unit and boundary
 tests into the corresponding test module in the same change; keep integration
 tests with the behavior they exercise.
 
-The fixture generators (`scripts/generate_*_fixtures.py`) make paid CLI calls.
-Their tests replace the CLI with a fake, so their code is still covered.
+The obsolete fixture generators have been retired. Use the native capture
+workflow to prepare reviewed fixtures; do not invoke paid CLIs in tests.
 Use diff-cover to identify missing coverage; add tests rather than lowering
 the threshold.
 
