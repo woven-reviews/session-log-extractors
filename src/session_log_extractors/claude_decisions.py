@@ -1,7 +1,7 @@
 """Claude refusal and plan evidence, independent of raw-result export policy."""
 
 import re
-from typing import Optional, Tuple
+from typing import Optional
 
 from session_log_extractors.json_types import JsonValue
 from session_log_extractors.session_model import (
@@ -71,25 +71,6 @@ _PLAN_APPROVAL_PREFIX = "User has approved your plan"
 _PLAN_EDITED = re.compile(
     r"^##\s*Approved Plan \(edited by user\):\s*\n(.*)\Z", re.DOTALL | re.MULTILINE
 )
-
-
-def parse_plan_decision(content: str) -> Tuple[str, str, str]:
-    """Classify an ExitPlanMode tool_result.
-
-    Returns ``(decision, edited_plan, message)`` where decision is
-    ``"approved"`` / ``"rejected"`` / ``"unknown"``, ``edited_plan`` is the
-    human's edited plan text (``""`` if they approved as-is), and ``message`` is
-    any steering message they typed when rejecting.
-    """
-    if not isinstance(content, str):
-        return "unknown", "", ""
-    if content.startswith(_PLAN_APPROVAL_PREFIX):
-        m = _PLAN_EDITED.search(content)
-        return "approved", m.group(1).strip() if m else "", ""
-    denial = parse_permission_denial(content)
-    if denial is not None:
-        return "rejected", "", denial
-    return "unknown", "", ""
 
 
 def _text(content: JsonValue) -> str:

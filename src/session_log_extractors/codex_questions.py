@@ -82,17 +82,12 @@ def _association(
     questions: list[Question], key: str, evidence: list[QuestionEvidence]
 ) -> tuple[QuestionAssociation | None, Question | None]:
     matches = [question for question in questions if question.get("native_id") == key]
-    # A native answer map can also explicitly key by question text in older logs.
-    field = "question.id"
-    if not matches:
-        matches = [question for question in questions if question["text"] == key]
-        field = "question.question"
     if len(matches) != 1:
         return None, None
     question = matches[0]
     return QuestionAssociation(
         question_ref=question["ref"],
-        evidence=[*evidence, QuestionEvidence(field=field, value=key)],
+        evidence=[*evidence, QuestionEvidence(field="question.id", value=key)],
     ), question
 
 
@@ -106,14 +101,9 @@ def _selection(label: str, question: Question | None) -> QuestionSelection:
 
 
 def _answer(
-    response: QuestionResponse, value: JsonValue, question: Question | None
+    response: QuestionResponse, values: list[JsonValue], question: Question | None
 ) -> None:
     """Native arrays contain selected labels plus explicitly prefixed user notes."""
-    values = value.get("answers") if isinstance(value, dict) else value
-    if isinstance(values, str):
-        values = [values]
-    if not isinstance(values, list):
-        return
     selections: list[QuestionSelection] = []
     notes: list[str] = []
     for item in values:
@@ -256,12 +246,15 @@ class _CodexQuestionInterpreter:
             evidence = (
                 response["activity"]["evidence"] if "activity" in response else []
             )
+            values = value.get("answers") if isinstance(value, dict) else None
+            if not isinstance(values, list):
+                continue
             response["question"], question = _association(
                 questions,
                 key,
                 [*evidence, QuestionEvidence(field="answers key", value=key)],
             )
-            _answer(response, value, question)
+            _answer(response, values, question)
 
     def _response(
         self, result: ToolResult, scope: _QuestionGroup | None

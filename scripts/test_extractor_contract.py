@@ -461,3 +461,23 @@ def test_full_identity_is_source_free_and_export_does_not_mutate_it(
         exported = export_session(session, limit)
         assert exported["session_id"] == expected_id
         assert session == original
+
+
+@pytest.mark.parametrize(
+    ("extractor", "selection", "harness"),
+    [
+        (claude.EXTRACTOR, TRANSCRIPT, "claude"),
+        (codex.EXTRACTOR, CODEX_TRANSCRIPT, "codex"),
+        (copilot.EXTRACTOR, None, "copilot"),
+    ],
+)
+def test_native_interpretation_has_no_parallel_question_or_decision_summaries(
+    extractor, selection, harness
+):
+    source = _read_contract_source(extractor, selection, harness)
+    session = extractor.interpret_source(source)
+    obsolete_fields = {"questions", "plan_decision", "permission_denial"}
+    for message in session["events"]:
+        assert obsolete_fields.isdisjoint(message)
+        for call in message.get("tool_calls", []):
+            assert obsolete_fields.isdisjoint(call)

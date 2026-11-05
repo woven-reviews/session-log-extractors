@@ -58,13 +58,9 @@ from session_log_extractors import copilot_authorship, copilot_sources
 from session_log_extractors.copilot_actions import interpret_actions
 from session_log_extractors.copilot_decisions import interpret_decisions
 from session_log_extractors.copilot_interactions import (
-    apply_configured_refusal,
-    apply_human_response,
-    apply_permission_refusal,
     subagent_summaries,
 )
 from session_log_extractors.copilot_protocol import (
-    HUMAN_RESPONSE_RECORDED,
     TOOL_EXECUTION_COMPLETE,
 )
 from session_log_extractors.copilot_questions import (
@@ -870,7 +866,6 @@ class _CopilotSessionBuilder:
         call["result"] = _result_text(data.get("result"))
         if "error" in data:
             call["error"] = data["error"]
-        apply_configured_refusal(call)
         if result["is_error"]:
             call["is_error"] = True
 
@@ -930,20 +925,6 @@ class _CopilotSessionBuilder:
                 }
             )
 
-    def human_response(
-        self, record: dict[str, JsonValue], data: dict[str, JsonValue]
-    ) -> None:
-        call = self.calls.get(str(data.get("toolCallId")))
-        if call is not None:
-            apply_human_response(call, data)
-
-    def permission_completion(
-        self, record: dict[str, JsonValue], data: dict[str, JsonValue]
-    ) -> None:
-        call = self.calls.get(str(data.get("toolCallId")))
-        if call is not None:
-            apply_permission_refusal(call, data)
-
     def user_shell(
         self, record: dict[str, JsonValue], data: dict[str, JsonValue]
     ) -> None:
@@ -978,8 +959,6 @@ class _CopilotSessionBuilder:
         handlers = {
             "user.message": self.user_message,
             "tool.user_requested": self.user_shell,
-            HUMAN_RESPONSE_RECORDED: self.human_response,
-            "permission.completed": self.permission_completion,
             "assistant.message": self.assistant_message,
             "system.message": self.activity,
             "system.notification": self.activity,

@@ -53,11 +53,12 @@ def test_native_plan_decisions_follow_boolean_approval_and_feedback():
         response = data["response"]
         if response["responseKind"] != "exit_plan_mode":
             continue
-        decision = calls[data["toolCallId"]]["plan_decision"]
+        call = calls[data["toolCallId"]]
+        (decision,) = call["plan_decisions"]
         expected = "approved" if response["approved"] else "rejected"
-        assert decision["decision"] == expected
-        assert decision["plan"] == response["planContent"]
-        assert decision["message"] == response.get("feedback", "")
+        assert decision["outcome"] == expected
+        assert call["plan_versions"][-1]["text"] == response["planContent"]
+        assert decision.get("candidate_feedback", "") == response.get("feedback", "")
         decisions.append(expected)
     assert set(decisions) == {"approved", "rejected"}
 
@@ -276,13 +277,12 @@ def test_native_permission_refusals_keep_human_and_configured_sources():
     session = copilot.interpret_source(native_source())
     refusals = []
     for call in recorded_calls(session).values():
-        if "permission_denial" in call:
-            refusals.append(call["permission_denial"])
+        refusals.extend(call.get("permission_refusals", []))
     assert len(refusals) == 2
-    assert refusals[0]["by"] == "user"
-    assert refusals[0]["message"].startswith("CAPTURE_PERMISSION_DENY_1")
-    assert refusals[1]["by"] == "settings"
-    assert "shell(touch)" in refusals[1]["message"]
+    assert refusals[0]["source"] == "candidate"
+    assert refusals[0]["candidate_feedback"].startswith("CAPTURE_PERMISSION_DENY_1")
+    assert refusals[1]["source"] == "settings"
+    assert "shell(touch)" in refusals[1]["explanation"]
 
 
 def test_native_cli_stdout_and_file_agree(tmp_path, monkeypatch, capsys):
@@ -338,17 +338,21 @@ def test_native_plan_editor_assets_agree_with_approved_plan():
     session = copilot.interpret_source(native_source())
     edited_approvals = []
     for call in recorded_calls(session).values():
-        decision = call.get("plan_decision")
-        if (
-            decision
-            and decision["decision"] == "approved"
-            and "CAPTURE_PLAN_EDIT_1" in decision["plan"]
-        ):
-            edited_approvals.append(decision)
+        for decision in call.get("plan_decisions", []):
+            if decision["outcome"] != "approved":
+                continue
+            version_ref = decision["version"]["version_ref"]
+            for version in call["plan_versions"]:
+                if (
+                    version["ref"] == version_ref
+                    and "CAPTURE_PLAN_EDIT_1" in version["text"]
+                ):
+                    edited_approvals.append(version)
     assert len(edited_approvals) == 1
-    assert edited_approvals[0]["plan"] == after
-    # Copilot recorded approval of an edited file, without a native edited flag.
-    assert edited_approvals[0]["edited_plan"] == ""
+    assert edited_approvals[0]["text"] == after
+    # Copilot does not record an explicit edit relationship.
+    assert edited_approvals[0]["kind"] == "unknown"
+    assert "edited_from" not in edited_approvals[0]
 
 
 def test_native_image_tool_result_resolves_bytes_without_changing_raw_payload():

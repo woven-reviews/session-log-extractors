@@ -775,7 +775,6 @@ def test_export_preserves_payloads_but_leaves_model_semantics_unused():
             "content": "full",
             "is_error": False,
         },
-        permission_denial={"tool": "Read", "message": "no", "by": "user"},
     )
     event = Event(
         i=0,
