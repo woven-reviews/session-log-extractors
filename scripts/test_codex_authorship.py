@@ -6,6 +6,7 @@ from copy import deepcopy
 import codex_capture as capture
 import pytest
 
+from session_log_extractors import codex_protocol
 from session_log_extractors import extract_codex_session_log as codex
 from session_log_extractors.codex_authorship import message_authorship
 from session_log_extractors.session_log_envelope import export_session
@@ -42,7 +43,7 @@ def _native_kind(source, kind):
 def test_native_candidate_and_injected_blocks_reach_production_json(capsys):
     source = _source()
     native = capture.human_message(source.entries)
-    context = _native_kind(source, "environments.environment_context")
+    context = _native_kind(source, codex_protocol.ENVIRONMENT_CONTEXT)
     session = codex.interpret_source(source)
     candidate = _message(session, native)
     injected = _message(session, context)
@@ -68,7 +69,7 @@ def test_native_candidate_and_injected_blocks_reach_production_json(capsys):
 def test_mixed_native_blocks_keep_codepoint_offsets_and_recorded_markers():
     source = _source()
     native = capture.human_message(source.entries)
-    context = _native_kind(source, "environments.environment_context")
+    context = _native_kind(source, codex_protocol.ENVIRONMENT_CONTEXT)
     # Combine captured blocks, changing only candidate text for the Unicode edge.
     payload = native["payload"]
     payload["content"][0]["text"] = "Hi 🙂"
@@ -162,14 +163,14 @@ def test_native_skill_expansion_is_harness_but_its_selection_is_candidate():
     for native in capture.response_items(source.entries, "message"):
         payload = native["payload"]
         kinds = payload.get(META, {}).get("content_item_kinds", [])
-        if kinds == ["skills.selected_skill_instructions"]:
+        if kinds == [codex_protocol.SELECTED_SKILL_INSTRUCTIONS]:
             message = _message(session, native)
             assert _sources(message) == ["harness"]
             assert message["skill_invocation"]["name"]
             expansions.append(message)
-        elif kinds == ["user.text"] and payload["content"][0]["text"].startswith(
-            "$capture-greeting"
-        ):
+        elif kinds == [codex_protocol.USER_TEXT] and payload["content"][0][
+            "text"
+        ].startswith("$capture-greeting"):
             message = _message(session, native)
             assert _sources(message) == ["candidate"]
             selections.append(message)
@@ -178,7 +179,7 @@ def test_native_skill_expansion_is_harness_but_its_selection_is_candidate():
 
 def test_native_user_shell_command_and_outcome_remain_candidate_activity():
     source = _source()
-    native = _native_kind(source, "shell.user_command")
+    native = _native_kind(source, codex_protocol.USER_SHELL_COMMAND)
     session = codex.interpret_source(source)
     message = _message(session, native)
     assert message["text"] == native["payload"]["content"][0]["text"]
@@ -196,7 +197,7 @@ def test_native_agent_deliveries_are_other_agent_without_inherited_human_inputs(
     path = capture.CHILD_TRANSCRIPT if child else capture.TRANSCRIPT
     source = codex.read_source(path)
     session = codex.interpret_source(source)
-    messages = capture.response_items(source.entries, "agent_message")
+    messages = capture.response_items(source.entries, codex_protocol.AGENT_MESSAGE)
     native = messages[-1]
     message = _message(session, native)
     assert _sources(message) == ["other_agent"]
@@ -244,7 +245,9 @@ def test_text_representation_boundaries_preserve_ranges_without_evidence(content
         if isinstance(content, list) and len(content) == 2
         else "plain text"
     )
-    spans = message_authorship({"content": content}, text, None, "response_item")
+    spans = message_authorship(
+        {"content": content}, text, None, codex_protocol.RESPONSE_ITEM
+    )
     for span in spans:
         assert span["source"] == "unknown"
         assert "ts" not in span
@@ -269,7 +272,9 @@ def test_all_native_human_text_preserves_words_and_candidate_authorship():
     literal_xml_seen = False
     for native in capture.response_items(source.entries, "message"):
         payload = native["payload"]
-        if payload.get(META, {}).get("content_item_kinds") != ["user.text"]:
+        if payload.get(META, {}).get("content_item_kinds") != [
+            codex_protocol.USER_TEXT
+        ]:
             continue
         message = _message(session, native)
         native_text = payload["content"][0]["text"]
@@ -317,7 +322,7 @@ def test_legacy_image_views_preserve_ownership_and_content_timestamps(same_input
 
 def test_missing_shell_structure_preserves_unknown_text():
     source = _source()
-    native = _native_kind(source, "shell.user_command")
+    native = _native_kind(source, codex_protocol.USER_SHELL_COMMAND)
     # Deliberately break only the native command delimiter.
     payload = native["payload"]
     text = payload["content"][0]["text"].replace("<command>", "<future_command>")
@@ -330,7 +335,7 @@ def test_missing_shell_structure_preserves_unknown_text():
 
 def test_shell_lookalike_in_recorded_human_input_stays_candidate():
     source = _source()
-    shell = _native_kind(source, "shell.user_command")
+    shell = _native_kind(source, codex_protocol.USER_SHELL_COMMAND)
     human = capture.human_message(source.entries)
     # The human can paste a shell transcript literally. Keep human provenance.
     text = shell["payload"]["content"][0]["text"]
@@ -346,7 +351,7 @@ def test_shell_lookalike_in_recorded_human_input_stays_candidate():
 )
 def test_incomplete_agent_evidence_remains_unknown(change):
     source = _source()
-    native = capture.response_items(source.entries, "agent_message")[0]
+    native = capture.response_items(source.entries, codex_protocol.AGENT_MESSAGE)[0]
     payload = native["payload"]
     if change == "missing_author":
         payload.pop("author")
@@ -405,13 +410,15 @@ def test_primary_response_recognition_does_not_hide_conflicting_evidence(change)
     if change == "unknown_kind":
         payload[META]["content_item_kinds"] = ["future.output"]
     elif change == "conflicting_provenance":
-        payload[META]["content_item_kinds"] = ["user.text"]
+        payload[META]["content_item_kinds"] = [codex_protocol.USER_TEXT]
         payload[META]["content_item_metadata"] = [{"provenance": {"type": "harness"}}]
     elif change == "wrong_record_kind":
         payload["type"] = "future-message"
     else:
-        payload["content"][0]["type"] = "input_text"
-    spans = message_authorship(payload, text, entry["timestamp"], "response_item")
+        payload["content"][0]["type"] = codex_protocol.INPUT_TEXT
+    spans = message_authorship(
+        payload, text, entry["timestamp"], codex_protocol.RESPONSE_ITEM
+    )
     assert len(spans) == 1
     assert spans[0]["source"] == "unknown"
     assert spans[0]["end"] == len(text)

@@ -6,6 +6,7 @@ from copy import deepcopy
 import pytest
 from copilot_fixture import native_records
 
+from session_log_extractors import copilot_protocol
 from session_log_extractors.tool_inputs.copilot import input_schema
 
 
@@ -27,7 +28,7 @@ def test_captured_tool_inputs_have_copilot_schemas():
     }
     observed = set()
     for record in native_records():
-        if record["type"] != "tool.execution_start":
+        if record["type"] != copilot_protocol.TOOL_EXECUTION_START:
             continue
         data = record["data"]
         payload = data["arguments"]
@@ -52,13 +53,15 @@ def test_captured_tool_inputs_have_copilot_schemas():
 def test_file_tools_keep_their_harness_specific_fields(name, payload, schema):
     # Controlled examples keep exact field/schema expectations independent of prose.
     original = deepcopy(payload)
-    assert input_schema(name, payload) == schema
+    actual_input_schema = input_schema(name, payload)
+    assert actual_input_schema == schema
     assert payload == original
 
 
 @pytest.mark.parametrize("payload", [None, "raw", [], 42, True])
 def test_non_object_input_uses_explicit_fallback(payload):
-    assert input_schema("bash", payload) == "unsupported"
+    actual_input_schema = input_schema("bash", payload)
+    assert actual_input_schema == "unsupported"
 
 
 @pytest.mark.parametrize(
@@ -73,12 +76,14 @@ def test_non_object_input_uses_explicit_fallback(payload):
     ],
 )
 def test_other_harness_or_unknown_names_are_unsupported(name):
-    assert input_schema(name, {"recorded": True}) == "unsupported"
+    actual_input_schema = input_schema(name, {"recorded": True})
+    assert actual_input_schema == "unsupported"
 
 
 def test_recognition_is_distinct_from_runtime_validation():
     # Recognition identifies a supported object shape without validating fields.
     payload = {"command": ["unexpected type"], "extra": {"preserve": None}}
     original = deepcopy(payload)
-    assert input_schema("bash", payload) == "CopilotBash"
+    actual_input_schema = input_schema("bash", payload)
+    assert actual_input_schema == "CopilotBash"
     assert payload == original

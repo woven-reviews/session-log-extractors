@@ -1,4 +1,4 @@
-"""Shared recorded-ID selection rules and streaming identity scan mechanics."""
+"""Shared transcript identity, directory matching, and file selection."""
 
 from __future__ import annotations
 
@@ -64,3 +64,35 @@ def read_recorded_id(
     except OSError:
         return None
     return session_id
+
+
+def paths_overlap(path: Path, other: Path) -> bool:
+    """Match either resolved ancestor direction, including equality."""
+    try:
+        path.resolve().relative_to(other.resolve())
+        return True
+    except ValueError:
+        pass
+    try:
+        other.resolve().relative_to(path.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def cwd_matches(recorded_cwd: str | None, cwd: Path, strict: bool = False) -> bool:
+    """Match a recorded working directory using the requested strictness."""
+    if not recorded_cwd:
+        return False
+    recorded_path = Path(recorded_cwd).expanduser()
+    if strict:
+        return recorded_path.resolve() == cwd.resolve()
+    return paths_overlap(recorded_path, cwd)
+
+
+def newest(paths: Iterable[Path]) -> Path | None:
+    """Select the latest modification time, retaining input order on ties."""
+    paths = list(paths)
+    if not paths:
+        return None
+    return max(paths, key=lambda path: path.stat().st_mtime)

@@ -1,8 +1,11 @@
 """The explicitly selected current Copilot capture, shared by offline tests."""
 
 import json
+import shutil
+import sqlite3
 from pathlib import Path
 
+from session_log_extractors import copilot_protocol
 from session_log_extractors import copilot_sources as sources
 
 ROOT = Path(__file__).parent / "fixtures" / "copilot" / "1.0.104-3"
@@ -50,7 +53,7 @@ def native_tool_source():
     source = native_source()
     requests = []
     for record in source.state_records:
-        if record["type"] != "assistant.message":
+        if record["type"] != copilot_protocol.ASSISTANT_MESSAGE:
             continue
         for request in record["data"].get("toolRequests", []):
             arguments = request.get("arguments", {})
@@ -64,11 +67,14 @@ def native_tool_source():
     selected = []
     for record in source.state_records:
         data = record["data"]
-        if record["type"] == "user.message" and data.get("messageId") == message_id:
+        if (
+            record["type"] == copilot_protocol.USER_MESSAGE
+            and data.get("messageId") == message_id
+        ):
             selected.append(record)
         elif record == owner or data.get("toolCallId") == request["toolCallId"]:
             selected.append(record)
-        elif record["type"] == "assistant.message":
+        elif record["type"] == copilot_protocol.ASSISTANT_MESSAGE:
             if data.get("originatingMessageId") == message_id and not data.get(
                 "toolRequests"
             ):
@@ -84,10 +90,10 @@ def single_image_source():
     assets = []
     users = []
     for record in source.state_records:
-        if record["type"] == "session.binary_asset":
+        if record["type"] == copilot_protocol.BINARY_ASSET:
             assets.append(record)
         if (
-            record["type"] == "user.message"
+            record["type"] == copilot_protocol.USER_MESSAGE
             and len(record["data"].get("attachments", [])) == 2
         ):
             users.append(record)
@@ -104,17 +110,46 @@ def native_prose_source():
     source = native_source()
     users = []
     for record in source.state_records:
-        if record["type"] == "user.message" and record["data"]["content"].startswith(
-            "Without tools, recall"
-        ):
+        if record["type"] == copilot_protocol.USER_MESSAGE and record["data"][
+            "content"
+        ].startswith("Without tools, recall"):
             users.append(record)
     assert len(users) == 1, "Expected one operator recall request"
     (user,) = users
     selected = [user]
     for record in source.state_records:
-        if record["type"] == "assistant.message":
+        if record["type"] == copilot_protocol.ASSISTANT_MESSAGE:
             if record["data"].get("originatingMessageId") == user["data"]["messageId"]:
                 selected.append(record)
     source.state_records = selected
     source.files = []
     return source
+
+
+def native_lines() -> list[str]:
+    """Read the selected native event log as physical JSONL lines."""
+    return TRANSCRIPT.read_text(encoding="utf-8").splitlines()
+
+
+def native_db_copy(directory: Path, sql: str = "", params=()) -> Path:
+    """Copy the capture database, optionally applying one controlled SQL edit."""
+    path = directory / "session-store.db"
+    shutil.copyfile(DATABASE, path)
+    if sql:
+        with sqlite3.connect(path) as connection:
+            connection.execute(sql, params)
+    return path
+
+
+def write_events_log(state_root: Path, session_id: str, lines: list[str]) -> Path:
+    """Write supplied lines under an explicit isolated state directory."""
+    session_dir = state_root / session_id
+    session_dir.mkdir(parents=True, exist_ok=True)
+    path = session_dir / "events.jsonl"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def install_native_events(state_root: Path) -> Path:
+    """Install the selected capture under an explicit isolated state directory."""
+    return write_events_log(state_root, SESSION_ID, native_lines())

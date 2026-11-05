@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from session_log_extractors import claude_protocol
 from session_log_extractors import extract_claude_session_log as claude
 from session_log_extractors.claude_sources import ClaudeSource
 from session_log_extractors.session_log_envelope import export_session
@@ -18,10 +19,13 @@ def _interaction():
     entries = claude.load_entries(TRANSCRIPT)
     matches = []
     for entry in entries:
-        if entry.get("type") != "assistant":
+        if entry.get("type") != claude_protocol.ASSISTANT_RECORD:
             continue
         for block in claude._content_blocks(entry):
-            if not isinstance(block, dict) or block.get("name") != "AskUserQuestion":
+            if (
+                not isinstance(block, dict)
+                or block.get("name") != claude_protocol.ASK_USER_QUESTION
+            ):
                 continue
             for question in block["input"]["questions"]:
                 if question.get("multiSelect") is True:
@@ -35,7 +39,7 @@ def _interaction():
 def _recorded_result(entries, call_id):
     matches = []
     for entry in entries:
-        if entry.get("type") != "user":
+        if entry.get("type") != claude_protocol.USER_RECORD:
             continue
         for block in claude._content_blocks(entry):
             if isinstance(block, dict) and block.get("tool_use_id") == call_id:
@@ -288,8 +292,8 @@ def test_recommendations_previews_and_free_text_are_separate():
 @pytest.mark.parametrize(
     "kind,expected_source",
     [
-        ("user-rejected", "candidate"),
-        ("permission-rule", "settings"),
+        (claude_protocol.USER_REJECTED, "candidate"),
+        (claude_protocol.SETTINGS_RULE, "settings"),
         ("future-denial", "unknown"),
     ],
 )
@@ -540,7 +544,7 @@ def test_explicit_legacy_rejection_is_a_candidate_refusal(use_native_payload):
         is_error=True,
     )
     if use_native_payload:
-        result["toolUseResult"] = "User rejected tool use"
+        result["toolUseResult"] = claude_protocol.REJECTED_RESULT
     else:
         result.pop("toolUseResult")
     session = _interpret([assistant, result])
@@ -665,7 +669,7 @@ def test_native_question_fields_preserve_exact_offered_values():
     observed_questions = 0
     for message in session["events"]:
         for call in message.get("tool_calls", []):
-            if call["name"] != "AskUserQuestion":
+            if call["name"] != claude_protocol.ASK_USER_QUESTION:
                 continue
             questions = call["interaction_questions"]
             native_questions = call["input"]["questions"]
@@ -691,7 +695,7 @@ def test_text_only_content_blocks_keep_explicit_question_associations():
     expected_count = len(result["toolUseResult"]["answers"])
     result.pop("toolUseResult")
     block = result["message"]["content"][0]
-    block["content"] = [{"type": "text", "text": block["content"]}]
+    block["content"] = [{"type": claude_protocol.TEXT_BLOCK, "text": block["content"]}]
     session = _interpret([assistant, result])
     recorded_responses = _conversation_responses(session)
     assert len(recorded_responses) == expected_count
@@ -734,7 +738,9 @@ def test_orphan_responses_stay_at_their_native_position_in_the_conversation(miss
     else:
         result["message"]["content"][0]["tool_use_id"] = "missing-call"
     later = deepcopy(assistant)
-    later["message"]["content"] = [{"type": "text", "text": "Later assistant message"}]
+    later["message"]["content"] = [
+        {"type": claude_protocol.TEXT_BLOCK, "text": "Later assistant message"}
+    ]
     session = _interpret([assistant, result, later])
     original = deepcopy(session)
     exported = export_session(session, 0)

@@ -33,7 +33,8 @@ def test_load_records_preserves_native_objects_around_malformed_lines(
     records = load_records(path)
 
     assert records == [(2, first_record), (5, second_record)]
-    assert capsys.readouterr().err == (
+    captured = capsys.readouterr()
+    assert captured.err == (
         f"warning: {path}: skipping malformed JSON on line 3\n"
         f"warning: {path}: skipping non-object JSON on line 4\n"
         f"warning: {path}: skipping malformed JSON on line 6\n"
@@ -78,7 +79,8 @@ def test_blank_input_is_valid_and_silent(content, tmp_path, capsys):
     records = load_records(path)
 
     assert records == []
-    assert capsys.readouterr().err == ""
+    captured = capsys.readouterr()
+    assert captured.err == ""
 
 
 @pytest.mark.parametrize("content", ["null", "[]", "42", "true", '"text"', "bad"])
@@ -115,7 +117,8 @@ def test_load_entries_counts_non_dict_and_skips_blank_lines(tmp_path, capsys):
     for entry in entries:
         entry_types.append(entry["type"])
     assert entry_types == ["user"]
-    assert "skipped 6 malformed/non-object records total" in capsys.readouterr().err
+    captured = capsys.readouterr()
+    assert "skipped 6 malformed/non-object records total" in captured.err
 
 
 def test_load_entries_warns_once_for_many_bad_lines(tmp_path, capsys):
@@ -161,4 +164,5 @@ def test_load_entries_skips_malformed_lines_with_warning(tmp_path, capsys):
     actual_records = load_entries(path)
 
     assert actual_records == expected_records
-    assert "skipping malformed JSON on line 3" in capsys.readouterr().err
+    captured = capsys.readouterr()
+    assert "skipping malformed JSON on line 3" in captured.err

@@ -6,6 +6,7 @@ from copy import deepcopy
 import pytest
 from copilot_fixture import native_source, recorded_calls
 
+from session_log_extractors import copilot_protocol
 from session_log_extractors import extract_copilot_session_log as copilot
 from session_log_extractors.session_log_envelope import export_session
 
@@ -15,7 +16,7 @@ def _question_source():
     source = native_source()
     owner = None
     for record in source.state_records:
-        if record["type"] != "assistant.message":
+        if record["type"] != copilot_protocol.ASSISTANT_MESSAGE:
             continue
         for request in record["data"].get("toolRequests", []):
             properties = (
@@ -23,7 +24,7 @@ def _question_source():
                 .get("requestedSchema", {})
                 .get("properties", {})
             )
-            if request["name"] == "ask_user" and len(properties) == 1:
+            if request["name"] == copilot_protocol.ASK_USER and len(properties) == 1:
                 ((name, field),) = properties.items()
                 if field.get("type") != "string" or not field.get("enum"):
                     continue
@@ -53,7 +54,7 @@ def _question_source():
 
 def _human_response(source):
     for record in source.state_records:
-        if record["type"] == "human_response.recorded":
+        if record["type"] == copilot_protocol.HUMAN_RESPONSE_RECORDED:
             return record
     pytest.fail("Required captured answer is missing")
 
@@ -121,7 +122,7 @@ def test_question_without_call_id_retains_native_containment_but_no_answer_link(
     del source.state_records[0]["data"]["toolRequests"][0]["toolCallId"]
     retained = []
     for record in source.state_records:
-        if record["type"] != "tool.execution_start":
+        if record["type"] != copilot_protocol.TOOL_EXECUTION_START:
             retained.append(record)
     source.state_records = retained
     session = copilot.interpret_source(source)
@@ -150,11 +151,11 @@ def test_whole_request_cancellation_does_not_guess_a_question_in_a_group():
     fields["second"] = deepcopy(fields["choice"])
     retained = []
     for record in source.state_records:
-        if record["type"] == "human_response.recorded":
+        if record["type"] == copilot_protocol.HUMAN_RESPONSE_RECORDED:
             continue
-        if record["type"] == "tool.execution_complete":
+        if record["type"] == copilot_protocol.TOOL_EXECUTION_COMPLETE:
             record["data"]["toolTelemetry"]["properties"]["elicitation_action"] = (
-                "cancel"
+                copilot_protocol.ELICITATION_CANCEL
             )
             record["data"]["result"] = None
         retained.append(record)
@@ -183,11 +184,11 @@ def _assert_native_questions(source):
             answers_by_id.setdefault(response["native_id"], []).append(response)
     seen_answers = 0
     for record in source.state_records:
-        if record["type"] != "human_response.recorded":
+        if record["type"] != copilot_protocol.HUMAN_RESPONSE_RECORDED:
             continue
         data = record["data"]
         native = data["response"]
-        if native["responseKind"] != "ask_user":
+        if native["responseKind"] != copilot_protocol.ASK_USER:
             continue
         responses = answers_by_id[record["id"]]
         assert len(responses) == len(native["content"])
@@ -265,7 +266,7 @@ def test_native_structured_question_facts_survive_export(limit):
             exported_message.get("tool_calls", []),
             strict=True,
         ):
-            if call["name"] != "ask_user":
+            if call["name"] != copilot_protocol.ASK_USER:
                 continue
             assert (
                 exported_call["interaction_questions"] == call["interaction_questions"]
@@ -334,7 +335,7 @@ def test_repeated_identical_questions_keep_distinct_occurrences():
     repeated = deepcopy(source.state_records)
     for record in repeated:
         record["id"] += "-repeated"
-        if record["type"] == "assistant.message":
+        if record["type"] == copilot_protocol.ASSISTANT_MESSAGE:
             for request in record["data"]["toolRequests"]:
                 request["toolCallId"] += "-repeated"
         elif "toolCallId" in record["data"]:
@@ -354,9 +355,9 @@ def test_tool_errors_and_display_text_never_create_question_refusals():
     source = _question_source()
     selected = []
     for record in source.state_records:
-        if record["type"] == "human_response.recorded":
+        if record["type"] == copilot_protocol.HUMAN_RESPONSE_RECORDED:
             continue
-        if record["type"] == "tool.execution_complete":
+        if record["type"] == copilot_protocol.TOOL_EXECUTION_COMPLETE:
             record["data"]["success"] = False
             record["data"]["result"] = {"content": "User cancelled the request."}
             record["data"].pop("toolTelemetry")
@@ -502,9 +503,9 @@ def test_cancellation_without_its_request_remains_a_response_only_result():
     source = _question_source()
     completions = []
     for record in source.state_records:
-        if record["type"] == "tool.execution_complete":
+        if record["type"] == copilot_protocol.TOOL_EXECUTION_COMPLETE:
             record["data"]["toolTelemetry"]["properties"]["elicitation_action"] = (
-                "cancel"
+                copilot_protocol.ELICITATION_CANCEL
             )
             completions.append(record)
     source.state_records = completions
@@ -553,14 +554,14 @@ def test_question_contract_tolerates_reworded_capture():
     replacements = _question_label_replacements(source)
     for record in source.state_records:
         data = record["data"]
-        if record["type"] == "assistant.message":
+        if record["type"] == copilot_protocol.ASSISTANT_MESSAGE:
             data["content"] = "Reworded assistant response."
             for request in data.get("toolRequests", []):
-                if request["name"] == "ask_user":
+                if request["name"] == copilot_protocol.ASK_USER:
                     _reword_question_payload(request["arguments"], replacements)
-        elif record["type"] == "human_response.recorded":
+        elif record["type"] == copilot_protocol.HUMAN_RESPONSE_RECORDED:
             response = data["response"]
-            if response["responseKind"] == "ask_user":
+            if response["responseKind"] == copilot_protocol.ASK_USER:
                 _reword_question_payload(response, replacements)
                 _reword_recorded_answers(response, replacements)
     _assert_native_questions(source)
@@ -581,9 +582,9 @@ def _reword_question_payload(payload, replacements):
 def _question_label_replacements(source):
     replacements = {}
     for record in source.state_records:
-        if record["type"] == "human_response.recorded":
+        if record["type"] == copilot_protocol.HUMAN_RESPONSE_RECORDED:
             response = record["data"]["response"]
-            if response["responseKind"] != "ask_user":
+            if response["responseKind"] != copilot_protocol.ASK_USER:
                 continue
             for field in response["requestedSchema"]["properties"].values():
                 choices = field.get("items", field)

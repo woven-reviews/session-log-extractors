@@ -20,6 +20,9 @@ from session_log_extractors.jsonl_sources import (
     load_jsonl_objects,
     parse_jsonl_objects,
 )
+from session_log_extractors.session_selection import (
+    cwd_matches as _cwd_matches,
+)
 from session_log_extractors.session_selection import select_recorded_id
 
 COPILOT_DB = Path.home() / ".copilot" / "session-store.db"
@@ -71,28 +74,6 @@ def _table_columns(conn: sqlite3.Connection, name: str) -> set[str]:
         if isinstance(col, str):
             cols.add(col)
     return cols
-
-
-def _paths_overlap(a: Path, b: Path) -> bool:
-    try:
-        a.resolve().relative_to(b.resolve())
-        return True
-    except ValueError:
-        pass
-    try:
-        b.resolve().relative_to(a.resolve())
-        return True
-    except ValueError:
-        return False
-
-
-def _cwd_matches(session_cwd: Optional[str], cwd: Path, strict: bool = False) -> bool:
-    if not session_cwd:
-        return False
-    rec = Path(session_cwd).expanduser()
-    if strict:
-        return rec.resolve() == cwd.resolve()
-    return _paths_overlap(rec, cwd)
 
 
 def _row_record(row: sqlite3.Row) -> Dict[str, JsonValue]:

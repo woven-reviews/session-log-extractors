@@ -18,6 +18,9 @@ from session_log_extractors.json_types import JsonValue, parse_json
 CaptureFormat = Literal["text", "json", "jsonl"]
 _EMAIL_PATTERN = r"[A-Za-z0-9_.+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
 _API_KEY_PATTERN = r"sk-ant-[A-Za-z0-9_.-]+"
+_EMAIL_RULE = "email"
+_API_KEY_RULE = "api_key"
+_ORGANIZATION_RULE = "organization_id"
 _ORGANIZATION_PLACEHOLDER = "[REDACTED_ORGANIZATION_ID]"
 
 
@@ -64,7 +67,7 @@ def _is_inline_image(value: dict[str, JsonValue]) -> bool:
 
 
 def _replacement_rules(rules: SanitizationRules) -> list[_Rule]:
-    names = {"email", "api_key", "organization_id"}
+    names = {_EMAIL_RULE, _API_KEY_RULE, _ORGANIZATION_RULE}
     originals: set[str] = set()
     compiled: list[_Rule] = []
     ordered = sorted(
@@ -80,9 +83,9 @@ def _replacement_rules(rules: SanitizationRules) -> list[_Rule]:
         originals.add(rule.original)
         compiled.append(_Rule(rule.name, re.escape(rule.original), rule.replacement))
     if rules.redact_api_keys:
-        compiled.append(_Rule("api_key", _API_KEY_PATTERN, "[REDACTED_API_KEY]"))
+        compiled.append(_Rule(_API_KEY_RULE, _API_KEY_PATTERN, "[REDACTED_API_KEY]"))
     if rules.redact_emails:
-        compiled.append(_Rule("email", _EMAIL_PATTERN, "[REDACTED_EMAIL]"))
+        compiled.append(_Rule(_EMAIL_RULE, _EMAIL_PATTERN, "[REDACTED_EMAIL]"))
     return compiled
 
 
@@ -131,9 +134,9 @@ class _CaptureSanitizer:
         ):
             return item
         if record.get("type") == "credential_org" and key == "organizationUuid":
-            self.counts.setdefault("organization_id", 0)
+            self.counts.setdefault(_ORGANIZATION_RULE, 0)
             if item != _ORGANIZATION_PLACEHOLDER:
-                self.counts["organization_id"] += 1
+                self.counts[_ORGANIZATION_RULE] += 1
             return _ORGANIZATION_PLACEHOLDER
         return self.value(item)
 

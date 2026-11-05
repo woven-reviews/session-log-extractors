@@ -6,6 +6,30 @@ import re
 from typing import Final
 
 from session_log_extractors.claude_authorship import _is_compact_invocation
+from session_log_extractors.claude_protocol import (
+    AGENT_TOOLS as AGENT_TOOLS,
+)
+from session_log_extractors.claude_protocol import (
+    CREATE_TOOL as CREATE_TOOL,
+)
+from session_log_extractors.claude_protocol import (
+    EDIT_TOOL as EDIT_TOOL,
+)
+from session_log_extractors.claude_protocol import (
+    MULTI_EDIT_TOOL as MULTI_EDIT_TOOL,
+)
+from session_log_extractors.claude_protocol import (
+    NOTEBOOK_EDIT_TOOL as NOTEBOOK_EDIT_TOOL,
+)
+from session_log_extractors.claude_protocol import (
+    READ_TOOL as READ_TOOL,
+)
+from session_log_extractors.claude_protocol import (
+    SKILL_TOOL as SKILL_TOOL,
+)
+from session_log_extractors.claude_protocol import (
+    WRITE_TOOL as WRITE_TOOL,
+)
 from session_log_extractors.json_types import JsonValue, json_value
 from session_log_extractors.session_model import (
     ActionActivityReference,
@@ -23,19 +47,11 @@ from session_log_extractors.session_model import (
     ToolExecutionOutcome,
 )
 
-READ_TOOL: Final = "Read"
-WRITE_TOOL: Final = "Write"
-EDIT_TOOL: Final = "Edit"
-NOTEBOOK_EDIT_TOOL: Final = "NotebookEdit"
-MULTI_EDIT_TOOL: Final = "MultiEdit"
-CREATE_TOOL: Final = "Create"
 FILE_WRITING_TOOLS: Final = frozenset(
     {WRITE_TOOL, EDIT_TOOL, NOTEBOOK_EDIT_TOOL, MULTI_EDIT_TOOL, CREATE_TOOL}
 )
 FILE_TOOLS: Final = FILE_WRITING_TOOLS | {READ_TOOL}
 FILE_PATH_KEYS: Final = ("file_path", "path", "notebook_path", "filePath")
-SKILL_TOOL: Final = "Skill"
-AGENT_TOOLS: Final = frozenset({"Agent", "Task"})
 _COMMAND = re.compile(
     r"<(command-name|command-message|command-args)>(.*?)</\1>", re.DOTALL
 )

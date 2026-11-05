@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from session_log_extractors import claude_protocol
 from session_log_extractors import extract_claude_session_log as claude
 from session_log_extractors.claude_sources import ClaudeSource
 from session_log_extractors.session_log_envelope import export_session
@@ -18,7 +19,9 @@ def _recorded_user(marker):
     matches = []
     for entry in claude.load_entries(TRANSCRIPT):
         content = entry.get("message", {}).get("content")
-        if entry.get("type") == "user" and isinstance(content, str):
+        if entry.get("type") == claude_protocol.USER_RECORD and isinstance(
+            content, str
+        ):
             if marker in content and not entry.get("isCompactSummary"):
                 matches.append(entry)
     assert len(matches) == 1, f"Expected one native user record for {marker}"
@@ -56,7 +59,9 @@ def _sources(message):
     return sources
 
 
-@pytest.mark.parametrize("prompt_source", ["typed", "queued"])
+@pytest.mark.parametrize(
+    "prompt_source", [claude_protocol.PROMPT_TYPED, claude_protocol.PROMPT_QUEUED]
+)
 def test_interactive_human_text_is_candidate_without_stripping_literal_markup(
     prompt_source,
 ):
@@ -70,7 +75,7 @@ def test_interactive_human_text_is_candidate_without_stripping_literal_markup(
         if isinstance(expected_text, list):
             text_blocks = []
             for block in expected_text:
-                if block.get("type") == "text":
+                if block.get("type") == claude_protocol.TEXT_BLOCK:
                     text_blocks.append(block["text"])
             expected_text = "\n".join(text_blocks)
         message = _single_message(entry)
@@ -92,7 +97,7 @@ def test_native_injected_records_remain_harness_activity():
     entries = []
     for entry in claude.load_entries(TRANSCRIPT):
         origin = entry.get("origin", {})
-        if entry.get("type") == "user" and (
+        if entry.get("type") == claude_protocol.USER_RECORD and (
             entry.get("isMeta")
             or entry.get("isCompactSummary")
             or origin.get("kind") == "task-notification"
@@ -156,7 +161,8 @@ def test_full_native_cli_preserves_order_ownership_and_authorship(capsys):
         emitted_ids.append(message["id"])
     queued = _queued_record()
     assert emitted_ids.count(queued["uuid"]) == 1
-    assert claude.main(["--transcript", str(TRANSCRIPT), "--output", "-"]) == 0
+    exit_status = claude.main(["--transcript", str(TRANSCRIPT), "--output", "-"])
+    assert exit_status == 0
     exported = json.loads(capsys.readouterr().out)
     for message, actual in zip(session["events"], exported["events"], strict=True):
         assert actual["text"] == message["text"]
@@ -270,10 +276,12 @@ def test_image_only_injection_retains_images_without_empty_ranges():
     matches = []
     for entry in claude.load_entries(TRANSCRIPT):
         content = entry.get("message", {}).get("content")
-        if entry.get("type") != "user" or not isinstance(content, list):
+        if entry.get("type") != claude_protocol.USER_RECORD or not isinstance(
+            content, list
+        ):
             continue
         for block in content:
-            if block.get("type") == "image":
+            if block.get("type") == claude_protocol.IMAGE_BLOCK:
                 matches.append(entry)
                 break
     assert matches, "Missing native pasted images"
@@ -281,7 +289,7 @@ def test_image_only_injection_retains_images_without_empty_ranges():
     original_message = _single_message(entry)
     images = []
     for block in entry["message"]["content"]:
-        if block.get("type") == "image":
+        if block.get("type") == claude_protocol.IMAGE_BLOCK:
             images.append(block)
     entry["message"]["content"] = images
     entry["isMeta"] = True
@@ -380,7 +388,10 @@ def _recorded_interruptions():
     for entry in claude.load_entries(TRANSCRIPT):
         content = entry.get("message", {}).get("content")
         if content == [
-            {"type": "text", "text": "[Request interrupted by user for tool use]"}
+            {
+                "type": claude_protocol.TEXT_BLOCK,
+                "text": "[Request interrupted by user for tool use]",
+            }
         ]:
             interruptions.append(entry)
     assert interruptions, "Missing captured user-interruption notices"
@@ -485,7 +496,9 @@ def test_shell_input_recognition_requires_the_native_standalone_record(shape):
     elif shape == "extra_text":
         entry["message"]["content"] = content + "\nOther unattributed words."
     elif shape == "list":
-        entry["message"]["content"] = [{"type": "text", "text": content}]
+        entry["message"]["content"] = [
+            {"type": claude_protocol.TEXT_BLOCK, "text": content}
+        ]
     elif shape == "empty":
         entry["message"]["content"] = "<bash-input>  </bash-input>"
     else:
@@ -591,7 +604,9 @@ def test_shell_output_link_does_not_override_recorded_content_or_provenance(shap
     if shape == "quoted":
         shell_output["message"]["content"] = "Example: " + content
     elif shape == "list":
-        shell_output["message"]["content"] = [{"type": "text", "text": content}]
+        shell_output["message"]["content"] = [
+            {"type": claude_protocol.TEXT_BLOCK, "text": content}
+        ]
     else:
         shell_output["isMeta"] = True
     session = _interpret([shell_input, shell_output])
@@ -637,7 +652,9 @@ def test_command_invocation_needs_recorded_human_provenance_and_native_shape(bou
     elif boundary == "quoted":
         entry["message"]["content"] = "Example: " + content
     elif boundary == "list":
-        entry["message"]["content"] = [{"type": "text", "text": content}]
+        entry["message"]["content"] = [
+            {"type": claude_protocol.TEXT_BLOCK, "text": content}
+        ]
     else:
         entry["isMeta"] = True
     message = _single_message(entry)
@@ -663,7 +680,9 @@ def _recorded_model_invocations():
     matches = []
     for entry in claude.load_entries(TRANSCRIPT):
         content = entry.get("message", {}).get("content")
-        if entry.get("type") == "user" and isinstance(content, str):
+        if entry.get("type") == claude_protocol.USER_RECORD and isinstance(
+            content, str
+        ):
             if "<command-name>/model</command-name>" in content:
                 matches.append(entry)
     assert matches, "Missing native model-selector invocations"
@@ -700,7 +719,9 @@ def test_model_selector_recognition_requires_its_native_control_record(shape):
     if shape == "quoted":
         entry["message"]["content"] = "Example: " + content
     elif shape == "list":
-        entry["message"]["content"] = [{"type": "text", "text": content}]
+        entry["message"]["content"] = [
+            {"type": claude_protocol.TEXT_BLOCK, "text": content}
+        ]
     elif shape == "wrong_command":
         entry["message"]["content"] = content.replace("model", "unsupported-control")
     elif shape == "extra_text":
@@ -810,7 +831,9 @@ def test_model_result_link_respects_native_shape_and_injection_provenance(shape)
     if shape == "quoted":
         result["message"]["content"] = "Example: " + content
     elif shape == "list":
-        result["message"]["content"] = [{"type": "text", "text": content}]
+        result["message"]["content"] = [
+            {"type": claude_protocol.TEXT_BLOCK, "text": content}
+        ]
     else:
         result["isMeta"] = True
     session = _interpret([invocation, result])
@@ -825,7 +848,9 @@ def _recorded_compact_invocations():
     forms = set()
     for entry in claude.load_entries(TRANSCRIPT):
         content = entry.get("message", {}).get("content")
-        if entry.get("type") != "user" or not isinstance(content, str):
+        if entry.get("type") != claude_protocol.USER_RECORD or not isinstance(
+            content, str
+        ):
             continue
         if content == "/compact":
             forms.add("plain")
@@ -866,7 +891,9 @@ def test_compact_control_recognition_excludes_other_text_and_unmarked_sdk_prompt
         if shape == "quoted":
             entry["message"]["content"] = "Example: " + content
         elif shape == "list":
-            entry["message"]["content"] = [{"type": "text", "text": content}]
+            entry["message"]["content"] = [
+                {"type": claude_protocol.TEXT_BLOCK, "text": content}
+            ]
         elif shape == "extra_text":
             entry["message"]["content"] += "\nAdditional unattributed text."
         elif shape == "sdk":

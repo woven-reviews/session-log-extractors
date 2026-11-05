@@ -6,6 +6,9 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Final
 
+from session_log_extractors.codex_protocol import (
+    REQUEST_USER_INPUT as REQUEST_USER_INPUT,
+)
 from session_log_extractors.json_types import JsonValue, json_value, parse_json
 from session_log_extractors.session_model import (
     AuthorshipSource,
@@ -24,7 +27,6 @@ from session_log_extractors.session_model import (
     ToolResult,
 )
 
-REQUEST_USER_INPUT: Final = "request_user_input"
 _USER_NOTE: Final = "user_note: "
 _CUSTOM_CHOICE: Final = "None of the above"
 _RECOMMENDED: Final = "(Recommended)"

@@ -2,6 +2,21 @@
 
 import re
 
+from session_log_extractors.codex_protocol import (
+    AGENT_MESSAGE,
+    AGENTS_MD_INSTRUCTIONS,
+    ENVIRONMENT_CONTEXT,
+    IMAGE_PREPARATION_ERROR,
+    MESSAGE,
+    OUTPUT_TEXT,
+    PLUGIN_RECOMMENDATIONS,
+    RECOVERY_CONTEXT,
+    ROLE_ASSISTANT,
+    SELECTED_SKILL_INSTRUCTIONS,
+    TURN_ABORTED_CONTENT,
+    USER_SHELL_COMMAND,
+    USER_TEXT,
+)
 from session_log_extractors.json_types import JsonValue
 from session_log_extractors.session_model import (
     AuthorshipMarker,
@@ -11,15 +26,15 @@ from session_log_extractors.session_model import (
 
 _META = "payload.internal_chat_message_metadata_passthrough"
 _KIND_SOURCES: dict[str, AuthorshipSource] = {
-    "user.text": AuthorshipSource.CANDIDATE,
-    "agents_md.instructions": AuthorshipSource.HARNESS,
-    "environments.environment_context": AuthorshipSource.HARNESS,
-    "plugins.recommendations": AuthorshipSource.HARNESS,
-    "skills.selected_skill_instructions": AuthorshipSource.HARNESS,
-    "generic.turn_aborted": AuthorshipSource.HARNESS,
-    "images.preparation_error": AuthorshipSource.HARNESS,
-    "daemon_recovery.internal_context": AuthorshipSource.HARNESS,
-    "shell.user_command": AuthorshipSource.HARNESS,
+    USER_TEXT: AuthorshipSource.CANDIDATE,
+    AGENTS_MD_INSTRUCTIONS: AuthorshipSource.HARNESS,
+    ENVIRONMENT_CONTEXT: AuthorshipSource.HARNESS,
+    PLUGIN_RECOMMENDATIONS: AuthorshipSource.HARNESS,
+    SELECTED_SKILL_INSTRUCTIONS: AuthorshipSource.HARNESS,
+    TURN_ABORTED_CONTENT: AuthorshipSource.HARNESS,
+    IMAGE_PREPARATION_ERROR: AuthorshipSource.HARNESS,
+    RECOVERY_CONTEXT: AuthorshipSource.HARNESS,
+    USER_SHELL_COMMAND: AuthorshipSource.HARNESS,
 }
 _PROVENANCE_SOURCES: dict[str, AuthorshipSource] = {
     "user": AuthorshipSource.CANDIDATE,
@@ -124,17 +139,17 @@ def _block_source(
     kind: JsonValue,
     provenance: JsonValue,
 ) -> AuthorshipSource:
-    if payload.get("type") != "agent_message":
+    if payload.get("type") != AGENT_MESSAGE:
         source = _source(kind, provenance)
         if source != AuthorshipSource.UNKNOWN:
             return source
         # The recorded assistant/output_text pair identifies a runtime response.
         # Codex's content-kind label "unknown" does not erase that actor evidence.
         if (
-            payload.get("type") == "message"
-            and payload.get("role") == "assistant"
+            payload.get("type") == MESSAGE
+            and payload.get("role") == ROLE_ASSISTANT
             and isinstance(block, dict)
-            and block.get("type") == "output_text"
+            and block.get("type") == OUTPUT_TEXT
             and kind in (None, "unknown")
             and provenance is None
         ):
@@ -159,7 +174,7 @@ def _shell_activity_range(
     span: AuthorshipRange, text: str, kind: JsonValue
 ) -> AuthorshipRange:
     """Attribute command and outcome only from the native shell-activity schema."""
-    if kind != "shell.user_command" or span["source"] != AuthorshipSource.HARNESS:
+    if kind != USER_SHELL_COMMAND or span["source"] != AuthorshipSource.HARNESS:
         return span
     match = re.match(
         r"\A<user_shell_command>\s*<command>\n(.*?)\n</command>\s*<result>",
@@ -186,7 +201,7 @@ def message_authorship(
         return []
     base = [AuthorshipMarker(field="type", value=record_type)]
     base.extend(_source_markers(payload, "payload"))
-    if payload.get("type") == "agent_message":
+    if payload.get("type") == AGENT_MESSAGE:
         for key in ("author", "recipient"):
             if key in payload:
                 base.append(

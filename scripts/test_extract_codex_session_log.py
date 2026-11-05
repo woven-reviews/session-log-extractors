@@ -25,25 +25,21 @@ from codex_capture import (
     response_items,
 )
 
+from session_log_extractors import codex_protocol, session_log_envelope
 from session_log_extractors import extract_codex_session_log as mod
-from session_log_extractors import session_log_envelope
 from session_log_extractors.codex_sources import (
-    _cwd_matches,
-    _paths_overlap,
     load_entries,
-    newest,
     output_identifier,
     select_transcript,
     session_cwd_from_file,
     session_id_from_file,
 )
 from session_log_extractors.extract_codex_session_log import (
-    _decode_jsonish,
+    _decode_arguments,
     _extract_all,
     _flatten_result_text,
     _image_bytes_and_ext,
     _plan_update,
-    _unique_identifier,
     append_unique_path,
     assistant_text_from_payload,
     build_raw_envelope,
@@ -102,40 +98,41 @@ def _events(
 
 
 def _users(entries):
-    matching_entries = []
-    for e in _interpret(entries)["events"]:
-        if e["role"] == "user":
-            matching_entries.append(e)
-    return matching_entries
+    user_messages = []
+    for event in _interpret(entries)["events"]:
+        if event["role"] == "user":
+            user_messages.append(event)
+    return user_messages
 
 
 def _calls(entries):
     tool_calls = []
-    for e in _interpret(entries)["events"]:
-        for c in e.get("tool_calls", []):
-            tool_calls.append(c)
+    for event in _interpret(entries)["events"]:
+        for call in event.get("tool_calls", []):
+            tool_calls.append(call)
     return tool_calls
 
 
 def test_codex_structured_skill_call_is_recorded():
     entries = [
         {
-            "type": "event_msg",
+            "type": codex_protocol.EVENT_MSG,
             "timestamp": "2026-01-01T00:00:00Z",
-            "payload": {"type": "user_message", "message": "Make a PDF"},
+            "payload": {"type": codex_protocol.USER_MESSAGE, "message": "Make a PDF"},
         },
         {
-            "type": "response_item",
+            "type": codex_protocol.RESPONSE_ITEM,
             "timestamp": "2026-01-01T00:00:01Z",
             "payload": {
-                "type": "function_call",
-                "name": "skills.read",
+                "type": codex_protocol.FUNCTION_CALL,
+                "name": codex_protocol.SKILLS_READ,
                 "call_id": "skill-1",
                 "arguments": json.dumps({"package": "pdf:pdf"}),
             },
         },
     ]
-    assert _interpret(entries)["skills_used"] == ["pdf:pdf"]
+    session = _interpret(entries)
+    assert session["skills_used"] == ["pdf:pdf"]
 
 
 def test_codex_initial_response_item_user_message_is_exported_once():
@@ -143,9 +140,9 @@ def test_codex_initial_response_item_user_message_is_exported_once():
     text = user["payload"]["content"][0]["text"]
     # Add the legacy event view of the same captured input to test deduplication.
     duplicate = {
-        "type": "event_msg",
+        "type": codex_protocol.EVENT_MSG,
         "timestamp": user["timestamp"],
-        "payload": {"type": "user_message", "message": text},
+        "payload": {"type": codex_protocol.USER_MESSAGE, "message": text},
     }
     users = _users([user, duplicate])
     assert len(users) == 1
@@ -160,11 +157,13 @@ def test_legacy_bare_slash_command_is_recorded():
     # Custom slash commands are rejected by the current interactive CLI.
     entries = [
         {
-            "type": "response_item",
+            "type": codex_protocol.RESPONSE_ITEM,
             "payload": {
-                "type": "message",
+                "type": codex_protocol.MESSAGE,
                 "role": "user",
-                "content": [{"type": "input_text", "text": "/review fixture"}],
+                "content": [
+                    {"type": codex_protocol.INPUT_TEXT, "text": "/review fixture"}
+                ],
             },
         }
     ]
@@ -178,10 +177,10 @@ def test_legacy_bare_slash_command_is_recorded():
 def test_codex_tagged_slash_command_is_recorded():
     entries = [
         {
-            "type": "event_msg",
+            "type": codex_protocol.EVENT_MSG,
             "timestamp": "2026-01-01T00:00:00Z",
             "payload": {
-                "type": "user_message",
+                "type": codex_protocol.USER_MESSAGE,
                 "message": (
                     "<command-name>/review</command-name>\n"
                     "<command-message>review</command-message>\n"
@@ -198,14 +197,14 @@ def test_codex_tagged_slash_command_is_recorded():
 
 def test_codex_skill_md_read_is_recorded():
     args = {"cmd": "sed -n '1,200p' /tmp/plugins/documents/skills/documents/SKILL.md"}
-    assert skill_names_from_call("exec_command", args) == ["documents"]
+    actual_skill_names_from_call = skill_names_from_call("exec_command", args)
+    assert actual_skill_names_from_call == ["documents"]
 
 
 def test_codex_normalized_mcp_skill_read_is_recorded():
     args = {"package": "presentations:Presentations"}
-    assert skill_names_from_call("mcp__skills__read", args) == [
-        "presentations:Presentations"
-    ]
+    actual_skill_names_from_call = skill_names_from_call("mcp__skills__read", args)
+    assert actual_skill_names_from_call == ["presentations:Presentations"]
 
 
 def test_legacy_process_rejection_records_user_denial():
@@ -225,28 +224,31 @@ def test_legacy_process_rejection_records_user_denial():
 def test_codex_handwritten_plan_mode_update_plan_branch():
     entries = [
         {
-            "type": "event_msg",
+            "type": codex_protocol.EVENT_MSG,
             "timestamp": "2026-08-05T10:00:00Z",
             "payload": {
                 "type": "task_started",
-                "collaboration_mode_kind": "plan",
+                "collaboration_mode_kind": codex_protocol.PLAN_MODE,
             },
         },
         {
-            "type": "turn_context",
+            "type": codex_protocol.TURN_CONTEXT,
             "timestamp": "2026-08-05T10:00:01Z",
-            "payload": {"collaboration_mode": {"mode": "plan"}},
+            "payload": {"collaboration_mode": {"mode": codex_protocol.PLAN_MODE}},
         },
         {
-            "type": "event_msg",
+            "type": codex_protocol.EVENT_MSG,
             "timestamp": "2026-08-05T10:00:02Z",
-            "payload": {"type": "user_message", "message": "Plan the change"},
+            "payload": {
+                "type": codex_protocol.USER_MESSAGE,
+                "message": "Plan the change",
+            },
         },
         {
-            "type": "response_item",
+            "type": codex_protocol.RESPONSE_ITEM,
             "timestamp": "2026-08-05T10:00:03Z",
             "payload": {
-                "type": "function_call",
+                "type": codex_protocol.FUNCTION_CALL,
                 "name": "functions.update_plan",
                 "call_id": "plan-1",
                 "arguments": json.dumps(
@@ -261,28 +263,31 @@ def test_codex_handwritten_plan_mode_update_plan_branch():
             },
         },
         {
-            "type": "response_item",
+            "type": codex_protocol.RESPONSE_ITEM,
             "timestamp": "2026-08-05T10:00:04Z",
             "payload": {
-                "type": "function_call_output",
+                "type": codex_protocol.FUNCTION_CALL_OUTPUT,
                 "call_id": "plan-1",
                 "output": "Plan updated",
             },
         },
         {
-            "type": "response_item",
+            "type": codex_protocol.RESPONSE_ITEM,
             "timestamp": "2026-08-05T10:00:05Z",
             "payload": {
-                "type": "message",
+                "type": codex_protocol.MESSAGE,
                 "role": "assistant",
-                "content": [{"type": "output_text", "text": "Here is the plan."}],
+                "content": [
+                    {"type": codex_protocol.OUTPUT_TEXT, "text": "Here is the plan."}
+                ],
             },
         },
     ]
 
     session = _interpret(entries)
     assert session["events"][0]["collaboration_mode"] == "plan"
-    assert _calls(entries)[0]["plan_update"]["steps"] == [
+    interpreted_calls = _calls(entries)
+    assert interpreted_calls[0]["plan_update"]["steps"] == [
         {"step": "Inspect schema", "status": "completed"},
         {"step": "Design change", "status": "in_progress"},
     ]
@@ -306,7 +311,7 @@ def test_codex_native_plan_fixture_records_plan_mode():
 def test_codex_default_mode_update_plan_remains_execution_tool():
     entries = [
         {
-            "type": "event_msg",
+            "type": codex_protocol.EVENT_MSG,
             "timestamp": "2026-08-05T10:00:00Z",
             "payload": {
                 "type": "task_started",
@@ -314,15 +319,15 @@ def test_codex_default_mode_update_plan_remains_execution_tool():
             },
         },
         {
-            "type": "event_msg",
+            "type": codex_protocol.EVENT_MSG,
             "timestamp": "2026-08-05T10:00:01Z",
-            "payload": {"type": "user_message", "message": "Build it"},
+            "payload": {"type": codex_protocol.USER_MESSAGE, "message": "Build it"},
         },
         {
-            "type": "response_item",
+            "type": codex_protocol.RESPONSE_ITEM,
             "payload": {
-                "type": "function_call",
-                "name": "update_plan",
+                "type": codex_protocol.FUNCTION_CALL,
+                "name": codex_protocol.UPDATE_PLAN,
                 "call_id": "plan-1",
                 "arguments": json.dumps(
                     {"plan": [{"step": "Implement", "status": "in_progress"}]}
@@ -330,70 +335,77 @@ def test_codex_default_mode_update_plan_remains_execution_tool():
             },
         },
     ]
-    assert _users(entries)[0]["collaboration_mode"] == "default"
+    user_messages = _users(entries)
+    assert user_messages[0]["collaboration_mode"] == "default"
     call = _calls(entries)[0]
     assert "plan_update" not in call
     assert call["name"] == "update_plan"
 
 
 def test_codex_noise_cleaning():
-    assert clean_user_text("<bash-stdout>output</bash-stdout>") == ""
-    assert (
-        clean_user_text("<bash-input>ls -la</bash-input>")
-        == "<bash-input>ls -la</bash-input>"
-    )
+    actual_clean_user_text = clean_user_text("<bash-stdout>output</bash-stdout>")
+    assert actual_clean_user_text == ""
+    actual_clean_user_text = clean_user_text("<bash-input>ls -la</bash-input>")
+    assert actual_clean_user_text == "<bash-input>ls -la</bash-input>"
 
 
 def test_codex_summary_options_and_shell_command():
     entries = [
         {
-            "type": "event_msg",
+            "type": codex_protocol.EVENT_MSG,
             "timestamp": "2026-01-01T00:00:01Z",
-            "payload": {"type": "user_message", "message": "Need help\nnow"},
+            "payload": {
+                "type": codex_protocol.USER_MESSAGE,
+                "message": "Need help\nnow",
+            },
         },
         {
-            "type": "response_item",
+            "type": codex_protocol.RESPONSE_ITEM,
             "timestamp": "2026-01-01T00:00:02Z",
             "payload": {
-                "type": "function_call",
+                "type": codex_protocol.FUNCTION_CALL,
                 "name": "functions.request_user_input",
                 "call_id": "call-1",
                 "arguments": json.dumps({"questions": QUESTIONS}),
             },
         },
         {
-            "type": "response_item",
+            "type": codex_protocol.RESPONSE_ITEM,
             "timestamp": "2026-01-01T00:00:03Z",
             "payload": {
-                "type": "function_call_output",
+                "type": codex_protocol.FUNCTION_CALL_OUTPUT,
                 "call_id": "call-1",
                 "output": json.dumps({"answers": {"team": {"answers": ["QUAL"]}}}),
             },
         },
         {
-            "type": "event_msg",
+            "type": codex_protocol.EVENT_MSG,
             "timestamp": "2026-01-01T00:00:04Z",
             "payload": {
-                "type": "user_message",
+                "type": codex_protocol.USER_MESSAGE,
                 "message": "<bash-stdout>ignored</bash-stdout>",
             },
         },
         {
-            "type": "event_msg",
+            "type": codex_protocol.EVENT_MSG,
             "timestamp": "2026-01-01T00:00:05Z",
             "payload": {
-                "type": "user_message",
+                "type": codex_protocol.USER_MESSAGE,
                 "message": "<bash-input>ls -la</bash-input>",
             },
         },
     ]
 
-    assert _interpret(entries)["files_changed"] == []
-    assert len(_users(entries)) == 3
+    session = _interpret(entries)
+    assert session["files_changed"] == []
+    user_messages = _users(entries)
+    assert len(user_messages) == 3
     response = _calls(entries)[0]["question_responses"][0]
     assert response["selections"][0]["label"] == "QUAL"
-    assert _users(entries)[1]["text"] == "<bash-stdout>ignored</bash-stdout>"
-    assert _users(entries)[2]["shell_command"] == "ls -la"
+    user_messages = _users(entries)
+    assert user_messages[1]["text"] == "<bash-stdout>ignored</bash-stdout>"
+    user_messages = _users(entries)
+    assert user_messages[2]["shell_command"] == "ls -la"
 
 
 def test_codex_native_question_fixture_marks_answered_option():
@@ -580,12 +592,15 @@ def test_codex_strict_requires_exact_cwd():
 
 def _codex_entries(image_path, missing_path="/gone/missing.png"):
     return [
-        {"type": "session_meta", "payload": {"id": "sess-1", "cwd": "/work/app"}},
         {
-            "type": "event_msg",
+            "type": codex_protocol.SESSION_META,
+            "payload": {"id": "sess-1", "cwd": "/work/app"},
+        },
+        {
+            "type": codex_protocol.EVENT_MSG,
             "timestamp": "2026-08-01T10:00:00Z",
             "payload": {
-                "type": "user_message",
+                "type": codex_protocol.USER_MESSAGE,
                 "message": "here is the mock",
                 "images": [str(image_path), missing_path],
             },
@@ -633,7 +648,7 @@ def test_interpret_events_attaches_output_to_its_function_call():
     calls = []
     for event in events:
         calls.extend(event.get("tool_calls", []))
-    requests = response_items(entries, "custom_tool_call")
+    requests = response_items(entries, codex_protocol.CUSTOM_TOOL_CALL)
     assert len(calls) == len(requests) == 2
     for call, request in zip(calls, requests, strict=True):
         assert call["name"] == request["payload"]["name"]
@@ -646,24 +661,13 @@ def test_interpret_events_attaches_output_to_its_function_call():
 
 
 def test_clean_user_text_empty_returns_empty():
-    assert clean_user_text("") == ""
-    assert clean_user_text(None) == ""
+    actual_clean_user_text = clean_user_text("")
+    assert actual_clean_user_text == ""
+    actual_clean_user_text = clean_user_text(None)
+    assert actual_clean_user_text == ""
 
 
 # --- file discovery / selection ---------------------------------------
-
-
-def test_newest_returns_none_for_empty_and_picks_max_mtime():
-    assert newest([]) is None
-    with tempfile.TemporaryDirectory() as tmp_name:
-        tmp = Path(tmp_name)
-        old = tmp / "old.jsonl"
-        new = tmp / "new.jsonl"
-        old.write_text("{}")
-        new.write_text("{}")
-        os.utime(old, (1, 1))
-        os.utime(new, (1000, 1000))
-        assert newest([old, new]) == new
 
 
 def test_session_id_from_file_handles_malformed_line_and_missing_id():
@@ -677,11 +681,13 @@ def test_session_id_from_file_handles_malformed_line_and_missing_id():
                 ]
             )
         )
-        assert session_id_from_file(path) is None
+        recorded_id = session_id_from_file(path)
+        assert recorded_id is None
 
 
 def test_session_id_from_file_missing_file_returns_none():
-    assert session_id_from_file(Path("/no/such/file.jsonl")) is None
+    recorded_id = session_id_from_file(Path("/no/such/file.jsonl"))
+    assert recorded_id is None
 
 
 def test_session_cwd_from_file_falls_back_to_turn_context():
@@ -698,34 +704,26 @@ def test_session_cwd_from_file_falls_back_to_turn_context():
                 ]
             )
         )
-        assert session_cwd_from_file(path) == "/work/app"
+        recorded_cwd = session_cwd_from_file(path)
+        assert recorded_cwd == "/work/app"
 
 
 def test_session_cwd_from_file_missing_file_and_no_cwd():
-    assert session_cwd_from_file(Path("/no/such/file.jsonl")) is None
+    recorded_cwd = session_cwd_from_file(Path("/no/such/file.jsonl"))
+    assert recorded_cwd is None
     with tempfile.TemporaryDirectory() as tmp_name:
         path = Path(tmp_name) / "log.jsonl"
         path.write_text(json.dumps({"type": "session_meta", "payload": {}}))
-        assert session_cwd_from_file(path) is None
-
-
-def test_paths_overlap_reverse_direction_and_no_overlap():
-    assert _paths_overlap(Path("/work"), Path("/work/app")) is True
-    assert _paths_overlap(Path("/work/one"), Path("/work/two")) is False
-
-
-def test_cwd_matches_strict_and_non_strict():
-    assert _cwd_matches(None, Path("/work")) is False
-    assert _cwd_matches("/work", Path("/work"), strict=True) is True
-    assert _cwd_matches("/work/app", Path("/work"), strict=True) is False
-    assert _cwd_matches("/work/app", Path("/work")) is True
+        recorded_cwd = session_cwd_from_file(path)
+        assert recorded_cwd is None
 
 
 def test_output_identifier_falls_back_to_stem_for_no_session_id():
     with tempfile.TemporaryDirectory() as tmp_name:
         path = Path(tmp_name) / "rollout-abc.jsonl"
         path.write_text(json.dumps({"type": "other"}))
-        assert output_identifier(path) == "rollout-abc"
+        actual_output_identifier = output_identifier(path)
+        assert actual_output_identifier == "rollout-abc"
 
 
 def test_select_transcript_explicit_transcript_missing_raises():
@@ -737,14 +735,16 @@ def test_select_transcript_explicit_transcript_present():
     with tempfile.TemporaryDirectory() as tmp_name:
         path = Path(tmp_name) / "t.jsonl"
         path.write_text("{}")
-        assert select_transcript(None, str(path), None) == path
+        actual_select_transcript = select_transcript(None, str(path), None)
+        assert actual_select_transcript == path
 
 
 def test_select_transcript_positional_file_path():
     with tempfile.TemporaryDirectory() as tmp_name:
         path = Path(tmp_name) / "t.jsonl"
         path.write_text("{}")
-        assert select_transcript(str(path), None, None) == path
+        actual_select_transcript = select_transcript(str(path), None, None)
+        assert actual_select_transcript == path
 
 
 def test_select_transcript_selector_prefix_single_and_ambiguous_and_missing():
@@ -756,7 +756,8 @@ def test_select_transcript_selector_prefix_single_and_ambiguous_and_missing():
         one.write_text(json.dumps({"type": "session_meta", "payload": {"id": "sessA"}}))
         two.write_text(json.dumps({"type": "session_meta", "payload": {"id": "sessB"}}))
 
-        assert select_transcript("sessA", None, str(sessions)) == one
+        actual_select_transcript = select_transcript("sessA", None, str(sessions))
+        assert actual_select_transcript == one
 
         dup_dir = Path(tmp_name) / "dup"
         dup_dir.mkdir()
@@ -799,7 +800,8 @@ def test_select_transcript_falls_back_to_cwd_match_then_newest_anywhere():
         old_cwd = os.getcwd()
         try:
             os.chdir(project)
-            assert select_transcript(None, None, str(sessions)) == in_cwd
+            actual_select_transcript = select_transcript(None, None, str(sessions))
+            assert actual_select_transcript == in_cwd
         finally:
             os.chdir(old_cwd)
 
@@ -815,7 +817,10 @@ def test_select_transcript_falls_back_to_cwd_match_then_newest_anywhere():
         old_cwd = os.getcwd()
         try:
             os.chdir(project)
-            assert select_transcript(None, None, str(only_other_dir)) == only_elsewhere
+            actual_select_transcript = select_transcript(
+                None, None, str(only_other_dir)
+            )
+            assert actual_select_transcript == only_elsewhere
         finally:
             os.chdir(old_cwd)
 
@@ -872,22 +877,24 @@ def test_image_refs_from_event_handles_dict_variants_and_junk():
     }
     refs = image_refs_from_event(payload)
     record_types = []
-    for r in refs:
-        record_types.append(r["type"])
-    kinds = record_types
-    assert kinds.count("path") >= 4
-    assert "data_url" in kinds
-    assert "base64" in kinds
+    for ref in refs:
+        record_types.append(ref["type"])
+    assert record_types.count("path") >= 4
+    assert "data_url" in record_types
+    assert "base64" in record_types
 
 
 def test_image_refs_from_user_message_payload_ignores_non_list_and_other_blocks():
-    assert image_refs_from_user_message_payload({"content": "not a list"}) == []
+    actual_image_refs_from_user_message_payload = image_refs_from_user_message_payload(
+        {"content": "not a list"}
+    )
+    assert actual_image_refs_from_user_message_payload == []
     refs = image_refs_from_user_message_payload(
         {
             "content": [
-                {"type": "input_text", "text": "hi"},
-                {"type": "input_image", "image_url": 123},
-                {"type": "input_image", "image_url": "/tmp/f.png"},
+                {"type": codex_protocol.INPUT_TEXT, "text": "hi"},
+                {"type": codex_protocol.INPUT_IMAGE, "image_url": 123},
+                {"type": codex_protocol.INPUT_IMAGE, "image_url": "/tmp/f.png"},
             ]
         }
     )
@@ -896,49 +903,60 @@ def test_image_refs_from_user_message_payload_ignores_non_list_and_other_blocks(
 
 
 def test_is_startup_context_requires_all_markers():
-    assert not is_startup_context("plain text")
-    assert not is_startup_context(
+    actual_is_startup_context = is_startup_context("plain text")
+    assert not actual_is_startup_context
+    actual_is_startup_context = is_startup_context(
         "<recommended_plugins>only this</recommended_plugins>"
     )
+    assert not actual_is_startup_context
 
 
 def test_user_text_from_event_non_string_message():
-    assert user_text_from_event({"message": 123}) == ""
+    actual_user_text_from_event = user_text_from_event({"message": 123})
+    assert actual_user_text_from_event == ""
 
 
 def test_user_text_from_response_item_strips():
-    assert user_text_from_response_item({"content": [{"text": "  hi  "}]}) == "hi"
+    actual_user_text_from_response_item = user_text_from_response_item(
+        {"content": [{"text": "  hi  "}]}
+    )
+    assert actual_user_text_from_response_item == "hi"
 
 
 def test_assistant_text_from_payload_uses_output_text_key():
-    assert (
-        assistant_text_from_payload({"content": [{"output_text": "hello"}]}) == "hello"
+    actual_assistant_text_from_payload = assistant_text_from_payload(
+        {"content": [{"output_text": "hello"}]}
     )
+    assert actual_assistant_text_from_payload == "hello"
 
 
 def test_content_text_plain_string_content():
-    assert assistant_text_from_payload({"content": "plain string"}) == "plain string"
+    actual_assistant_text_from_payload = assistant_text_from_payload(
+        {"content": "plain string"}
+    )
+    assert actual_assistant_text_from_payload == "plain string"
 
 
 def test_content_text_list_of_plain_strings():
-    assert (
-        assistant_text_from_payload({"content": ["line one", "line two"]})
-        == "line one\nline two"
+    actual_assistant_text_from_payload = assistant_text_from_payload(
+        {"content": ["line one", "line two"]}
     )
+    assert actual_assistant_text_from_payload == "line one\nline two"
 
 
 # --- skill references ---------------------------------------
 
 
 def test_skill_refs_from_call_skill_tool_without_value_adds_nothing():
-    assert skill_names_from_call("skill", {}) == []
+    actual_skill_names_from_call = skill_names_from_call("skill", {})
+    assert actual_skill_names_from_call == []
 
 
 def test_skill_refs_from_call_dedupes_repeated_skill_path_mention():
     # The same SKILL.md path mentioned twice in one call must not duplicate
     # the skill reference.
     blob = "/plugins/documents/skills/pdf/SKILL.md and again /plugins/documents/skills/pdf/SKILL.md"
-    refs = skill_names_from_call("exec_command", {"cmd": blob})
+    refs = skill_names_from_call(codex_protocol.EXEC_COMMAND, {"cmd": blob})
     assert refs == ["pdf"]
 
 
@@ -946,9 +964,12 @@ def test_skill_refs_from_call_dedupes_repeated_skill_path_mention():
 
 
 def test_plan_update_requires_list_of_steps_with_str_step():
-    assert _plan_update("{}") is None
-    assert _plan_update(json.dumps({"plan": "not-a-list"})) is None
-    assert _plan_update(json.dumps({"plan": [{"status": "pending"}]})) is None
+    actual_plan_update = _plan_update("{}")
+    assert actual_plan_update is None
+    actual_plan_update = _plan_update(json.dumps({"plan": "not-a-list"}))
+    assert actual_plan_update is None
+    actual_plan_update = _plan_update(json.dumps({"plan": [{"status": "pending"}]}))
+    assert actual_plan_update is None
     result = _plan_update(
         json.dumps({"plan": [{"step": "Do it"}], "explanation": "why"})
     )
@@ -958,29 +979,44 @@ def test_plan_update_requires_list_of_steps_with_str_step():
     }
 
 
-def test_decode_jsonish_passthrough_and_parse():
-    assert _decode_jsonish(123) == 123
-    assert _decode_jsonish("not json") == "not json"
-    assert _decode_jsonish(json.dumps({"a": 1})) == {"a": 1}
+def test_decode_arguments_passthrough_and_parse():
+    actual_decode_arguments = _decode_arguments(123)
+    assert actual_decode_arguments == 123
+    actual_decode_arguments = _decode_arguments("not json")
+    assert actual_decode_arguments == "not json"
+    actual_decode_arguments = _decode_arguments(json.dumps({"a": 1}))
+    assert actual_decode_arguments == {"a": 1}
 
 
 def test_flatten_result_text_variants():
-    assert _flatten_result_text(True) == "True"
-    assert _flatten_result_text([1, "a"]) == "1 a"
-    assert _flatten_result_text({"message": "hi", "text": "there"}) == "hi there"
-    assert _flatten_result_text({"unmapped": "value"}) == "value"
-    assert _flatten_result_text({}) == ""
+    actual_flatten_result_text = _flatten_result_text(True)
+    assert actual_flatten_result_text == "True"
+    actual_flatten_result_text = _flatten_result_text([1, "a"])
+    assert actual_flatten_result_text == "1 a"
+    actual_flatten_result_text = _flatten_result_text(
+        {"message": "hi", "text": "there"}
+    )
+    assert actual_flatten_result_text == "hi there"
+    actual_flatten_result_text = _flatten_result_text({"unmapped": "value"})
+    assert actual_flatten_result_text == "value"
+    actual_flatten_result_text = _flatten_result_text({})
+    assert actual_flatten_result_text == ""
 
 
 # --- patch paths / unique path bookkeeping ---------------------------------------
 
 
 def test_patch_paths_handles_variants():
-    assert patch_paths(None) == []
-    assert patch_paths(123) == []
-    assert patch_paths("*** Add File: a.py\n*** Update File: b.py") == ["a.py", "b.py"]
-    assert patch_paths(json.dumps({"input": "*** Delete File: c.py"})) == ["c.py"]
-    assert patch_paths({"content": "*** Add File: d.py"}) == ["d.py"]
+    actual_patch_paths = patch_paths(None)
+    assert actual_patch_paths == []
+    actual_patch_paths = patch_paths(123)
+    assert actual_patch_paths == []
+    actual_patch_paths = patch_paths("*** Add File: a.py\n*** Update File: b.py")
+    assert actual_patch_paths == ["a.py", "b.py"]
+    actual_patch_paths = patch_paths(json.dumps({"input": "*** Delete File: c.py"}))
+    assert actual_patch_paths == ["c.py"]
+    actual_patch_paths = patch_paths({"content": "*** Add File: d.py"})
+    assert actual_patch_paths == ["d.py"]
 
 
 def test_append_unique_path_skips_empty_and_duplicates():
@@ -1000,28 +1036,29 @@ def test_append_unique_path_skips_empty_and_duplicates():
 def test_interpret_turn_context_sets_mode_on_existing_turn_without_one():
     entries = [
         {
-            "type": "event_msg",
+            "type": codex_protocol.EVENT_MSG,
             "timestamp": "2026-01-01T00:00:00Z",
-            "payload": {"type": "user_message", "message": "hi"},
+            "payload": {"type": codex_protocol.USER_MESSAGE, "message": "hi"},
         },
         {
-            "type": "turn_context",
+            "type": codex_protocol.TURN_CONTEXT,
             "timestamp": "2026-01-01T00:00:01Z",
-            "payload": {"collaboration_mode": {"mode": "plan"}},
+            "payload": {"collaboration_mode": {"mode": codex_protocol.PLAN_MODE}},
         },
     ]
-    assert _users(entries)[0]["collaboration_mode"] == "plan"
+    user_messages = _users(entries)
+    assert user_messages[0]["collaboration_mode"] == "plan"
 
 
 def test_interpret_patch_apply_end_records_paths_and_stdout():
     entries = [
         {
-            "type": "event_msg",
+            "type": codex_protocol.EVENT_MSG,
             "timestamp": "2026-01-01T00:00:00Z",
-            "payload": {"type": "user_message", "message": "edit files"},
+            "payload": {"type": codex_protocol.USER_MESSAGE, "message": "edit files"},
         },
         {
-            "type": "event_msg",
+            "type": codex_protocol.EVENT_MSG,
             "timestamp": "2026-01-01T00:00:01Z",
             "payload": {
                 "type": "patch_apply_end",
@@ -1038,7 +1075,7 @@ def test_interpret_patch_apply_end_records_paths_and_stdout():
 def test_interpret_patch_apply_end_before_any_turn_retains_harness_activity():
     entries = [
         {
-            "type": "event_msg",
+            "type": codex_protocol.EVENT_MSG,
             "timestamp": "2026-01-01T00:00:00Z",
             "payload": {
                 "type": "patch_apply_end",
@@ -1074,48 +1111,51 @@ def test_interpret_assistant_message_before_any_user_is_preserved():
 def test_interpret_function_call_before_any_user_turn_creates_turn():
     entries = [
         {
-            "type": "response_item",
+            "type": codex_protocol.RESPONSE_ITEM,
             "timestamp": "2026-01-01T00:00:00Z",
             "payload": {
-                "type": "function_call",
+                "type": codex_protocol.FUNCTION_CALL,
                 "name": "shell",
                 "call_id": "c1",
                 "input": json.dumps({"command": "ls"}),
             },
         }
     ]
-    assert _calls(entries)[0]["name"] == "shell"
-    assert _calls(entries)[0]["input"] == {"command": "ls"}
+    interpreted_calls = _calls(entries)
+    assert interpreted_calls[0]["name"] == "shell"
+    interpreted_calls = _calls(entries)
+    assert interpreted_calls[0]["input"] == {"command": "ls"}
 
 
 def test_interpret_apply_patch_tool_call_records_file_paths():
     entries = [
         {
-            "type": "event_msg",
+            "type": codex_protocol.EVENT_MSG,
             "timestamp": "2026-01-01T00:00:00Z",
-            "payload": {"type": "user_message", "message": "patch it"},
+            "payload": {"type": codex_protocol.USER_MESSAGE, "message": "patch it"},
         },
         {
-            "type": "response_item",
+            "type": codex_protocol.RESPONSE_ITEM,
             "timestamp": "2026-01-01T00:00:01Z",
             "payload": {
-                "type": "function_call",
-                "name": "apply_patch",
+                "type": codex_protocol.FUNCTION_CALL,
+                "name": codex_protocol.APPLY_PATCH,
                 "call_id": "c1",
                 "arguments": json.dumps({"input": "*** Add File: new.py"}),
             },
         },
     ]
-    assert _interpret(entries)["files_changed"] == ["new.py"]
+    session = _interpret(entries)
+    assert session["files_changed"] == ["new.py"]
 
 
 def test_interpret_function_call_output_before_any_user_is_retained():
     entries = [
         {
-            "type": "response_item",
+            "type": codex_protocol.RESPONSE_ITEM,
             "timestamp": "2026-01-01T00:00:00Z",
             "payload": {
-                "type": "function_call_output",
+                "type": codex_protocol.FUNCTION_CALL_OUTPUT,
                 "call_id": "c1",
                 "output": "result",
             },
@@ -1129,23 +1169,25 @@ def test_interpret_function_call_output_before_any_user_is_retained():
 def test_interpret_empty_tool_input_is_preserved():
     entries = [
         {
-            "type": "event_msg",
+            "type": codex_protocol.EVENT_MSG,
             "timestamp": "2026-01-01T00:00:00Z",
-            "payload": {"type": "user_message", "message": "do it"},
+            "payload": {"type": codex_protocol.USER_MESSAGE, "message": "do it"},
         },
         {
-            "type": "response_item",
+            "type": codex_protocol.RESPONSE_ITEM,
             "timestamp": "2026-01-01T00:00:01Z",
             "payload": {
-                "type": "function_call",
+                "type": codex_protocol.FUNCTION_CALL,
                 "name": "noop_tool",
                 "call_id": "c1",
                 "arguments": "",
             },
         },
     ]
-    assert _calls(entries)[0]["name"] == "noop_tool"
-    assert _calls(entries)[0]["input"] == ""
+    interpreted_calls = _calls(entries)
+    assert interpreted_calls[0]["name"] == "noop_tool"
+    interpreted_calls = _calls(entries)
+    assert interpreted_calls[0]["input"] == ""
 
 
 # --- event export edge cases ---------------------------------------
@@ -1154,14 +1196,14 @@ def test_interpret_empty_tool_input_is_preserved():
 def test_interpret_events_skips_blank_user_event_without_text_or_images():
     entries = [
         {
-            "type": "event_msg",
+            "type": codex_protocol.EVENT_MSG,
             "timestamp": "2026-01-01T00:00:00Z",
-            "payload": {"type": "user_message", "message": ""},
+            "payload": {"type": codex_protocol.USER_MESSAGE, "message": ""},
         },
         {
-            "type": "event_msg",
+            "type": codex_protocol.EVENT_MSG,
             "timestamp": "2026-01-01T00:00:01Z",
-            "payload": {"type": "user_message", "message": "real text"},
+            "payload": {"type": codex_protocol.USER_MESSAGE, "message": "real text"},
         },
     ]
     events = _events(entries)
@@ -1173,18 +1215,18 @@ def test_interpret_events_retains_startup_context_as_its_own_message():
     startup_text = "<recommended_plugins>x</recommended_plugins>\n# AGENTS.md instructions\n<environment_context>y</environment_context>"
     entries = [
         {
-            "type": "response_item",
+            "type": codex_protocol.RESPONSE_ITEM,
             "timestamp": "2026-01-01T00:00:00Z",
             "payload": {
-                "type": "message",
+                "type": codex_protocol.MESSAGE,
                 "role": "user",
-                "content": [{"type": "input_text", "text": startup_text}],
+                "content": [{"type": codex_protocol.INPUT_TEXT, "text": startup_text}],
             },
         },
         {
-            "type": "event_msg",
+            "type": codex_protocol.EVENT_MSG,
             "timestamp": "2026-01-01T00:00:01Z",
-            "payload": {"type": "user_message", "message": "actual turn"},
+            "payload": {"type": codex_protocol.USER_MESSAGE, "message": "actual turn"},
         },
     ]
     events = _events(entries)
@@ -1196,12 +1238,12 @@ def test_interpret_events_retains_startup_context_as_its_own_message():
 def test_interpret_events_assistant_whitespace_is_preserved():
     entries = [
         {
-            "type": "response_item",
+            "type": codex_protocol.RESPONSE_ITEM,
             "timestamp": "2026-01-01T00:00:00Z",
             "payload": {
-                "type": "message",
+                "type": codex_protocol.MESSAGE,
                 "role": "assistant",
-                "content": [{"type": "output_text", "text": "   "}],
+                "content": [{"type": codex_protocol.OUTPUT_TEXT, "text": "   "}],
             },
         }
     ]
@@ -1226,29 +1268,39 @@ def test_interpret_events_function_call_flushes_pending_user_message():
 def test_export_omits_unmatched_result_without_inventing_a_message():
     entries = [
         {
-            "type": "response_item",
+            "type": codex_protocol.RESPONSE_ITEM,
             "timestamp": "2026-01-01T00:00:00Z",
             "payload": {
-                "type": "function_call_output",
+                "type": codex_protocol.FUNCTION_CALL_OUTPUT,
                 "call_id": "unknown",
                 "output": "whatever",
             },
         }
     ]
-    assert _events(entries) == []
+    exported_events = _events(entries)
+    assert exported_events == []
 
 
 # --- image byte decoding ---------------------------------------
 
 
 def test_image_bytes_and_ext_invalid_data_url_and_bad_base64():
-    assert (
-        _image_bytes_and_ext({"type": "data_url", "data_url": "not-a-data-url"}) is None
+    actual_image_bytes_and_ext = _image_bytes_and_ext(
+        {"type": "data_url", "data_url": "not-a-data-url"}
     )
-    assert _image_bytes_and_ext({"type": "data_url", "data_url": 123}) is None
-    assert _image_bytes_and_ext({"type": "base64", "data": 123}) is None
-    assert _image_bytes_and_ext({"type": "base64", "data": "!!!not-base64!!!"}) is None
-    assert _image_bytes_and_ext({"type": "unknown"}) is None
+    assert actual_image_bytes_and_ext is None
+    actual_image_bytes_and_ext = _image_bytes_and_ext(
+        {"type": "data_url", "data_url": 123}
+    )
+    assert actual_image_bytes_and_ext is None
+    actual_image_bytes_and_ext = _image_bytes_and_ext({"type": "base64", "data": 123})
+    assert actual_image_bytes_and_ext is None
+    actual_image_bytes_and_ext = _image_bytes_and_ext(
+        {"type": "base64", "data": "!!!not-base64!!!"}
+    )
+    assert actual_image_bytes_and_ext is None
+    actual_image_bytes_and_ext = _image_bytes_and_ext({"type": "unknown"})
+    assert actual_image_bytes_and_ext is None
 
 
 def test_image_bytes_and_ext_base64_without_media_type_defaults_to_img():
@@ -1258,16 +1310,22 @@ def test_image_bytes_and_ext_base64_without_media_type_defaults_to_img():
 
 
 def test_image_bytes_and_ext_path_missing_file_returns_none():
-    assert _image_bytes_and_ext({"type": "path", "path": "/no/such/file.png"}) is None
-    assert _image_bytes_and_ext({"type": "path", "path": 123}) is None
+    actual_image_bytes_and_ext = _image_bytes_and_ext(
+        {"type": "path", "path": "/no/such/file.png"}
+    )
+    assert actual_image_bytes_and_ext is None
+    actual_image_bytes_and_ext = _image_bytes_and_ext({"type": "path", "path": 123})
+    assert actual_image_bytes_and_ext is None
 
 
 # --- session-level helpers ---------------------------------------
 
 
 def test_first_timestamp_empty_entries_returns_none():
-    assert first_timestamp([]) is None
-    assert first_timestamp([{"no": "timestamp"}]) is None
+    actual_first_timestamp = first_timestamp([])
+    assert actual_first_timestamp is None
+    actual_first_timestamp = first_timestamp([{"no": "timestamp"}])
+    assert actual_first_timestamp is None
 
 
 def test_session_models_dedupes_and_ignores_missing():
@@ -1294,14 +1352,17 @@ def test_session_models_dedupes_and_ignores_missing():
 def test_multiple_plan_updates():
     entries = [
         {
-            "type": "event_msg",
+            "type": codex_protocol.EVENT_MSG,
             "timestamp": "2026-01-01T00:00:00Z",
-            "payload": {"type": "task_started", "collaboration_mode_kind": "plan"},
+            "payload": {
+                "type": "task_started",
+                "collaboration_mode_kind": codex_protocol.PLAN_MODE,
+            },
         },
         {
-            "type": "event_msg",
+            "type": codex_protocol.EVENT_MSG,
             "timestamp": "2026-01-01T00:00:01Z",
-            "payload": {"type": "user_message", "message": "plan twice"},
+            "payload": {"type": codex_protocol.USER_MESSAGE, "message": "plan twice"},
         },
     ]
     for i in range(2):
@@ -1319,8 +1380,8 @@ def test_multiple_plan_updates():
             }
         )
     recorded_values = []
-    for c in _calls(entries):
-        recorded_values.append(c["plan_update"]["steps"][0]["step"])
+    for call in _calls(entries):
+        recorded_values.append(call["plan_update"]["steps"][0]["step"])
     assert recorded_values == ["Step 0", "Step 1"]
 
 
@@ -1329,7 +1390,10 @@ def test_records_files_changed():
     expected = []
     for entry in entries:
         item = entry["payload"].get("item", {})
-        if item.get("type") == "FileChange" and item.get("status") == "completed":
+        if (
+            item.get("type") == codex_protocol.FILE_CHANGE
+            and item.get("status") == "completed"
+        ):
             for path in item.get("changes", {}):
                 if path not in expected:
                     expected.append(path)
@@ -1388,12 +1452,12 @@ def test_extract_all_retains_success_but_reports_partial_failure(monkeypatch):
 
         original_interpret = mod.interpret_source
 
-        def flaky_build_envelope(source, *args):
+        def flaky_interpret_source(source, *args):
             if "bad" in source.path.name:
                 raise ValueError("boom")
             return original_interpret(source, *args)
 
-        monkeypatch.setattr(mod, "interpret_source", flaky_build_envelope)
+        monkeypatch.setattr(mod, "interpret_source", flaky_interpret_source)
         monkeypatch.chdir(project)
         rc = mod._extract_all(str(sessions), str(out))
 
@@ -1429,7 +1493,9 @@ def test_main_single_session_writes_only_json(tmp_path):
     status = main(["--transcript", str(TRANSCRIPT), "--output", str(destination)])
     assert status == 0
     envelope = json.loads(destination.read_text())
-    assert envelope["models"] == session_models(load_entries(TRANSCRIPT))
+    actual_load_entries = load_entries(TRANSCRIPT)
+    actual_session_models = session_models(actual_load_entries)
+    assert envelope["models"] == actual_session_models
     assert len(envelope["models"]) == 2
     assert list(tmp_path.iterdir()) == [destination]
 
@@ -1452,7 +1518,8 @@ def test_jsonl_files_returns_empty_for_missing_root():
 
 
 def test_flatten_result_text_unhandled_type_returns_empty():
-    assert _flatten_result_text(None) == ""
+    actual_flatten_result_text = _flatten_result_text(None)
+    assert actual_flatten_result_text == ""
 
 
 def test_skill_refs_from_call_backfills_path_for_already_seen_skill():
@@ -1468,22 +1535,27 @@ def test_skill_refs_from_call_unserializable_args_skips_regex_scan():
     class Weird:
         pass
 
-    assert skill_names_from_call("exec_command", {"cmd": Weird()}) == []
+    actual_skill_names_from_call = skill_names_from_call(
+        "exec_command", {"cmd": Weird()}
+    )
+    assert actual_skill_names_from_call == []
 
 
 def test_interpret_tagged_command_without_leading_slash_is_ignored():
     entries = [
         {
-            "type": "event_msg",
+            "type": codex_protocol.EVENT_MSG,
             "timestamp": "2026-01-01T00:00:00Z",
             "payload": {
-                "type": "user_message",
+                "type": codex_protocol.USER_MESSAGE,
                 "message": "<command-name>not-a-command</command-name>\nsome text",
             },
         }
     ]
-    assert "command" not in _users(entries)[0]
-    assert _users(entries)[0]["text"] == entries[0]["payload"]["message"]
+    user_messages = _users(entries)
+    assert "command" not in user_messages[0]
+    user_messages = _users(entries)
+    assert user_messages[0]["text"] == entries[0]["payload"]["message"]
 
 
 def test_interpret_startup_context_preserves_its_timestamp_and_text():
@@ -1493,18 +1565,18 @@ def test_interpret_startup_context_preserves_its_timestamp_and_text():
     )
     entries = [
         {
-            "type": "response_item",
+            "type": codex_protocol.RESPONSE_ITEM,
             "timestamp": "2026-01-01T00:00:00Z",
             "payload": {
-                "type": "message",
+                "type": codex_protocol.MESSAGE,
                 "role": "user",
-                "content": [{"type": "input_text", "text": startup_text}],
+                "content": [{"type": codex_protocol.INPUT_TEXT, "text": startup_text}],
             },
         },
         {
-            "type": "event_msg",
+            "type": codex_protocol.EVENT_MSG,
             "timestamp": "2026-01-01T00:00:01Z",
-            "payload": {"type": "user_message", "message": "actual turn"},
+            "payload": {"type": codex_protocol.USER_MESSAGE, "message": "actual turn"},
         },
     ]
     users = _users(entries)
@@ -1516,10 +1588,10 @@ def test_interpret_startup_context_preserves_its_timestamp_and_text():
 def test_interpret_events_function_call_arguments_fallback_to_input():
     entries = [
         {
-            "type": "response_item",
+            "type": codex_protocol.RESPONSE_ITEM,
             "timestamp": "2026-01-01T00:00:00Z",
             "payload": {
-                "type": "function_call",
+                "type": codex_protocol.FUNCTION_CALL,
                 "name": "shell",
                 "call_id": "c1",
                 "input": json.dumps({"command": "ls"}),
@@ -1533,17 +1605,8 @@ def test_interpret_events_function_call_arguments_fallback_to_input():
 
 def test_image_bytes_and_ext_data_url_bad_base64_padding():
     ref = {"type": "data_url", "data_url": "data:image/png;base64,abc"}
-    assert _image_bytes_and_ext(ref) is None
-
-
-def test_unique_identifier_suffixes_duplicates():
-    used: set = set()
-    identifier = _unique_identifier("sess", used)
-    assert identifier == "sess"
-    identifier = _unique_identifier("sess", used)
-    assert identifier == "sess-2"
-    identifier = _unique_identifier("sess", used)
-    assert identifier == "sess-3"
+    actual_image_bytes_and_ext = _image_bytes_and_ext(ref)
+    assert actual_image_bytes_and_ext is None
 
 
 def test_extract_all_write_failure_is_skipped():
@@ -1601,8 +1664,8 @@ def test_json_entrypoints_bypass_presentation(mode, tmp_path, monkeypatch, capsy
     elif mode == "batch":
         args = ["--all", "--sessions-root", str(tmp_path)]
     status = main(args, project_root=tmp_path / "out")
-    assert status == 0
     captured = capsys.readouterr()
+    assert status == 0
     envelope = json.loads(captured.out if mode == "stdout" else destination.read_text())
     assert envelope["events"] == expected
     assert envelope["session_id"] == "s1"
@@ -1628,18 +1691,18 @@ def test_cli_preserves_nested_tools_and_result_cap(
     result = "é" * 10
     entries += [
         {
-            "type": "response_item",
+            "type": codex_protocol.RESPONSE_ITEM,
             "payload": {
-                "type": "function_call",
+                "type": codex_protocol.FUNCTION_CALL,
                 "name": "multi_tool_use.parallel",
                 "call_id": "c1",
                 "arguments": json.dumps(tool_input),
             },
         },
         {
-            "type": "response_item",
+            "type": codex_protocol.RESPONSE_ITEM,
             "payload": {
-                "type": "function_call_output",
+                "type": codex_protocol.FUNCTION_CALL_OUTPUT,
                 "call_id": "c1",
                 "output": {"content": [{"type": "text", "text": result}]},
             },
@@ -1653,8 +1716,8 @@ def test_cli_preserves_nested_tools_and_result_cap(
     else:
         args += ["--transcript", str(transcript), "--output", "-"]
     status = main(args)
-    assert status == 0
     captured = capsys.readouterr()
+    assert status == 0
     envelope = json.loads(
         (tmp_path / "out" / "codex_session_log_raw_s1.json").read_text()
         if batch
@@ -1696,8 +1759,8 @@ def test_cli_warnings_stay_on_stderr(stdout, tmp_path, monkeypatch, capsys):
             "-" if stdout else str(destination),
         ]
     )
-    assert status == 0
     captured = capsys.readouterr()
+    assert status == 0
     assert (
         json.loads(captured.out if stdout else destination.read_text())["session_id"]
         == "s1"
@@ -1719,14 +1782,13 @@ def test_batch_duplicate_identifiers_preserve_both_json_files(tmp_path, monkeypa
     selected_envelopes = []
     for path in out.glob("*.json"):
         selected_envelopes.append(json.loads(path.read_text()))
-    envelopes = selected_envelopes
     message_texts = set()
-    for e in envelopes:
-        message_texts.add(e["events"][0]["text"])
+    for envelope in selected_envelopes:
+        message_texts.add(envelope["events"][0]["text"])
     assert message_texts == {"first", "second"}
     session_ids = set()
-    for e in envelopes:
-        session_ids.add(e["session_id"])
+    for envelope in selected_envelopes:
+        session_ids.add(envelope["session_id"])
     assert session_ids == {"same"}
     output_names = set()
     for p in out.iterdir():
@@ -1794,95 +1856,91 @@ def test_codex_preserves_native_results_and_identity():
     # Retain the native tool shapes, changing only IDs/results to exercise
     # repeated names, unmatched results, and missing/null/empty boundaries.
     entries = exec_interactions()
-    matching_entries = []
-    for e in entries:
-        if e["payload"].get("type") == "custom_tool_call":
-            matching_entries.append(e)
-    calls = matching_entries
-    selected_matching_entries = []
-    for e in entries:
-        if e["payload"].get("type") == "custom_tool_call_output":
-            selected_matching_entries.append(e)
-    outputs = selected_matching_entries
-    calls[0]["payload"]["id"] = "native-call"
-    outputs[0]["payload"]["output"] = {"nested": [None, "", {"unknown": True}]}
-    outputs[0]["payload"]["id"] = "native-result"
-    outputs[1]["payload"]["output"] = None
-    missing = json.loads(json.dumps(calls[0]))
+    native_calls = []
+    for event in entries:
+        if event["payload"].get("type") == codex_protocol.CUSTOM_TOOL_CALL:
+            native_calls.append(event)
+    native_results = []
+    for event in entries:
+        if event["payload"].get("type") == codex_protocol.CUSTOM_TOOL_CALL_OUTPUT:
+            native_results.append(event)
+    native_calls[0]["payload"]["id"] = "native-call"
+    native_results[0]["payload"]["output"] = {"nested": [None, "", {"unknown": True}]}
+    native_results[0]["payload"]["id"] = "native-result"
+    native_results[1]["payload"]["output"] = None
+    missing = json.loads(json.dumps(native_calls[0]))
     missing["payload"]["call_id"] = "no-result"
-    empty = json.loads(json.dumps(outputs[1]))
+    empty = json.loads(json.dumps(native_results[1]))
     empty["payload"]["call_id"] = "unmatched"
     empty["payload"]["output"] = ""
     entries.extend([missing, empty])
     source = mod.CodexSource(Path("unused.jsonl"), entries)
     session = mod.interpret_source(source)
     assert session is not None
-    tool_calls = []
-    for e in session["events"]:
-        for c in e.get("tool_calls", []):
-            tool_calls.append(c)
-    interpreted = tool_calls
+    interpreted_calls = []
+    for event in session["events"]:
+        for call in event.get("tool_calls", []):
+            interpreted_calls.append(call)
     tool_names = []
-    for c in interpreted:
-        tool_names.append(c["name"])
+    for call in interpreted_calls:
+        tool_names.append(call["name"])
     assert tool_names == ["exec"] * 3
-    assert interpreted[0]["id"] == calls[0]["payload"]["call_id"]
-    assert interpreted[0]["result_record"]["content"] == outputs[0]["payload"]["output"]
-    assert interpreted[0]["result_record"]["id"] == "native-result"
-    assert interpreted[1]["result"] is None
-    assert "result" not in interpreted[2]
+    assert interpreted_calls[0]["id"] == native_calls[0]["payload"]["call_id"]
+    assert (
+        interpreted_calls[0]["result_record"]["content"]
+        == native_results[0]["payload"]["output"]
+    )
+    assert interpreted_calls[0]["result_record"]["id"] == "native-result"
+    assert interpreted_calls[1]["result"] is None
+    assert "result" not in interpreted_calls[2]
     assert session["unmatched_tool_results"][0]["content"] == ""
     assert session["unsupported_tools"] == ["exec"]
     result_checks = []
-    for c in interpreted:
-        result_checks.append("result_truncated" not in c)
+    for call in interpreted_calls:
+        result_checks.append("result_truncated" not in call)
     assert all(result_checks)
 
 
 def test_native_results_match_ids_across_user_messages_and_export_without_mutation():
     entries = exec_interactions()
-    matching_entries = []
-    for e in entries:
-        if e["payload"].get("type") == "custom_tool_call":
-            matching_entries.append(e)
-    calls = matching_entries
-    selected_matching_entries = []
-    for e in entries:
-        if e["payload"].get("type") == "custom_tool_call_output":
-            selected_matching_entries.append(e)
-    outputs = selected_matching_entries
-    selected_selected_matching_entries = []
-    for e in entries:
-        if e["payload"].get("role") == "user":
-            selected_selected_matching_entries.append(e)
-    user = next(iter(selected_selected_matching_entries))
+    native_calls = []
+    for event in entries:
+        if event["payload"].get("type") == codex_protocol.CUSTOM_TOOL_CALL:
+            native_calls.append(event)
+    native_results = []
+    for event in entries:
+        if event["payload"].get("type") == codex_protocol.CUSTOM_TOOL_CALL_OUTPUT:
+            native_results.append(event)
+    native_user_records = []
+    for event in entries:
+        if event["payload"].get("role") == "user":
+            native_user_records.append(event)
+    user = next(iter(native_user_records))
     # Retain the native envelope and call IDs, delaying the results past a
     # second human message and returning them in reverse call order.
-    outputs[0]["payload"]["output"] = "é" * 12_000
-    outputs[0]["payload"]["is_error"] = True
-    entries = [user, *calls, user, *reversed(outputs)]
+    native_results[0]["payload"]["output"] = "é" * 12_000
+    native_results[0]["payload"]["is_error"] = True
+    entries = [user, *native_calls, user, *reversed(native_results)]
     session = _interpret(entries)
-    tool_calls = []
-    for e in session["events"]:
-        for c in e.get("tool_calls", []):
-            tool_calls.append(c)
-    interpreted = tool_calls
-    assert interpreted[0]["result"] == "é" * 12_000
-    assert interpreted[0]["result_record"]["content"] == "é" * 12_000
-    assert interpreted[0]["is_error"] is True
-    assert interpreted[1]["result_record"]["content"] == outputs[1]["payload"]["output"]
+    interpreted_calls = []
+    for event in session["events"]:
+        for call in event.get("tool_calls", []):
+            interpreted_calls.append(call)
+    assert interpreted_calls[0]["result"] == "é" * 12_000
+    assert interpreted_calls[0]["result_record"]["content"] == "é" * 12_000
+    assert interpreted_calls[0]["is_error"] is True
+    assert (
+        interpreted_calls[1]["result_record"]["content"]
+        == native_results[1]["payload"]["output"]
+    )
     original = json.dumps(session)
     capped = session_log_envelope.export_session(session, 7)
     exported = capped["events"][1]["tool_calls"][0]
     assert exported["result"] == "é" * 3
     assert exported["result_bytes"] == 24_000
     assert exported["result_truncated"] is True
-    assert (
-        session_log_envelope.export_session(session, -1)["events"][1]["tool_calls"][0][
-            "result"
-        ]
-        == "é" * 12_000
-    )
+    exported = session_log_envelope.export_session(session, -1)
+    assert exported["events"][1]["tool_calls"][0]["result"] == "é" * 12_000
     assert json.dumps(session) == original
 
 
@@ -1890,9 +1948,9 @@ def test_native_results_match_ids_across_user_messages_and_export_without_mutati
 def test_native_result_missing_null_and_empty_stay_distinct(output):
     source = mod.CodexSource(TRANSCRIPT, question_interaction())
     recorded_values = []
-    for e in source.entries:
-        if e["payload"].get("type") == "function_call_output":
-            recorded_values.append(e["payload"])
+    for event in source.entries:
+        if event["payload"].get("type") == codex_protocol.FUNCTION_CALL_OUTPUT:
+            recorded_values.append(event["payload"])
     result = next(iter(recorded_values))
     if output == "missing":
         del result["output"]
@@ -1900,13 +1958,13 @@ def test_native_result_missing_null_and_empty_stay_distinct(output):
         result["output"] = output
     session = mod.interpret_source(source)
     tool_calls = []
-    for e in session["events"]:
-        for c in e.get("tool_calls", []):
+    for event in session["events"]:
+        for c in event.get("tool_calls", []):
             tool_calls.append(c)
     call = next(iter(tool_calls))
     selected_tool_calls = []
-    for e in session_log_envelope.export_session(session)["events"]:
-        for c in e.get("tool_calls", []):
+    for event in session_log_envelope.export_session(session)["events"]:
+        for c in event.get("tool_calls", []):
             selected_tool_calls.append(c)
     exported = next(iter(selected_tool_calls))
     if output == "missing":
@@ -1934,16 +1992,15 @@ def test_native_message_ids_and_image_ownership_survive():
         }
     )
     session = mod.interpret_source(source)
-    matching_entries = []
-    for e in session["events"]:
-        if e["role"] == "user":
-            matching_entries.append(e)
-    users = matching_entries
-    assert users[0]["id"] == "image-owner"
-    assert users[0]["message_id"] == "message-1"
-    assert users[0]["parent_id"] == "parent-1"
-    assert len(users[0]["images"]) == 2
-    assert "images" not in users[-1]
+    user_messages = []
+    for event in session["events"]:
+        if event["role"] == "user":
+            user_messages.append(event)
+    assert user_messages[0]["id"] == "image-owner"
+    assert user_messages[0]["message_id"] == "message-1"
+    assert user_messages[0]["parent_id"] == "parent-1"
+    assert len(user_messages[0]["images"]) == 2
+    assert "images" not in user_messages[-1]
 
 
 def test_cli_reports_unsupported_schema_once_and_retains_input(tmp_path, capsys):
@@ -1951,13 +2008,13 @@ def test_cli_reports_unsupported_schema_once_and_retains_input(tmp_path, capsys)
     transcript = tmp_path / "s.jsonl"
     _write_jsonl(transcript, entries)
     status = main(["--transcript", str(transcript), "--output", "-"])
-    assert status == 0
     captured = capsys.readouterr()
+    assert status == 0
     assert captured.err.count("warning: unsupported tool input schemas: exec") == 1
     calls = []
     for event in json.loads(captured.out)["events"]:
         calls.extend(event.get("tool_calls", []))
-    requests = response_items(entries, "custom_tool_call")
+    requests = response_items(entries, codex_protocol.CUSTOM_TOOL_CALL)
     assert len(calls) == len(requests) == 2
     for call, request in zip(calls, requests, strict=True):
         assert call["input"] == request["payload"]["input"]
@@ -1998,14 +2055,17 @@ def test_legacy_duplicate_user_views_preserve_raw_text():
     text = "Keep this prose. <bash-stdout>legacy wrapper</bash-stdout>"
     entries = [
         {
-            "type": "response_item",
+            "type": codex_protocol.RESPONSE_ITEM,
             "payload": {
-                "type": "message",
+                "type": codex_protocol.MESSAGE,
                 "role": "user",
-                "content": [{"type": "input_text", "text": text}],
+                "content": [{"type": codex_protocol.INPUT_TEXT, "text": text}],
             },
         },
-        {"type": "event_msg", "payload": {"type": "user_message", "message": text}},
+        {
+            "type": codex_protocol.EVENT_MSG,
+            "payload": {"type": codex_protocol.USER_MESSAGE, "message": text},
+        },
     ]
     users = _users(entries)
     assert len(users) == 1
@@ -2055,7 +2115,8 @@ def test_sanitized_collision_keeps_native_ids_and_parent_reference(tmp_path, cap
         ["--sessions-root", str(tmp_path), "--output", str(tmp_path)],
         project_root=tmp_path,
     )
-    assert status == 0, capsys.readouterr().err
+    captured = capsys.readouterr()
+    assert status == 0, captured.err
     identities = set()
     names = set()
     for path in tmp_path.glob("*.json"):

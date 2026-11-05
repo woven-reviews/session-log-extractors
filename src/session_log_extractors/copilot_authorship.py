@@ -5,9 +5,13 @@ from pathlib import PurePath
 from typing import Literal, TypeAlias
 
 from session_log_extractors.copilot_protocol import (
+    ASSISTANT_MESSAGE,
     HOOK_END,
     HOOK_START,
+    ROLE_ASSISTANT,
     SKILL_INVOKED,
+    SOURCE_SYSTEM,
+    SOURCE_USER,
     USER_INVOKED,
 )
 from session_log_extractors.json_types import JsonValue, string_value
@@ -79,16 +83,16 @@ def _original_source(
     if continuation:
         return (
             AuthorshipSource.HARNESS
-            if source in (None, "system")
+            if source in (None, SOURCE_SYSTEM)
             else AuthorshipSource.UNKNOWN
         )
     # The SDK documents omitted source as the runtime's ordinary-human default.
     # An agent-scoped record without source cannot establish human authorship.
     if "source" not in data:
         return AuthorshipSource.UNKNOWN if agent_scoped else AuthorshipSource.CANDIDATE
-    if source == "user":
+    if source == SOURCE_USER:
         return AuthorshipSource.CANDIDATE
-    if source == "system":
+    if source == SOURCE_SYSTEM:
         return AuthorshipSource.HARNESS
     if isinstance(source, str) and source.startswith("agent-") and source[6:]:
         return AuthorshipSource.OTHER_AGENT
@@ -181,9 +185,9 @@ def user_shell_output_source(
 def _has_model_evidence(
     record: dict[str, JsonValue], data: dict[str, JsonValue]
 ) -> bool:
-    if record.get("type") != "assistant.message":
+    if record.get("type") != ASSISTANT_MESSAGE:
         return False
-    if "source" in data or data.get("role") not in (None, "assistant"):
+    if "source" in data or data.get("role") not in (None, ROLE_ASSISTANT):
         return False
     model = string_value(data.get("model"))
     call = string_value(data.get("apiCallId"))

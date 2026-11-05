@@ -9,6 +9,7 @@ from codex_capture import TRANSCRIPT as CODEX_TRANSCRIPT
 from codex_capture import human_message, question_interaction
 from copilot_fixture import native_records
 
+from session_log_extractors import claude_protocol, copilot_protocol
 from session_log_extractors.claude_sources import read_source
 from session_log_extractors.codex_sources import load_entries
 from session_log_extractors.session_log_envelope import (
@@ -33,6 +34,7 @@ from session_log_extractors.session_model import (
     QuestionResponse,
     QuestionResponseOutcome,
     QuestionSelection,
+    RefusalSource,
     Session,
     ToolCall,
     UserMessage,
@@ -60,7 +62,7 @@ def test_question_occurrences_and_response_states_are_independent():
     responses = [
         QuestionResponse(
             ref="r1",
-            outcome="answered",
+            outcome=QuestionResponseOutcome.ANSWERED,
             question=QuestionAssociation(
                 question_ref="q1",
                 evidence=[
@@ -73,12 +75,16 @@ def test_question_occurrences_and_response_states_are_independent():
         ),
         QuestionResponse(
             ref="r2",
-            outcome="refused",
+            outcome=QuestionResponseOutcome.REFUSED,
             question=None,
-            refusal=QuestionRefusal(by="candidate", explanation="Prompt dismissed"),
+            refusal=QuestionRefusal(
+                by=RefusalSource.CANDIDATE.value, explanation="Prompt dismissed"
+            ),
             candidate_feedback="Please ask later",
         ),
-        QuestionResponse(ref="r3", outcome="unknown", question=None),
+        QuestionResponse(
+            ref="r3", outcome=QuestionResponseOutcome.UNKNOWN, question=None
+        ),
     ]
     session = Session(
         harness="test",
@@ -159,7 +165,7 @@ def _codex_question_contract():
     )
     response = QuestionResponse(
         ref="r1",
-        outcome="answered",
+        outcome=QuestionResponseOutcome.ANSWERED,
         question=QuestionAssociation(question_ref=question["ref"], evidence=evidence),
         selections=selections,
         activity=QuestionActivityReference(
@@ -214,7 +220,7 @@ def _claude_question_interaction(marker):
     for record in records:
         native_result = record.get("toolUseResult")
         if (
-            record.get("type") == "user"
+            record.get("type") == claude_protocol.USER_RECORD
             and isinstance(native_result, dict)
             and marker in json.dumps(native_result)
         ):
@@ -229,10 +235,10 @@ def _claude_call_for_result(records, result):
     (result_block,) = result["message"]["content"]
     calls = []
     for record in records:
-        if record.get("type") != "assistant":
+        if record.get("type") != claude_protocol.ASSISTANT_RECORD:
             continue
         for block in record["message"]["content"]:
-            if block.get("name") == "AskUserQuestion":
+            if block.get("name") == claude_protocol.ASK_USER_QUESTION:
                 if block["id"] == result_block["tool_use_id"]:
                     calls.append(block)
     assert len(calls) == 1, "Expected one ID-matched AskUserQuestion call"
@@ -283,7 +289,7 @@ def test_claude_native_notes_and_previews_survive_export(marker, limit):
     annotation = result["toolUseResult"]["annotations"][question["text"]]
     response = QuestionResponse(
         ref="r1",
-        outcome="answered",
+        outcome=QuestionResponseOutcome.ANSWERED,
         selections=[],
         question=_claude_question_link(call, result_block, question),
         candidate_feedback=annotation["notes"],
@@ -348,7 +354,7 @@ def test_claude_native_custom_answer_remains_free_text():
     recorded_answer = result["toolUseResult"]["answers"][question["text"]]
     response = QuestionResponse(
         ref="r1",
-        outcome="answered",
+        outcome=QuestionResponseOutcome.ANSWERED,
         selections=[],
         free_text=recorded_answer,
         question=_claude_question_link(call, result_block, question),
@@ -366,7 +372,9 @@ def test_claude_native_multiselect_preserves_question_scope():
     results = []
     for record in records:
         native_result = record.get("toolUseResult")
-        if record.get("type") != "user" or not isinstance(native_result, dict):
+        if record.get("type") != claude_protocol.USER_RECORD or not isinstance(
+            native_result, dict
+        ):
             continue
         for native_question in native_result.get("questions", []):
             if native_question.get("multiSelect"):
@@ -389,7 +397,7 @@ def test_claude_native_multiselect_preserves_question_scope():
             selections.append(QuestionSelection(label=label))
         response = QuestionResponse(
             ref=f"r{index}",
-            outcome="answered",
+            outcome=QuestionResponseOutcome.ANSWERED,
             selections=selections,
             question=_claude_question_link(call, result_block, question),
         )
@@ -436,15 +444,15 @@ def test_claude_native_question_cancellation_has_explicit_refusal_evidence():
     records = read_source(TRANSCRIPT).entries
     question_calls = {}
     for record in records:
-        if record.get("type") == "assistant":
+        if record.get("type") == claude_protocol.ASSISTANT_RECORD:
             for block in record["message"]["content"]:
-                if block.get("name") == "AskUserQuestion":
+                if block.get("name") == claude_protocol.ASK_USER_QUESTION:
                     question_calls[block["id"]] = block
     cancellations = []
     for record in records:
         if (
-            record.get("type") == "user"
-            and record.get("toolDenialKind") == "user-rejected"
+            record.get("type") == claude_protocol.USER_RECORD
+            and record.get("toolDenialKind") == claude_protocol.USER_REJECTED
         ):
             for block in record["message"]["content"]:
                 if block.get("tool_use_id") in question_calls:
@@ -471,8 +479,10 @@ def test_claude_native_question_cancellation_has_explicit_refusal_evidence():
     response = QuestionResponse(
         ref="r1",
         question=association,
-        outcome="refused",
-        refusal=QuestionRefusal(by="candidate", explanation=result_block["content"]),
+        outcome=QuestionResponseOutcome.REFUSED,
+        refusal=QuestionRefusal(
+            by=RefusalSource.CANDIDATE.value, explanation=result_block["content"]
+        ),
     )
 
     decoded = json.loads(json.dumps(response))
@@ -488,7 +498,7 @@ def test_copilot_shell_failure_does_not_supply_question_response_evidence():
     records = native_records()
     results = []
     for record in records:
-        if record["type"] != "tool.execution_complete":
+        if record["type"] != copilot_protocol.TOOL_EXECUTION_COMPLETE:
             continue
         data = record["data"]
         if "CAPTURE_ERROR_7" in data.get("result", {}).get("content", ""):
@@ -525,7 +535,7 @@ def test_question_refusal_preserves_source_without_fabricating_feedback(by):
     response = QuestionResponse(
         ref="r1",
         question=None,
-        outcome="refused",
+        outcome=QuestionResponseOutcome.REFUSED,
         refusal=QuestionRefusal(by=by, explanation="Recorded refusal explanation"),
     )
     assert json.loads(json.dumps(response))["refusal"]["by"] == by
@@ -579,7 +589,7 @@ def test_shared_session_preserves_complete_content(harness):
         Image(**unavailable_image("missing.png")),
     ]
     call = ToolCall(
-        name="Read",
+        name=claude_protocol.READ_TOOL,
         input={"paths": ["a", "b"], "options": {"limit": None}},
         result={"content": [None, "", {"text": "original"}]},
         is_error=True,
@@ -602,8 +612,10 @@ def test_shared_session_preserves_complete_content(harness):
         **session,
         "truncation": {"tool_result_max_bytes": 8192},
     }
-    assert build_envelope(session) == expected
-    assert json.loads(json.dumps(export_session(session))) == expected
+    envelope = build_envelope(session)
+    assert envelope == expected
+    exported = export_session(session)
+    assert json.loads(json.dumps(exported)) == expected
 
 
 @pytest.mark.parametrize("limit", [4096, 0, 4, -1])
@@ -620,7 +632,7 @@ def test_export_caps_only_the_copy_and_retains_original_size(limit):
                 text="",
                 tool_calls=[
                     ToolCall(
-                        name="Read",
+                        name=claude_protocol.READ_TOOL,
                         input={"full": result},
                         result=result,
                         is_error=False,
@@ -640,7 +652,8 @@ def test_export_caps_only_the_copy_and_retains_original_size(limit):
     assert call["is_error"] is False
     assert exported["truncation"] == {"tool_result_max_bytes": limit}
     assert session == original
-    assert export_session(session, -1)["events"][0]["tool_calls"][0]["result"] == result
+    exported = export_session(session, -1)
+    assert exported["events"][0]["tool_calls"][0]["result"] == result
     call["input"]["full"] = "changed"
     assert session == original
 
@@ -699,7 +712,10 @@ def test_export_preserves_explicit_null_and_empty_metadata():
 @pytest.mark.parametrize("limit", [2, -1])
 def test_export_preserves_recorded_result_provenance(limit):
     call = ToolCall(
-        name="Read", result="retained", result_bytes=9000, result_truncated=True
+        name=claude_protocol.READ_TOOL,
+        result="retained",
+        result_bytes=9000,
+        result_truncated=True,
     )
     session = Session(
         harness="test",
@@ -740,7 +756,7 @@ def test_export_reads_json_fields_without_mutating_session_semantics():
         file_activity=[
             {
                 "file_path": "/workspace/app.py",
-                "tool_name": "Read",
+                "tool_name": claude_protocol.READ_TOOL,
                 "provenance": {
                     "record_type": "claude.tool_use",
                     "turn_index": None,
@@ -750,7 +766,8 @@ def test_export_reads_json_fields_without_mutating_session_semantics():
         ],
     )
     original = deepcopy(session)
-    assert export_session(session) == {
+    exported = export_session(session)
+    assert exported == {
         "schema": "raw-session-log/1",
         "harness": "claude",
         "session_id": "s",
@@ -765,7 +782,7 @@ def test_export_reads_json_fields_without_mutating_session_semantics():
 
 def test_export_preserves_payloads_but_leaves_model_semantics_unused():
     call = ToolCall(
-        name="Read",
+        name=claude_protocol.READ_TOOL,
         id="call-1",
         input={"file_path": "/app.py", "extension": {"unknown": [1, None]}},
         result="full",
@@ -887,9 +904,8 @@ def _recorded_skill_expansions():
                     and block["text"].startswith("Base directory for this skill:")
                 ):
                     skill_expansions.append((entry, block["text"]))
-    expansions = skill_expansions
-    assert expansions, "Missing native skill expansion messages"
-    return expansions
+    assert skill_expansions, "Missing native skill expansion messages"
+    return skill_expansions
 
 
 def test_claude_native_injected_message_fits_authorship_contract():
@@ -932,7 +948,7 @@ def test_copilot_native_transformed_prompt_fits_mixed_ranges():
     records = native_records()
     user_records = []
     for record in records:
-        if record["type"] == "user.message":
+        if record["type"] == copilot_protocol.USER_MESSAGE:
             user_records.append(record)
     native = next(iter(user_records))
     data = native["data"]
@@ -977,7 +993,7 @@ def test_authorship_retains_message_structure_through_export():
             i=1,
             role="assistant",
             text="reply",
-            tool_calls=[ToolCall(name="Read", id="call-1")],
+            tool_calls=[ToolCall(name=claude_protocol.READ_TOOL, id="call-1")],
             authorship=[AuthorshipRange(start=0, end=5, source="unknown", ts=None)],
         ),
         Event(i=2, role="user", text="", authorship=[]),

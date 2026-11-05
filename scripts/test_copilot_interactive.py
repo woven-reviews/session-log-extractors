@@ -14,6 +14,7 @@ from copilot_fixture import (
     recorded_calls,
 )
 
+from session_log_extractors import copilot_protocol
 from session_log_extractors import extract_copilot_session_log as copilot
 from session_log_extractors.session_log_envelope import export_session
 
@@ -22,7 +23,7 @@ def test_native_human_markup_survives_interpretation():
     source = native_source()
     native = None
     for record in source.state_records:
-        if record["type"] == "user.message":
+        if record["type"] == copilot_protocol.USER_MESSAGE:
             native = record
             break
 
@@ -47,11 +48,11 @@ def test_native_plan_decisions_follow_boolean_approval_and_feedback():
     calls = recorded_calls(session)
     decisions = []
     for record in source.state_records:
-        if record["type"] != "human_response.recorded":
+        if record["type"] != copilot_protocol.HUMAN_RESPONSE_RECORDED:
             continue
         data = record["data"]
         response = data["response"]
-        if response["responseKind"] != "exit_plan_mode":
+        if response["responseKind"] != copilot_protocol.EXIT_PLAN_MODE:
             continue
         call = calls[data["toolCallId"]]
         (decision,) = call["plan_decisions"]
@@ -67,7 +68,9 @@ def test_native_child_messages_keep_their_recorded_agent_identity():
     source = native_source()
     child_messages = {}
     for record in source.state_records:
-        if record["type"] == "assistant.message" and record.get("agentId"):
+        if record["type"] == copilot_protocol.ASSISTANT_MESSAGE and record.get(
+            "agentId"
+        ):
             child_messages[record["id"]] = record["agentId"]
     assert child_messages, "Required child activity is missing"
 
@@ -110,7 +113,8 @@ def test_native_user_shell_retains_command_and_complete_result():
     for span in message["authorship"]:
         assert span["source"] == "candidate"
     original = deepcopy(session)
-    assert export_session(session, -1)["events"]
+    exported = export_session(session, -1)
+    assert exported["events"]
     assert session == original
 
 
@@ -133,12 +137,12 @@ def test_complete_native_inputs_results_and_ownership():
     starts = 0
     for record in source.state_records:
         data = record["data"]
-        if record["type"] == "tool.execution_start":
+        if record["type"] == copilot_protocol.TOOL_EXECUTION_START:
             starts += 1
             call = calls[data["toolCallId"]]
             assert call["input"] == data["arguments"]
             assert call["execution"]["input"] == data["arguments"]
-        if record["type"] == "tool.execution_complete":
+        if record["type"] == copilot_protocol.TOOL_EXECUTION_COMPLETE:
             completions += 1
             result = results[record["id"]]
             assert result["tool_call_id"] == data["toolCallId"]
@@ -252,12 +256,12 @@ def test_native_attachment_bytes_types_order_and_message_ownership():
             messages[message["id"]] = message
     assets = {}
     for record in source.state_records:
-        if record["type"] == "session.binary_asset":
+        if record["type"] == copilot_protocol.BINARY_ASSET:
             assets[record["data"]["assetId"]] = record["data"]
     seen = []
     for record in source.state_records:
         attachments = record["data"].get("attachments", [])
-        if record["type"] != "user.message" or not attachments:
+        if record["type"] != copilot_protocol.USER_MESSAGE or not attachments:
             continue
         images = messages[record["id"]]["images"]
         assert len(images) == len(attachments)
@@ -376,7 +380,7 @@ def test_missing_tool_image_asset_is_explicitly_unavailable():
     source = native_source()
     retained = []
     for record in source.state_records:
-        if record["type"] != "session.binary_asset":
+        if record["type"] != copilot_protocol.BINARY_ASSET:
             retained.append(record)
     source.state_records = retained
     session = copilot.interpret_source(source)
@@ -392,9 +396,9 @@ def test_duplicate_user_shell_completion_preserves_first_and_unmatched():
     source = native_source()
     completions = []
     for record in source.state_records:
-        if record["type"] == "tool.execution_complete" and record["data"].get(
-            "isUserRequested"
-        ):
+        if record["type"] == copilot_protocol.TOOL_EXECUTION_COMPLETE and record[
+            "data"
+        ].get("isUserRequested"):
             completions.append(record)
     assert len(completions) == 1
     (completion,) = completions
@@ -420,9 +424,9 @@ def test_duplicate_user_shell_completion_preserves_first_and_unmatched():
 def test_empty_user_shell_output_has_no_empty_authorship_range():
     source = native_source()
     for record in source.state_records:
-        if record["type"] == "tool.execution_complete" and record["data"].get(
-            "isUserRequested"
-        ):
+        if record["type"] == copilot_protocol.TOOL_EXECUTION_COMPLETE and record[
+            "data"
+        ].get("isUserRequested"):
             # Keep the native IDs, replacing only the successful result's output.
             record["data"]["result"] = {"content": ""}
     session = copilot.interpret_source(source)

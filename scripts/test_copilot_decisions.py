@@ -5,6 +5,7 @@ from copy import deepcopy
 import pytest
 from copilot_fixture import ASSETS, SESSION_ID, native_source
 
+from session_log_extractors import copilot_protocol
 from session_log_extractors.copilot_decisions import interpret_decisions
 from session_log_extractors.extract_copilot_session_log import interpret_source
 from session_log_extractors.session_log_envelope import export_session
@@ -14,8 +15,11 @@ def _plan_responses(source):
     responses = []
     for record in source.state_records:
         data = record.get("data", {})
-        if record["type"] == "human_response.recorded":
-            if data.get("response", {}).get("responseKind") == "exit_plan_mode":
+        if record["type"] == copilot_protocol.HUMAN_RESPONSE_RECORDED:
+            if (
+                data.get("response", {}).get("responseKind")
+                == copilot_protocol.EXIT_PLAN_MODE
+            ):
                 responses.append(record)
     assert responses, "Capture must contain plan responses"
     return responses
@@ -195,14 +199,14 @@ def _controlled_session(calls):
     }
 
 
-def _permission_record(kind="denied-interactively-by-user"):
+def _permission_record(kind=copilot_protocol.DENIED_BY_USER):
     return {
         "id": "denial",
-        "type": "permission.completed",
+        "type": copilot_protocol.PERMISSION_COMPLETED,
         "data": {
             "requestId": "request",
             "toolCallId": "call",
-            "decisionSource": "human_response",
+            "decisionSource": copilot_protocol.HUMAN_RESPONSE,
             "result": {"kind": kind, "feedback": "Controlled candidate feedback"},
         },
     }
@@ -210,12 +214,12 @@ def _permission_record(kind="denied-interactively-by-user"):
 
 def _response_record():
     return {
-        "type": "human_response.recorded",
+        "type": copilot_protocol.HUMAN_RESPONSE_RECORDED,
         "data": {
             "toolCallId": "call",
-            "actor": "human_response",
+            "actor": copilot_protocol.HUMAN_RESPONSE,
             "response": {
-                "responseKind": "exit_plan_mode",
+                "responseKind": copilot_protocol.EXIT_PLAN_MODE,
                 "approved": True,
                 "planContent": "Plan 雪",
                 "feedback": "Controlled feedback",
@@ -267,7 +271,7 @@ def test_missing_or_ambiguous_calls_leave_refusal_unassociated(calls):
 def test_call_and_request_associations_respect_agent_scope():
     session = _controlled_session([{"name": "bash", "id": "call", "agent_id": "child"}])
     request = {
-        "type": "permission.requested",
+        "type": copilot_protocol.PERMISSION_REQUESTED,
         "agentId": "child",
         "data": {
             "requestId": "request",
@@ -299,7 +303,7 @@ def test_denied_action_uses_only_a_unique_nonconflicting_request(
         [{"name": "write", "id": "call", "input": {"path": "x"}}]
     )
     request_record = {
-        "type": "permission.requested",
+        "type": copilot_protocol.PERMISSION_REQUESTED,
         "data": {"requestId": "request", "permissionRequest": permission_request},
     }
 
@@ -315,7 +319,7 @@ def test_denied_action_uses_only_a_unique_nonconflicting_request(
 def test_duplicate_requests_cannot_supply_action_information():
     session = _controlled_session([])
     request = {
-        "type": "permission.requested",
+        "type": copilot_protocol.PERMISSION_REQUESTED,
         "data": {
             "requestId": "request",
             "permissionRequest": {"intention": "Unproven action"},
@@ -342,7 +346,7 @@ def test_duplicate_requests_cannot_supply_action_information():
 def test_settings_refusal_can_be_recorded_in_tool_result(result):
     session = _controlled_session([{"name": "bash", "id": "call"}])
     record = {
-        "type": "tool.execution_complete",
+        "type": copilot_protocol.TOOL_EXECUTION_COMPLETE,
         "data": {"toolCallId": "call", "result": result},
     }
     interpret_decisions(session, [record], native_session_id="s")
@@ -353,11 +357,11 @@ def test_settings_refusal_can_be_recorded_in_tool_result(result):
     assert refusal["explanation"]
 
 
-@pytest.mark.parametrize("code", ["denied", "tool_error"])
+@pytest.mark.parametrize("code", [copilot_protocol.DENIED_ERROR, "tool_error"])
 def test_unknown_tool_denial_is_distinct_from_candidate_feedback(code):
     session = _controlled_session([])
     record = {
-        "type": "tool.execution_complete",
+        "type": copilot_protocol.TOOL_EXECUTION_COMPLETE,
         "data": {
             "toolCallId": "missing",
             "error": {"code": code, "message": "Opaque harness error"},
@@ -413,10 +417,12 @@ def test_conflicting_call_name_cannot_own_a_plan_response():
 
 
 def test_repeated_presentations_have_no_inferred_decision_link():
-    session = _controlled_session([{"name": "exit_plan_mode", "id": "call"}])
+    session = _controlled_session(
+        [{"name": copilot_protocol.EXIT_PLAN_MODE, "id": "call"}]
+    )
     start = {
-        "type": "tool.execution_start",
-        "data": {"toolCallId": "call", "toolName": "exit_plan_mode"},
+        "type": copilot_protocol.TOOL_EXECUTION_START,
+        "data": {"toolCallId": "call", "toolName": copilot_protocol.EXIT_PLAN_MODE},
     }
     interpret_decisions(
         session, [start, deepcopy(start), _response_record()], native_session_id="s"
@@ -428,7 +434,10 @@ def test_repeated_presentations_have_no_inferred_decision_link():
 
 def test_unmatched_presentation_and_malformed_records_are_retained_or_ignored_honestly():
     session = _controlled_session([])
-    start = {"type": "tool.execution_start", "data": {"toolName": "exit_plan_mode"}}
+    start = {
+        "type": copilot_protocol.TOOL_EXECUTION_START,
+        "data": {"toolName": copilot_protocol.EXIT_PLAN_MODE},
+    }
     interpret_decisions(
         session, [{"type": "malformed", "data": None}, start], native_session_id="s"
     )
@@ -443,7 +452,7 @@ def test_plan_tool_failure_without_human_response_never_creates_a_decision():
     # Remove human response evidence; raw plan tool completions alone prove no decision.
     records = []
     for record in source.state_records:
-        if record["type"] != "human_response.recorded":
+        if record["type"] != copilot_protocol.HUMAN_RESPONSE_RECORDED:
             records.append(record)
     source.state_records = records
     session = interpret_source(source)
@@ -455,7 +464,7 @@ def test_plan_tool_failure_without_human_response_never_creates_a_decision():
 def test_request_id_can_bridge_to_its_recorded_tool_call():
     session = _controlled_session([{"name": "bash", "id": "call"}])
     request = {
-        "type": "permission.requested",
+        "type": copilot_protocol.PERMISSION_REQUESTED,
         "data": {
             "requestId": "request",
             "permissionRequest": {"toolCallId": "call", "fullCommandText": "Run test"},
@@ -487,10 +496,13 @@ def test_tool_denial_merges_only_through_same_agent_parent_and_call(
     session = _controlled_session([])
     permission = _permission_record()
     result = {
-        "type": "tool.execution_complete",
+        "type": copilot_protocol.TOOL_EXECUTION_COMPLETE,
         "parentId": parent_id,
         "agentId": agent,
-        "data": {"toolCallId": call_id, "error": {"code": "denied"}},
+        "data": {
+            "toolCallId": call_id,
+            "error": {"code": copilot_protocol.DENIED_ERROR},
+        },
     }
     interpret_decisions(session, [permission, result], native_session_id="s")
     assert len(session["permission_refusals"]) == 2
@@ -539,11 +551,11 @@ def test_native_plan_and_denial_tests_tolerate_reworded_generated_prose():
     source = native_source()
     for record in source.state_records:
         data = record.get("data", {})
-        if record["type"] == "assistant.message":
+        if record["type"] == copilot_protocol.ASSISTANT_MESSAGE:
             data["content"] = "Different assistant prose"
-        if record["type"] == "human_response.recorded":
+        if record["type"] == copilot_protocol.HUMAN_RESPONSE_RECORDED:
             response = data["response"]
-            if response.get("responseKind") == "exit_plan_mode":
+            if response.get("responseKind") == copilot_protocol.EXIT_PLAN_MODE:
                 response["planContent"] = "Reworded complete plan 雪"
                 response["summary"] = "Different summary"
                 if "feedback" in response:
@@ -566,9 +578,9 @@ def test_native_plan_and_denial_tests_tolerate_reworded_generated_prose():
 @pytest.mark.parametrize(
     "kind,expected_source",
     [
-        ("denied-by-rules", "settings"),
-        ("denied-by-content-exclusion-policy", "settings"),
-        ("denied-no-approval-rule-and-could-not-request-from-user", "unknown"),
+        (copilot_protocol.DENIED_BY_RULES, "settings"),
+        (copilot_protocol.DENIED_CONTENT_POLICY, "settings"),
+        (copilot_protocol.DENIED_UNAVAILABLE, "unknown"),
     ],
 )
 def test_native_noninteractive_denial_variants_never_claim_candidate_feedback(
@@ -587,7 +599,9 @@ def test_native_noninteractive_denial_variants_never_claim_candidate_feedback(
     assert "candidate_feedback" not in refusal
 
 
-@pytest.mark.parametrize("result", [None, "denied", {}, {"kind": "denied-future"}])
+@pytest.mark.parametrize(
+    "result", [None, copilot_protocol.DENIED_ERROR, {}, {"kind": "denied-future"}]
+)
 def test_unsupported_permission_payload_does_not_invent_a_refusal(result):
     session = _controlled_session([])
     record = _permission_record()
@@ -628,8 +642,8 @@ def test_export_serializes_established_ownership_without_resolving_addresses(act
 def test_conflicting_native_tool_name_cannot_own_plan_presentation():
     session = _controlled_session([{"name": "bash", "id": "call"}])
     start = {
-        "type": "tool.execution_start",
-        "data": {"toolName": "exit_plan_mode", "toolCallId": "call"},
+        "type": copilot_protocol.TOOL_EXECUTION_START,
+        "data": {"toolName": copilot_protocol.EXIT_PLAN_MODE, "toolCallId": "call"},
     }
     interpret_decisions(session, [start], native_session_id="s")
     (presentation,) = session["plan_presentations"]

@@ -8,6 +8,7 @@ import pytest
 from codex_capture import TRANSCRIPT as CODEX_TRANSCRIPT
 from copilot_fixture import native_records, native_source
 
+from session_log_extractors import claude_protocol, codex_protocol, copilot_protocol
 from session_log_extractors.claude_sources import read_source
 from session_log_extractors.codex_sources import load_entries
 from session_log_extractors.session_log_envelope import export_session
@@ -58,7 +59,9 @@ def _illustrative_session():
         "*** Begin Patch\n*** Update File: café.py\n-old\n+雪\n"
         "*** Update File: untouched.py\n-old\n+new\n*** End Patch"
     )
-    call = ToolCall(name="apply_patch", id="c1", input=patch, result="雪" * 4000)
+    call = ToolCall(
+        name=codex_protocol.APPLY_PATCH, id="c1", input=patch, result="雪" * 4000
+    )
     evidence = [ActionEvidence(field="example.call.id", value="c1")]
     activity = ActionActivityReference(
         message_i=7, tool_call_index=0, evidence=evidence
@@ -177,7 +180,7 @@ def _session_with_attached_facts():
         evidence=[ActionEvidence(field="example.task.call_id", value="task-call")],
     )
     task_call = ToolCall(
-        name="spawn_agent",
+        name=codex_protocol.SPAWN_AGENT,
         id="task-call",
         input={"message": task["prompt"], "description": task["description"]},
         result="Raw task result",
@@ -401,10 +404,12 @@ def _claude_calls():
     calls = []
     for record in read_source(TRANSCRIPT).entries:
         content = record.get("message", {}).get("content")
-        if record.get("type") != "assistant" or not isinstance(content, list):
+        if record.get("type") != claude_protocol.ASSISTANT_RECORD or not isinstance(
+            content, list
+        ):
             continue
         for block in content:
-            if block.get("type") == "tool_use":
+            if block.get("type") == claude_protocol.TOOL_USE_BLOCK:
                 calls.append((block["name"], block["input"], block["id"]))
     return calls
 
@@ -417,8 +422,8 @@ def _native_calls(harness):
         for record in load_entries(CODEX_TRANSCRIPT):
             payload = record.get("payload", {})
             if (
-                payload.get("type") == "function_call"
-                and payload.get("name") == "spawn_agent"
+                payload.get("type") == codex_protocol.FUNCTION_CALL
+                and payload.get("name") == codex_protocol.SPAWN_AGENT
             ):
                 calls.append(
                     (
@@ -429,7 +434,7 @@ def _native_calls(harness):
                 )
     else:
         for record in native_records():
-            if record["type"] == "tool.execution_start":
+            if record["type"] == copilot_protocol.TOOL_EXECUTION_START:
                 data = record["data"]
                 calls.append((data["toolName"], data["arguments"], data["toolCallId"]))
     return calls
@@ -438,8 +443,8 @@ def _native_calls(harness):
 @pytest.mark.parametrize(
     ("harness", "tool", "prompt_field", "id_field"),
     [
-        ("claude", "Agent", "prompt", "tool_use.id"),
-        ("codex", "spawn_agent", "message", "payload.call_id"),
+        ("claude", claude_protocol.AGENT_TOOL, "prompt", "tool_use.id"),
+        ("codex", codex_protocol.SPAWN_AGENT, "message", "payload.call_id"),
         ("copilot", "task", "prompt", "data.toolCallId"),
     ],
 )
@@ -488,7 +493,7 @@ def test_native_tasks_preserve_full_recorded_prompt_and_nested_input(
 def test_native_copilot_skill_keeps_recorded_definition_without_external_loading():
     invocations = []
     for record in native_records():
-        if record["type"] != "skill.invoked":
+        if record["type"] != copilot_protocol.SKILL_INVOKED:
             continue
         data = record["data"]
         invocation = Invocation(
@@ -511,7 +516,7 @@ def test_native_copilot_skill_keeps_recorded_definition_without_external_loading
 def _confirmed_claude_edits():
     edits = {}
     for name, payload, call_id in _claude_calls():
-        if name == "Edit":
+        if name == claude_protocol.EDIT_TOOL:
             edits[call_id] = payload
     interactions = []
     for record in read_source(TRANSCRIPT).entries:
@@ -540,7 +545,7 @@ def test_native_claude_edit_confirmation_retains_complete_edit_and_patch_evidenc
         ]
         action = FileAction(
             ref="a1",
-            action_name="Edit",
+            action_name=claude_protocol.EDIT_TOOL,
             path=payload["file_path"],
             execution_outcome=ToolExecutionOutcome.SUCCEEDED,
             change=FileChangeConfirmation(
@@ -552,7 +557,7 @@ def test_native_claude_edit_confirmation_retains_complete_edit_and_patch_evidenc
             ),
         )
         call = ToolCall(
-            name="Edit",
+            name=claude_protocol.EDIT_TOOL,
             id=call_id,
             input=payload,
             result=block["content"],

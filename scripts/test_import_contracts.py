@@ -38,7 +38,8 @@ def graph():
 
 @pytest.mark.parametrize("contract_id", CONTRACTS)
 def test_current_dependencies_satisfy_contracts(contract_id, graph):
-    assert _check(contract_id, graph).kept
+    contract_result = _check(contract_id, graph)
+    assert contract_result.kept
 
 
 _PROHIBITED_IMPORTS = []
@@ -79,7 +80,8 @@ _PROHIBITED_IMPORTS.extend(
 @pytest.mark.parametrize(("contract_id", "importer", "imported"), _PROHIBITED_IMPORTS)
 def test_prohibited_dependency_breaks_contract(contract_id, importer, imported, graph):
     graph.add_import(importer=f"{PACKAGE}.{importer}", imported=f"{PACKAGE}.{imported}")
-    assert not _check(contract_id, graph).kept
+    contract_result = _check(contract_id, graph)
+    assert not contract_result.kept
 
 
 @pytest.mark.parametrize("contract_id", ["model-boundary", "export-boundary"])
@@ -87,7 +89,8 @@ def test_indirect_prohibited_dependencies_are_rejected(contract_id, graph):
     graph.add_import(
         importer=f"{PACKAGE}.json_types", imported=f"{PACKAGE}.codex_sources"
     )
-    assert not _check(contract_id, graph).kept
+    contract_result = _check(contract_id, graph)
+    assert not contract_result.kept
 
 
 @pytest.mark.parametrize("harness", ["claude", "copilot", "codex"])
@@ -97,4 +100,5 @@ def test_shared_union_and_own_extractor_can_import_harness_schema(harness, graph
             importer=f"{PACKAGE}.{importer}",
             imported=f"{PACKAGE}.tool_inputs.{harness}",
         )
-    assert _check(f"{harness}-schemas", graph).kept
+    contract_result = _check(f"{harness}-schemas", graph)
+    assert contract_result.kept

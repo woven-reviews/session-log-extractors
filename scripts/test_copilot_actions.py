@@ -5,6 +5,7 @@ from copy import deepcopy
 import pytest
 from copilot_fixture import native_source, recorded_calls
 
+from session_log_extractors import copilot_protocol
 from session_log_extractors import extract_copilot_session_log as extractor
 from session_log_extractors.extract_copilot_session_log import interpret_source
 from session_log_extractors.session_log_envelope import export_session
@@ -34,7 +35,7 @@ def test_native_file_actions_preserve_paths_outcomes_and_modification_evidence(l
     calls = _exported_calls(session, envelope)
     completions = {}
     for record in source.state_records:
-        if record["type"] == "tool.execution_complete":
+        if record["type"] == copilot_protocol.TOOL_EXECUTION_COMPLETE:
             completions[record["data"]["toolCallId"]] = record["data"]
     names = set()
     failed_creates = []
@@ -92,7 +93,7 @@ def test_native_tasks_and_repeated_skill_invocations_survive_caps(limit):
     assert task["agent_type"] == call["input"]["agent_type"]
     children = []
     for record in source.state_records:
-        if record["type"] == "subagent.started":
+        if record["type"] == copilot_protocol.SUBAGENT_STARTED:
             children.append(record)
     assert len(children) == 1
     assert task["agent_id"] == children[0]["agentId"]
@@ -120,7 +121,7 @@ def test_native_slash_invocation_enriches_one_occurrence_with_linked_definition(
     assert session is not None
     definitions = {}
     for record in source.state_records:
-        if record["type"] == "skill.invoked":
+        if record["type"] == copilot_protocol.SKILL_INVOKED:
             definitions[record["id"]] = record["data"]
     slashes = []
     for message in export_session(session, 0)["events"]:
@@ -163,7 +164,7 @@ def _tool_source(name):
     source = native_source()
     selected = None
     for record in source.state_records:
-        if record["type"] != "assistant.message":
+        if record["type"] != copilot_protocol.ASSISTANT_MESSAGE:
             continue
         for request in record["data"].get("toolRequests", []):
             if request["name"] == name:
@@ -190,7 +191,7 @@ def _tool_source(name):
 def test_success_and_diff_text_do_not_confirm_unmatched_paths(evidence):
     source, request = _tool_source("edit")
     for record in source.state_records:
-        if record["type"] == "tool.execution_complete":
+        if record["type"] == copilot_protocol.TOOL_EXECUTION_COMPLETE:
             # Retain the native diff-looking result, replacing only fileEdits.
             record["data"]["success"] = True
             record["data"]["fileEdits"] = evidence
@@ -206,7 +207,7 @@ def test_success_and_diff_text_do_not_confirm_unmatched_paths(evidence):
 def test_completion_preserves_additional_paths_without_confirming_other_attempts():
     source, request = _tool_source("edit")
     for record in source.state_records:
-        if record["type"] == "tool.execution_complete":
+        if record["type"] == copilot_protocol.TOOL_EXECUTION_COMPLETE:
             record["data"]["fileEdits"] = [{"path": "/other", "kind": "edit"}]
     session = interpret_source(source)
     assert session is not None
@@ -223,7 +224,7 @@ def test_unmatched_completion_preserves_modifications_with_unknown_ownership():
     source, _ = _tool_source("edit")
     selected = []
     for record in source.state_records:
-        if record["type"] == "tool.execution_complete":
+        if record["type"] == copilot_protocol.TOOL_EXECUTION_COMPLETE:
             selected.append(record)
     source.state_records = selected
     session = interpret_source(source)
@@ -233,14 +234,15 @@ def test_unmatched_completion_preserves_modifications_with_unknown_ownership():
     assert action["activity"] is None
     assert action["change"] is not None
     assert session["unmatched_tool_results"]
-    assert "file_actions" not in export_session(session, 0)
+    exported = export_session(session, 0)
+    assert "file_actions" not in exported
 
 
 def test_orphan_subagent_start_preserves_identity_without_invented_parent():
     source, _ = _tool_source("task")
     selected = []
     for record in source.state_records:
-        if record["type"] == "subagent.started":
+        if record["type"] == copilot_protocol.SUBAGENT_STARTED:
             selected.append(record)
     source.state_records = selected
     session = interpret_source(source)
@@ -262,7 +264,7 @@ def test_ambiguous_or_absent_completions_preserve_unknown_outcomes(boundary):
     source, _ = _tool_source("edit")
     completions = []
     for record in source.state_records:
-        if record["type"] == "tool.execution_complete":
+        if record["type"] == copilot_protocol.TOOL_EXECUTION_COMPLETE:
             completions.append(record)
     assert len(completions) == 1
     (completion,) = completions
@@ -324,7 +326,7 @@ def test_task_fields_and_identity_retain_recorded_uncertainty(boundary):
         payload["description"] = None
     else:
         for record in list(source.state_records):
-            if record["type"] != "subagent.started":
+            if record["type"] != copilot_protocol.SUBAGENT_STARTED:
                 continue
             if boundary == "duplicate-child":
                 duplicate = deepcopy(record)
@@ -368,7 +370,9 @@ def test_enrichment_preserves_all_existing_json_and_model_content(monkeypatch):
                 call.pop(field, None)
 
     assert enriched == baseline
-    assert export_session(enriched, 17) == export_session(baseline, 17)
+    exported = export_session(enriched, 17)
+    exported_2 = export_session(baseline, 17)
+    assert exported == exported_2
 
 
 def test_database_only_facts_survive_without_conversation():
@@ -418,9 +422,9 @@ def _slash_source():
     source = native_source()
     selected = []
     for record in source.state_records:
-        if record["type"] == "user.message" and record["data"]["content"].startswith(
-            "/"
-        ):
+        if record["type"] == copilot_protocol.USER_MESSAGE and record["data"][
+            "content"
+        ].startswith("/"):
             selected.append(record)
     assert len(selected) == 1, "Capture must supply the operator's slash submission"
     source.state_records = selected
@@ -470,7 +474,7 @@ def test_unlinked_native_invocations_preserve_definitions_without_loading(conten
     source = native_source()
     selected = []
     for record in source.state_records:
-        if record["type"] == "skill.invoked":
+        if record["type"] == copilot_protocol.SKILL_INVOKED:
             selected.append(record)
     assert len(selected) == 2
     record = selected[0]
@@ -500,13 +504,13 @@ def test_native_invocations_cannot_borrow_ownership_from_names_or_broken_links()
     source = native_source()
     definitions = []
     for record in source.state_records:
-        if record["type"] == "skill.invoked":
+        if record["type"] == copilot_protocol.SKILL_INVOKED:
             # Keep names identical, but break both recorded ownership chains.
             record["parentId"] = "not-recorded"
             definitions.append(record)
-        elif record["type"] == "user.message" and record["data"]["content"].startswith(
-            "/"
-        ):
+        elif record["type"] == copilot_protocol.USER_MESSAGE and record["data"][
+            "content"
+        ].startswith("/"):
             record["parentId"] = "not-recorded"
     assert len(definitions) == 2
     session = interpret_source(source)
