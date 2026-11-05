@@ -8,7 +8,7 @@ repos:
         types_or: [python, pyi]
       - id: ruff-check
         name: Ruff check
-        entry: uv run --locked ruff check
+        entry: uv run --locked ruff check --ignore-noqa
         language: system
         types_or: [python, pyi]
       - id: mypy

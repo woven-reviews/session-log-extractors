@@ -11,7 +11,7 @@ CI checks:
 
 ```sh
 uv run --locked ruff format --check .
-uv run --locked ruff check .
+uv run --locked ruff check --ignore-noqa .
 uv run --locked mypy src
 uv run --locked lint-imports
 uv run --locked pytest --cov=scripts --cov=src --cov-report=term --cov-report=xml --cov-fail-under=95
@@ -30,7 +30,7 @@ settings. Mypy enforces strict mode, `disallow_any_unimported`, and
 Fix type errors through accurate types, typed construction, and checked narrowing.
 Casts and `no_type_check` APIs are banned by Ruff. Do not replace casts with
 broader `Any` annotations, unchecked validators, or ignored errors.
-Type-checker suppressions follow the same exception policy as Ruff below.
+Type-checker suppressions are prohibited, as are Ruff suppressions.
 
 Keep all five coverage thresholds at 95% or higher. Overall coverage excludes
 test modules; run diff-cover after the overall run produces `coverage.xml`.
@@ -226,23 +226,9 @@ to satisfy this naming guidance.
 Ruff checks application code, fixture generators, and tests. Keep the enabled
 rules and initial configurable limits (complexity 10, statements 50, branches
 12, arguments 5); these are Ruff defaults, not universal quality standards.
-Agents must never add new lint exceptions or broaden existing ones. Do not add
-suppressions, disable rules, exclude files or directories, or raise thresholds
-to make a check pass. Fix the code to satisfy the rules. This also applies to
-adding or broadening type-checker ignores and weakening mypy settings. PR review
-must check the diff for new or broadened lint/type exceptions and weakened
-configuration; these are review responsibilities, not automated guarantees. Remove existing
-ignore comments when fixing or replacing the code they cover; do not add new
-ones.
-
-The exceptions inventoried in README.md exist solely because this codebase
-predates lint enforcement. They are temporary debt for pre-existing code, not
-precedent or permission to suppress violations in new or replacement code.
-Each identifies its function, specific rules, reason, and removal ticket.
-Remove the exception when replacing or substantially refactoring that code;
-never transfer it to replacement code. Update README.md in the same change:
-remove resolved exception entries, update entries for partially resolved
-exceptions, and keep the remaining counts, rules, reasons, and removal tickets
-accurate. Keep the initial baseline inventory clearly labeled as historical.
-Unrelated fixes must not increase metrics inside suppressed functions; reviewers
-must compare those metrics because automated comparisons are deferred.
+CI and pre-commit use `ruff check --ignore-noqa`; inline and file-level
+`noqa` comments cannot suppress violations. Do not add suppressions, disable
+rules, exclude files or directories, or raise thresholds to make a check pass.
+Fix the code to satisfy the rules. Type-checker ignores and weakened mypy
+settings are also prohibited. PR review must reject lint/type suppressions and
+weakened configuration.
