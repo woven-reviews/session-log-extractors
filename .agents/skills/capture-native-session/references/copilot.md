@@ -148,11 +148,18 @@ state-root flag. For ordinary offline CLI checks use an isolated HOME containing
 the selected state layout. In-process tests can set `copilot_sources.COPILOT_STATE_ROOT`.
 Use `read_source`/`interpret_source` and the shared exporter for uncapped model
 validation. `copilot_interactions.subagent_summaries` separately summarizes inline
-children. Structured questions and responses are exported within existing tool
-result strings as JSON alongside capped `raw_result` text; no top-level fields
-are added, and existing value types are preserved.
+children. Structured questions and responses are attached as
+`interaction_questions` and `question_responses` on evidenced tool calls,
+separately from capped textual `result`. Inspect those attachments at budget zero;
+complete selections, free text, and recorded answer payloads must remain.
 Unassociated responses appear as response-only tool results in native order.
-Plan decisions, complete identity and shell-result records, schemas, and child
-summaries remain available on the model. JSON also exports tool
-inputs/results/errors, selected message provenance, images, and shell-rendered
-text. Record that boundary explicitly.
+Shared refusal and plan facts also attach to evidenced calls/results, alongside
+`file_actions`, `subagent_tasks`, and `invocations` on their owning messages/calls.
+Full plan content, task text, and invocation definitions/arguments survive textual
+caps. Internal session indexes do not become top-level parallel collections.
+
+Complete native identities, shell-result records, schemas, and child summaries
+remain available internally; JSON exports selected provenance, agent scope,
+images, tool inputs/results/errors, and rendered user-shell text. Inspect actual
+attachments and retained payloads rather than requiring capture-specific counts.
+Unknown ownership stays explicit; missing decisions never imply approval.

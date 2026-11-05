@@ -41,8 +41,9 @@ When extracting code into a new module, move its existing unit and boundary
 tests into the corresponding test module in the same change; keep integration
 tests with the behavior they exercise.
 
-The fixture generators (`scripts/generate_*_fixtures.py`) make paid CLI calls.
-Their tests replace the CLI with a fake, so their code is still covered.
+The scripted fixture generators and their fake-CLI tests have been retired.
+Use the capture-native-session skill for explicitly authorized interactive
+capture outside tests and CI; ordinary tests use committed native fixtures.
 Use diff-cover to identify missing coverage; add tests rather than lowering
 the threshold.
 
@@ -223,7 +224,7 @@ to satisfy this naming guidance.
 
 ## Lint policy
 
-Ruff checks application code, fixture generators, and tests. Keep the enabled
+Ruff checks application code, capture tooling, and tests. Keep the enabled
 rules and initial configurable limits (complexity 10, statements 50, branches
 12, arguments 5); these are Ruff defaults, not universal quality standards.
 CI and pre-commit use `ruff check --ignore-noqa`; inline and file-level

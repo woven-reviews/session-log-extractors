@@ -103,12 +103,15 @@ and exclude inherited parent history from the child's own activity. Preserve the
 complete native sidecar even when interpreting only its own recorded boundary.
 There is no dedicated Codex child-summary API; validate its public reader,
 interpreter, and export separately from the parent. The parent’s incoming
-`response_item.agent_message` delivery record has no normalized model record;
-retain it in the native rollout and report that interpretation gap separately
-from the child’s own final response.
+`response_item.agent_message` delivery becomes an assistant contribution with
+`other_agent` authorship and recorded sender/recipient markers. Validate that
+delivery separately from the child’s own final response.
 
 Human text with `user.text` provenance must retain literal harness-like XML.
 Recorded skill expansions belong to their own native message/turn IDs. Native
 answer arrays select whole labels; note text and substring overlap must not
-invent additional selections. Export intentionally omits model-only identities,
-skill-invocation details, file-change details, and child relationships.
+invent additional selections. JSON retains attached `invocations`,
+`file_actions`, and `subagent_tasks`,
+including full recorded definitions and task text independently of textual caps.
+Internal native identities, patch compatibility records, and parent relationships
+remain model-only; they do not become parallel top-level JSON collections.

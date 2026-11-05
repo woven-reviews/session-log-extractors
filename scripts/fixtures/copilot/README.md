@@ -74,7 +74,9 @@ and separately accessible child summaries. Tool calls carry shared
 `interaction_questions` and `question_responses` alongside their existing raw
 `result` strings, including ID-linked answers and telemetry-evidenced question
 cancellation. The raw-result cap does not shorten these structured facts.
-There are no new top-level or event fields.
+Enrichment attaches facts and provenance to existing conversation records,
+including message-level fields where supported; it does not add top-level
+parallel collections.
 Unassociated responses remain result-only activity in native order.
 Plain enum labels provide no
 structured recommendation, option-description, or preview fields; these remain
