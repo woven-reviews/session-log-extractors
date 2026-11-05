@@ -758,36 +758,40 @@ def test_select_transcript_selector_as_file_path():
     assert select_transcript(str(f), None, None) == f
 
 
-def test_select_transcript_by_session_id_exact_and_suffix():
-    proj = Path(tempfile.mkdtemp())
-    (proj / "abc123.jsonl").write_bytes(TRANSCRIPT.read_bytes())
-    assert select_transcript("abc123", None, str(proj)) == proj / "abc123.jsonl"
-    (proj / "xyz").write_bytes(TRANSCRIPT.read_bytes())
-    assert select_transcript("xyz", None, str(proj)) == proj / "xyz"
+def _copy_with_session_id(path, session_id):
+    # Keep the native records, changing only the top-level recorded session ID.
+    entries = _recorded_session_entries()
+    for entry in entries:
+        if "sessionId" in entry:
+            entry["sessionId"] = session_id
+    _write_jsonl(path, entries)
 
 
-def test_select_transcript_prefix_match_unique_and_ambiguous():
-    proj = Path(tempfile.mkdtemp())
-    (proj / "sess-aaa.jsonl").write_bytes(TRANSCRIPT.read_bytes())
-    assert select_transcript("sess-aaa", None, str(proj)) == proj / "sess-aaa.jsonl"
-    (proj / "sess-bbb.jsonl").write_bytes(TRANSCRIPT.read_bytes())
-    assert select_transcript("sess-a", None, str(proj)) == proj / "sess-aaa.jsonl"
+def test_select_transcript_by_recorded_session_id(tmp_path):
+    transcript = tmp_path / "renamed.jsonl"
+    _copy_with_session_id(transcript, "abc123")
+    selected = select_transcript("abc123", None, str(tmp_path))
+    assert selected == transcript
 
-    proj2 = Path(tempfile.mkdtemp())
-    (proj2 / "sess-aaa.jsonl").write_bytes(TRANSCRIPT.read_bytes())
-    (proj2 / "sess-aab.jsonl").write_bytes(TRANSCRIPT.read_bytes())
+
+def test_select_transcript_prefix_match_unique_and_ambiguous(tmp_path):
+    first = tmp_path / "first.jsonl"
+    _copy_with_session_id(first, "sess-aaa")
+    selected = select_transcript("sess-a", None, str(tmp_path))
+    assert selected == first
+
+    _copy_with_session_id(tmp_path / "second.jsonl", "sess-aab")
+    with pytest.raises(FileNotFoundError, match="ambiguous"):
+        select_transcript("sess-aa", None, str(tmp_path))
+
+
+def test_select_transcript_selector_not_found_in_project_dir(tmp_path):
+    # A populated project must not fall back to its newest transcript.
+    shutil.copyfile(TRANSCRIPT, tmp_path / "newest.jsonl")
     with pytest.raises(FileNotFoundError) as exc_info:
-        select_transcript("sess-aa", None, str(proj2))
+        select_transcript("missing-id", None, str(tmp_path))
 
-    assert "ambiguous" in str(exc_info.value)
-
-
-def test_select_transcript_selector_not_found_in_project_dir():
-    proj = Path(tempfile.mkdtemp())  # no .jsonl files at all -- newest() yields None
-    with pytest.raises(FileNotFoundError) as exc_info:
-        select_transcript("missing-id", None, str(proj))
-
-    assert "missing-id" in str(exc_info.value) and str(proj) in str(exc_info.value)
+    assert "missing-id" in str(exc_info.value) and str(tmp_path) in str(exc_info.value)
 
 
 def test_select_transcript_selector_not_found_without_project_dir():
@@ -1607,7 +1611,7 @@ def test_cli_single_selection_paths(selector, tmp_path, capsys):
     _write_jsonl(transcript, _recorded_session_entries())
     args = ["--project-dir", str(tmp_path), "--output", "-"]
     if selector != "newest":
-        args += [str(transcript) if selector == "path" else "session-1"]
+        args += [str(transcript) if selector == "path" else TRANSCRIPT.stem[:8]]
     assert main(args) == 0
     assert json.loads(capsys.readouterr().out)["session_id"] == _capture_session_id()
 

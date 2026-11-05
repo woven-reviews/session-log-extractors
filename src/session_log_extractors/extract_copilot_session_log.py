@@ -1251,7 +1251,7 @@ def build_arg_parser(project_root: Optional[Path] = None) -> argparse.ArgumentPa
         "session",
         nargs="?",
         metavar="SESSION_ID",
-        help="session id or prefix (optional; --output - selects newest for current repo)",
+        help="case-sensitive recorded ID (unique exact, then literal prefix; --output - selects newest)",
     )
     parser.add_argument(
         "--db",
