@@ -843,7 +843,7 @@ class _CodexSessionBuilder:
         self.source = source
         self.session = Session(
             harness="codex",
-            session_id=source.identifier,
+            session_id=source.session_id or source.identifier,
             events=[],
             cwd=source.cwd,
             started_at=first_timestamp(source.entries),
@@ -1410,7 +1410,8 @@ def main(
     print(f"using transcript: {transcript}", file=sys.stderr)
 
     try:
-        envelope = extract_transcript(transcript, args.tool_result_bytes)
+        source = EXTRACTOR.read_source(transcript)
+        envelope = _extract_source(source, args.tool_result_bytes)
     except (OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -1421,7 +1422,7 @@ def main(
         warn_if_oversized("stdout JSON", payload, TOOL_RESULT_BYTES_FLAG)
     else:
         out_path = (
-            project_root / raw_filename("codex", envelope["session_id"])
+            project_root / raw_filename("codex", source.identifier)
             if args.output is None
             else Path(args.output).expanduser()
         )

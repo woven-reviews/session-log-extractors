@@ -519,6 +519,13 @@ def _path_image_ext(ref: Dict[str, str]) -> str:
     return guessed.split("/")[-1] if "/" in guessed else "img"
 
 
+def _recorded_session_id(session: Dict[str, JsonValue]) -> str:
+    identifier = session.get("id")
+    if isinstance(identifier, str) and identifier:
+        return identifier
+    return output_identifier(session)
+
+
 def output_identifier(session: Dict[str, JsonValue]) -> str:
     """Generate a short identifier for output filenames."""
     session_id = session.get("id", "unknown")
@@ -1179,7 +1186,7 @@ def interpret_source(source: CopilotSource) -> Session:
     }
     session = Session(
         harness="copilot",
-        session_id=output_identifier(source.session),
+        session_id=_recorded_session_id(source.session),
         events=events,
         cwd=_string(source.session.get("cwd")),
         started_at=_string(source.session.get("created_at")),
