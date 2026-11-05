@@ -1,246 +1,179 @@
 # session-log-extractors
 
-Reusable extractors for Claude, Codex, and Copilot session logs.
+Reusable JSON extractors for Claude Code, Codex, and GitHub Copilot CLI sessions.
+They preserve the recorded conversation, inline available images, and attach
+structured facts supported by native evidence.
 
-## Attribution approach
+## Extract sessions
 
-Our goal is to make the candidate's deliberate actions and decisions visible in
-the session log. A reviewer should be able to understand what the candidate
-said, what they chose to do, and the recorded outcomes of those actions.
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and run
+`uv sync --locked` from the repository root. Python 3.11 or newer is supported.
+The scripts use the installed package in `src/session_log_extractors/`.
 
-Classify a record by the activity it represents, using the available evidence—not
-simply by who generated its wording. Software-generated text can represent a
-deliberate candidate action. Automatically supplied context should remain
-distinguishable from the candidate's contribution.
+```sh
+uv run --locked python scripts/extract_claude_session_log.py
+uv run --locked python scripts/extract_codex_session_log.py
+uv run --locked python scripts/extract_copilot_session_log.py
+```
 
-Preserve the original information while making that distinction. When attribution
-is unclear, treat it as unresolved ambiguity to investigate and resolve, rather
-than silently accepting it or hiding potentially meaningful candidate behavior.
-If the evidence genuinely cannot establish attribution, retain the information
-and document the gap rather than guessing.
+By default, each command exports all sessions matching the current project.
+The repository scripts write to the checkout root, including when invoked from
+subdirectories. Filenames are `<harness>_session_log_raw_<session-id>.json`.
+Upload those JSON files with their inline images; no image description pass or
+hand editing is needed. Recorded Markdown remains message content.
 
-Specific examples and tests illustrate these principles; they do not define an
-exhaustive list of candidate actions.
+Use `--help` on each script for its complete interface. Common options are:
 
-## Extraction compatibility
+| Selection or option | Behavior |
+| --- | --- |
+| Positional session ID | Export one session. A unique exact recorded ID wins; otherwise a unique literal prefix is required. Matching is case-sensitive. |
+| `--all` | Export every matching project session; this is the default with no explicit selection. |
+| `--strict` | Require the exact recorded working directory rather than parent/descendant project matching. |
+| `--output ./exports` | Choose a batch output directory. |
+| `--output ./session.json` | Choose a single-session file destination. |
+| `--output -` | Write one session to stdout (newest matching session if no selector is supplied); diagnostics stay on stderr. |
+| `--tool-result-bytes N` | Cap textual tool results at N UTF-8 bytes; default **8,192**, zero clips nonempty text, any negative value retains full text. |
 
-The [extraction information contract](scripts/fixtures/README.md) records the
-move to JSON-only output, the complete information to preserve across
-harnesses, and the fixture acceptance requirements.
+Claude and Codex also accept `--transcript PATH`. Codex accepts a transcript
+path as its positional selection and `--sessions-root DIR` for discovery. Copilot accepts
+`--db PATH` for its SQLite store; it also reads the corresponding native session
+state and attachments. Copilot has no direct JSONL/state-root CLI flag.
 
-Tests target one explicitly selected current versioned native capture per harness.
-When a newer capture records changed upstream behavior, retain the previous input
-and assertion as a focused legacy compatibility case, documenting its CLI version
-and reason, and add an assertion for current behavior. Run the main suite against
-the current capture rather than every version; retain older captures while legacy
-cases need them. Extractor bugs still require fixes, not changed expectations.
+Explicit selection never falls back to a newest unrelated session. Missing or
+ambiguous IDs fail with exit 1 and stderr diagnostics, without changing output
+files. Copilot treats `%` and `_` as literal ID characters.
 
-Claude tests select the complete interactive 2.1.312 capture (including 2.1.314
-resumes). Test modules pin its native paths directly. Focused tests select
-records by tool names and inputs, message content, and question semantics;
-integration tests read the full transcript. Recorded IDs only associate selected
-activity with its results; fixture lookup never uses saved IDs or transcript
-positions. Missing or ambiguous semantic matches fail explicitly.
-No test reads the older unversioned Claude captures. See the
-[Claude fixture provenance](scripts/fixtures/claude/README.md) for boundary
-mutations and legacy compatibility cases.
+Claude and Codex ignore blank lines and skip malformed JSON/non-object records
+with source/line diagnostics (up to five individual warnings plus a total).
+Blank files and valid objects with no conversation activity produce `events: []`.
+There is no native-format recognition gate, so unrelated JSON objects can also
+produce an empty export. Nonblank input with no valid objects fails. Codex
+discovery still needs recorded cwd metadata; select a blank file explicitly.
+Copilot sessions without usable conversation likewise export an empty envelope.
+Missing/unreadable sources and output failures exit 1. Batch mode attempts all
+selected sessions and retains successful files; it exits 1 for any failure or
+no selected sessions. Tolerated skipped records alone do not fail extraction.
 
-Claude extraction produces JSON. Run
-`uv run --locked python scripts/extract_claude_session_log.py` to export every session in the
-resolved project directory to `claude_session_log_raw_<session-id>.json` in the
-project root. Use a session id or `--transcript PATH` for one session, with
-`--output PATH` for an explicit JSON destination or `--output -` for stdout.
-`--tool-result-bytes N` sets the raw-text result cap (default: 8192 bytes;
-zero clips nonempty text; negative means no cap).
-Recorded Markdown, inline images, and tool results remain in the JSON.
+Available images retain their owning message and order. Missing assets remain
+explicit unavailable references, rather than disappearing. The exporter warns
+above **8 MiB** of serialized JSON. The result cap is not a whole-file limit:
+inputs, structured results, attached facts, conversation, and images stay complete.
 
-Claude exports the normal envelope with `events: []` for blank files and object
-records that produce no conversation events, retaining available session metadata.
-No Claude-format recognition gate is applied: unrelated JSON objects can therefore
-produce a successful empty export. Blank lines are ignored. Malformed JSON and
-non-object records are skipped with source/line diagnostics on stderr (up to five
-individual warnings plus a total). Nonblank input with no valid object records,
-missing/unreadable input, and output failures exit 1. Tolerated skipped records
-alone do not fail extraction. JSON goes only to the selected destination.
-Batch extraction attempts every selected transcript, writes valid empty sessions,
-and retains successful files; it exits 0 only if every selected session exports
-successfully, otherwise 1. Missing project directories and no selected transcripts
-also exit 1. Missing-image unavailable markers remain unchanged.
+### Docker helpers
 
-This implements the Claude input boundary in QUAL-2534. Consuming-application
-handling remains in [QUAL-2500](https://linear.app/andela/issue/QUAL-2500/handle-invalid-and-empty-json-only-session-logs-explicitly);
-shared serialization and schema compatibility are documented below.
+Build from the repository root so the image includes the package:
 
-Claude tool calls include `interaction_questions` and `question_responses` from
-the shared question contract, directly under `events[].tool_calls[]`. Each
-occurrence has a local `ref`; response links carry native call-ID and question-key
-evidence. Repeated question text within a
-call, duplicate call IDs, and unmatched results keep `question: null` rather than
-guessing. A question with no response remains unanswered. Options retain exact
-labels, descriptions, previews, and recorded `(Recommended)` markers separately
-from selected options. Responses distinguish selections, custom `free_text`,
-`candidate_feedback` notes, selected previews, and refusals with their evidenced
-source. A generic tool error does not create a refusal.
+```sh
+docker build -f scripts/Dockerfile -t session-log-extractor .
+docker run --rm session-log-extractor -c 'from session_log_extractors import session_log_envelope'
+```
 
-Claude prefers complete `toolUseResult.answers` and `annotations` over display
-text, retaining the alternate payload in `result_record.native_result` alongside
-the original input and result. Older text-only records require explicit question
-and answer pairs. Results without a proven call owner remain in `tool_results`
-on their original native message in `events`; their structured responses live
-on those result records. The envelope keeps its existing top-level fields, so
-consumers traverse one conversation without joining parallel session-wide lists.
-Structured decision facts and payloads survive short text caps; textual result
-copies use the configured cap. Export leaves the interpreted model unchanged.
+For mounted extraction, follow the repository helpers for
+[Claude](.claude/commands/extract-claude-session-logs.md),
+[Codex](.agents/skills/extract-codex-session-logs/SKILL.md), or
+[Copilot](.agents/skills/extract-copilot-session-logs/SKILL.md).
+They verify the checkout and mount its native sources read-only. Output must
+stay inside the shared checkout, for example batch `--output ./exports`.
+Destinations outside the checkout are unsupported by these workflows.
+Single-session `--output` names a file, not a batch directory.
 
-Claude user-message text now retains wrappers, whitespace, and injected skill
-and command expansions verbatim. Nonempty user text carries Unicode code-point
-`authorship` ranges. Consistent `promptSource: typed/queued`, `turnOrigin: human`,
-and `origin.kind: human` establish candidate input. Captured standalone native
-user-interruption notices also count as candidate activity: they record the
-user's control action and must remain visible when harness activity is hidden.
-Their wording is generated by Claude. Standalone native shell-mode input also
-counts as candidate activity, preserving the submitted command and its wrapper.
-Native slash-command invocations with recorded human origin and human turn also
-retain candidate attribution for the invocation and supplied arguments.
-Captured standalone `/model` control invocations also count as candidate activity,
-retaining the user's decision to open the model selector. Its result notices
-retain the chosen model as candidate activity through the recorded parent ID.
-The native CLI's plain and wrapped `/compact` invocation records likewise retain
-the user's compaction action as candidate activity. Its completion notice inherits
-candidate attribution through the recorded parent ID; the generated summary stays
-harness content. Unmarked SDK `/compact` prompts remain unknown.
-Shell output likewise inherits candidate activity only through its recorded
-parent ID pointing to a unique candidate shell input. Output and input formats
-must match; unlinked or ambiguous output stays unknown. Explicit injections, task notifications,
-and compact summaries retain harness ranges. Queued-command
-attachments retain their recorded rendered role and text, with candidate ranges
-located by an exact, unique match to the separately recorded original prompt;
-wrapper text has harness ranges. A peer origin with a separately recorded body
-similarly identifies other-agent words before broad `isMeta` classification.
-Missing or ambiguous evidence stays unknown. Role, `userType: external`,
-`turnOrigin: human` alone, and tag spelling do not establish candidate authorship.
-Ranges retain recorded provenance fields and their own timestamps; command
-actions and native identities remain available on the interpreted model.
-The exporter copies supplied authorship ranges without applying the tool-result
-cap to message text. Missing ranges still mean unknown, including on other
-harnesses. See the [authorship contract](scripts/fixtures/README.md#shared-text-authorship-contract)
-for evidence limits.
+## Understand the output
 
-Codex extraction also produces only JSON. Run
-`uv run --locked python scripts/extract_codex_session_log.py` to export every matching project
-session to `codex_session_log_raw_<session-id>.json` in the project root.
-Session selection, `--output PATH`, `--output -`, and `--tool-result-bytes N`
-work as described above; `--sessions-root DIR` overrides the session root and
-`--strict` requires an exact recorded working directory match. Codex also
-removes `--raw`, `--no-raw`, and `--raw-tool-result-bytes`. Upload the JSON files
-with inline images; no generated Markdown or image description pass is needed.
-Recorded Markdown, inline images, and tool results remain in the JSON.
+The goal is to make the candidate’s deliberate actions and decisions visible:
+what they said, what they chose, and the recorded outcomes. Classify activity by
+its evidence rather than who generated its wording. Investigate unresolved
+attribution without hiding meaningful activity or guessing when evidence is
+insufficient. Examples illustrate these principles; they are not an exhaustive
+list of candidate actions.
 
-Codex uses the same input outcomes as Claude: blank files and object records
-with no conversation events export the normal envelope with `events: []`,
-retaining available metadata and filename/session identity. Unrelated objects
-are accepted; there is no native-format recognition gate. Blank lines are ignored.
-Malformed JSON and non-object records are skipped with source/line warnings on
-stderr (at most five individual warnings plus a total). Nonblank files with no
-valid objects, missing/unreadable input, and output failures exit 1 without a
-successful export. Partial malformed input retains its usable records and exits 0.
-JSON goes only to the selected destination. Batch mode writes valid empty sessions,
-attempts every selected transcript, retains successful outputs, and exits 0 only
-when every selected transcript exports successfully; no matches exits 1.
-Discovery still requires recorded cwd information; blank files can be selected
-explicitly but do not gain automatic project matching. Missing-image unavailable
-markers remain preserved. Consumer handling belongs to QUAL-2500; shared
-serialization and schema compatibility are documented below.
+The envelope uses schema `raw-session-log/1`. Traverse `events` in recorded
+order, with each message's tool calls/results, images, and attached facts.
+Questions and answers use `interaction_questions` and `question_responses` on
+their evidenced tool calls. Refusals, plans, actions, task prompts, and invocations
+are attached to the messages, calls, or results they describe where supported.
+They are separate from textual `result` and survive a zero-byte result cap.
+Internal session indexes do not become top-level JSON collections.
 
-Codex exports shared `permission_refusals` on the evidenced tool call (or legacy
-harness message), and `plan_versions` / `plan_decisions` on their recorded
-messages. Refusals retain complete evidence, native variants, denied tool names,
-and separate candidate feedback and harness explanations. Read-only sandbox
-refusals have source `settings`; generic denials without attribution have source
-`unknown`. Native cancellations and ordinary tool errors never imply denial.
-Codex attaches these facts to their canonical records during interpretation,
-using the same shared `DecisionFacts` export path as Claude. The exporter copies
-facts without reconstructing ownership from session-level collections. These
-fields survive zero/short/unlimited result caps without changing the interpreted
-session. Unmatched refusals stay on their internal unmatched result records,
-with null activity/action associations.
+Interpretation establishes ownership using recorded IDs, native containment,
+and explicit relationships. Export copies established facts and applies output
+policy; it does not reconstruct associations from internal indexes or proximity.
+Unassociated evidence stays explicit. Claude and Copilot can retain orphan
+responses on result-only conversation activity; Codex unmatched results without
+a conversation owner remain internal. Consumers must not assume every internal
+fact appears in JSON.
 
-A complete assistant `<proposed_plan>` block records a proposed version, without
-asserting that it was presented for approval. Candidate-authored statements whose
-first line is exactly `Implement the plan.` or `Reject the plan.` record explicit
-outcomes; following lines remain candidate feedback. Their version/presentation
-associations remain null because the statement records no target ID. Other prose
-is preserved as conversation, without classifying its intent. The current native
-capture contains revised proposals and ordinary rejection feedback but no
-structured rejection, approval-presentation link, or edited-plan editor record.
-Those workflows are unsupported: revisions do not imply edits of an earlier
-version, feedback does not imply a rejection, and mode changes or missing results
-do not imply approval. Legacy `update_plan` checklists remain distinct from plan
-proposals. See [Codex fixture provenance](scripts/fixtures/codex/README.md).
+Authorship is independent of message role. Candidate activity includes supported
+native notices of deliberate control actions, even when the harness generated
+the wording. Automatically supplied context and primary-assistant output remain
+distinct from candidate input; another agent requires recorded identity.
+Unknown attribution stays unknown. Original text, wrappers, and whitespace remain
+available. See the [preservation guide](scripts/fixtures/README.md) for acceptance
+examples and evidence limits, and [architecture](docs/architecture.md) for the
+pipeline and responsibility boundaries.
 
-Explicit ID selection is case-sensitive across Claude, Codex, and Copilot. A
-unique exact recorded ID wins; otherwise the selector must be a unique literal
-prefix. Missing or ambiguous selections exit 1 with stderr diagnostics, emit no
-export JSON, and leave output files untouched. Copilot treats `%` and `_` literally.
-Claude searches only top-level transcripts in the resolved project; Codex searches
-its session root. Filenames are not ID aliases. Use an existing positional file
-path or `--transcript PATH` for Claude/Codex files without a recorded ID or with a
-renamed filename. `--transcript` still overrides positional selection, and `--all`
-still ignores it. Exported identity and output naming are unchanged.
+Tool failures, cancellation, settings refusals, and human rejection are different
+facts. Missing decisions never imply approval. Assistant prose alone does not
+establish a permission refusal. Successful execution or an attempted edit does
+not prove a file changed; use evidenced action confirmation rather than a legacy
+`files_changed` list. Definitions and skill links alone do not prove invocation.
+No external skill/command definitions are loaded.
 
-Copilot extraction produces JSON. Run
-`uv run --locked python scripts/extract_copilot_session_log.py` to export every matching session
-to `copilot_session_log_raw_<identifier>.json` in the project root. Use a session
-id or unique prefix to select one session, `--output PATH` for its JSON file,
-or `--output -` for the selected or newest session on stdout. With `--all`,
-`--output DIR` selects the destination directory. `--strict` requires an exact
-working-directory match during discovery; `--db PATH` selects a database.
-`--tool-result-bytes N` sets the raw-text result cap (default: 8192 bytes;
-zero clips nonempty text; negative means no cap).
-Tool inputs and results remain structured, and available images are inlined as
-base64; unavailable image references remain explicit in the JSON.
+The [shared model](src/session_log_extractors/session_model.py) and
+[exporter](src/session_log_extractors/session_log_envelope.py) are authoritative
+for exact types and exported fields. Export does not perform general runtime
+semantic validation or repair relationships. Additive fields retain the schema
+version; incompatible removal or changes of type/meaning require a new version.
+There is no version negotiation.
 
-Valid empty Copilot sessions write a normal JSON envelope with `events: []`,
-retain available metadata, and exit 0. A missing `events.jsonl` supports
-database-only extraction; an existing blank sidecar also permits database fallback.
-Malformed/non-object records are skipped when at least one valid object remains,
-with at most five source/line warnings on stderr plus a total for larger counts.
-An existing nonblank sidecar with no valid objects, or an unreadable sidecar,
-fails even when database conversation text is available. Unrelated JSON objects
-are accepted without requiring recognized native event types.
+## Capture compatibility
 
-Database, required-schema, selection, and output failures report errors on stderr
-and exit 1. Batch extraction attempts every selected session, retains successful
-files, and exits 1 if any session fails; all successful exports exit 0. Selecting
-no sessions exits 1. Diagnostics remain separate from JSON, and missing images
-retain unavailable markers. Consuming-application handling is coordinated in
-[QUAL-2500](https://linear.app/andela/issue/QUAL-2500/handle-invalid-and-empty-json-only-session-logs-explicitly).
+Tests select one current complete versioned native capture per harness. See
+[Claude provenance](scripts/fixtures/claude/README.md),
+[Codex provenance](scripts/fixtures/codex/README.md), and
+[Copilot provenance](scripts/fixtures/copilot/README.md) for supported evidence,
+controlled boundaries, and capture-specific limitations.
 
-Extraction uses recorded skill/command invocations and payloads without reading
-local definitions. Recorded Markdown remains message content; the extractors do
-not generate Markdown or image descriptions.
+Select evidence by tool names, structured properties, prepared assets, or
+operator markers, then associate it through recorded IDs. Generated assistant
+prose, question wording, labels, shell syntax, and model names may change without
+requiring rewritten prose assertions or approval of a new output baseline.
+Keep precise checks for controlled parser cases, payload preservation, ownership,
+ordering, images, decisions, and byte limits. Missing required feature evidence
+must fail explicitly.
 
-Codex filesystem discovery, selection, transcript loading, and optional image
-asset reads live in `session_log_extractors.codex_sources`. The extractor's
-`read_source(path)` loads a `CodexSource` with records, bounded session metadata,
-and image inputs. `interpret_source(source)` returns an uncapped shared `Session`
-without filesystem access, including empty sessions; `build_raw_envelope(source)`
-always exports it. Missing path inputs retain unavailable-image markers. Export reuses loaded metadata;
-discovery retains the original 50-line ID and 80-line cwd lookup windows.
+When an upgrade changes native behavior, retain a focused legacy case with its
+version and reason where needed; keep the main suite on the selected current
+capture. Extractor bugs require fixes. Approved whole-output baselines and an
+automated fresh-capture drift workflow are unfinished. Ordinary tests use
+committed inputs and never run paid capture. Future capture uses the
+[capture-native-session skill](.agents/skills/capture-native-session/SKILL.md);
+the scripted generators and fake-CLI support tests have been retired.
 
-## Running the installed package
+## Public extraction stages
 
-Run local commands above from the repository root after `uv sync --locked`.
-uv installs the shared exporter from `src/session_log_extractors/`; keep the
-existing extractor scripts as entrypoints.
+All three public adapters implement
+[`Extractor[Request, Source]`](src/session_log_extractors/extractor_contract.py).
+`read_source` snapshots required evidence/assets; `interpret_source` returns an
+uncapped shared `Session` without source I/O, including empty sessions. CLI
+orchestration owns selection, connections, diagnostics, and writing. Use
+`export_session(session, tool_result_max_bytes=8192)` for JSON output.
+The [native-fixture contract tests](scripts/test_extractor_contract.py) cover all
+three harnesses, source-free interpretation, and non-mutating export. The
+package ships `py.typed` for typed consumers.
+
+Child evidence differs by harness: Claude has sidecar readers and summaries;
+main JSON omits those sidecars. Codex child sources can be read, interpreted, and
+exported separately, respecting their recorded history boundary. Copilot child
+records are inline with agent scope, with separate summaries available internally.
+A parent's task summary is not the child's conversation.
 
 ### Deterministic capture sanitization
 
 `capture_sanitization.py` contains the capture redaction rules, separately from
 extraction. It reads no environment variables, credentials, home directory, or
 clock. Identical input bytes and explicit rules produce identical sanitized
-bytes and count/hash reports. Existing fixture generators retain their current
-sanitizers; this command is for preparing and reviewing capture copies.
+bytes and count/hash reports. Use this command to prepare and review interactive
+capture copies.
 
 Create a private rules file outside the repository, for example:
 
@@ -289,348 +222,26 @@ matches, sorted by rule name. They contain no matched values, timestamps, or
 machine-specific paths. With no `--report`, the report goes to stdout. Invalid
 rules or malformed JSON fail explicitly rather than silently dropping records.
 
-Build Docker from the repository root so the context includes `pyproject.toml`
-and `src/`:
+## Development
 
-```sh
-docker build -f scripts/Dockerfile -t session-log-extractor .
-docker run --rm session-log-extractor -c 'from session_log_extractors import session_log_envelope'
-```
+Install locked development tools with `uv sync --locked --extra test` (CI pins uv
+0.12.11). Add `--python 3.11` to match CI. uv manages `.venv` without activation.
+After intentional dependency changes, run `uv lock` and commit the lockfile.
 
-The repository extraction helpers mount the verified checkout and invoke its
-`scripts/extract_*_session_log.py` with the image's Python and installed package.
-The Claude, Codex, and Copilot scripts delegate to their `session_log_extractors` modules
-and supply the checkout root for default output paths, including from subdirectories.
-Copilot retains `~/.copilot/session-store.db` and `~/.copilot/session-state`
-for discovery; `--db PATH` still overrides the database location.
-Repository matching uses the current working directory; default output uses the checkout root.
-Direct calls to the package modules' `main()` use the working
-directory at call time for default output, or an explicit `project_root=Path(...)`.
-Run `uv run --locked pytest tests/test_smoke.py` to check package imports and
-fixture exports through all three local script entrypoints.
+Follow [AGENTS.md](AGENTS.md) for the authoritative commands and coding policy.
+Before committing, run its Ruff format/check, strict package-wide mypy, Import
+Linter, and all **five 95% coverage gates**: overall, changed-line, and separate
+Claude, Codex, and Copilot extractor coverage. Run diff-cover after the overall
+run creates `coverage.xml` and after fetching `origin/main`.
+Do not add suppressions, broaden exceptions, weaken settings, or lower thresholds.
 
-Claude readers live in `session_log_extractors.claude_sources`. `read_source(path)`
-loads main records; `read_subagent_sources(path)` reads the sibling sidecars with
-optional metadata and retains each source path. For replay without filesystem
-access, construct `ClaudeSource(path, entries, metadata)` directly and call
-`extract_claude_session_log.interpret_source(source)` or
-`summarize_subagent_source(source)`. Images remain inline in the recorded entries.
-Claude interprets main records once into the shared session and exports with
-`export_session`; byte limits apply only at export. `interpret_source` accepts
-no result cap and always returns a `Session`, including when events are empty.
-`Session.events` holds ordered `UserMessage` and
-`AssistantMessage` records. User messages retain recognized commands and shell
-actions; tool calls retain native IDs, results, questions, plan decisions,
-permission denials, and skill invocations. Results and decisions attach to their
-call by native ID even across later human messages. Native message/parent IDs
-and complete result records remain available on the model. Known tool inputs
-have named schemas in `tool_inputs/claude.py`, including `BashInput` and
-`ReadInput`. Copilot owns its payload types and tool-name recognition in
-`tool_inputs/copilot.py`, with explicit `CopilotBash`, `CopilotSkill`, and file-tool
-schema identifiers. Each extractor recognizes only its own tool vocabulary.
-`tool_inputs/__init__.py` combines the harness types for the shared model without
-a global registry. Opaque values use `json_types.JsonValue`; the question-option
-shape used by the shared model lives in `question_types.py`. Schema recognition preserves additional keys and
-does not validate payloads at runtime. `ToolCall.input_schema` and
-`Session.unsupported_tools` identify unsupported names or non-object inputs;
-the CLI reports them on stderr while preserving their payloads. Unmatched results
-are retained explicitly instead of assigned by proximity. `Session.files_changed`,
-`skills_used`, and `subagent_count` hold session facts without turn grouping.
-The shared exporter selects current JSON fields from messages and calls while
-preserving complete nested input/result payloads. `build_events` remains an
-export convenience wrapper. `Turn`, `Interaction`, and chronological sidecar
-attribution have been removed. Main JSON extraction omits sidecars;
-`load_subagents(path)` retains its timestamp-ordered summaries for existing callers.
-
-Claude JSON includes `permission_refusals`, `plan_versions`,
-`plan_presentations`, and `plan_decisions` on the calls that carry their evidence.
-`claude_decisions.py` interprets these shared records before export, so complete
-plans, native denial variants, source evidence, and candidate feedback survive
-short raw-result limits. Candidate prompt refusals and settings rules have
-separate sources; ordinary tool failures do not become candidate decisions.
-Explicit editor evidence links edited versions to their proposals. Unanswered
-presentations have no decision, and unfamiliar results never imply approval.
-Unmatched results keep their facts on `tool_results` with null activity/action
-or plan associations instead of borrowing a nearby call. Duplicate interaction
-IDs also retain unassociated results. Original `ExitPlanMode` calls and native
-permission lifecycle records remain available; general planning lifecycles and
-response timestamps are outside this enrichment.
-
-Shared `interaction_questions` and `question_responses`, `permission_refusals`,
-and plan records are the sole interpretation across all three harnesses. The
-combined `questions`, singular `plan_decision`, and `permission_denial` summaries
-have been removed. Codex answers use the recorded `answers` map keyed by question
-ID, with a nested `answers` array; `user_note:` entries preserve custom text.
-Unsupported answer containers remain in complete native inputs/results without
-guessed answers. Claude text answers must explicitly name their questions; no
-first-answer fallback associates mismatched text.
-
-| Removed summary | Shared representation |
-| --- | --- |
-| Combined question/answer | `Question` retains offered text, headers and options; `QuestionResponse` holds selections, free text, notes and previews with recorded associations. |
-| Plan decision summary | `PlanVersion` retains proposed/edited content, `PlanPresentation` records review, and `ObservedPlanDecision` records the outcome and candidate feedback. |
-| Permission denial summary | `PermissionRefusal` distinguishes source, action, harness explanation and candidate feedback. Native `permission_decisions` retain their separate request/completion lifecycle. |
-
-Copilot readers and discovery live in `session_log_extractors.copilot_sources`.
-`read_source(connection, session)` loads metadata, required database rows, models,
-and ordered state records into `CopilotSource`. The extractor's `read_source`
-also snapshots referenced external image bytes, following the Codex reader pattern.
-`CopilotExtractor(Extractor[CopilotRequest, CopilotSource])` exposes the production
-stages through `EXTRACTOR`.
-`CopilotRequest` holds the selected metadata and caller-owned connection.
-`interpret_source(source)` returns an uncapped shared `Session` without database
-or filesystem access; `build_raw_envelope(source)` applies `export_session`.
-Ordered native messages own their tool requests and images; results join by
-recorded call ID. Repeated and orphan results remain in `unmatched_tool_results`,
-and the complete native result stays in `result_record` beside the compatible
-textual JSON result. Database-only inputs retain file targets by `turn_index`.
-
-All three harnesses attach structured `interaction_questions` and
-`question_responses` to their evidenced tool calls during interpretation.
-The exporter copies those facts alongside the existing capped `result` string;
-it does not reconstruct ownership from session-level question indexes or wrap
-facts inside result text. Session-level collections remain internal model views.
-Unmatched Codex results and responses remain internal when no displayable
-conversation owner is established.
-Each schema property is a distinct question occurrence with
-the exact request message, title, description, enum options, and selection mode.
-Responses link through a unique same-agent `toolCallId` and the recorded answer
-map's property key. Repeated questions retain distinct local references; missing,
-duplicate, or cross-agent identifiers leave answers explicitly unassociated.
-Responses without an evidenced owning call appear as result-only tool activity
-at their native record position, without an invented request ID or input.
-`recorded_answer` retains the original JSON value, including unsupported shapes;
-`selections` and `free_text` describe its interpretation. Multiple custom values
-are newline-joined in `free_text`; their original boundaries remain in
-`recorded_answer`. Candidate feedback stays separate from answer text and harness
-explanations. A native `elicitation_action: cancel` establishes a candidate
-cancellation, separate from refusal; errors and rendered cancellation prose
-alone do not establish either. Cancellation of a
-multi-question request remains unassociated with an individual question.
-The captured enum format has no option descriptions, recommendation markers,
-or previews: these fields remain absent, while labels and complete raw tool
-inputs/results remain available. Structured question facts survive every raw
-result byte budget, including zero.
-
-Copilot also populates the shared `permission_refusals`, `plan_versions`,
-`plan_presentations`, and `plan_decisions` collections before export. The
-interpreter attaches those records directly to their evidenced tool calls in the
-existing conversation; the shared serializer exports the established ownership.
-Session collections index the same records for internal callers and retain
-unassociated facts. A unique same-agent call ID, or a unique permission request ID
-carrying that call ID, establishes ownership. Settings
-rules and content-exclusion refusals remain distinct from candidate refusals;
-candidate feedback requires recorded human provenance. Cancellations, tool
-errors, unfamiliar decision values, and missing decisions never imply approval.
-Complete plan content from responses survives every raw-result cap, including
-editor-modified approved text. Plan-file create inputs preserve proposals;
-execution starts record presentations with unknown displayed versions. Response
-content has unknown version kind unless the source establishes more. No edit
-relationship is inferred from changed text or neighboring records. Legacy
-call summaries remain available on the model.
-
-Copilot authorship is independent of role. Recorded `data.source` and automatic
-continuation evidence distinguish candidate, harness, and other-agent input;
-unfamiliar or contradictory evidence remains unknown. The supported unscoped
-human default applies when source is omitted; agent-scoped input without source
-remains unknown. Native transformed text is retained verbatim in `text`, with
-code-point authorship ranges where the original input can be located uniquely.
-The named `submitted` record separately retains pre-transformation input and its
-interpreted authorship. A transformed slash expansion follows a unique same-agent
-parent-ID chain through hooks to a matching `skill.invoked` / `user-invoked`
-record. Its supported invocation notice and exact supplied arguments are candidate
-activity; loaded skill instructions and automatic context stay harness content.
-Missing links, conflicting definitions, or ambiguous rendered matches stay unknown.
-Native assistant prose with model and provider response ID evidence is an
-`harness` contribution, retaining assistant role. Model generation does not
-establish another agent's input. Role alone is insufficient.
-Original-only steering messages and DB fallback text remain verbatim.
-
-Native system messages, notifications, and instruction updates remain ordered
-runtime activity with source/type markers. Message and tool agent scope and
-parent task identity survive the JSON boundary. User-shell command/output
-ranges retain candidate activity only through a unique same-agent recorded call
-ID and an explicit user-requested completion or direct recorded parent link.
-Missing completion evidence stays
-unknown; ambiguous or cross-agent results stay unmatched. Editor-selection
-schema support is covered by controlled boundaries; the selected interactive
-capture does not establish native IDE authorship. See the
-[Copilot evidence and limits](scripts/fixtures/copilot/README.md).
-
-Recorded database file activity stays in `file_activity`, including when native
-tools supply the JSON. `FileActivity` holds the path and tool name;
-`FileActivity.provenance` identifies the native record type and preserves its
-source turn index and first-seen time. Source indices never index `Session.events`,
-and first-seen times do not assert modification times. File activity alone does
-not populate `files_changed` or infer read/write actions.
-
-Copilot also exports shared `file_actions`, `subagent_tasks`, and `invocations`
-on their evidenced messages or tool calls. `copilot_actions.py` establishes these
-facts during interpretation; internal session collections index the same records.
-Native `view`, `create`, `edit`, `glob`, and `grep` calls retain action names and
-verbatim paths (null when absent). Execution success is separate from change
-confirmation: only structured completion `fileEdits` with a matching path and a
-recognized create/edit kind confirms a modification. Requests, database rows,
-success flags, and rendered diffs alone do not. Additional completion paths are
-separate actions. Missing, duplicate, or cross-agent IDs never supply ownership;
-unmatched modifications and database rows remain internal with null activity.
-
-Native `task` calls retain full prompt and description independently, including
-empty strings; absent or invalid text is not replaced with another field. A
-unique subagent start linked to the task's execution start supplies child identity.
-Native `skill` calls remain distinct occurrences. A `skill.invoked` record linked
-to a call completion or user submission enriches that occurrence with the full
-recorded definition and path. Slash submissions retain exact text and arguments,
-including recorded `[$name](target)` links. Standalone links, definition paths,
-matching names, and timestamps do not establish invocation or ownership. Unknown
-owners remain internal; definitions are never loaded externally. All structured
-facts survive raw-result caps, including zero, without changing existing JSON
-content or adding parallel top-level collections. Other tool vocabularies remain
-unsupported. Unrecognized modification kinds retain their recorded names and
-evidence with unknown change confirmation.
-
-`PermissionDecision.status` records whether a completion was observed (`pending`
-or `completed`). `native_decision` retains the harness's result label verbatim;
-a missing label stays `None`, and a pending request has no result label.
-Recorded request IDs join permission lifecycle records, without inferred tool-call
-ownership. These lifecycle facts do not automatically establish a
-`PermissionRefusal`; an observed refusal requires its own native evidence.
-`ToolExecution` likewise represents a recorded execution start; adapters leave it
-absent when only a request or result was recorded.
-Unsupported tool schemas are listed in `unsupported_tools`; opaque inputs survive.
-For replay, construct `CopilotSource`
-directly from supplied rows, state records, and optional `image_inputs`.
-State JSONL is read and decoded once per extraction. Image bytes are keyed by
-recorded path, with media type inferred per reference; inline images remain in
-the records. CLI selection and read-only connection ownership stay in orchestration.
-
-## Public extractor stages
-
-`session_log_extractors.extractor_contract.Extractor[Request, Source]` defines
-`read_source(request) -> Source` and `interpret_source(source) -> Session | None`.
-The request and source types remain specific to each harness. Readers snapshot
-all required records/assets; interpreters do no source I/O and apply no export
-limits. Selection, connection ownership, diagnostics, and writing remain in the
-CLI. All implementations use the shared exporter rather than overriding export.
-
-Claude, Codex, and Copilot implement this protocol in their public extractor adapters;
-their typed `EXTRACTOR` instances are used by single-session and batch extraction.
-All three interpreters always return a `Session`, including empty sessions.
-Mypy checks conformance in CI, and `scripts/test_extractor_contract.py`
-checks signature rejection, source-free interpretation, full results, and
-non-mutating export using native fixtures. The package includes `py.typed` so
-imports retain their annotations when checked outside the source directory.
-
-Codex uses one native interpreter with ordered messages and calls. It retains
-native identities, collaboration mode, commands, plan updates, skill names,
-changed files, and patch completion records in named model fields. Tool results
-match calls by recorded call ID, including across later human messages; unmatched
-results remain explicit. Denial prose without a call ID stays on its recorded
-message without a guessed tool association. User and assistant text retain
-whitespace and wrappers; startup-shaped user messages remain in order with their
-own timestamps and images. Exact response/event text duplicates reconcile using
-the existing response identity/image preference and event timestamp; differing
-text remains on separate messages, so an input cannot consume another's images.
-Nonempty text carries shared `authorship` ranges into JSON, with exact native
-record, payload, block, and per-content provenance markers. The harness-owned
-`codex_authorship` module uses aligned `content_item_kinds` and
-`content_item_metadata[].provenance` from
-`internal_chat_message_metadata_passthrough`. Recorded human input and supported candidate control activity are `candidate`;
-recorded primary-assistant responses, workspace/environment context, and
-selected-skill expansion are `harness`. Either understood kind or provenance can supply evidence; native primary-assistant
-response records separately identify harness activity. Missing,
-unsupported, misaligned, or conflicting evidence stays `unknown`. Role and
-wrapper-looking text alone never establish source. The original text is
-unchanged, and offsets count Unicode code points. Newlines inserted by the
-existing block serialization stay uncovered (unknown).
-
-Native image-attachment records, including their framing, remain candidate
-activity under their recorded user provenance; image ownership stays unchanged.
-For exact duplicate views, response ranges and their timestamps survive alongside
-the event timestamp and both views' markers. Recorded message and turn IDs stay
-on the model. Native user-shell records retain the complete candidate control activity,
-including the recorded command and outcome, using the native shell kind. Native agent deliveries
-retain sender/recipient markers and are exported as assistant contributions with
-`other_agent` authorship; child interpretation honors the recorded history
-boundary. Developer/system instructions remain outside the conversation. Native
-IDE classification remains unestablished; see the [fixture evidence limits](scripts/fixtures/README.md#native-evidence-and-limits).
-Native answer arrays select whole labels by question ID; notes and substring
-overlap do not invent selections.
-`ToolCall.result_record.content` retains complete native
-results, while `ToolCall.result` retains the existing uncapped textual
-interpretation for JSON compatibility. Missing, null, and empty results stay
-distinct. The exporter alone caps that textual view, without mutating either
-representation. Unsupported tool inputs are retained and reported on stderr.
-The duplicate `Turn`, `build_turns`, and `build_events` paths are removed; callers
-use `interpret_source(CodexSource(...))` and `export_session` instead.
-
-The current interactive Codex capture also retains native skill expansions as
-`UserMessage.skill_invocation` records with their own message/turn identities.
-`PatchResult.file_changes` replaces its paths-only `paths` field with typed
-`FileChange` records containing recorded content, unified diffs, and move targets.
-Child sources retain the recorded parent ID and history boundary; interpretation
-excludes inherited parent activity and exposes `Session.parent_session_id`.
-Codex now attaches shared `file_actions`, `subagent_tasks`, and `invocations`
-to canonical messages and calls before JSON export. Independent native file
-completions and structured command reads remain ordered `harness` events when
-no originating call ID is established. Shell and code-mode text stay opaque.
-Patch requests retain recorded action names, paths, move destinations, and full
-inputs. Success alone never confirms a modification: confirmation requires
-per-path native change evidence, and identical-content diffs remain unconfirmed.
-Explicit call IDs can enrich a unique attempted path; nearby text and matching
-paths alone cannot establish ownership. Legacy `files_changed` may include
-attempts and is not confirmation evidence.
-
-Subagent tasks retain full, separately recorded prompts and descriptions,
-including opaque prompt strings. Native activity IDs or matched results supply
-agent identities. Invocation occurrences retain exact slash text and arguments,
-skill-link syntax/targets, and complete definitions already recorded in selected
-expansions or known skill-tool payloads. A unique requested skill and selected
-expansion in the same recorded turn can enrich one occurrence; ambiguous or
-unlinked expansions stay separate. Standalone links, incidental skill paths,
-and unselected definitions do not create invocations. No external definitions
-are loaded. Structured facts survive zero/short raw-result caps, and export
-does not mutate the model. Session indexes remain internal; patch compatibility
-records and parent links also remain model-only. These fields supply JSON facts
-without changing the frontend's Agent actions display.
-
-Copilot also implements the public contract and returns uncapped sessions.
-
-## Shared session/export boundary
-
-Adapters can supply `Session`, `Event`, `ToolCall`, and `Image` dictionaries from
-`session_log_extractors.session_model` directly to
-`session_log_extractors.session_log_envelope.export_session(session, tool_result_max_bytes=8192)`.
-Supply complete interpreted content: export copies it before applying the existing
-UTF-8 byte cap to textual tool results, retaining original byte counts and
-truncation flags. Negative limits retain full text. Structured results, nested
-payloads, images, ordering, and missing/null/empty values pass through unchanged.
-Standalone `tool_results` and attached `result_record` text carry independent
-`content_bytes`/`content_truncated` and
-`native_result_bytes`/`native_result_truncated` fields. These export-generated
-fields are present for strings, including empty strings; missing, null, objects,
-and lists do not acquire text accounting. Native objects and lists retain all
-nested strings even when a parallel textual result is capped. Existing original
-counts and truncation provenance survive re-export.
-
-The complete serialized JSON, including images and structured results, produces
-a warning on stderr above 8 MiB. The per-result cap is not a whole-file limit;
-no additional content is dropped. The model has no presentation state, adapter
-base class, or runtime validation.
-
-All three harnesses apply limits through `export_session` with an 8192-byte default.
-
-File and stdout outputs use `serialize_envelope`: UTF-8 JSON with unescaped
-Unicode, the existing default JSON spacing, recorded key and array order, and
-one trailing newline. Fixed recorded inputs and identical options produce
-identical JSON bytes across repeated runs and destinations. Diagnostics stay on
-stderr; serialized-size warnings count the trailing newline too.
-
-The schema remains `raw-session-log/1` when fields are added, including structured
-fields attached to conversation records. Removing an existing field or changing
-its type or meaning incompatibly requires a new schema version. This policy
-does not introduce version negotiation. Serialization preserves established
-facts and unknown associations; it does not validate or repair relationships.
+Install hooks with `uv run --locked pre-commit install`; run them with
+`uv run --locked pre-commit run --all-files`. Hooks and
+[CI](.github/workflows/test.yml) use the locked tool versions. Import Linter
+checks dependency directions; native-fixture tests check behavioral boundaries.
+Review still assesses semantic ownership, preservation, names, and readability.
+See the [historical implementation plan](docs/implementation-plan.md) for migration
+rationale, rather than current contributor instructions.
 
 ## Ownership
 
@@ -641,88 +252,3 @@ it is granted**. All rights are reserved by Andela.
 ## Releases
 
 Releases are tagged with immutable semantic versions, e.g. `v1.0.0`.
-
-## Development
-
-Install [uv](https://docs.astral.sh/uv/getting-started/installation/) (CI uses
-0.12.11), then sync the project and test tools from the committed lockfile:
-
-```sh
-uv sync --locked --extra test
-```
-
-uv manages `.venv` automatically; no activation is needed. Python 3.11 or newer
-is supported; CI uses 3.11 (`uv sync --locked --extra test --python 3.11` to match).
-Ruff, mypy, Import Linter, and pre-commit are pinned in `pyproject.toml`; mypy
-checks the entire source package in strict mode, including
-`disallow_any_unimported` and `disallow_any_explicit`. All test dependencies are locked in
-`uv.lock`. Format Python with `uv run --locked ruff format .`. Run the same
-checks as CI before opening a PR:
-
-```sh
-uv run --locked ruff format --check .
-uv run --locked ruff check --ignore-noqa .
-uv run --locked mypy src
-uv run --locked lint-imports
-uv run --locked pytest --cov=scripts --cov=src --cov-report=term --cov-report=xml --cov-fail-under=95
-git fetch origin main
-uv run --locked diff-cover coverage.xml --compare-branch=origin/main --fail-under=95
-uv run --locked pytest scripts/test_extract_codex_session_log.py --cov=session_log_extractors.extract_codex_session_log --cov-fail-under=95
-uv run --locked pytest scripts/test_extract_claude_session_log.py --cov=session_log_extractors.extract_claude_session_log --cov-fail-under=95
-uv run --locked pytest scripts/test_extract_copilot_session_log.py --cov=session_log_extractors.extract_copilot_session_log --cov-fail-under=95
-```
-
-Overall coverage excludes test modules. All five gates—overall, changed-line, Codex, Claude,
-and Copilot coverage—must each reach 95%. Run diff-cover immediately after the overall test
-run, which generates `coverage.xml`.
-
-After intentionally changing dependencies in `pyproject.toml`, run `uv lock`
-and commit `uv.lock` with the change. Use `uv lock --upgrade` only when intending
-to upgrade the locked dependencies.
-
-## Automated boundaries and review responsibilities
-
-Install the local hooks with `uv run --locked pre-commit install`. Run all hooks
-with `uv run --locked pre-commit run --all-files`. Hooks invoke the same locked
-Ruff, mypy, and Import Linter commands as CI. Mypy and Import Linter always run
-for the whole package, regardless of the staged filenames; Ruff checks Python
-files passed by pre-commit.
-
-Import Linter's declarative contracts in `pyproject.toml` prohibit direct and
-indirect model dependencies on readers, extractors, or export, and exporter
-dependencies on readers or extractors. Protected contracts restrict direct
-imports of each harness schema module to its own extractor and the exact shared
-union module. The union remains available to the model. Architecture regression
-tests inject forbidden graph edges, including indirect dependencies, and verify
-the configured contracts reject them. No custom lint rules or checker scripts
-are needed.
-
-Module dependencies cannot prove that interpretation avoids source access or
-export caps when orchestration shares a module. Native-fixture contract tests
-cover those behavioral boundaries for Claude and Copilot, including unknown
-payload fields and non-mutating export. Codex protocol adoption is out of scope.
-
-Review still judges names, readability, semantic ownership, recorded versus
-derived values, fixture selection, and payload preservation. Review must also
-reject suppressions and weakened lint/type configuration.
-See [AGENTS.md](AGENTS.md) for these judgment-based rules.
-
-## Type escape policy
-
-The package has no casts or type ignores. Ruff's `TID251` bans `typing.cast`,
-`typing_extensions.cast`, and both `no_type_check` APIs; `PGH003` requires coded
-ignores. Mypy runs in strict mode with both `Any` restrictions across the whole source
-package, requires error codes, and rejects unused ignores. Recursive JSON types
-and checked narrowing preserve opaque values and unknown native fields.
-
-Type-checker suppressions are prohibited by AGENTS.md and checked in PR review.
-
-## Ruff lint policy
-
-CI and pre-commit run `ruff check --ignore-noqa`, so inline and file-level
-`noqa` comments cannot suppress violations. Do not add suppressions, disable
-rules, exclude source files, or raise thresholds to make checks pass.
-
-Ruff enforces complexity/statements/branches/arguments at 10/50/12/5.
-The enabled rules are defined in `pyproject.toml`. See [AGENTS.md](AGENTS.md)
-for the repository's coding and review requirements.
