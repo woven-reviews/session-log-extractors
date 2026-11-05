@@ -73,6 +73,14 @@ def _recorded_session_entries():
     return load_entries(TRANSCRIPT)
 
 
+def _capture_session_id():
+    recorded_ids = set()
+    for entry in _recorded_session_entries():
+        if isinstance(entry.get("sessionId"), str) and entry["sessionId"]:
+            recorded_ids.add(entry["sessionId"])
+    return _require_single_match(recorded_ids, "recorded session ID")
+
+
 def _require_single_match(matches, description):
     assert len(matches) == 1, f"Expected one {description}, found {len(matches)}"
     (match,) = matches
@@ -1221,7 +1229,7 @@ def test_native_continued_conversation_keeps_follow_up_in_one_session():
 def test_build_raw_envelope_preserves_metadata_and_events():
     entries = _recorded_session_entries()
     envelope = build_raw_envelope(Path("/wherever/sess123.jsonl"), entries)
-    assert envelope["session_id"] == "sess123"
+    assert envelope["session_id"] == _capture_session_id()
     assert envelope["cwd"] == "/tmp/CAPTURE_ROOT/workspace"
     assert envelope["started_at"] == first_timestamp(entries)
     assert envelope["models"] == session_models(entries)
@@ -1461,7 +1469,7 @@ def test_cli_stdout_preserves_markdown_and_images(
     assert list(output.iterdir()) == []
     assert "using transcript:" in captured.err
     assert envelope["schema"] == "raw-session-log/1"
-    assert envelope["session_id"] == "session"
+    assert envelope["session_id"] == _capture_session_id()
     assert envelope["events"] == build_events(entries, 3)
     user = _require_single_match(envelope["events"], "image message")
     assert user["text"] == "# Keep **recorded Markdown**"
@@ -1503,7 +1511,7 @@ def test_cli_file_preserves_markdown_and_images(
     assert output_names == [filename]
     envelope = json.loads((output / filename).read_text())
     assert envelope["schema"] == "raw-session-log/1"
-    assert envelope["session_id"] == "session"
+    assert envelope["session_id"] == _capture_session_id()
     assert envelope["events"] == build_events(entries, 3)
     user = _require_single_match(envelope["events"], "image message")
     assert user["text"] == "# Keep **recorded Markdown**"
@@ -1578,7 +1586,7 @@ def test_cli_preserves_native_payloads(transcript, limit, capsys):
     expected_events = build_events(entries, limit)
     assert envelope["events"] == expected_events
     assert envelope["schema"] == "raw-session-log/1"
-    assert envelope["session_id"] == transcript.stem
+    assert envelope["session_id"] == _capture_session_id()
     assert envelope["cwd"] == session_cwd(entries)
     assert envelope["started_at"] == first_timestamp(entries)
     assert envelope["models"] == session_models(entries)
@@ -1601,7 +1609,7 @@ def test_cli_single_selection_paths(selector, tmp_path, capsys):
     if selector != "newest":
         args += [str(transcript) if selector == "path" else "session-1"]
     assert main(args) == 0
-    assert json.loads(capsys.readouterr().out)["session_id"] == "session-123"
+    assert json.loads(capsys.readouterr().out)["session_id"] == _capture_session_id()
 
 
 @pytest.mark.parametrize("mode", ["single", "batch"])
@@ -1708,7 +1716,8 @@ def test_cli_exports_empty_sessions(destination, contents, tmp_path, capsys):
         assert captured.out == ""
         envelope = json.loads(target.read_text())
     assert envelope["schema"] == "raw-session-log/1"
-    assert envelope["session_id"] == "session"
+    expected_id = _capture_session_id() if contents == "native" else "session"
+    assert envelope["session_id"] == expected_id
     assert envelope["events"] == []
     assert envelope["cwd"] == session_cwd(entries)
     assert envelope["started_at"] == first_timestamp(entries)
@@ -1745,6 +1754,7 @@ def test_interpret_supplied_source_without_filesystem(limit, fixture, monkeypatc
         entries = _recorded_tool_interaction("Read", "multibyte.txt")
     source = ClaudeSource(Path("/unavailable/session.jsonl"), entries)
     expected_events = build_events(entries, limit)
+    expected_id = _capture_session_id()
 
     def forbidden(*args, **kwargs):
         pytest.fail("interpretation accessed the filesystem")
@@ -1753,7 +1763,7 @@ def test_interpret_supplied_source_without_filesystem(limit, fixture, monkeypatc
         for method in ["open", "is_file", "is_dir", "iterdir", "stat", "read_text"]:
             guard.setattr(Path, method, forbidden)
         session = eclog.interpret_source(source)
-        assert session["session_id"] == "session"
+        assert session["session_id"] == expected_id
         assert (
             session_log_envelope.export_session(session, limit)["events"]
             == expected_events
@@ -2612,3 +2622,88 @@ def test_cli_help_explains_empty_and_failure_outcomes(capsys):
     assert "events: []" in captured.out
     assert "malformed/non-object records" in captured.out
     assert "any batch failure" in captured.out
+
+
+@pytest.mark.parametrize("mode", ["stdout", "explicit", "default", "batch"])
+def test_recorded_identity_survives_renaming_in_all_output_modes(
+    mode, tmp_path, capsys
+):
+    transcript = tmp_path / "renamed.jsonl"
+    shutil.copyfile(TRANSCRIPT, transcript)
+    source = read_source(transcript)
+    recorded_ids = set()
+    for entry in source.entries:
+        if isinstance(entry.get("sessionId"), str) and entry["sessionId"]:
+            recorded_ids.add(entry["sessionId"])
+    assert len(recorded_ids) == 1
+    (expected_id,) = recorded_ids
+    session = eclog.interpret_source(source)
+    assert session["session_id"] == expected_id
+
+    destination = tmp_path / "explicit.json"
+    args = ["--transcript", str(transcript)]
+    if mode == "stdout":
+        args += ["--output", "-"]
+    elif mode == "explicit":
+        args += ["--output", str(destination)]
+    elif mode == "batch":
+        args = ["--all", "--project-dir", str(tmp_path)]
+    status = main(args, project_root=tmp_path)
+    captured = capsys.readouterr()
+    assert status == 0, captured.err
+    if mode in {"default", "batch"}:
+        destination = tmp_path / "claude_session_log_raw_renamed.json"
+    payload = captured.out if mode == "stdout" else destination.read_text()
+    actual = json.loads(payload)
+    assert actual["session_id"] == expected_id
+    expected = session_log_envelope.export_session(session)
+    assert actual == expected
+
+
+@pytest.mark.parametrize("invalid_id", [None, "", 17, [], {}])
+def test_unusable_claude_ids_keep_stem_fallback(invalid_id):
+    source = read_source(TRANSCRIPT)
+    # Replace only native identity fields; agentId must not become session identity.
+    for entry in source.entries:
+        entry["sessionId"] = invalid_id
+        entry["agentId"] = "separate-agent"
+    source.path = Path("fallback.jsonl")
+    session = eclog.interpret_source(source)
+    assert session["session_id"] == "fallback"
+
+
+def _conflicting_identity_source():
+    source = read_source(TRANSCRIPT)
+    # Keep the native conversation, but deliberately assemble two session identities.
+    for entry in source.entries:
+        entry["sessionId"] = "first-native-id"
+    source.entries[-1]["sessionId"] = "second-native-id"
+    return source
+
+
+def test_conflicting_claude_ids_fail_during_interpretation():
+    source = _conflicting_identity_source()
+    with pytest.raises(ValueError, match="session") as error:
+        eclog.interpret_source(source)
+    diagnostic = str(error.value)
+    assert "first-native-id" in diagnostic
+    assert "second-native-id" in diagnostic
+
+
+@pytest.mark.parametrize("batch", [False, True])
+def test_claude_identity_conflict_uses_cli_error_handling(batch, tmp_path, capsys):
+    source = _conflicting_identity_source()
+    transcript = tmp_path / "conflict.jsonl"
+    with transcript.open("w") as stream:
+        for entry in source.entries:
+            stream.write(json.dumps(entry) + "\n")
+    args = ["--transcript", str(transcript), "--output", "-"]
+    if batch:
+        args = ["--all", "--project-dir", str(tmp_path)]
+    status = main(args, project_root=tmp_path)
+    captured = capsys.readouterr()
+    assert status == 1
+    assert not captured.out
+    assert "first-native-id" in captured.err
+    assert "second-native-id" in captured.err
+    assert not (tmp_path / "claude_session_log_raw_conflict.json").exists()

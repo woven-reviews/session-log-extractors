@@ -1648,3 +1648,76 @@ def test_copilot_cli_rejects_non_string_database_identity(tmp_path, capsys, batc
     assert "session id must be a string" in captured.err
     assert captured.out == ""
     assert not list(tmp_path.rglob("*.json"))
+
+
+@pytest.mark.parametrize("mode", ["stdout", "explicit", "default", "batch"])
+def test_full_copilot_identity_in_all_output_modes(mode, tmp_path, capsys):
+    db_path = _native_db_copy(tmp_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE sessions SET cwd = ?", (str(Path.cwd()),))
+    with get_db_connection(db_path) as conn:
+        recorded = get_session_by_id(conn, SESSION_ID)
+    assert recorded is not None
+    destination = tmp_path / "explicit.json"
+    args = [SESSION_ID, "--db", str(db_path)]
+    if mode == "stdout":
+        args += ["--output", "-"]
+    elif mode == "explicit":
+        args += ["--output", str(destination)]
+    elif mode == "batch":
+        args = ["--all", "--db", str(db_path)]
+    status = copilot_log.main(args, project_root=tmp_path)
+    captured = capsys.readouterr()
+    assert status == 0, captured.err
+    if mode in {"default", "batch"}:
+        label = copilot_log.output_identifier(recorded)
+        destination = tmp_path / f"copilot_session_log_raw_{label}.json"
+    payload = captured.out if mode == "stdout" else destination.read_text()
+    assert json.loads(payload)["session_id"] == SESSION_ID
+
+
+def test_copilot_prefix_collision_keeps_full_identities(tmp_path, capsys):
+    db_path = _native_db_copy(tmp_path)
+    # Duplicate just the native session row, holding date and prefix constant.
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE sessions SET id = ?, cwd = ?, created_at = ?",
+            ("abcdefgh-1111", str(Path.cwd()), "2026-01-01T12:00:00Z"),
+        )
+        conn.execute(
+            "INSERT INTO sessions (id, cwd, created_at) VALUES (?, ?, ?)",
+            ("abcdefgh-2222", str(Path.cwd()), "2026-01-01T12:00:00Z"),
+        )
+    status = copilot_log.main(["--all", "--db", str(db_path)], project_root=tmp_path)
+    assert status == 0, capsys.readouterr().err
+    identities = set()
+    names = set()
+    for path in tmp_path.glob("*.json"):
+        names.add(path.name)
+        identities.add(json.loads(path.read_text())["session_id"])
+    assert identities == {"abcdefgh-1111", "abcdefgh-2222"}
+    assert names == {
+        "copilot_session_log_raw_2026-01-01_abcdefgh.json",
+        "copilot_session_log_raw_2026-01-01_abcdefgh-2.json",
+    }
+
+
+@pytest.mark.parametrize(
+    ("native_id", "expected"), [(None, "2026-01-01_unknown"), ("", "2026-01-01_")]
+)
+def test_missing_copilot_identity_preserves_fallback(native_id, expected):
+    source = native_source()
+    source.session["created_at"] = "2026-01-01T12:00:00Z"
+    if native_id is None:
+        source.session.pop("id")
+    else:
+        source.session["id"] = native_id
+    session = copilot_log.interpret_source(source)
+    assert session["session_id"] == expected
+
+
+def test_malformed_copilot_identity_keeps_type_error():
+    source = native_source()
+    source.session["id"] = 17
+    with pytest.raises(TypeError):
+        copilot_log.interpret_source(source)

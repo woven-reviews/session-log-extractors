@@ -2200,3 +2200,70 @@ def test_legacy_duplicate_user_views_preserve_raw_text():
     users = _users(entries)
     assert len(users) == 1
     assert users[0]["text"] == text
+
+
+@pytest.mark.parametrize("mode", ["stdout", "explicit", "default", "batch"])
+def test_unsafe_native_identity_is_independent_of_filename(mode, tmp_path, capsys):
+    # Change only the recorded ID/cwd in the native metadata/input boundary fixture.
+    transcript = tmp_path / "renamed.jsonl"
+    _write_jsonl(transcript, _session_entries("a/b", Path.cwd(), "hello"))
+    source = mod.read_source(transcript)
+    session = mod.interpret_source(source)
+    assert session["session_id"] == "a/b"
+    destination = tmp_path / "explicit.json"
+    args = ["--transcript", str(transcript)]
+    if mode == "stdout":
+        args += ["--output", "-"]
+    elif mode == "explicit":
+        args += ["--output", str(destination)]
+    elif mode == "batch":
+        args = ["--sessions-root", str(tmp_path), "--output", str(tmp_path)]
+    status = main(args, project_root=tmp_path)
+    captured = capsys.readouterr()
+    assert status == 0, captured.err
+    if mode in {"default", "batch"}:
+        destination = tmp_path / "codex_session_log_raw_a-b.json"
+    payload = captured.out if mode == "stdout" else destination.read_text()
+    actual = json.loads(payload)
+    expected = session_log_envelope.export_session(session)
+    assert actual == expected
+    assert actual["session_id"] == "a/b"
+
+
+def test_sanitized_collision_keeps_native_ids_and_parent_reference(tmp_path, capsys):
+    for filename, native_id in [("parent", "a/b"), ("child", "a-b")]:
+        entries = _session_entries(native_id, Path.cwd(), "hello")
+        if filename == "child":
+            entries[0]["payload"]["parent_thread_id"] = "a/b"
+        transcript = tmp_path / f"{filename}.jsonl"
+        _write_jsonl(transcript, entries)
+        session = mod.interpret_source(mod.read_source(transcript))
+        assert session["session_id"] == native_id
+        if filename == "child":
+            assert session["parent_session_id"] == "a/b"
+    status = main(
+        ["--sessions-root", str(tmp_path), "--output", str(tmp_path)],
+        project_root=tmp_path,
+    )
+    assert status == 0, capsys.readouterr().err
+    identities = set()
+    names = set()
+    for path in tmp_path.glob("*.json"):
+        envelope = json.loads(path.read_text())
+        names.add(path.name)
+        identities.add(envelope["session_id"])
+    assert identities == {"a/b", "a-b"}
+    assert names == {
+        "codex_session_log_raw_a-b.json",
+        "codex_session_log_raw_a-b-2.json",
+    }
+
+
+@pytest.mark.parametrize("native_id", [None, "", 17])
+def test_missing_codex_identity_keeps_filename_fallback(native_id, tmp_path):
+    entries = _session_entries("original", tmp_path, "hello")
+    entries[0]["payload"]["id"] = native_id
+    transcript = tmp_path / "fallback.jsonl"
+    _write_jsonl(transcript, entries)
+    session = mod.interpret_source(mod.read_source(transcript))
+    assert session["session_id"] == "fallback"

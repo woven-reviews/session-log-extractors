@@ -420,3 +420,44 @@ def test_recorded_primary_assistant_text_is_harness_activity(
         checked += 1
     assert checked > 0, "Capture must supply a primary-assistant response"
     assert session == original
+
+
+@pytest.mark.parametrize(
+    ("extractor", "selection", "harness"),
+    [
+        (claude.EXTRACTOR, TRANSCRIPT, "claude"),
+        (codex.EXTRACTOR, CODEX_TRANSCRIPT, "codex"),
+        (copilot.EXTRACTOR, None, "copilot"),
+    ],
+)
+def test_full_identity_is_source_free_and_export_does_not_mutate_it(
+    extractor, selection, harness, monkeypatch
+):
+    source = _read_contract_source(extractor, selection, harness)
+    baseline = extractor.interpret_source(source)
+    # Change only the native identity, retaining every recorded conversation entry.
+    expected_id = "complete/native-session-identity"
+    if harness == "claude":
+        for entry in source.entries:
+            if "sessionId" in entry:
+                entry["sessionId"] = expected_id
+    elif harness == "codex":
+        source.session_id = expected_id
+    else:
+        expected_id = source.session["id"]
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("interpret_source accessed its source store")
+
+    with monkeypatch.context() as guard:
+        guard.setattr(sqlite3, "connect", forbidden)
+        for method in ["open", "read_text", "read_bytes", "stat"]:
+            guard.setattr(Path, method, forbidden)
+        session = extractor.interpret_source(source)
+    assert session["session_id"] == expected_id
+    assert session["events"] == baseline["events"]
+    original = deepcopy(session)
+    for limit in [0, 17, 4096, -1]:
+        exported = export_session(session, limit)
+        assert exported["session_id"] == expected_id
+        assert session == original
