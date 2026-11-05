@@ -35,18 +35,7 @@ _APPROVAL: Final = "Implement the plan."
 _REJECTION: Final = "Reject the plan."
 
 
-def parse_permission_denial(text: JsonValue) -> str | None:
-    """Return legacy candidate feedback, empty for denial without feedback."""
-    if not isinstance(text, str):
-        return None
-    stripped = _EXTERNAL.sub("", text).lstrip()
-    if not stripped.startswith((USER_REFUSAL_PREFIX, _GENERIC_DENIAL)):
-        return None
-    feedback = _FEEDBACK.search(stripped)
-    return feedback.group(1).strip() if feedback else ""
-
-
-def is_process_rejection(result: object) -> bool:
+def _is_process_rejection(result: object) -> bool:
     """Recognize the older CreateProcess rejection, excluding cancellations."""
     return (
         isinstance(result, str)
@@ -78,7 +67,7 @@ def _denial_variant(text: str) -> tuple[str, RefusalSource] | None:
         return USER_REFUSAL_PREFIX, RefusalSource.CANDIDATE
     if text.startswith(_GENERIC_DENIAL):
         return _GENERIC_DENIAL, RefusalSource.UNKNOWN
-    if is_process_rejection(text):
+    if _is_process_rejection(text):
         return _PROCESS, RefusalSource.CANDIDATE
     return None
 
@@ -179,6 +168,25 @@ def _result_refusal(
         target.setdefault("permission_refusals", []).append(refusal)
 
 
+def _message_refusal(message: Message) -> None:
+    """Recognize canned legacy messages without interpreting assistant reports."""
+    text = message.get("text") or ""
+    stripped = _EXTERNAL.sub("", text).lstrip()
+    if message["role"] != "assistant" or not stripped.startswith(
+        (USER_REFUSAL_PREFIX, _GENERIC_DENIAL)
+    ):
+        return
+    refusal = _refusal(
+        text,
+        _activity(message),
+        None,
+        f"codex:message/{message['i']}/refusal",
+        field="message.text",
+    )
+    if refusal is not None:
+        message.setdefault("permission_refusals", []).append(refusal)
+
+
 def populate_decision_facts(session: Session) -> None:
     """Attach facts to canonical activity before the shared exporter copies it."""
     for message in session["events"]:
@@ -200,15 +208,6 @@ def populate_decision_facts(session: Session) -> None:
                 activity,
                 f"codex:message/{message['i']}/call/{index}/refusal",
             )
-        if "permission_denial" in message:
-            refusal = _refusal(
-                message.get("text"),
-                _activity(message),
-                None,
-                f"codex:message/{message['i']}/refusal",
-                field="message.text",
-            )
-            if refusal is not None:
-                message.setdefault("permission_refusals", []).append(refusal)
+        _message_refusal(message)
     for index, result in enumerate(session.get("unmatched_tool_results", [])):
         _result_refusal(result, None, None, f"codex:unmatched/{index}/refusal")

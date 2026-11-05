@@ -58,7 +58,7 @@ import re
 import sys
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, TypedDict
+from typing import Dict, List, Optional, Tuple
 
 from session_log_extractors import codex_sources
 from session_log_extractors.codex_actions import (
@@ -72,15 +72,10 @@ from session_log_extractors.codex_actions import (
 )
 from session_log_extractors.codex_authorship import message_authorship
 from session_log_extractors.codex_decisions import (
-    is_process_rejection,
     populate_decision_facts,
-)
-from session_log_extractors.codex_decisions import (
-    parse_permission_denial as parse_permission_denial,
 )
 from session_log_extractors.codex_invocations import populate_invocations
 from session_log_extractors.codex_questions import (
-    REQUEST_USER_INPUT,
     _CodexQuestionInterpreter,
 )
 from session_log_extractors.codex_sources import CodexSource, ImageInputs
@@ -91,7 +86,6 @@ from session_log_extractors.json_types import (
     parse_json,
     string_value,
 )
-from session_log_extractors.question_types import is_question_option
 from session_log_extractors.session_log_envelope import (
     DEFAULT_TOOL_RESULT_MAX_BYTES,
     TOOL_RESULT_BYTES_FLAG,
@@ -114,10 +108,8 @@ from session_log_extractors.session_model import (
     Image,
     Message,
     PatchResult,
-    PermissionDenial,
     PlanStep,
     PlanUpdate,
-    QuestionAnswer,
     Session,
     SkillInvocation,
     ToolCall,
@@ -133,10 +125,6 @@ _IMAGE_EXT = {
     "image/webp": "webp",
 }
 
-
-# Tools that ask the human for a direct answer. Codex has used both bare and
-# namespaced tool names in logs, so matching is suffix-based during interpretation.
-INTERACTION_TOOLS = {REQUEST_USER_INPUT}
 
 # Retain parsing for update_plan-shaped calls; no current native capture shows
 # this tool in Plan mode or Default mode.
@@ -352,10 +340,6 @@ def _tool_name(payload: Dict[str, JsonValue]) -> str:
     return name if isinstance(name, str) else "tool"
 
 
-def _is_interaction_tool(name: str) -> bool:
-    return any(name == tool or name.endswith("." + tool) for tool in INTERACTION_TOOLS)
-
-
 def _is_plan_tool(name: str) -> bool:
     return any(name == tool or name.endswith("." + tool) for tool in PLAN_TOOLS)
 
@@ -406,99 +390,6 @@ def _decode_jsonish(value: JsonValue) -> JsonValue:
     return value
 
 
-def _value_to_answer_text(value: JsonValue) -> str:
-    if isinstance(value, str):
-        return value
-    if isinstance(value, (int, float, bool)):
-        return str(value)
-    if isinstance(value, list):
-        parts = [_value_to_answer_text(v) for v in value]
-        return ", ".join(p for p in parts if p)
-    if isinstance(value, dict):
-        for key in (
-            "answer",
-            "answers",
-            "answer_text",
-            "value",
-            "label",
-            "selected_label",
-            "selected",
-            "selection",
-            "choice",
-            "choices",
-            "labels",
-        ):
-            if key in value:
-                text = _value_to_answer_text(value[key])
-                if text:
-                    return text
-    return ""
-
-
-def _extract_answer_from_item(question: Dict[str, JsonValue], item: JsonValue) -> str:
-    if not isinstance(item, dict):
-        return ""
-
-    qid = question.get("id")
-    qtext = question.get("question")
-    header = question.get("header")
-    item_ids = (
-        item.get("id"),
-        item.get("question_id"),
-        item.get("questionId"),
-        item.get("question"),
-        item.get("header"),
-    )
-    if any(marker and marker in item_ids for marker in (qid, qtext, header)):
-        return _value_to_answer_text(item)
-    return ""
-
-
-def _answer_in_container(question: Dict[str, JsonValue], container: JsonValue) -> str:
-    if isinstance(container, dict):
-        for key in (
-            question.get("id"),
-            question.get("question"),
-            question.get("header"),
-        ):
-            if isinstance(key, str) and key in container:
-                text = _value_to_answer_text(container[key])
-                if text:
-                    return text
-        items = list(container.values())
-    elif isinstance(container, list):
-        items = container
-    else:
-        return ""
-    for item in items:
-        text = _extract_answer_from_item(question, item)
-        if text:
-            return text
-    return ""
-
-
-def _structured_answer_for_question(
-    question: Dict[str, JsonValue], output: JsonValue
-) -> str:
-    output = _decode_jsonish(output)
-    if isinstance(output, dict):
-        for key in (
-            question.get("id"),
-            question.get("question"),
-            question.get("header"),
-        ):
-            if isinstance(key, str) and key in output:
-                text = _value_to_answer_text(output[key])
-                if text:
-                    return text
-        for key in ("answers", "responses", "selections", "values"):
-            text = _answer_in_container(question, output.get(key))
-            if text:
-                return text
-        return _extract_answer_from_item(question, output)
-    return _answer_in_container(question, output)
-
-
 def _flatten_result_text(output: JsonValue) -> str:
     output = _decode_jsonish(output)
     if isinstance(output, str):
@@ -522,103 +413,6 @@ def _flatten_result_text(output: JsonValue) -> str:
             ]
         return " ".join(nonempty)
     return ""
-
-
-def _parse_chosen(
-    question_text: str, options: List[Dict[str, JsonValue]], result_text: str
-) -> Tuple[str, List[Dict[str, JsonValue]]]:
-    val = ""
-    if question_text and result_text:
-        marker = f'"{question_text}"="'
-        idx = result_text.find(marker)
-        if idx != -1:
-            rest = result_text[idx + len(marker) :]
-            end = rest.find('"')
-            val = rest[:end] if end != -1 else rest
-    if not val and result_text:
-        parts = result_text.split('="', 1)
-        if len(parts) == 2:
-            tail = parts[1]
-            end = tail.find('"')
-            val = tail[:end] if end != -1 else tail
-    return val, _selected_from_text(options, val)
-
-
-def _selected_options(
-    options: list[dict[str, JsonValue]], answers: list[str]
-) -> list[dict[str, JsonValue]]:
-    return [
-        option
-        for option in options
-        if isinstance(label := option.get("label"), str) and label and label in answers
-    ]
-
-
-def _selected_from_text(
-    options: list[dict[str, JsonValue]], text: str
-) -> list[dict[str, JsonValue]]:
-    # Legacy text answers can contain comma-separated choices. Native arrays
-    # bypass this ambiguous representation and match their whole labels.
-    return _selected_options(
-        options, [text, *(part.strip() for part in text.split(","))]
-    )
-
-
-def _native_answer_values(
-    question: dict[str, JsonValue], output: JsonValue
-) -> list[str] | None:
-    decoded = _decode_jsonish(output)
-    container = decoded.get("answers") if isinstance(decoded, dict) else None
-    question_id = question.get("id")
-    if not isinstance(container, dict) or not isinstance(question_id, str):
-        return None
-    answer = container.get(question_id)
-    values = answer.get("answers") if isinstance(answer, dict) else None
-    return (
-        [value for value in values if isinstance(value, str)]
-        if isinstance(values, list)
-        else None
-    )
-
-
-def option_qa_from_output(
-    output: JsonValue, questions: Optional[List[JsonValue]]
-) -> List[_OptionAnswer]:
-    if not questions:
-        return []
-
-    result_text = _flatten_result_text(output)
-    out: List[_OptionAnswer] = []
-    for q in questions:
-        if not isinstance(q, dict):
-            continue
-        raw_options = q.get("options")
-        options = (
-            [o for o in raw_options if isinstance(o, dict)]
-            if isinstance(raw_options, list)
-            else []
-        )
-        native_answers = _native_answer_values(q, output)
-        if native_answers is not None:
-            val = ", ".join(answer for answer in native_answers if answer)
-            chosen = _selected_options(options, native_answers)
-        else:
-            val, chosen = _parse_chosen(
-                string_value(q.get("question")) or "", options, result_text
-            )
-            if not val:
-                val = _structured_answer_for_question(q, output)
-                chosen = _selected_from_text(options, val)
-        out.append(
-            {
-                "question": q.get("question", ""),
-                "header": q.get("header", ""),
-                "options": options,
-                "chosen_labels": [o.get("label") for o in chosen],
-                "answer_text": val,
-            }
-        )
-    return out
 
 
 def patch_paths(arguments: JsonValue) -> List[str]:
@@ -733,31 +527,6 @@ def _user_commands(message: UserMessage, raw_text: str) -> None:
     commands = [c.strip() for c in _BASH_INPUT.findall(raw_text) if c.strip()]
     if commands:
         message["shell_command"] = "\n".join(commands)
-
-
-class _OptionAnswer(TypedDict):
-    question: JsonValue
-    header: JsonValue
-    options: list[dict[str, JsonValue]]
-    chosen_labels: list[JsonValue]
-    answer_text: str
-
-
-def _questions(call: ToolCall, output: JsonValue) -> list[QuestionAnswer]:
-    arguments = call.get("input")
-    questions = arguments.get("questions") if isinstance(arguments, dict) else None
-    if not _is_interaction_tool(call["name"]) or not isinstance(questions, list):
-        return []
-    return [
-        QuestionAnswer(
-            question=str(qa["question"]),
-            header=str(qa["header"]),
-            options=[o for o in qa["options"] if is_question_option(o)],
-            chosen_labels=[str(label) for label in qa["chosen_labels"]],
-            answer_text=str(qa["answer_text"]),
-        )
-        for qa in option_qa_from_output(output, questions)
-    ]
 
 
 def _user_message(
@@ -944,14 +713,6 @@ class _CodexSessionBuilder:
         message["authorship"] = message_authorship(
             payload, text, timestamp, "response_item"
         )
-        denial = (
-            parse_permission_denial(text) if payload.get("type") == "message" else None
-        )
-        if denial is not None:
-            # A message without a call ID cannot establish tool ownership.
-            message["permission_denial"] = PermissionDenial(
-                tool="(tool call)", message=denial, by="user"
-            )
         self.append(message)
 
     def call(self, payload: dict[str, JsonValue], timestamp: str | None) -> None:
@@ -1009,13 +770,6 @@ class _CodexSessionBuilder:
             # Keep the full native result above and the existing textual JSON
             # interpretation here. Only the exporter applies byte limits.
             call["result"] = None if output is None else _flatten_result_text(output)
-            questions = _questions(call, output)
-            if questions:
-                call["questions"] = questions
-            if is_process_rejection(_flatten_result_text(output)):
-                call["permission_denial"] = PermissionDenial(
-                    tool=call["name"], message="", by="user"
-                )
         if result["is_error"]:
             call["is_error"] = True
 

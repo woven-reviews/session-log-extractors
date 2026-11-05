@@ -26,7 +26,7 @@ import re
 import sys
 from collections import Counter
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from session_log_extractors import session_log_envelope
 from session_log_extractors.claude_actions import (
@@ -45,15 +45,9 @@ from session_log_extractors.claude_authorship import (
     _user_authorship,
 )
 from session_log_extractors.claude_decisions import (
-    _PERMISSION_DENIED_TOOL,
     PLAN_TOOLS,
     _attach_decisions,
-)
-from session_log_extractors.claude_decisions import (
-    parse_permission_denial as parse_permission_denial,
-)
-from session_log_extractors.claude_decisions import (
-    parse_plan_decision as parse_plan_decision,
+    parse_permission_denial,
 )
 from session_log_extractors.claude_questions import (
     ASK_USER_QUESTION,
@@ -70,7 +64,6 @@ from session_log_extractors.claude_sources import (
 )
 from session_log_extractors.extractor_contract import Extractor
 from session_log_extractors.json_types import JsonValue, string_value
-from session_log_extractors.question_types import QuestionOption, is_question_option
 from session_log_extractors.session_log_envelope import (
     DEFAULT_TOOL_RESULT_MAX_BYTES,
     TOOL_RESULT_BYTES_FLAG,
@@ -87,9 +80,6 @@ from session_log_extractors.session_model import (
     Event,
     Message,
     NativeIdentity,
-    PermissionDenial,
-    PlanDecision,
-    QuestionAnswer,
     Session,
     SubagentSummary,
     ToolCall,
@@ -427,134 +417,6 @@ def _result_block_text(block: Dict[str, JsonValue]) -> str:
     return ""
 
 
-def _parse_chosen(
-    question_text: str, options: Sequence[QuestionOption], result_text: str
-) -> Tuple[str, List[QuestionOption]]:
-    """Pull the chosen answer for one question out of the result string.
-
-    The AskUserQuestion result is self-describing, e.g.
-    ``Your questions have been answered: "<question>"="<label>", "<q2>"="<l2>".``
-    For multiSelect the value is comma-joined labels; for an "Other" answer the
-    value is free text matching no option. We locate the value by anchoring on
-    the exact question text, then match complete labels, including comma-separated
-    multiSelect values.
-    """
-    val = ""
-    if question_text and result_text:
-        marker = f'"{question_text}"="'
-        idx = result_text.find(marker)
-        if idx != -1:
-            rest = result_text[idx + len(marker) :]
-            end = rest.find('"')
-            val = rest[:end] if end != -1 else rest
-    if not val and result_text:
-        # Single-question fallback: first value after an '="'.
-        parts = result_text.split('="', 1)
-        if len(parts) == 2:
-            tail = parts[1]
-            end = tail.find('"')
-            val = tail[:end] if end != -1 else tail
-    selected = (
-        {val} if any(o.get("label") == val for o in options) else set(val.split(", "))
-    )
-    chosen = [o for o in options if (label := o.get("label")) and label in selected]
-    return val, chosen
-
-
-def _answer_questions(
-    questions: Sequence[QuestionAnswer], result_text: str
-) -> List[QuestionAnswer]:
-    """Interpret answers for the questions on an already matched tool call."""
-    answers: List[QuestionAnswer] = []
-    for question in questions:
-        options = question["options"]
-        value, chosen = _parse_chosen(question["question"], options, result_text)
-        answers.append(
-            QuestionAnswer(
-                question=question["question"],
-                header=question["header"],
-                options=options,
-                chosen_labels=[option["label"] for option in chosen],
-                answer_text=value,
-            )
-        )
-    return answers
-
-
-def _apply_plan_result(record: PlanDecision, result_text: str) -> None:
-    """Update the plan on an already matched call with its recorded decision."""
-    decision, edited, message = parse_plan_decision(result_text)
-    record["decision"] = decision
-    # An approval can echo the unchanged plan under the edited-plan heading.
-    record["edited_plan"] = (
-        edited if edited and edited.strip() != (record["plan"] or "").strip() else ""
-    )
-    record["message"] = message
-
-
-def _interpret_permission_denial(
-    tool: str, result_text: str
-) -> PermissionDenial | None:
-    """Interpret a refusal for the tool whose result has already been matched."""
-    message = parse_permission_denial(result_text)
-    if message is None:
-        return None
-    return PermissionDenial(
-        tool=tool,
-        message=message,
-        by="settings" if _PERMISSION_DENIED_TOOL.match(result_text) else "user",
-    )
-
-
-def option_qa_from_result(
-    entry: Dict[str, JsonValue],
-    pending_questions: Dict[str, Sequence[QuestionAnswer] | JsonValue],
-) -> List[QuestionAnswer]:
-    """Compatibility helper matching native result blocks to pending questions."""
-    answers: List[QuestionAnswer] = []
-    for block in _content_blocks(entry):
-        if not isinstance(block, dict) or block.get("type") != "tool_result":
-            continue
-        tool_id = block.get("tool_use_id")
-        questions = pending_questions.get(tool_id) if isinstance(tool_id, str) else None
-        answers.extend(
-            _answer_questions(_question_records(questions), _result_block_text(block))
-        )
-    return answers
-
-
-def apply_plan_decisions(
-    entry: Dict[str, JsonValue], pending_plans: Dict[str, PlanDecision]
-) -> bool:
-    """Compatibility helper consuming matched plans from the caller's pending map."""
-    handled = False
-    for block in _content_blocks(entry):
-        if not isinstance(block, dict) or block.get("type") != "tool_result":
-            continue
-        tool_id = block.get("tool_use_id")
-        record = pending_plans.pop(tool_id, None) if isinstance(tool_id, str) else None
-        if record is not None:
-            _apply_plan_result(record, _result_block_text(block))
-            handled = True
-    return handled
-
-
-def permission_denials_from_result(
-    entry: Dict[str, JsonValue], tool_uses: Dict[str, str]
-) -> List[PermissionDenial]:
-    """Compatibility helper matching native result blocks to recorded tool labels."""
-    denials: List[PermissionDenial] = []
-    for block in _content_blocks(entry):
-        if not isinstance(block, dict) or block.get("type") != "tool_result":
-            continue
-        tool_id = block.get("tool_use_id")
-        tool = tool_uses.get(tool_id, "tool") if isinstance(tool_id, str) else "tool"
-        denial = _interpret_permission_denial(tool, _result_block_text(block))
-        if denial is not None:
-            denials.append(denial)
-    return denials
-
-
 def _message_identity(entry: Dict[str, JsonValue]) -> NativeIdentity:
     """Retain native record, parent, and API-message IDs without guessing links."""
     identity = NativeIdentity()
@@ -577,34 +439,6 @@ def _attach_identity(message: NativeIdentity, identity: NativeIdentity) -> None:
         message["parent_id"] = identity["parent_id"]
     if "message_id" in identity:
         message["message_id"] = identity["message_id"]
-
-
-def _question_options(value: object) -> List[QuestionOption]:
-    if not isinstance(value, list):
-        return []
-    return [option for option in value if is_question_option(option)]
-
-
-def _question_records(value: object) -> List[QuestionAnswer]:
-    """Read known question fields while retaining additional option fields."""
-    if not isinstance(value, (list, tuple)):
-        return []
-    return [
-        QuestionAnswer(
-            question=string_value(question.get("question")) or "",
-            header=string_value(question.get("header")) or "",
-            options=_question_options(question.get("options")),
-        )
-        for question in value
-        if isinstance(question, dict)
-    ]
-
-
-def _questions(tool_input: object) -> List[QuestionAnswer]:
-    if not isinstance(tool_input, dict):
-        return []
-    questions = tool_input.get("questions")
-    return _question_records(questions) if isinstance(questions, list) else []
 
 
 def _attach_native_result(record: ToolResult, entry: Dict[str, JsonValue]) -> None:
@@ -806,17 +640,6 @@ class _ClaudeInterpreter:
                 ):
                     self.ambiguous_call_ids.add(tool_id)
                 self.pending_calls[tool_id] = call
-        if name in PLAN_TOOLS:
-            call["plan_decision"] = PlanDecision(
-                plan=(string_value(tool_input.get("plan")) or "")
-                if isinstance(tool_input, dict)
-                else "",
-                decision="no decision recorded",
-                edited_plan="",
-                message="",
-            )
-        elif name in INTERACTION_TOOLS:
-            call["questions"] = _questions(tool_input)
         self.action(call)
         return call
 
@@ -895,19 +718,6 @@ class _ClaudeInterpreter:
         call["result"] = result_text
         if block.get("is_error"):
             call["is_error"] = True
-        self.decision(call, result_text)
-
-    def decision(self, call: ToolCall, result_text: str) -> None:
-        if "plan_decision" in call:
-            _apply_plan_result(call["plan_decision"], result_text)
-            return
-        if "questions" in call:
-            call["questions"] = _answer_questions(call["questions"], result_text)
-        descriptor = tool_descriptor(call["name"], call["input"])
-        label = f"{call['name']} — {descriptor}" if descriptor else call["name"]
-        denial = _interpret_permission_denial(label, result_text)
-        if denial is not None:
-            call["permission_denial"] = denial
 
 
 def build_events(

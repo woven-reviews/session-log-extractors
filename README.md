@@ -352,9 +352,24 @@ Explicit editor evidence links edited versions to their proposals. Unanswered
 presentations have no decision, and unfamiliar results never imply approval.
 Unmatched results keep their facts on `tool_results` with null activity/action
 or plan associations instead of borrowing a nearby call. Duplicate interaction
-IDs also retain unassociated results. The legacy in-memory summaries and
-`ExitPlanMode` calls remain available; general permission/planning lifecycles
-and response timestamps are outside this enrichment.
+IDs also retain unassociated results. Original `ExitPlanMode` calls and native
+permission lifecycle records remain available; general planning lifecycles and
+response timestamps are outside this enrichment.
+
+Shared `interaction_questions` and `question_responses`, `permission_refusals`,
+and plan records are the sole interpretation across all three harnesses. The
+combined `questions`, singular `plan_decision`, and `permission_denial` summaries
+have been removed. Codex answers use the recorded `answers` map keyed by question
+ID, with a nested `answers` array; `user_note:` entries preserve custom text.
+Unsupported answer containers remain in complete native inputs/results without
+guessed answers. Claude text answers must explicitly name their questions; no
+first-answer fallback associates mismatched text.
+
+| Removed summary | Shared representation |
+| --- | --- |
+| Combined question/answer | `Question` retains offered text, headers and options; `QuestionResponse` holds selections, free text, notes and previews with recorded associations. |
+| Plan decision summary | `PlanVersion` retains proposed/edited content, `PlanPresentation` records review, and `ObservedPlanDecision` records the outcome and candidate feedback. |
+| Permission denial summary | `PermissionRefusal` distinguishes source, action, harness explanation and candidate feedback. Native `permission_decisions` retain their separate request/completion lifecycle. |
 
 Copilot readers and discovery live in `session_log_extractors.copilot_sources`.
 `read_source(connection, session)` loads metadata, required database rows, models,
@@ -478,8 +493,8 @@ evidence with unknown change confirmation.
 or `completed`). `native_decision` retains the harness's result label verbatim;
 a missing label stays `None`, and a pending request has no result label.
 Recorded request IDs join permission lifecycle records, without inferred tool-call
-ownership. These session facts do not automatically create `PermissionDenial`,
-which is a normalized refusal summary attached to an evidenced tool call.
+ownership. These lifecycle facts do not automatically establish a
+`PermissionRefusal`; an observed refusal requires its own native evidence.
 `ToolExecution` likewise represents a recorded execution start; adapters leave it
 absent when only a request or result was recorded.
 Unsupported tool schemas are listed in `unsupported_tools`; opaque inputs survive.

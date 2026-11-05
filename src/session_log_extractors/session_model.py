@@ -11,7 +11,6 @@ from enum import StrEnum
 from typing import Final, Literal, Never, NotRequired, Required, TypeAlias, TypedDict
 
 from session_log_extractors.json_types import JsonValue
-from session_log_extractors.question_types import QuestionOption
 from session_log_extractors.tool_inputs import ToolInput, ToolInputSchema
 
 REFUSAL_CANDIDATE: Final = "candidate"
@@ -27,18 +26,6 @@ class Image(TypedDict, total=False):
     bytes: int
     unavailable: bool
     ref: str
-
-
-class QuestionAnswer(TypedDict):
-    """Legacy combined record; migrate in QUAL-2523/QUAL-2524/QUAL-2525."""
-
-    question: str
-    header: str
-    options: list[QuestionOption]
-    chosen_labels: NotRequired[list[str]]
-    answer_text: NotRequired[str]
-    field_name: NotRequired[str]
-    recorded_answer: NotRequired[str | list[str]]
 
 
 class QuestionEvidence(TypedDict):
@@ -151,28 +138,6 @@ class QuestionResponse(TypedDict):
     cancellation: NotRequired[QuestionCancellation]
     candidate_feedback: NotRequired[str]
     activity: NotRequired[QuestionActivityReference]
-
-
-class PlanDecision(TypedDict):
-    """A proposed plan and any recorded approval, edit, or rejection."""
-
-    plan: str
-    decision: str
-    edited_plan: str
-    message: str
-
-
-class PermissionDenial(TypedDict):
-    """A normalized refusal summary attached to its evidenced tool call.
-
-    This asserts a denial, unlike PermissionDecision's lifecycle status and
-    native result label. Adapters must establish denial and call ownership from
-    recorded evidence; a native decision label alone does not create this record.
-    """
-
-    tool: str
-    message: str
-    by: str
 
 
 class DecisionEvidence(TypedDict):
@@ -597,11 +562,8 @@ class ToolCall(DecisionFacts, ActionFacts, total=False):
     result_record: ToolResult
     result_images: list[Image]
     execution: ToolExecution
-    questions: list[QuestionAnswer]
     interaction_questions: list[Question]
     question_responses: list[QuestionResponse]
-    plan_decision: PlanDecision
-    permission_denial: PermissionDenial
     skill: str
 
 
@@ -691,7 +653,6 @@ class MessageContent(NativeIdentity, DecisionFacts, ActionFacts, total=False):
     submitted: SubmittedText
     collaboration_mode: str
     tool_results: list[ToolResult]
-    permission_denial: PermissionDenial
 
 
 class SkillInvocation(TypedDict):

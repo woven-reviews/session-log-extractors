@@ -159,16 +159,16 @@ a call owner, the result stays on its original message in `tool_results`, with
 its `question_responses` nested on that result. Containment does not invent a
 question association: an ambiguous response still has `question: null`.
 The exporter preserves these structured facts even when it truncates raw text.
-`QuestionAnswer` and `ToolCall.questions` remain legacy compatibility fields for
-existing callers; they are not exported. New consumers use the inline shared
-records. Copilot migration remains QUAL-2525.
+These separate records are the sole question interpretation in all three
+harnesses. The combined `QuestionAnswer` and `ToolCall.questions` summaries
+have been removed.
 
-Codex currently stages its facts in internal `Session.interaction_questions` and
-`Session.question_responses` lists. The exporter projects only facts with an
-evidenced call address onto existing tool calls; facts without that address
-remain on the source model. These lists are not exported as top-level fields.
-The exporter never invents conversation events from staged facts. Claude's
-orphan result events come directly from recorded native messages.
+Codex and Copilot also keep internal `Session.interaction_questions` and
+`Session.question_responses` indexes. The exporter reads facts already attached
+to canonical activity; unassociated facts remain on the source model. These
+indexes are not exported as top-level fields. The exporter never invents
+conversation events from staged facts. Claude's orphan result events come
+directly from recorded native messages.
 
 | Record/field | Meaning |
 | --- | --- |
@@ -408,14 +408,16 @@ refusal strings, or claim complete native-format coverage.
 ### Codex production questions and responses
 
 Codex populates both shared lists, including questions with no observed result.
-The existing legacy `ToolCall.questions` interpretation remains for compatibility.
+The shared records are the sole interpretation; native inputs/results remain complete.
 JSON places the shared facts on their existing conversation tool-call entries;
 consumers continue to traverse `events` in the same order. A `request_user_input` call defines
 question occurrences through its native containment. `call_id` joins results to
-that call, and the `answers` map keys identify questions within the call. Repeated
-IDs across calls remain distinct. Duplicate IDs or question text within a call,
-unmatched keys, and results with no matching call retain unassociated responses;
-matching counts and timestamps never establish a link.
+that call. The `answers` map uses question IDs and nested `answers` arrays;
+question text and headers never establish an association. Repeated IDs across
+calls remain distinct. Duplicate IDs within a call, unmatched keys, and results
+with no matching call retain unassociated responses; matching counts and
+timestamps never establish a link. Alternative answer containers, scalar answer
+coercion, and text fallbacks are unsupported and remain raw payloads.
 
 Native answer arrays retain whole selected labels, including punctuation and
 commas, with an option reference only for one exact offered match. `user_note: `
@@ -467,15 +469,14 @@ example; native payload preservation and the existing raw-result cap still apply
 
 ## Shared permission refusals and plan decisions contract
 
-`Session.permission_refusals`, `plan_versions`, `plan_presentations`, and
-`plan_decisions` are optional ordered lists for adapter adoption in
-QUAL-2526/QUAL-2527/QUAL-2528. These add shared-model semantics only. Production
-JSON and native parsing are unchanged. The current exporter reads its existing
-fields and leaves these complete records on the source model, independently of
-raw-result byte limits. Existing `PermissionDenial`, `PlanDecision`, their
-message/call fields, and `Session.permission_decisions` remain intact for
-compatibility. New consumers should use the separate facts rather than populate
-both old summaries and new records.
+`permission_refusals`, `plan_versions`, `plan_presentations`, and `plan_decisions`
+are optional ordered lists on canonical messages, calls, or results with recorded
+ownership. The three harnesses interpret and export these shared facts before
+raw-result limits apply. Session-level indexes remain internal; they do not
+establish ownership or create top-level export fields. The legacy `PermissionDenial`
+and `PlanDecision` types and their message/call summaries have been removed.
+`Session.permission_decisions` remains a distinct native request/completion
+lifecycle, independent of established refusals.
 
 | Record/field | Contract |
 | --- | --- |
@@ -567,9 +568,9 @@ native adapter adoption, infer a complete lifecycle, or generate paid captures.
 
 | Harness | Evidence and interpretation inspected | Fit and gaps |
 | --- | --- | --- |
-| Claude | [Provenance](claude/README.md), `2.1.312/native/` interactive capture (2026-10-30): `toolDenialKind: user-rejected` and `permission-rule` on ID-matched results; `ExitPlanMode` calls; error outside plan mode; rejection feedback; structured `toolUseResult.plan` and `planWasEdited: true`. Inspected `parse_permission_denial`, `parse_plan_decision`, and `_apply_plan_result`. | Projections retain denial source/variant, canonical call ownership, and complete proposed/edited text compared directly with before/after editor assets. The failed presentation is a tool error, not candidate rejection. Harness-generated rejection instructions are explanations, not candidate feedback. Text-only feedback parsing and production adoption remain QUAL-2526. Unknown sources/variants use controlled boundaries. |
-| Codex | [Provenance](codex/README.md), CLI 0.166.0 interactive capture (2026-10-30): `call_id`-matched permission/question cancellations (`aborted by user`), separate structured read-only sandbox refusal, proposed-plan assistant text, stay-in-Plan choice and later feedback, ordinary implementation approval. Inspected `_is_process_rejection`, `_plan_update`, and call/result interpretation. | Tests preserve complete cancellation results on canonical calls and project the separate settings refusal with its complete structured evidence. Cancellation is not the older CreateProcess denial variant; later feedback has no proven call link. The capture does not establish edited-plan editor content or `update_plan` in Plan mode. It supplies no dedicated structured decision record proving the association between ordinary implementation text and a specific plan version. Native plan interpretation remains QUAL-2527; do not invent approvals, edits, or associations from nearby messages. |
-| Copilot | [Provenance](copilot/README.md), CLI 1.0.104-3 interactive capture (2026-10-30): `permission.completed` has native kind, feedback, request/tool IDs and `decisionSource`; configured refusal is on `tool.execution_complete.error`; `human_response.recorded` contains `responseKind: exit_plan_mode`, boolean `approved`, full `planContent`, and optional feedback. Inspected `copilot_interactions` and permission joins. | Projections retain native boolean outcomes, full returned plan text, independently linked presentations/versions, candidate denial feedback, and settings explanations. The response's returned plan is directly associated by containment; its equality to the initially presented version is not established. The real editor assets establish changed content in this capture, but text differences alone never prove an `edited_from` association. Permission-menu cancellation remains distinct from denial. Production adoption remains QUAL-2528. |
+| Claude | [Provenance](claude/README.md), `2.1.312/native/` interactive capture (2026-10-30): `toolDenialKind: user-rejected` and `permission-rule` on ID-matched results; `ExitPlanMode` calls; error outside plan mode; rejection feedback; structured `toolUseResult.plan` and `planWasEdited: true`. Interpretation lives in `claude_decisions.py`. | Projections retain denial source/variant, canonical call ownership, and complete proposed/edited text compared directly with before/after editor assets. The failed presentation is a tool error, not candidate rejection. Harness-generated rejection instructions are explanations, not candidate feedback. Text-only feedback is parsed by the same shared interpreter. Unknown sources/variants use controlled boundaries. |
+| Codex | [Provenance](codex/README.md), CLI 0.166.0 interactive capture (2026-10-30): `call_id`-matched permission/question cancellations (`aborted by user`), separate structured read-only sandbox refusal, proposed-plan assistant text, stay-in-Plan choice and later feedback, ordinary implementation approval. Inspected `_is_process_rejection`, `_plan_update`, and call/result interpretation. | Tests preserve complete cancellation results on canonical calls and project the separate settings refusal with its complete structured evidence. Cancellation is not the older CreateProcess denial variant; later feedback has no proven call link. The capture does not establish edited-plan editor content or `update_plan` in Plan mode. It supplies no dedicated structured decision record proving the association between ordinary implementation text and a specific plan version. The shared interpreter retains explicit candidate decisions without inventing version associations from nearby messages. |
+| Copilot | [Provenance](copilot/README.md), CLI 1.0.104-3 interactive capture (2026-10-30): `permission.completed` has native kind, feedback, request/tool IDs and `decisionSource`; configured refusal is on `tool.execution_complete.error`; `human_response.recorded` contains `responseKind: exit_plan_mode`, boolean `approved`, full `planContent`, and optional feedback. Interpretation lives in `copilot_decisions.py`; native permission joins remain separate. | Projections retain native boolean outcomes, full returned plan text, independently linked presentations/versions, candidate denial feedback, and settings explanations. The response's returned plan is directly associated by containment; its equality to the initially presented version is not established. The real editor assets establish changed content in this capture, but text differences alone never prove an `edited_from` association. Permission-menu cancellation remains distinct from denial. Nonhuman actors retain unknown outcomes rather than establishing candidate approval. |
 
 Generated plan text, feedback, and assistant prose are compared with recorded
 fields or prepared editor assets rather than fixed wording. Selectors use native

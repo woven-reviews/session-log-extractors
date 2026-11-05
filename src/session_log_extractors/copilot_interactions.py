@@ -1,66 +1,9 @@
-"""Interpret Copilot's structured human responses without parsing rendered prose."""
+"""Summarize recorded Copilot child activity within its agent scope."""
 
-from session_log_extractors.copilot_protocol import (
-    DENIED_BY_USER,
-    EXIT_PLAN_MODE,
-    SETTINGS_REFUSAL_PREFIX,
-)
 from session_log_extractors.json_types import JsonValue, string_value
 from session_log_extractors.session_model import (
-    PlanDecision,
     SubagentSummary,
-    ToolCall,
 )
-
-
-def apply_human_response(call: ToolCall, data: dict[str, JsonValue]) -> None:
-    response = data.get("response")
-    if not isinstance(response, dict):
-        return
-    if (
-        call["name"] == EXIT_PLAN_MODE
-        and response.get("responseKind") == EXIT_PLAN_MODE
-    ):
-        call["plan_decision"] = _plan_decision(response)
-
-
-def apply_permission_refusal(call: ToolCall, data: dict[str, JsonValue]) -> None:
-    """A human refusal requires the native decision and its recorded call ID."""
-    result = data.get("result")
-    if not isinstance(result, dict) or result.get("kind") != DENIED_BY_USER:
-        return
-    call["permission_denial"] = {
-        "tool": call["name"],
-        "message": string_value(result.get("feedback")) or "",
-        "by": "user",
-    }
-
-
-def apply_configured_refusal(call: ToolCall) -> None:
-    """Use Copilot's tool-result refusal prefix, never assistant explanation."""
-    error = call.get("error")
-    result = error.get("message") if isinstance(error, dict) else call.get("result")
-    if isinstance(result, str) and result.startswith(SETTINGS_REFUSAL_PREFIX):
-        call["permission_denial"] = {
-            "tool": call["name"],
-            "message": result,
-            "by": "settings",
-        }
-
-
-def _plan_decision(response: dict[str, JsonValue]) -> PlanDecision:
-    approved = response.get("approved")
-    decision = "unknown"
-    if approved is True:
-        decision = "approved"
-    elif approved is False:
-        decision = "rejected"
-    return PlanDecision(
-        plan=string_value(response.get("planContent")) or "",
-        decision=decision,
-        edited_plan="",
-        message=string_value(response.get("feedback")) or "",
-    )
 
 
 def subagent_summaries(
