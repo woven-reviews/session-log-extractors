@@ -1213,7 +1213,7 @@ def build_arg_parser(project_root: Optional[Path] = None) -> argparse.ArgumentPa
     parser.add_argument(
         "session",
         nargs="?",
-        help="session id/prefix OR path to a Codex .jsonl transcript",
+        help="case-sensitive recorded ID (unique exact, then literal prefix) OR transcript path",
     )
     parser.add_argument(
         "--transcript",

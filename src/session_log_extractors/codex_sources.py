@@ -10,6 +10,12 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 from session_log_extractors.json_types import JsonValue, parse_json
 from session_log_extractors.jsonl_sources import load_records
+from session_log_extractors.session_selection import (
+    read_recorded_id,
+    select_recorded_id,
+)
+
+SESSION_META = "session_meta"
 
 CODEX_SESSIONS_ROOT = Path.home() / ".codex" / "sessions"
 
@@ -64,7 +70,7 @@ def session_id_from_file(path: Path) -> Optional[str]:
                     continue
                 if not isinstance(obj, dict):
                     continue
-                if obj.get("type") == "session_meta":
+                if obj.get("type") == SESSION_META:
                     sid = _payload(obj).get("id")
                     return sid if isinstance(sid, str) else None
     except OSError:
@@ -83,7 +89,7 @@ def session_cwd_from_file(path: Path) -> Optional[str]:
                 if not isinstance(obj, dict):
                     continue
                 payload = _payload(obj)
-                if obj.get("type") == "session_meta":
+                if obj.get("type") == SESSION_META:
                     cwd = payload.get("cwd")
                     if isinstance(cwd, str) and cwd:
                         return cwd
@@ -153,7 +159,7 @@ def select_transcript(
     Precedence:
       1. --transcript PATH
       2. positional selector that is an existing file
-      3. positional selector as filename/session-id prefix
+      3. positional selector as case-sensitive recorded ID (unique exact, then prefix)
       4. newest transcript whose recorded cwd overlaps the current cwd
       5. newest transcript anywhere under ~/.codex/sessions
 
@@ -202,19 +208,53 @@ def select_transcript(
     )
 
 
-def _select_prefix(files: List[Path], selector: str) -> Path:
-    matches: List[Path] = []
-    for p in files:
-        sid = session_id_from_file(p)
-        if p.stem.startswith(selector) or (sid and sid.startswith(selector)):
-            matches.append(p)
-    if len(matches) == 1:
-        return matches[0]
-    if len(matches) > 1:
-        joined = "\n  ".join(str(p) for p in matches)
-        raise FileNotFoundError(
-            f"session selector {selector!r} is ambiguous; matches:\n  {joined}"
+class _CodexSelectionIdentity:
+    """Recognize owned metadata while excluding recorded inherited parent history."""
+
+    def __init__(self) -> None:
+        self._metadata_seen = False
+        self._parent_id: str | None = None
+        self._history_boundary: int | None = None
+
+    def identify(self, entry: Dict[str, JsonValue]) -> str | None:
+        if entry.get("type") != SESSION_META:
+            return None
+        payload = _payload(entry)
+        session_id = payload.get("id")
+        if not self._metadata_seen:
+            self._metadata_seen = True
+            parent = payload.get("parent_thread_id")
+            boundary = payload.get("subagent_history_start_ordinal")
+            self._parent_id = parent if isinstance(parent, str) else None
+            if isinstance(boundary, int) and not isinstance(boundary, bool):
+                self._history_boundary = boundary
+        elif self._is_inherited_parent(entry, session_id):
+            return None
+        return session_id if isinstance(session_id, str) else None
+
+    def _is_inherited_parent(
+        self, entry: Dict[str, JsonValue], session_id: JsonValue
+    ) -> bool:
+        ordinal = entry.get("ordinal")
+        return (
+            self._parent_id is not None
+            and session_id == self._parent_id
+            and self._history_boundary is not None
+            and isinstance(ordinal, int)
+            and not isinstance(ordinal, bool)
+            and 0 < ordinal < self._history_boundary
         )
+
+
+def _select_prefix(files: List[Path], selector: str) -> Path:
+    candidates = []
+    for path in files:
+        session_id = read_recorded_id(path, _CodexSelectionIdentity().identify)
+        if session_id is not None:
+            candidates.append((session_id, path))
+    selected = select_recorded_id(candidates, selector)
+    if selected is not None:
+        return selected
     raise FileNotFoundError(f"no Codex transcript matching {selector!r}")
 
 
@@ -230,7 +270,7 @@ def read_source(path: Path) -> CodexSource:
     id_seen = False
     for line, entry in records:
         payload = _payload(entry)
-        if line <= 50 and entry.get("type") == "session_meta" and not id_seen:
+        if line <= 50 and entry.get("type") == SESSION_META and not id_seen:
             sid = payload.get("id")
             source.session_id = sid if isinstance(sid, str) else None
             parent = payload.get("parent_thread_id")
@@ -239,7 +279,7 @@ def read_source(path: Path) -> CodexSource:
             if isinstance(boundary, int) and not isinstance(boundary, bool):
                 source.history_start_ordinal = boundary
             id_seen = True
-        if line <= 80 and entry.get("type") in ("session_meta", "turn_context"):
+        if line <= 80 and entry.get("type") in (SESSION_META, "turn_context"):
             cwd = payload.get("cwd")
             if source.cwd is None and isinstance(cwd, str) and cwd:
                 source.cwd = cwd

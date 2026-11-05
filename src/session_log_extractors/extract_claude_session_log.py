@@ -63,6 +63,7 @@ from session_log_extractors.claude_sources import (
     ClaudeSource,
     read_source,
     read_subagent_sources,
+    select_project_session,
 )
 from session_log_extractors.claude_sources import (
     load_entries as load_entries,
@@ -217,8 +218,8 @@ def select_transcript(
     Precedence:
       1. ``--transcript PATH`` (explicit file).
       2. positional ``selector`` that is itself a path to an existing file.
-      3. positional ``selector`` treated as a session id, looked up in the
-         resolved project dir (with or without the ``.jsonl`` suffix).
+      3. positional ``selector`` as a case-sensitive recorded ID: unique exact
+         match, otherwise unique literal prefix in the resolved project dir.
       4. newest ``.jsonl`` in the resolved project dir.
       5. newest ``.jsonl`` across every project dir (global fallback).
 
@@ -239,22 +240,18 @@ def select_transcript(
 
     proj = resolve_project_dir(project_dir, cwd, strict=strict)
 
-    if selector and proj is not None:
-        picked = _select_project_session(selector, proj)
+    if selector:
+        picked = select_project_session(selector, proj) if proj is not None else None
         if picked is not None:
             return picked
+        where = f" in {proj}" if proj is not None else ""
+        raise FileNotFoundError(f"no transcript matching {selector!r}{where}")
 
     # Newest in the resolved project dir.
     if proj is not None:
         picked = newest(_jsonl_files(proj))
         if picked is not None:
             return picked
-
-    # If a selector was given but never resolved, that is an error -- do not
-    # silently fall through to an unrelated transcript.
-    if selector:
-        where = f" in {proj}" if proj is not None else ""
-        raise FileNotFoundError(f"no transcript matching {selector!r}{where}")
 
     # Strict mode: never reach past the cwd's own project dir.
     if strict:
@@ -285,22 +282,6 @@ def _selector_path(selector: Optional[str]) -> Optional[Path]:
         path = Path(selector).expanduser()
         if path.is_file():
             return path
-    return None
-
-
-def _select_project_session(selector: str, project: Path) -> Optional[Path]:
-    for name in (selector, f"{selector}.jsonl"):
-        candidate = project / name
-        if candidate.is_file():
-            return candidate
-    matches = [p for p in _jsonl_files(project) if p.stem.startswith(selector)]
-    if len(matches) == 1:
-        return matches[0]
-    if len(matches) > 1:
-        joined = "\n  ".join(str(p) for p in matches)
-        raise FileNotFoundError(
-            f"session id {selector!r} is ambiguous; matches:\n  {joined}"
-        )
     return None
 
 
@@ -1134,7 +1115,7 @@ def build_arg_parser(project_root: Optional[Path] = None) -> argparse.ArgumentPa
     p.add_argument(
         "session",
         nargs="?",
-        help="session id (full or unique prefix) OR a path to a .jsonl transcript",
+        help="case-sensitive recorded ID (unique exact, then literal prefix) OR transcript path",
     )
     p.add_argument(
         "--transcript",

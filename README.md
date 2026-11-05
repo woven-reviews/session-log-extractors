@@ -178,6 +178,16 @@ version, feedback does not imply a rejection, and mode changes or missing result
 do not imply approval. Legacy `update_plan` checklists remain distinct from plan
 proposals. See [Codex fixture provenance](scripts/fixtures/codex/README.md).
 
+Explicit ID selection is case-sensitive across Claude, Codex, and Copilot. A
+unique exact recorded ID wins; otherwise the selector must be a unique literal
+prefix. Missing or ambiguous selections exit 1 with stderr diagnostics, emit no
+export JSON, and leave output files untouched. Copilot treats `%` and `_` literally.
+Claude searches only top-level transcripts in the resolved project; Codex searches
+its session root. Filenames are not ID aliases. Use an existing positional file
+path or `--transcript PATH` for Claude/Codex files without a recorded ID or with a
+renamed filename. `--transcript` still overrides positional selection, and `--all`
+still ignores it. Exported identity and output naming are unchanged.
+
 Copilot extraction produces JSON. Run
 `uv run --locked python scripts/extract_copilot_session_log.py` to export every matching session
 to `copilot_session_log_raw_<identifier>.json` in the project root. Use a session

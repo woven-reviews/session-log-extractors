@@ -20,6 +20,7 @@ from session_log_extractors.jsonl_sources import (
     load_jsonl_objects,
     parse_jsonl_objects,
 )
+from session_log_extractors.session_selection import select_recorded_id
 
 COPILOT_DB = Path.home() / ".copilot" / "session-store.db"
 COPILOT_STATE_ROOT = Path.home() / ".copilot" / "session-state"
@@ -149,18 +150,24 @@ def newest_session(
 def get_session_by_id(
     conn: sqlite3.Connection, session_id: str
 ) -> Optional[Dict[str, JsonValue]]:
-    """Retrieve a session by its ID."""
+    """Select a case-sensitive exact ID or unique literal prefix."""
     cursor = conn.cursor()
     cursor.execute(
         """
         SELECT id, cwd, repository, branch, summary, created_at, updated_at
         FROM sessions
-        WHERE id = ? OR id LIKE ?
+        WHERE substr(id, 1, length(?)) = ? COLLATE BINARY
     """,
-        (session_id, f"{session_id}%"),
+        (session_id, session_id),
     )
-    row = cursor.fetchone()
-    return _row_record(row) if row else None
+    candidates = []
+    for row in cursor:
+        record = _row_record(row)
+        recorded_id = string_value(record.get("id"))
+        if recorded_id is None:
+            raise ValueError("Copilot session id must be a string")
+        candidates.append((recorded_id, record))
+    return select_recorded_id(candidates, session_id)
 
 
 def get_session_turns(

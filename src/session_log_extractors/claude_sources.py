@@ -12,6 +12,10 @@ from typing import Dict, List
 
 from session_log_extractors.json_types import JsonValue, parse_json
 from session_log_extractors.jsonl_sources import load_jsonl_objects
+from session_log_extractors.session_selection import (
+    read_recorded_id,
+    select_recorded_id,
+)
 
 load_entries = load_jsonl_objects
 
@@ -60,3 +64,23 @@ def read_subagent_sources(transcript: Path) -> List[ClaudeSource]:
         for path in sorted(directory.iterdir())
         if path.is_file() and path.suffix == ".jsonl"
     ]
+
+
+def _recorded_id(entry: Dict[str, JsonValue]) -> str | None:
+    session_id = entry.get("sessionId")
+    return session_id if isinstance(session_id, str) else None
+
+
+def select_project_session(selector: str, project: Path) -> Path | None:
+    """Select by recorded ID among top-level project transcripts only."""
+    if not project.is_dir():
+        return None
+    candidates = []
+    # Child transcripts share their parent's sessionId. Recursing into their
+    # directories would incorrectly make a single parent session ambiguous.
+    for path in sorted(project.glob("*.jsonl")):
+        if path.is_file():
+            session_id = read_recorded_id(path, _recorded_id)
+            if session_id is not None:
+                candidates.append((session_id, path))
+    return select_recorded_id(candidates, selector)
