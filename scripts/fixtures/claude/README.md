@@ -131,19 +131,22 @@ reason wording, and the unchanged-plan echo under an edited-plan heading.
 These tests retain the prior semantic assertions with targeted native mutations
 or the exact parser input. Older image media types remain explicit legacy cases.
 
-The print-mode generator tests also use the current native input and child
-sidecar as fake CLI output. They adapt only command/response markers required by
-the generator's fixed prompts and compare complete sanitized records. The generator
-itself retains its existing manual workflow; it does not regenerate the interactive
-capture.
+## Capture workflow and retired inputs
 
-## Historical inputs
+Future captures use the repository's
+[capture-native-session skill](../../../.agents/skills/capture-native-session/SKILL.md)
+for interactive native capture, followed by sanitization and reviewed promotion.
+The shared sanitizer's tests in `scripts/test_capture_sanitization.py` cover
+native record and payload preservation, deterministic explicit replacements,
+image preservation, and malformed input.
 
-The unversioned files came from Claude Code 2.1.292 on 2026-10-09, except the
-hand-authored `plan_modes.jsonl`, `questions.jsonl`, `images.jsonl`, and
-`truncated.jsonl`. They remain historical artifacts, outside the active test
-inputs. `scripts/generate_claude_fixtures.py` manually regenerates the old print-mode
-cases and makes paid calls using the operator's login. It must never run in tests.
+The obsolete print-mode generator, its dedicated fake-CLI support tests, and
+15 unused unversioned artifacts were retired in QUAL-2547. Those artifacts came
+from Claude Code 2.1.292 on 2026-10-09, except the hand-authored plan, question,
+image, and truncated-input cases. Active boundary tests described above retain
+legacy compatibility coverage using the current capture or controlled inputs.
+The complete 2.1.312 capture and its required sidecars/assets remain the test
+inputs; the retired workflow did not regenerate this interactive capture.
 
 ## Structured action facts (QUAL-2529)
 

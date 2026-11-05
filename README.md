@@ -636,7 +636,7 @@ checks as CI before opening a PR:
 
 ```sh
 uv run --locked ruff format --check .
-uv run --locked ruff check .
+uv run --locked ruff check --ignore-noqa .
 uv run --locked mypy src
 uv run --locked lint-imports
 uv run --locked pytest --cov=scripts --cov=src --cov-report=term --cov-report=xml --cov-fail-under=95
@@ -679,8 +679,7 @@ payload fields and non-mutating export. Codex protocol adoption is out of scope.
 
 Review still judges names, readability, semantic ownership, recorded versus
 derived values, fixture selection, and payload preservation. Review must also
-reject new suppressions or weakened configuration and compare complexity inside
-existing suppressed functions: automated tools do not detect that growth.
+reject suppressions and weakened lint/type configuration.
 See [AGENTS.md](AGENTS.md) for these judgment-based rules.
 
 ## Type escape policy
@@ -691,54 +690,14 @@ ignores. Mypy runs in strict mode with both `Any` restrictions across the whole 
 package, requires error codes, and rejects unused ignores. Recursive JSON types
 and checked narrowing preserve opaque values and unknown native fields.
 
-Adding or broadening type-checker suppressions is prohibited by AGENTS.md and
-checked in PR review alongside Ruff exceptions. Remove existing ignores when
-fixing or replacing the code they cover; do not add new ones.
+Type-checker suppressions are prohibited by AGENTS.md and checked in PR review.
 
-## Ruff lint policy and initial inventory
+## Ruff lint policy
 
-CI runs Ruff across application code, generators, and tests. E4/E7/E9 and F
-catch basic Python errors; B catches common bugs; I orders imports; C4 and PIE
-catch unnecessary collection/redundant patterns. PT011/PT012/PT017 strengthen
-exception tests. PLC0415 requires module-level imports, including in tests.
-PGH004 rejects blanket noqa comments and RUF100 rejects stale ones.
-C901/PLR0915/PLR0912/PLR0913 enforce complexity/statements/branches/arguments at
-10/50/12/5. These are Ruff's configurable defaults, not universal quality
-standards. Lint supplements behavioral tests; it does not prove extraction
-correctness or complete native-format coverage. UP/SIM adoption is deferred.
+CI and pre-commit run `ruff check --ignore-noqa`, so inline and file-level
+`noqa` comments cannot suppress violations. Do not add suppressions, disable
+rules, exclude source files, or raise thresholds to make checks pass.
 
-On the pinned Ruff 0.14.0 formatting baseline (`4f5b449`), the initial inventory
-was **107 findings**: 30 C901, 21 PLR0912, 13 PLR0915, 4 PLR0913, 15 B011,
-10 PT017, 9 I001, 4 B905, and 1 PIE810. The 39 non-complexity findings are fixed
-(imports, exception tests, explicit zip behavior, and redundant startswith). The
-initial 68 complexity findings were recorded as function-level, rule-specific
-exceptions. The remaining exceptions exist
-solely because the codebase predates lint enforcement. This is temporary debt
-for pre-existing code, not precedent or permission to suppress future violations.
-No directory exclusion or raised threshold hides them.
-
-The exception reasons are existing selection and asset I/O (source-boundary
-tickets), presentation being removed (JSON-only tickets), interpretation being
-consolidated (pipeline tickets), or generator/test orchestration (dedicated
-cleanup ticket QUAL-2547).
-Algorithms and interfaces are preserved in this tooling change.
-
-| File (relative to `scripts/` unless shown) | Function | Rules | Removal ticket |
-| --- | --- | --- | --- |
-| `generate_claude_fixtures.py` | `run_case` | C901, PLR0912, PLR0915 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
-| `test_generate_claude_fixtures.py` | `_fake_claude` | PLR0913 | [QUAL-2547](https://linear.app/andela/issue/QUAL-2547) |
-
-**Agents must never add new lint exceptions or broaden existing ones.** Do not
-add suppressions, disable rules, exclude files or directories, or raise thresholds
-to make a check pass. Fix the code to satisfy the rules. New and replacement code
-must pass without exceptions.
-
-Every existing exception names a function, specific rules, reason, and removal
-ticket. Remove it when replacing or substantially refactoring that code; do not
-transfer it to replacement code. **Update this inventory in the same change**:
-remove resolved exception entries, update entries for partially resolved
-exceptions, and keep the remaining counts, rules, reasons, and removal tickets
-accurate. Keep the initial baseline inventory clearly labeled as historical.
-Unrelated fixes must not increase metrics within suppressed functions: reviewers
-must compare them manually, since automated metric comparisons are deferred.
-See [AGENTS.md](AGENTS.md).
+Ruff enforces complexity/statements/branches/arguments at 10/50/12/5.
+The enabled rules are defined in `pyproject.toml`. See [AGENTS.md](AGENTS.md)
+for the repository's coding and review requirements.
