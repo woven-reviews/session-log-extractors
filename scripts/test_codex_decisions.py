@@ -5,7 +5,6 @@ from copy import deepcopy
 import pytest
 from codex_capture import TRANSCRIPT, exec_interactions
 
-from session_log_extractors.codex_decisions import parse_permission_denial
 from session_log_extractors.codex_sources import CodexSource, load_entries
 from session_log_extractors.extract_codex_session_log import interpret_source
 from session_log_extractors.session_log_envelope import export_session
@@ -191,7 +190,8 @@ def test_unknown_authorship_does_not_create_candidate_approval():
     assert not _facts(session, "plan_decisions")
 
 
-def test_legacy_assistant_denial_has_no_invented_action_owner():
+@pytest.mark.parametrize("limit", [0, 17, -1])
+def test_legacy_assistant_denial_has_no_invented_action_owner(limit):
     # This legacy harness message has no recorded tool reference.
     entry = _controlled_user("Permission for this tool use was denied.")
     entry["payload"]["role"] = "assistant"
@@ -202,8 +202,11 @@ def test_legacy_assistant_denial_has_no_invented_action_owner():
     assert refusal["source"] == "unknown"
     assert refusal["action"] is None
     assert "tool_call_index" not in refusal["activity"]
-    envelope = export_session(session, 0)
+    original = deepcopy(session)
+    envelope = export_session(session, limit)
     assert envelope["events"][0]["permission_refusals"] == [refusal]
+    assert session == original
+    assert "permission_denial" not in session["events"][0]
 
 
 def test_unmatched_refusal_stays_internal_instead_of_attaching_to_nearest_call():
@@ -222,34 +225,6 @@ def test_unmatched_refusal_stays_internal_instead_of_attaching_to_nearest_call()
         assert "permission_refusals" not in message
         for call in message.get("tool_calls") or []:
             assert "permission_refusals" not in call
-
-
-def test_codex_permission_denial_strips_external_prefix():
-    c = (
-        "[external_agent_tool_result: error]\nThe user doesn't want to proceed "
-        "with this tool use. The tool use was rejected. STOP what you are doing."
-    )
-    assert parse_permission_denial(c) == ""
-
-
-def test_codex_permission_denial_with_message():
-    c = (
-        "[external_agent_tool_result: error]\nPermission for this tool use was "
-        "denied. The tool use was rejected. The user said:\nuse a branch"
-    )
-    assert parse_permission_denial(c) == "use a branch"
-
-
-def test_codex_permission_denial_ignores_normal_text():
-    assert (
-        parse_permission_denial("[external_agent_tool_result]\nfile contents") is None
-    )
-    assert parse_permission_denial("Sure, I'll do that.") is None
-
-
-def test_parse_permission_denial_rejects_non_string():
-    assert parse_permission_denial(None) is None
-    assert parse_permission_denial(123) is None
 
 
 def test_explicit_rejection_keeps_candidate_feedback_without_linking_by_proximity():

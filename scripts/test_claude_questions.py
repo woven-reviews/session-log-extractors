@@ -879,3 +879,39 @@ def test_native_notes_only_response_has_explicit_empty_selections():
             response["candidate_feedback"]
             == result["toolUseResult"]["annotations"][key]["notes"]
         )
+
+
+@pytest.mark.parametrize("limit", [0, 17, -1])
+def test_mismatched_text_answer_never_falls_back_to_the_first_question(limit):
+    assistant, result, call = _interaction()
+    # Narrow to one captured question to exercise the former single-question
+    # fallback; retain call ownership but answer an explicitly different question.
+    question = call["input"]["questions"][0]
+    call["input"]["questions"] = [question]
+    result.pop("toolUseResult")
+    text = 'Your questions have been answered: "Unrecorded question"="Custom café, 雪".'
+    result["message"]["content"][0]["content"] = text
+    session = _interpret([assistant, result])
+    original = deepcopy(session)
+    (response,) = _conversation_responses(session)
+    assert response["question"] is None
+    assert response["free_text"] == "Custom café, 雪"
+    call = session["events"][0]["tool_calls"][0]
+    assert call["result_record"]["content"] == text
+    exported = export_session(session, limit)
+    assert _conversation_responses(exported) == [response]
+    assert session == original
+
+
+@pytest.mark.parametrize("labels", [("Plan", "Planet"), ("North", "Northwest")])
+def test_overlapping_labels_select_only_the_recorded_whole_label(labels):
+    assistant, result, call = _interaction()
+    shorter, longer = labels
+    question = call["input"]["questions"][0]
+    question["options"] = [{"label": shorter}, {"label": longer}]
+    result["toolUseResult"]["answers"] = {question["question"]: longer}
+    session = _interpret([assistant, result])
+    (response,) = _conversation_responses(session)
+    (selection,) = response["selections"]
+    assert selection["label"] == longer
+    assert "free_text" not in response

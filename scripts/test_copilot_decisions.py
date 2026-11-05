@@ -675,3 +675,28 @@ def test_session_only_decision_index_never_establishes_call_ownership():
     (exported_call,) = envelope["events"][0]["tool_calls"]
     assert session["permission_refusals"]
     assert "permission_refusals" not in exported_call
+
+
+@pytest.mark.parametrize("limit", [0, 17, -1])
+def test_native_plan_response_with_nonhuman_actor_never_establishes_approval(limit):
+    source = native_source()
+    responses = _plan_responses(source)
+    assert responses, "Capture must contain plan responses"
+    # Change only actor provenance; retain native approvals, plan content and IDs.
+    for record in responses:
+        record["data"]["actor"] = "settings"
+    session = interpret_source(source)
+    assert session is not None
+    original = deepcopy(session)
+    assert len(session["plan_decisions"]) == len(responses)
+    for decision in session["plan_decisions"]:
+        assert decision["outcome"] == "unknown"
+        assert isinstance(decision["native_decision"], bool)
+        assert "candidate_feedback" not in decision
+    exported = export_session(session, limit)
+    for message in exported["events"]:
+        for call in message.get("tool_calls", []):
+            assert "plan_decision" not in call
+            for decision in call.get("plan_decisions", []):
+                assert decision["outcome"] == "unknown"
+    assert session == original

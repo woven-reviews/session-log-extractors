@@ -1,22 +1,10 @@
 """Controlled malformed and legacy inputs supplement the interactive capture."""
 
-import pytest
 from copilot_fixture import native_source
 
 from session_log_extractors.copilot_interactions import (
-    apply_human_response,
     subagent_summaries,
 )
-from session_log_extractors.session_model import ToolCall
-
-
-@pytest.mark.parametrize("approval", [None, "approved", 1])
-def test_unknown_plan_approval_is_not_an_approval(approval):
-    call = ToolCall(name="exit_plan_mode")
-    apply_human_response(
-        call, {"response": {"responseKind": "exit_plan_mode", "approved": approval}}
-    )
-    assert call["plan_decision"]["decision"] == "unknown"
 
 
 def test_inline_child_summary_uses_only_the_recorded_agent_scope():

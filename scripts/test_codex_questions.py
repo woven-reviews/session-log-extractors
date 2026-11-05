@@ -357,13 +357,16 @@ def test_unrecognized_answer_values_remain_unknown_and_raw(value):
 
 @pytest.mark.parametrize("options", [None, [None, {}, {"label": 2}, {"label": "A"}]])
 def test_malformed_options_do_not_erase_valid_questions(options):
-    question = {"question": "Choose?", "options": options}
+    question = {"id": "q", "question": "Choose?", "options": options}
     session = _interpret(
-        _controlled({"answers": {"Choose?": "A"}}, questions=[question, None, {}])
+        _controlled(
+            {"answers": {"q": {"answers": ["A"]}}}, questions=[question, None, {}]
+        )
     )
     (retained,) = session["interaction_questions"]
     assert retained["text"] == "Choose?"
-    assert "native_id" not in retained and "header" not in retained
+    assert retained["native_id"] == "q"
+    assert "header" not in retained
     (response,) = session["question_responses"]
     assert response["outcome"] == "answered"
     assert response["question"]["question_ref"] == retained["ref"]
@@ -420,3 +423,38 @@ def test_duplicate_literal_sentinel_options_do_not_erase_the_selection():
     (response,) = session["question_responses"]
     assert response["selections"] == [{"label": "None of the above"}]
     assert response["free_text"] == "note"
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        {"q": "Something else entirely"},
+        {"responses": {"q": {"answers": ["A"]}}},
+        {"answers": {"q": "A"}},
+        {"answers": {"q": ["A"]}},
+        '"Choose?"="A"',
+    ],
+)
+def test_unsupported_answer_formats_keep_raw_payload_without_guessed_facts(output):
+    question = _question()
+    question["header"] = "Header"
+    session = _interpret(_controlled(output, questions=[question]))
+    call = session["events"][-1]["tool_calls"][0]
+    assert call["result_record"]["content"] == output
+    assert "questions" not in call
+    for response in session["question_responses"]:
+        assert response["question"] is None
+        assert response["outcome"] == "unknown"
+        assert "selections" not in response
+        assert "free_text" not in response
+
+
+@pytest.mark.parametrize("key", ["Choose?", "Header"])
+def test_answer_keys_cannot_associate_by_question_text_or_header(key):
+    question = _question()
+    question["header"] = "Header"
+    output = {"answers": {key: {"answers": ["A"]}}}
+    session = _interpret(_controlled(output, questions=[question]))
+    (response,) = session["question_responses"]
+    assert response["question"] is None
+    assert response["selections"] == [{"label": "A"}]

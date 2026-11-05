@@ -8,9 +8,9 @@ import pytest
 from codex_capture import TRANSCRIPT as CODEX_TRANSCRIPT
 from copilot_fixture import native_records
 
+from session_log_extractors import extract_claude_session_log as claude
 from session_log_extractors.claude_sources import read_source
 from session_log_extractors.codex_sources import CodexSource, load_entries
-from session_log_extractors.extract_claude_session_log import parse_plan_decision
 from session_log_extractors.extract_codex_session_log import interpret_source
 from session_log_extractors.session_log_envelope import export_session
 from session_log_extractors.session_model import (
@@ -208,19 +208,7 @@ def test_plan_versions_presentations_and_decisions_are_independent():
 @pytest.mark.parametrize("limit", [0, 17, 4096, -1])
 def test_structured_decision_facts_survive_raw_result_policy(limit):
     session = _illustrative_plan_session()
-    # Keep the legacy summaries too: this change must not alter their shape.
-    call = ToolCall(
-        name="review",
-        input={"plan": "Complete input"},
-        result="雪" * 2000,
-        plan_decision={
-            "plan": "Old",
-            "decision": "unknown",
-            "edited_plan": "",
-            "message": "",
-        },
-        permission_denial={"tool": "review", "message": "Old message", "by": "user"},
-    )
+    call = ToolCall(name="review", input={"plan": "Complete input"}, result="雪" * 2000)
     session["events"] = [{"i": 7, "role": "assistant", "tool_calls": [call]}]
     session["permission_refusals"] = [
         PermissionRefusal(
@@ -413,17 +401,26 @@ def test_claude_native_plan_tool_error_does_not_establish_rejection():
             and isinstance(content, str)
             and content.startswith("<tool_use_error>")
         ):
-            errors.append((record, result))
+            errors.append((call, record, result))
     assert len(errors) == 1, "Capture must retain the failed plan presentation"
-    record, result = errors[0]
-
-    outcome, edited, feedback = parse_plan_decision(result["content"])
-
+    call, record, result = errors[0]
+    assistants = []
+    for entry in read_source(CLAUDE_TRANSCRIPT).entries:
+        if entry.get("type") != "assistant":
+            continue
+        for block in claude._content_blocks(entry):
+            if isinstance(block, dict) and block.get("id") == call["id"]:
+                assistants.append(entry)
+    (assistant,) = assistants
+    session = claude.interpret_source(
+        claude.ClaudeSource(CLAUDE_TRANSCRIPT, [assistant, record])
+    )
     assert result["is_error"] is True
     assert "toolDenialKind" not in record
-    assert outcome == "unknown"
-    assert edited == ""
-    assert feedback == ""
+    (message,) = session["events"]
+    (interpreted_call,) = message["tool_calls"]
+    assert "plan_decisions" not in interpreted_call
+    assert "permission_refusals" not in interpreted_call
 
 
 def _copilot_plan_records(data, start):

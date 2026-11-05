@@ -21,6 +21,7 @@ import pytest
 
 from session_log_extractors import extract_claude_session_log as eclog
 from session_log_extractors import session_log_envelope
+from session_log_extractors.claude_decisions import parse_permission_denial
 from session_log_extractors.claude_sources import (
     ClaudeSource,
     read_source,
@@ -33,9 +34,7 @@ from session_log_extractors.extract_claude_session_log import (
     _human_text,
     _is_tool_result_entry,
     _jsonl_files,
-    _parse_chosen,
     _result_block_text,
-    apply_plan_decisions,
     build_events,
     build_raw_envelope,
     clean_user_text,
@@ -47,9 +46,6 @@ from session_log_extractors.extract_claude_session_log import (
     load_subagents,
     main,
     newest,
-    option_qa_from_result,
-    parse_permission_denial,
-    permission_denials_from_result,
     resolve_project_dir,
     select_transcript,
     session_cwd,
@@ -199,13 +195,19 @@ def _native_question_in(tool_input, *, multi_select):
     return _require_single_match(matches, f"question with multiSelect={multi_select}")
 
 
-def _answered_question_in(call, *, multi_select):
+def _response_to_question(call, *, multi_select):
     native_question = _native_question_in(call["input"], multi_select=multi_select)
     matches = []
-    for question in call["questions"]:
-        if question["question"] == native_question["question"]:
+    for question in call["interaction_questions"]:
+        if question["text"] == native_question["question"]:
             matches.append(question)
-    return _require_single_match(matches, "question matching its native input")
+    question = _require_single_match(matches, "question matching its native input")
+    responses = []
+    for response in call["question_responses"]:
+        association = response["question"]
+        if association is not None and association["question_ref"] == question["ref"]:
+            responses.append(response)
+    return _require_single_match(responses, "response to the recorded question")
 
 
 def _tool_calls_in(session):
@@ -225,8 +227,7 @@ def _unmatched_results_in(session):
 def _plan_decisions_in(session):
     decisions = []
     for call in _tool_calls_in(session):
-        if "plan_decision" in call:
-            decisions.append(call["plan_decision"])
+        decisions.extend(call.get("plan_decisions", []))
     return decisions
 
 
@@ -265,19 +266,24 @@ def _has_overlapping_labels(options):
     return False
 
 
-def _assert_answer_uses_distinct_recorded_options(question):
-    assert isinstance(question["answer_text"], str)
-    assert question["answer_text"].strip()
-    labels = question["chosen_labels"]
-    assert isinstance(labels, list)
-    for label in labels:
-        assert isinstance(label, str)
-        assert label
+def _assert_answer_uses_distinct_recorded_options(response, call):
+    assert response["outcome"] == "answered"
+    labels = []
+    association = response["question"]
+    assert association is not None
+    options_by_ref = {}
+    for question in call["interaction_questions"]:
+        if question["ref"] != association["question_ref"]:
+            continue
+        for option in question["options"]:
+            options_by_ref[option["ref"]] = option
+    for selection in response.get("selections", []):
+        label = selection["label"]
+        assert isinstance(label, str) and label
+        labels.append(label)
+        assert options_by_ref[selection["option_ref"]]["label"] == label
+    assert labels
     assert len(labels) == len(set(labels))
-    recorded_labels = set()
-    for option in question["options"]:
-        recorded_labels.add(option["label"])
-    assert set(labels) <= recorded_labels
 
 
 def test_native_skill_and_command_invocations_are_retained():
@@ -306,59 +312,15 @@ def test_native_skill_and_command_invocations_are_retained():
     assert command_events
 
 
-def test_single_choice():
-    assistant, result = _recorded_overlapping_options_interaction()
-    question = _require_single_match(
-        _content_block(assistant, "tool_use")["input"]["questions"], "single question"
-    )
-    value, chosen = _parse_chosen(
-        question["question"],
-        question["options"],
-        _content_block(result, "tool_result")["content"],
-    )
-    assert isinstance(value, str)
-    assert value.strip()
-    assert len(chosen) == 1
-    assert chosen[0] in question["options"]
-    assert value == chosen[0]["label"]
-
-
 def test_native_multiselect_answer():
     entries = _recorded_multiselect_interaction()
 
     session = eclog.interpret_source(ClaudeSource(Path("session.jsonl"), entries))
 
     call = _single_tool_call_in(session["events"])
-    answer = _answered_question_in(call, multi_select=True)
-    assert len(answer["chosen_labels"]) >= 2
-    _assert_answer_uses_distinct_recorded_options(answer)
-
-
-def test_parse_chosen_comma_separated_labels():
-    # Controlled parser primitive: native captures may use any option labels.
-    options = [{"label": "First"}, {"label": "Second"}, {"label": "Third"}]
-    value, chosen = _parse_chosen(
-        "Choose items", options, '"Choose items"="First, Third"'
-    )
-    assert value == "First, Third"
-    chosen_labels = []
-    for option in chosen:
-        chosen_labels.append(option["label"])
-    assert chosen_labels == ["First", "Third"]
-
-
-@pytest.mark.parametrize("labels", [("Plan", "Planet"), ("North", "Northwest")])
-def test_parse_chosen_overlapping_labels_selects_only_the_complete_label(labels):
-    # Supply the overlap and answer explicitly instead of pinning native wording.
-    shorter, longer = labels
-    options = [{"label": shorter}, {"label": longer}]
-    value, chosen = _parse_chosen("Choose one", options, f'"Choose one"="{longer}"')
-    assert shorter in longer
-    assert value == longer
-    chosen_labels = []
-    for option in chosen:
-        chosen_labels.append(option["label"])
-    assert chosen_labels == [longer]
+    answer = _response_to_question(call, multi_select=True)
+    assert len(answer["selections"]) >= 2
+    _assert_answer_uses_distinct_recorded_options(answer, call)
 
 
 def test_permission_denial_bare():
@@ -380,20 +342,10 @@ def test_native_settings_denial_is_recorded():
     )
     denials = []
     for call in _tool_calls_in(interpreted_session):
-        if "permission_denial" in call:
-            denials.append(call["permission_denial"])
+        denials.extend(call.get("permission_refusals", []))
     denial = _require_single_match(denials, "settings denial")
-    assert denial["tool"].split(" — ")[0] == "Bash"
-    assert denial["by"] == "settings"
-
-
-def test_permission_denials_from_result_names_tool():
-    assistant, result = _recorded_tool_interaction("Write", "denied-feedback.txt")
-    call = _content_block(assistant, "tool_use")
-    name = "Write — " + call["input"]["file_path"]
-    assert permission_denials_from_result(result, {call["id"]: name}) == [
-        {"tool": name, "message": "", "by": "user"}
-    ]
+    assert denial["action"]["tool_name"] == "Bash"
+    assert denial["source"] == "settings"
 
 
 def test_custom_answer_matches_no_option():
@@ -404,9 +356,9 @@ def test_custom_answer_matches_no_option():
     session = eclog.interpret_source(ClaudeSource(Path("session.jsonl"), entries))
 
     call = _single_tool_call_in(session["events"])
-    question = _answered_question_in(call, multi_select=False)
-    assert question["answer_text"] == "CAPTURE_CUSTOM_PLAIN_MOSS"
-    assert question["chosen_labels"] == []
+    response = _response_to_question(call, multi_select=False)
+    assert response["free_text"] == "CAPTURE_CUSTOM_PLAIN_MOSS"
+    assert not response.get("selections")
 
 
 def test_multi_question_anchors_on_its_own_text():
@@ -415,13 +367,13 @@ def test_multi_question_anchors_on_its_own_text():
         ClaudeSource(Path("session.jsonl"), entries)
     )
     call = _single_tool_call_in(interpreted_session["events"])
-    answer = _answered_question_in(call, multi_select=True)
-    _assert_answer_uses_distinct_recorded_options(answer)
-    assert len(answer["chosen_labels"]) >= 2
-    answer = _answered_question_in(call, multi_select=False)
-    _assert_answer_uses_distinct_recorded_options(answer)
-    assert len(answer["chosen_labels"]) == 1
-    assert answer["answer_text"] == answer["chosen_labels"][0]
+    answer = _response_to_question(call, multi_select=True)
+    _assert_answer_uses_distinct_recorded_options(answer, call)
+    assert len(answer["selections"]) >= 2
+    answer = _response_to_question(call, multi_select=False)
+    _assert_answer_uses_distinct_recorded_options(answer, call)
+    assert len(answer["selections"]) == 1
+    assert "free_text" not in answer
 
 
 def test_task_notification_is_stripped_to_empty():
@@ -624,10 +576,10 @@ def test_plan_approved_is_captured():
         ClaudeSource(Path("session.jsonl"), entries)
     )
     (plan,) = _plan_decisions_in(interpreted_session)
-    assert isinstance(plan["plan"], str)
-    assert plan["plan"].strip()
-    assert plan["decision"] == "approved"
-    assert plan["edited_plan"] == ""
+    (call,) = _tool_calls_in(interpreted_session)
+    assert call["plan_versions"][0]["text"] == call["input"]["plan"]
+    assert plan["outcome"] == "approved"
+    assert len(call["plan_versions"]) == 1
 
 
 def test_plan_approved_with_edit_keeps_final_version():
@@ -638,11 +590,15 @@ def test_plan_approved_with_edit_keeps_final_version():
         ClaudeSource(Path("session.jsonl"), entries)
     )
     (plan,) = _plan_decisions_in(interpreted_session)
-    assert plan["decision"] == "approved"
-    assert plan["plan"] == (ROOT / "assets/plan-before-editor.md").read_text()
+    assert plan["outcome"] == "approved"
+    (call,) = _tool_calls_in(interpreted_session)
     assert (
-        plan["edited_plan"]
-        == (ROOT / "assets/plan-after-editor.md").read_text().rstrip()
+        call["plan_versions"][0]["text"]
+        == (ROOT / "assets/plan-before-editor.md").read_text()
+    )
+    assert (
+        call["plan_versions"][1]["text"]
+        == (ROOT / "assets/plan-after-editor.md").read_text()
     )
 
 
@@ -654,13 +610,13 @@ def test_plan_rejected_keeps_steering_message():
         ClaudeSource(Path("session.jsonl"), entries)
     )
     (call,) = _tool_calls_in(interpreted_session)
-    plan = call["plan_decision"]
-    assert plan["decision"] == "rejected"
+    (plan,) = call["plan_decisions"]
+    assert plan["outcome"] == "rejected"
     assert (
-        plan["message"]
+        plan["candidate_feedback"]
         == "CAPTURE_PLAN_REJECT_1: print CAPTURE_PLAN_REVISED instead of CAPTURE_PLAN_HELLO. Keep everything else tiny and local."
     )
-    assert "permission_denial" not in call
+    assert call["permission_refusals"][0]["source"] == "candidate"
 
 
 def test_plan_rejection_reason_is_captured():
@@ -678,9 +634,10 @@ def test_plan_rejection_reason_is_captured():
     )
     plans = _plan_decisions_in(interpreted_session)
     (plan,) = plans
-    assert plan["decision"] == "rejected"
+    assert plan["outcome"] == "rejected"
     assert (
-        plan["message"] == "wrong table, use line_items\nand keep it in one migration"
+        plan["candidate_feedback"]
+        == "wrong table, use line_items\nand keep it in one migration"
     )
 
 
@@ -691,8 +648,10 @@ def test_plan_without_result_is_marked_undecided():
     interpreted_session = eclog.interpret_source(
         ClaudeSource(Path("session.jsonl"), [assistant])
     )
-    (plan,) = _plan_decisions_in(interpreted_session)
-    assert plan["decision"] == "no decision recorded"
+    assert _plan_decisions_in(interpreted_session) == []
+    (call,) = _tool_calls_in(interpreted_session)
+    assert call["plan_presentations"]
+    assert call["plan_versions"]
 
 
 # --------------------------------------------------------------------------- #
@@ -880,33 +839,6 @@ def test_extract_file_path_variants():
     assert extract_file_path("nope") is None
 
 
-def test_option_qa_from_result_builds_record():
-    assistant, result = _recorded_overlapping_options_interaction()
-    call = _content_block(assistant, "tool_use")
-    out = option_qa_from_result(result, {call["id"]: call["input"]["questions"]})
-    answer = _require_single_match(out, "choice answer")
-    _assert_answer_uses_distinct_recorded_options(answer)
-    assert len(answer["chosen_labels"]) == 1
-    assert answer["answer_text"] == answer["chosen_labels"][0]
-    native = _require_single_match(call["input"]["questions"], "native question")
-    assert answer["header"] == native["header"]
-
-
-def test_option_qa_from_result_ignores_untracked_tool():
-    _, result = _recorded_overlapping_options_interaction()
-    assert option_qa_from_result(result, {}) == []
-
-
-def test_option_qa_from_result_skips_non_tool_result_blocks_and_bad_questions():
-    assistant, result = _recorded_overlapping_options_interaction()
-    call = _content_block(assistant, "tool_use")
-    pending = {call["id"]: ["not-a-dict"]}
-    # Replace only the question payload with malformed data; include a native text block.
-    text = _recorded_user_message("CAPTURE_IMAGES_SAME:")
-    result["message"]["content"].insert(0, _content_block(text, "text"))
-    assert option_qa_from_result(result, pending) == []
-
-
 def test_is_tool_result_entry_true_for_bare_tool_use_result():
     _, entry = _recorded_tool_interaction("Bash", "CAPTURE_BASH_OK")
     # Legacy top-level result shape: remove only the result block carrying its ID.
@@ -944,123 +876,6 @@ def test_result_block_text_flattens_list_content():
     assert _result_block_text(block) == original + " " + original
 
 
-def test_parse_chosen_single_question_fallback_when_text_mismatches():
-    assistant, result = _recorded_overlapping_options_interaction()
-    question = _require_single_match(
-        _content_block(assistant, "tool_use")["input"]["questions"], "single question"
-    )
-    # Only the lookup text differs, exercising the single-question fallback.
-    value, chosen = _parse_chosen(
-        "Nomatch", question["options"], _content_block(result, "tool_result")["content"]
-    )
-    assert isinstance(value, str)
-    assert value.strip()
-    assert len(chosen) == 1
-    assert chosen[0] in question["options"]
-    assert value == chosen[0]["label"]
-
-
-def test_apply_plan_decisions_ignores_non_tool_result_blocks():
-    entry = _recorded_user_message("CAPTURE_IMAGES_SAME:")
-    assert apply_plan_decisions(entry, {}) is False
-
-
-def test_permission_denials_from_result_ignores_non_tool_result_blocks():
-    entry = _recorded_user_message("CAPTURE_IMAGES_SAME:")
-    assert permission_denials_from_result(entry, {}) == []
-
-
-def test_legacy_plan_helper_consumes_native_matches_and_updates_plan_records():
-    rejected_entries = _recorded_tool_interaction(
-        "ExitPlanMode", result_contains="CAPTURE_PLAN_REJECT_1:"
-    )
-    approved_entries = _recorded_tool_interaction(
-        "ExitPlanMode", result_contains="## Approved Plan:\n"
-    )
-    edited_entries = _recorded_tool_interaction(
-        "ExitPlanMode", result_contains="(edited by user):"
-    )
-    entries = [*rejected_entries, *approved_entries, *edited_entries]
-    interpreted_session = eclog.interpret_source(
-        ClaudeSource(Path("session.jsonl"), entries)
-    )
-    calls = _tool_calls_in(interpreted_session)
-    records = []
-    for call in calls:
-        records.append(
-            {
-                "plan": call["input"]["plan"],
-                "decision": "no decision recorded",
-                "edited_plan": "",
-                "message": "",
-            }
-        )
-    rejected_plan, approved_plan, edited_plan = records
-    pending = {}
-    for call, record in zip(calls, records, strict=True):
-        pending[call["id"]] = record
-
-    updated_count = 0
-    for entry in entries:
-        if apply_plan_decisions(entry, pending):
-            updated_count += 1
-
-    assert updated_count == 3
-    assert pending == {}
-    assert rejected_plan["decision"] == "rejected"
-    assert approved_plan["decision"] == "approved"
-    assert edited_plan["decision"] == "approved"
-    assert approved_plan["edited_plan"] == ""
-    assert (
-        edited_plan["edited_plan"]
-        == (ROOT / "assets/plan-after-editor.md").read_text().rstrip()
-    )
-    assert rejected_plan["message"].startswith("CAPTURE_PLAN_REJECT_1:")
-
-
-@pytest.mark.parametrize("tool_id", [None, "unknown-call"])
-def test_legacy_plan_helper_leaves_unmatched_plans_pending(tool_id):
-    assistant, result = _recorded_tool_interaction(
-        "ExitPlanMode", result_contains="## Approved Plan:\n"
-    )
-    entries = [assistant, result]
-    # Change only the captured result ID to exercise absent/unmatched associations.
-    _content_block(result, "tool_result")["tool_use_id"] = tool_id
-    interpreted_session = eclog.interpret_source(
-        ClaudeSource(Path("session.jsonl"), entries)
-    )
-    pending = {}
-    for call in _tool_calls_in(interpreted_session):
-        pending[call["id"]] = call["plan_decision"]
-    original = deepcopy(pending)
-    assert apply_plan_decisions(result, pending) is False
-    assert pending == original
-
-
-@pytest.mark.parametrize(
-    ("fixture", "expected"),
-    [
-        (("Read", "multibyte.txt"), []),
-        (
-            ("Bash", "CAPTURE_SETTINGS_REFUSAL"),
-            [{"tool": "Bash", "message": "", "by": "settings"}],
-        ),
-    ],
-)
-def test_legacy_denial_helper_matches_native_result_blocks(fixture, expected):
-    entries = _recorded_tool_interaction(*fixture)
-    interpreted_session = eclog.interpret_source(
-        ClaudeSource(Path("session.jsonl"), entries)
-    )
-    tool_names = {}
-    for call in _tool_calls_in(interpreted_session):
-        tool_names[call["id"]] = call["name"]
-    denials = []
-    for entry in entries:
-        denials.extend(permission_denials_from_result(entry, tool_names))
-    assert denials == expected
-
-
 def test_native_session_keeps_commands_shell_subagents_and_files():
     entries = _recorded_session_entries() + load_entries(SUBAGENT)
     session = eclog.interpret_source(ClaudeSource(Path("session.jsonl"), entries))
@@ -1096,9 +911,9 @@ def test_native_session_keeps_multiselect_answers():
                 multiselect_calls.append(call)
                 break
     question_call = _require_single_match(multiselect_calls, "multiselect call")
-    answer = _answered_question_in(question_call, multi_select=True)
-    _assert_answer_uses_distinct_recorded_options(answer)
-    assert len(answer["chosen_labels"]) >= 2
+    answer = _response_to_question(question_call, multi_select=True)
+    _assert_answer_uses_distinct_recorded_options(answer, question_call)
+    assert len(answer["selections"]) >= 2
 
 
 def test_native_session_keeps_user_write_denial():
@@ -1115,9 +930,9 @@ def test_native_session_keeps_user_write_denial():
         if "denied-feedback.txt" in json.dumps(call["input"]):
             denied_writes.append(call)
     denied_write = _require_single_match(denied_writes, "denied Write call")
-    denial = denied_write["permission_denial"]
-    assert denial["by"] == "user"
-    assert denial["message"] == ""
+    (denial,) = denied_write["permission_refusals"]
+    assert denial["source"] == "candidate"
+    assert "candidate_feedback" not in denial
 
 
 def test_build_events_retains_unmatched_results_and_skips_invalid_blocks():
@@ -2048,9 +1863,9 @@ def test_question_stays_with_its_call_across_a_later_user_message():
     call = _single_tool_call_in(session["events"])
     assert call["id"] == _content_block(assistant, "tool_use")["id"]
     assert call["result_record"]["tool_call_id"] == call["id"]
-    answer = _answered_question_in(call, multi_select=True)
-    assert len(answer["chosen_labels"]) >= 2
-    _assert_answer_uses_distinct_recorded_options(answer)
+    answer = _response_to_question(call, multi_select=True)
+    assert len(answer["selections"]) >= 2
+    _assert_answer_uses_distinct_recorded_options(answer, call)
     user_messages = []
     for event in session["events"]:
         if event["role"] == "user":
@@ -2075,7 +1890,7 @@ def test_plan_stays_with_its_call_across_a_later_user_message():
     call = _single_tool_call_in(session["events"])
     assert call["id"] == _content_block(assistant, "tool_use")["id"]
     assert call["result_record"]["tool_call_id"] == call["id"]
-    assert call["plan_decision"]["decision"] == "approved"
+    assert call["plan_decisions"][0]["outcome"] == "approved"
     user_messages = []
     for event in session["events"]:
         if event["role"] == "user":
@@ -2098,7 +1913,7 @@ def test_permission_denial_stays_with_its_call_across_a_later_user_message():
     call = _single_tool_call_in(session["events"])
     assert call["id"] == _content_block(assistant, "tool_use")["id"]
     assert call["result_record"]["tool_call_id"] == call["id"]
-    assert call["permission_denial"]["by"] == "settings"
+    assert call["permission_refusals"][0]["source"] == "settings"
     user_messages = []
     for event in session["events"]:
         if event["role"] == "user":
@@ -2150,8 +1965,10 @@ def test_malformed_question_options_preserve_input_and_allow_extraction(options)
     session = eclog.interpret_source(ClaudeSource(Path("session.jsonl"), entries))
     call = _single_tool_call_in(session["events"])
     assert call["input"] == block["input"]
-    assert _answered_question_in(call, multi_select=True)["options"] == []
-    answer = _answered_question_in(call, multi_select=True)["answer_text"]
+    for question in call["interaction_questions"]:
+        if question.get("multiple_selections"):
+            assert question["options"] == []
+    answer = _response_to_question(call, multi_select=True)["free_text"]
     assert isinstance(answer, str)
     assert answer.strip()
     exported = session_log_envelope.export_session(session)
@@ -2234,7 +2051,6 @@ def test_question_options_are_checked_without_losing_recorded_payload():
     assert options
     for option in options:
         option["preview"] = {"markdown": "**keep this**"}
-    valid_options = deepcopy(options)
     malformed_options = [{"label": 1}, {"label": "bad", "description": None}]
     options.extend(malformed_options)
 
@@ -2242,12 +2058,21 @@ def test_question_options_are_checked_without_losing_recorded_payload():
 
     call = _single_tool_call_in(session["events"])
     assert call["input"] == block["input"]
-    answer = _answered_question_in(call, multi_select=True)
-    assert answer["options"] == valid_options
-    for option in answer["options"]:
-        assert option["preview"] == {"markdown": "**keep this**"}
-    _assert_answer_uses_distinct_recorded_options(answer)
-    assert len(answer["chosen_labels"]) >= 2
+    answer = _response_to_question(call, multi_select=True)
+    for question in call["interaction_questions"]:
+        if not question.get("multiple_selections"):
+            continue
+        labels = []
+        for option in question["options"]:
+            labels.append(option["label"])
+            assert "preview" not in option
+        expected_labels = []
+        for option in options:
+            if isinstance(option["label"], str):
+                expected_labels.append(option["label"])
+        assert labels == expected_labels
+    _assert_answer_uses_distinct_recorded_options(answer, call)
+    assert len(answer["selections"]) >= 2
 
 
 @pytest.mark.parametrize("name", ["bash", "view", "edit", "create", "skill"])
@@ -2278,7 +2103,7 @@ def _plan_result_variant(text):
     return [assistant, result]
 
 
-def test_legacy_edited_heading_with_unchanged_plan_is_not_an_edit():
+def test_legacy_edited_heading_preserves_explicit_version_evidence():
     # The earlier audited plan fixture echoed an unchanged plan under this heading.
     assistant, result = _recorded_tool_interaction(
         "ExitPlanMode", result_contains="## Approved Plan:\n"
@@ -2291,8 +2116,10 @@ def test_legacy_edited_heading_with_unchanged_plan_is_not_an_edit():
         ClaudeSource(Path("session.jsonl"), [assistant, result])
     )
     (plan,) = _plan_decisions_in(interpreted_session)
-    assert plan["decision"] == "approved"
-    assert plan["edited_plan"] == ""
+    assert plan["outcome"] == "approved"
+    (call,) = _tool_calls_in(interpreted_session)
+    assert call["plan_versions"][1]["kind"] == "edited"
+    assert call["plan_versions"][1]["text"].strip() == call["input"]["plan"].strip()
 
 
 @pytest.mark.parametrize("media_type", ["image/jpeg", "image/gif", "image/webp"])
@@ -2333,8 +2160,8 @@ def test_legacy_dont_ask_denial_without_command_is_recorded():
         ClaudeSource(Path("session.jsonl"), [assistant, result])
     )
     (call,) = _tool_calls_in(interpreted_session)
-    assert call["permission_denial"]["by"] == "settings"
-    assert call["permission_denial"]["message"] == ""
+    assert call["permission_refusals"][0]["source"] == "settings"
+    assert "candidate_feedback" not in call["permission_refusals"][0]
 
 
 def _question_text_replacements(entries):
@@ -2408,9 +2235,9 @@ def test_multiselect_selection_tolerates_changed_capture(
     )
 
     call = _single_tool_call_in(session["events"])
-    answer = _answered_question_in(call, multi_select=True)
-    _assert_answer_uses_distinct_recorded_options(answer)
-    assert len(answer["chosen_labels"]) >= 2
+    answer = _response_to_question(call, multi_select=True)
+    _assert_answer_uses_distinct_recorded_options(answer, call)
+    assert len(answer["selections"]) >= 2
 
 
 def test_overlapping_option_selection_tolerates_changed_capture(
@@ -2426,10 +2253,10 @@ def test_overlapping_option_selection_tolerates_changed_capture(
     )
 
     call = _single_tool_call_in(session["events"])
-    answer = _answered_question_in(call, multi_select=False)
-    _assert_answer_uses_distinct_recorded_options(answer)
-    assert len(answer["chosen_labels"]) == 1
-    assert answer["answer_text"] == answer["chosen_labels"][0]
+    answer = _response_to_question(call, multi_select=False)
+    _assert_answer_uses_distinct_recorded_options(answer, call)
+    assert len(answer["selections"]) == 1
+    assert "free_text" not in answer
 
 
 def test_interpretation_accepts_reworded_assistant_prose(varied_native_entries):

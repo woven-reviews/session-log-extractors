@@ -5,11 +5,10 @@ from pathlib import Path
 
 import pytest
 
+from session_log_extractors.claude_decisions import parse_permission_denial
 from session_log_extractors.claude_sources import ClaudeSource, load_entries
 from session_log_extractors.extract_claude_session_log import (
     interpret_source,
-    parse_permission_denial,
-    parse_plan_decision,
 )
 from session_log_extractors.session_log_envelope import export_session
 
@@ -193,11 +192,16 @@ def test_plan_tool_errors_are_not_candidate_decisions(text):
     assert "permission_refusals" not in call
 
 
-def test_settings_plan_refusal_does_not_imply_candidate_rejection():
+@pytest.mark.parametrize("limit", [0, 17, -1])
+def test_settings_plan_refusal_does_not_imply_candidate_rejection(limit):
     assistant, _ = _interaction("ExitPlanMode", "CAPTURE_PLAN_REJECT_1:")
     _, result = _interaction("Bash", "CAPTURE_SETTINGS_REFUSAL")
     _result_block(result)["tool_use_id"] = _plan_call_block(assistant)["id"]
-    call = _call(export_session(_session([assistant, result]), 1))
+    session = _session([assistant, result])
+    original = deepcopy(session)
+    call = _call(export_session(session, limit))
+    assert session == original
+    assert "plan_decision" not in _call(session)
     assert "plan_decisions" not in call
     assert call["permission_refusals"][0]["source"] == "settings"
     assert "plan_presentations" not in call
@@ -303,11 +307,6 @@ def test_permission_denial_ignores_isc_license_text():
         parse_permission_denial("Permission to use, copy, modify, and/or distribute")
         is None
     )
-
-
-def test_plan_decision_unknown_for_unrecognized_content():
-    assert parse_plan_decision("just some other result text") == ("unknown", "", "")
-    assert parse_plan_decision(None) == ("unknown", "", "")
 
 
 def test_legacy_settings_variant_retains_source_without_native_kind():

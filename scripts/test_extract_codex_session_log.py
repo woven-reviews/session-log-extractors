@@ -40,14 +40,10 @@ from session_log_extractors.codex_sources import (
 from session_log_extractors.extract_codex_session_log import (
     _decode_jsonish,
     _extract_all,
-    _extract_answer_from_item,
     _flatten_result_text,
     _image_bytes_and_ext,
-    _parse_chosen,
     _plan_update,
-    _structured_answer_for_question,
     _unique_identifier,
-    _value_to_answer_text,
     append_unique_path,
     assistant_text_from_payload,
     build_raw_envelope,
@@ -58,7 +54,6 @@ from session_log_extractors.extract_codex_session_log import (
     image_refs_from_user_message_payload,
     is_startup_context,
     main,
-    option_qa_from_output,
     patch_paths,
     session_models,
     skill_names_from_call,
@@ -248,11 +243,10 @@ def test_codex_handwritten_assistant_denial_branch():
         },
     ]
     messages = _interpret(entries)["events"]
-    assert messages[-1]["permission_denial"] == {
-        "tool": "(tool call)",
-        "message": "not like that",
-        "by": "user",
-    }
+    (refusal,) = messages[-1]["permission_refusals"]
+    assert refusal["action"] is None
+    assert refusal["candidate_feedback"] == "not like that"
+    assert refusal["source"] == "candidate"
     assert "permission_denial" not in _calls(entries)[0]
     assert "not like that" in messages[-1]["text"]
 
@@ -265,7 +259,9 @@ def test_legacy_process_rejection_records_user_denial():
         "exec_command failed: CreateProcess rejected by user"
     )
     call = _calls([user, first, first_result])[0]
-    assert call["permission_denial"] == {"tool": "exec", "message": "", "by": "user"}
+    (refusal,) = call["permission_refusals"]
+    assert refusal["action"]["tool_name"] == "exec"
+    assert refusal["source"] == "candidate"
     assert "rejected by user" in call["result"].lower()
 
 
@@ -414,7 +410,7 @@ def test_codex_summary_options_and_shell_command():
             "payload": {
                 "type": "function_call_output",
                 "call_id": "call-1",
-                "output": json.dumps({"answers": {"team": "QUAL"}}),
+                "output": json.dumps({"answers": {"team": {"answers": ["QUAL"]}}}),
             },
         },
         {
@@ -437,7 +433,8 @@ def test_codex_summary_options_and_shell_command():
 
     assert _interpret(entries)["files_changed"] == []
     assert len(_users(entries)) == 3
-    assert _calls(entries)[0]["questions"][0]["chosen_labels"] == ["QUAL"]
+    response = _calls(entries)[0]["question_responses"][0]
+    assert response["selections"][0]["label"] == "QUAL"
     assert _users(entries)[1]["text"] == "<bash-stdout>ignored</bash-stdout>"
     assert _users(entries)[2]["shell_command"] == "ls -la"
 
@@ -447,20 +444,21 @@ def test_codex_native_question_fixture_marks_answered_option():
     recorded_questions = json.loads(request["payload"]["arguments"])["questions"]
     recorded_answers = json.loads(result["payload"]["output"])["answers"]
     call = _calls([user, request, result])[0]
-    assert len(call["questions"]) == len(recorded_questions)
-    for question, recorded in zip(call["questions"], recorded_questions, strict=True):
+    assert len(call["interaction_questions"]) == len(recorded_questions)
+    for question, recorded in zip(
+        call["interaction_questions"], recorded_questions, strict=True
+    ):
+        responses = []
+        for response in call["question_responses"]:
+            if response["question"]["question_ref"] == question["ref"]:
+                responses.append(response)
+        (response,) = responses
         answers = recorded_answers[recorded["id"]]["answers"]
-        selected = question["chosen_labels"]
-        assert len(selected) == 1
-        assert len(set(selected)) == len(selected)
-        assert selected[0] in answers
-        labels = []
-        for option in recorded["options"]:
-            labels.append(option["label"])
-        assert selected[0] in labels
-        assert question["question"] == recorded["question"]
-        for answer in answers:
-            assert answer in question["answer_text"]
+        (selection,) = response["selections"]
+        assert selection["label"] in answers
+        assert question["text"] == recorded["question"]
+        if "free_text" in response:
+            assert "user_note: " + response["free_text"] in answers
 
 
 def _write_jsonl(path: Path, entries):
@@ -1009,101 +1007,12 @@ def test_decode_jsonish_passthrough_and_parse():
     assert _decode_jsonish(json.dumps({"a": 1})) == {"a": 1}
 
 
-def test_value_to_answer_text_variants():
-    assert _value_to_answer_text(True) == "True"
-    assert _value_to_answer_text(3.5) == "3.5"
-    assert _value_to_answer_text(["a", "", "b"]) == "a, b"
-    assert _value_to_answer_text({"value": "picked"}) == "picked"
-    assert _value_to_answer_text({"unmapped": "x"}) == ""
-    assert _value_to_answer_text(None) == ""
-
-
-def test_extract_answer_from_item_matches_by_various_ids():
-    question = {"id": "q1", "question": "Pick one", "header": "H"}
-    assert _extract_answer_from_item(question, "not-a-dict") == ""
-    assert _extract_answer_from_item(question, {"id": "other"}) == ""
-    assert (
-        _extract_answer_from_item(question, {"question_id": "q1", "value": "yes"})
-        == "yes"
-    )
-
-
-def test_structured_answer_for_question_container_and_fallback_paths():
-    question = {"id": "q1", "question": "Pick one", "header": "H"}
-
-    # Direct top-level key match.
-    assert _structured_answer_for_question(question, {"q1": "direct"}) == "direct"
-
-    # Container dict keyed by question id.
-    assert (
-        _structured_answer_for_question(question, {"answers": {"q1": "via-container"}})
-        == "via-container"
-    )
-
-    # Container dict whose values must be scanned (list within answers values).
-    assert (
-        _structured_answer_for_question(
-            question, {"answers": {"other": {"question_id": "q1", "value": "scanned"}}}
-        )
-        == "scanned"
-    )
-
-    # Container list of items.
-    assert (
-        _structured_answer_for_question(
-            question, {"responses": [{"id": "q1", "value": "listed"}]}
-        )
-        == "listed"
-    )
-
-    # Fallback: output itself matches via _extract_answer_from_item.
-    assert (
-        _structured_answer_for_question(question, {"id": "q1", "value": "top"}) == "top"
-    )
-
-    # Output is a bare list.
-    assert (
-        _structured_answer_for_question(question, [{"id": "q1", "value": "bare-list"}])
-        == "bare-list"
-    )
-
-    # Nothing matches.
-    assert _structured_answer_for_question(question, {"nope": "x"}) == ""
-    assert _structured_answer_for_question(question, "plain string") == ""
-
-
 def test_flatten_result_text_variants():
     assert _flatten_result_text(True) == "True"
     assert _flatten_result_text([1, "a"]) == "1 a"
     assert _flatten_result_text({"message": "hi", "text": "there"}) == "hi there"
     assert _flatten_result_text({"unmapped": "value"}) == "value"
     assert _flatten_result_text({}) == ""
-
-
-def test_parse_chosen_marker_and_split_fallback():
-    options = [{"label": "QUAL"}, {"label": "SE"}]
-    val, chosen = _parse_chosen("Pick a team", options, '"Pick a team"="QUAL"')
-    assert val == "QUAL"
-    assert chosen == [{"label": "QUAL"}]
-
-    val, chosen = _parse_chosen("", options, 'result="SE"')
-    assert val == "SE"
-    assert chosen == [{"label": "SE"}]
-
-    val, chosen = _parse_chosen("Pick a team", options, "no markers here")
-    assert val == ""
-    assert chosen == []
-
-
-def test_option_qa_from_output_no_questions_returns_empty():
-    assert option_qa_from_output("anything", None) == []
-    assert option_qa_from_output("anything", []) == []
-
-
-def test_option_qa_from_output_falls_back_to_structured_answer():
-    questions = [{"id": "q1", "question": "Pick", "header": "H", "options": []}]
-    qas = option_qa_from_output({"q1": "structured-value"}, questions)
-    assert qas[0]["answer_text"] == "structured-value"
 
 
 # --- patch paths / unique path bookkeeping ---------------------------------------
@@ -1425,46 +1334,6 @@ def test_session_models_dedupes_and_ignores_missing():
 # --- retained interpretation edge cases ---------------------------------------
 
 
-def test_custom_answer_without_chosen_label():
-    questions = [
-        {
-            "id": "team",
-            "header": "Team",
-            "question": "Pick a team",
-            "options": [{"label": "QUAL"}],
-        }
-    ]
-    entries = [
-        {
-            "type": "event_msg",
-            "timestamp": "2026-01-01T00:00:00Z",
-            "payload": {"type": "user_message", "message": "need help"},
-        },
-        {
-            "type": "response_item",
-            "timestamp": "2026-01-01T00:00:01Z",
-            "payload": {
-                "type": "function_call",
-                "name": "functions.request_user_input",
-                "call_id": "call-1",
-                "arguments": json.dumps({"questions": questions}),
-            },
-        },
-        {
-            "type": "response_item",
-            "timestamp": "2026-01-01T00:00:02Z",
-            "payload": {
-                "type": "function_call_output",
-                "call_id": "call-1",
-                "output": json.dumps({"team": "Something else entirely"}),
-            },
-        },
-    ]
-    assert (
-        _calls(entries)[0]["questions"][0]["answer_text"] == "Something else entirely"
-    )
-
-
 def test_multiple_plan_updates():
     entries = [
         {
@@ -1627,16 +1496,6 @@ def test_jsonl_files_returns_empty_for_missing_root():
 
 def test_flatten_result_text_unhandled_type_returns_empty():
     assert _flatten_result_text(None) == ""
-
-
-def test_option_qa_from_output_skips_non_dict_question():
-    questions = [
-        "not-a-dict",
-        {"id": "q1", "question": "Pick", "header": "H", "options": []},
-    ]
-    qas = option_qa_from_output({"q1": "val"}, questions)
-    assert len(qas) == 1
-    assert qas[0]["answer_text"] == "val"
 
 
 def test_skill_refs_from_call_backfills_path_for_already_seen_skill():
@@ -2164,22 +2023,16 @@ def test_native_answer_arrays_match_whole_labels_and_ignore_note_mentions(select
     answer = {
         "answers": {"choice": {"answers": [*selected, 'user_note: Leaf, "café"']}}
     }
-    actual = option_qa_from_output(answer, questions)
-    assert actual[0]["chosen_labels"] == selected
-    assert 'user_note: Leaf, "café"' in actual[0]["answer_text"]
-
-
-@pytest.mark.parametrize(
-    "text, labels", [("Leaflet", ["Leaflet"]), ("Leaf, Leaflet", ["Leaf", "Leaflet"])]
-)
-def test_legacy_text_answers_match_whole_labels(text, labels):
-    options = [{"label": "Leaf"}, {"label": "Leaflet"}]
-    answer, chosen = _parse_chosen("Pick", options, f'"Pick"="{text}"')
+    user, request, result = question_interaction()
+    request["payload"]["arguments"] = json.dumps({"questions": questions})
+    result["payload"]["output"] = json.dumps(answer)
+    call = _calls([user, request, result])[0]
+    (response,) = call["question_responses"]
     actual_labels = []
-    for option in chosen:
-        actual_labels.append(option["label"])
-    assert answer == text
-    assert actual_labels == labels
+    for selection in response["selections"]:
+        actual_labels.append(selection["label"])
+    assert actual_labels == selected
+    assert response["free_text"] == 'Leaf, "café"'
 
 
 def test_legacy_duplicate_user_views_preserve_raw_text():

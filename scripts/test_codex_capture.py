@@ -340,16 +340,18 @@ def test_native_question_selection_tolerates_rewording_questions_labels_and_answ
     session = codex.interpret_source(source)
     call = _calls_by_id(session)[request["payload"]["call_id"]]
 
-    for actual, recorded in zip(call["questions"], arguments["questions"], strict=True):
-        assert actual["question"] == recorded["question"]
+    for actual, recorded in zip(
+        call["interaction_questions"], arguments["questions"], strict=True
+    ):
+        assert actual["text"] == recorded["question"]
         assert actual["header"] == recorded["header"]
-        assert len(actual["chosen_labels"]) == 1
-        selected = answers["answers"][recorded["id"]]["answers"]
-        assert actual["chosen_labels"][0] in selected
-        labels = []
+        actual_labels = []
+        recorded_labels = []
+        for option in actual["options"]:
+            actual_labels.append(option["label"])
         for option in recorded["options"]:
-            labels.append(option["label"])
-        assert actual["chosen_labels"][0] in labels
+            recorded_labels.append(option["label"])
+        assert actual_labels == recorded_labels
     for question in session["interaction_questions"]:
         recorded_answers = answers["answers"][question["native_id"]]["answers"]
         matching_responses = []
@@ -395,10 +397,11 @@ def test_native_cancellations_and_settings_refusal_remain_distinct():
         )
     canceled_questions = []
     for call_id in cancellations:
-        for question in calls[call_id].get("questions", []):
-            canceled_questions.append(question)
-            assert question["chosen_labels"] == []
-            assert question["answer_text"] == ""
+        for response in calls[call_id].get("question_responses", []):
+            canceled_questions.append(response)
+            assert response["outcome"] == "cancelled"
+            assert not response.get("selections")
+            assert "free_text" not in response
     assert canceled_questions
 
 
