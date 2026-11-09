@@ -19,10 +19,10 @@ def test_json_value_rejects_non_json_objects():
 
 
 def test_parse_json_preserves_unknown_fields_and_scalars():
-    assert parse_json('{"unknown": [false, null, 1, 1.5, "value"]}') == {
-        "unknown": [False, None, 1, 1.5, "value"]
-    }
-    assert parse_json('"opaque"') == "opaque"
+    parsed = parse_json('{"unknown": [false, null, 1, 1.5, "value"]}')
+    assert parsed == {"unknown": [False, None, 1, 1.5, "value"]}
+    parsed = parse_json('"opaque"')
+    assert parsed == "opaque"
     with pytest.raises(ValueError, match="Expecting"):
         parse_json("invalid")
 
@@ -31,4 +31,5 @@ def test_parse_json_preserves_unknown_fields_and_scalars():
     ("value", "expected"), [("text", "text"), (None, None), (7, None)]
 )
 def test_string_value_requires_a_recorded_string(value, expected):
-    assert string_value(value) == expected
+    actual_string = string_value(value)
+    assert actual_string == expected

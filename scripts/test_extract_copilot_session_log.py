@@ -19,14 +19,18 @@ from copilot_fixture import (
     DATABASE,
     ROOT,
     SESSION_ID,
-    TRANSCRIPT,
+    install_native_events,
+    native_db_copy,
+    native_lines,
     native_prose_source,
     native_source,
     native_tool_source,
     recorded_calls,
     single_image_source,
+    write_events_log,
 )
 
+from session_log_extractors import copilot_protocol
 from session_log_extractors import copilot_sources as sources
 from session_log_extractors import extract_copilot_session_log as copilot_log
 from session_log_extractors.copilot_sources import (
@@ -44,10 +48,6 @@ FIXTURES = ROOT
 PNG = (ASSETS / "red.png").read_bytes()
 
 
-def _native_lines() -> list[str]:
-    return TRANSCRIPT.read_text(encoding="utf-8").splitlines()
-
-
 def _call_names(session):
     names = []
     for message in session["events"]:
@@ -58,20 +58,6 @@ def _call_names(session):
 
 def _native_db():
     return get_db_connection(DATABASE)
-
-
-def _native_db_copy(tmp_path: Path, sql: str = "", params=()) -> Path:
-    """Copy the native DB into tmp_path, optionally applying one edit."""
-    db_path = tmp_path / "session-store.db"
-    shutil.copyfile(DATABASE, db_path)
-    if sql:
-        with sqlite3.connect(db_path) as conn:
-            conn.execute(sql, params)
-    return db_path
-
-
-def _install_native_events() -> None:
-    _write_events_log(SESSION_ID, _native_lines())
 
 
 def _hand_lines(name: str) -> list[str]:
@@ -85,7 +71,7 @@ def _isolate_copilot_state(tmp_path, monkeypatch):
 
 def _make_test_db(tmp_path, session_id, turns):
     """Copy the native DB schema with one session holding the given turns."""
-    db_path = _native_db_copy(tmp_path)
+    db_path = native_db_copy(tmp_path)
     with sqlite3.connect(db_path) as conn:
         for table in (
             "sessions",
@@ -122,15 +108,6 @@ def _make_test_db(tmp_path, session_id, turns):
     return db_path
 
 
-def _write_events_log(session_id: str, lines) -> Path:
-    """Write raw JSONL lines to the isolated state root's events.jsonl."""
-    session_dir = sources.COPILOT_STATE_ROOT / session_id
-    session_dir.mkdir(parents=True, exist_ok=True)
-    path = session_dir / "events.jsonl"
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return path
-
-
 def test_copilot_permissions_join_approval_denial_and_pending():
     perms = _permissions_from_events(
         sources.parse_state_records(_hand_lines("permissions.jsonl"))
@@ -153,7 +130,7 @@ def test_copilot_permissions_join_approval_denial_and_pending():
 
 
 def test_copilot_db_operations():
-    _install_native_events()
+    install_native_events(sources.COPILOT_STATE_ROOT)
     with _native_db() as conn:
         session = get_session_by_id(conn, SESSION_ID)
         turns = get_session_turns(conn, session["id"])
@@ -177,11 +154,11 @@ def test_copilot_native_fixture_ids_match_db_and_events():
         rows = conn.execute("SELECT id FROM sessions").fetchall()
     assert len(rows) == 1
     assert rows[0]["id"] == SESSION_ID
-    records = sources.parse_state_records(_native_lines())
+    records = sources.parse_state_records(native_lines())
     starts = []
     resumes = []
     for record in records:
-        if record["type"] == "session.start":
+        if record["type"] == copilot_protocol.SESSION_START:
             starts.append(record)
         elif record["type"] == "session.resume":
             resumes.append(record)
@@ -245,7 +222,7 @@ def test_copilot_image_attachment_is_inlined_from_db(tmp_path):
 
 def test_copilot_native_image_attachment_is_inlined():
     assert not Path("/workspace/red.png").exists()
-    _install_native_events()
+    install_native_events(sources.COPILOT_STATE_ROOT)
     with _native_db() as conn:
         envelope = copilot_log.extract_session(
             conn, get_session_by_id(conn, SESSION_ID)
@@ -264,9 +241,9 @@ def test_copilot_attachment_without_its_binary_asset_keeps_the_path():
     records = single_image_source().state_records
     lines = []
     for record in records:
-        if record["type"] != "session.binary_asset":
+        if record["type"] != copilot_protocol.BINARY_ASSET:
             lines.append(json.dumps(record))
-    _write_events_log("sess-asset", lines)
+    write_events_log(sources.COPILOT_STATE_ROOT, "sess-asset", lines)
     [record] = copilot_log.get_state_attachments("sess-asset")
     assert record["path"] == "/workspace/red.png"
     assert "data" not in record
@@ -320,9 +297,12 @@ def test_copilot_main_defaults_to_all_without_a_selector(monkeypatch, tmp_path):
 
 
 def test_decode_arguments_parses_json_string_and_falls_back_on_invalid():
-    assert copilot_log._decode_arguments('{"a": 1}') == {"a": 1}
-    assert copilot_log._decode_arguments("not json") == "not json"
-    assert copilot_log._decode_arguments({"a": 1}) == {"a": 1}
+    actual_decode_arguments = copilot_log._decode_arguments('{"a": 1}')
+    assert actual_decode_arguments == {"a": 1}
+    actual_decode_arguments = copilot_log._decode_arguments("not json")
+    assert actual_decode_arguments == "not json"
+    actual_decode_arguments = copilot_log._decode_arguments({"a": 1})
+    assert actual_decode_arguments == {"a": 1}
 
 
 def test_skill_refs_from_call_finds_named_skill_and_fills_in_its_path():
@@ -336,20 +316,30 @@ def test_skill_refs_from_call_finds_named_skill_and_fills_in_its_path():
 
 
 def test_skill_refs_from_call_survives_unserializable_arguments():
-    assert copilot_log.skill_refs_from_call("bash", {"bad": {1, 2}}) == []
+    actual_skill_refs_from_call = copilot_log.skill_refs_from_call(
+        "bash", {"bad": {1, 2}}
+    )
+    assert actual_skill_refs_from_call == []
 
 
 def test_copilot_parse_ts_and_format_timestamp_edge_cases():
-    assert copilot_log._parse_ts(None) is None
-    assert copilot_log._parse_ts(123) is None
-    assert copilot_log._parse_ts("not-a-timestamp") is None
-    assert copilot_log.format_timestamp(None) == "(no timestamp)"
-    assert copilot_log.format_timestamp(123) == "(no timestamp)"
-    assert copilot_log.format_timestamp("garbage-ts") == "garbage-ts"
+    actual_parse_ts = copilot_log._parse_ts(None)
+    assert actual_parse_ts is None
+    actual_parse_ts = copilot_log._parse_ts(123)
+    assert actual_parse_ts is None
+    actual_parse_ts = copilot_log._parse_ts("not-a-timestamp")
+    assert actual_parse_ts is None
+    actual_format_timestamp = copilot_log.format_timestamp(None)
+    assert actual_format_timestamp == "(no timestamp)"
+    actual_format_timestamp = copilot_log.format_timestamp(123)
+    assert actual_format_timestamp == "(no timestamp)"
+    actual_format_timestamp = copilot_log.format_timestamp("garbage-ts")
+    assert actual_format_timestamp == "garbage-ts"
 
 
 def test_copilot_date_only_with_no_timestamp():
-    assert copilot_log.date_only(None) == "unknown"
+    actual_date_only = copilot_log.date_only(None)
+    assert actual_date_only == "unknown"
 
 
 # -- per-session events log edge cases ---------------------------------------
@@ -357,7 +347,7 @@ def test_copilot_date_only_with_no_timestamp():
 
 def test_copilot_get_state_attachments_skips_malformed_and_irrelevant_lines():
     lines = _hand_lines("malformed.jsonl")
-    _write_events_log("sess-attach", lines)
+    write_events_log(sources.COPILOT_STATE_ROOT, "sess-attach", lines)
     attachments = copilot_log.get_state_attachments("sess-attach")
     assert len(attachments) == 1
     rec = attachments[0]
@@ -368,7 +358,7 @@ def test_copilot_get_state_attachments_skips_malformed_and_irrelevant_lines():
 
 
 def test_copilot_state_log_readers_propagate_os_error(monkeypatch):
-    _write_events_log("sess-oserr", ["{}"])
+    write_events_log(sources.COPILOT_STATE_ROOT, "sess-oserr", ["{}"])
 
     def unreadable(*args, **kwargs):
         raise OSError("boom")
@@ -384,31 +374,42 @@ def test_copilot_state_log_readers_propagate_os_error(monkeypatch):
 
 
 def test_copilot_permissions_from_events_skips_malformed_lines():
-    assert (
-        _permissions_from_events(
-            sources.parse_state_records(_hand_lines("malformed.jsonl"))
-        )
-        == []
+    actual_parse_state_records = sources.parse_state_records(
+        _hand_lines("malformed.jsonl")
     )
+    actual_permissions_from_events = _permissions_from_events(
+        actual_parse_state_records
+    )
+    assert actual_permissions_from_events == []
 
 
 def test_copilot_skills_from_events_skips_malformed_and_bad_data():
-    assert (
-        _skills_from_events(sources.parse_state_records(_hand_lines("malformed.jsonl")))
-        == []
+    actual_parse_state_records = sources.parse_state_records(
+        _hand_lines("malformed.jsonl")
     )
+    actual_skills_from_events = _skills_from_events(actual_parse_state_records)
+    assert actual_skills_from_events == []
 
 
 def test_copilot_result_text_variants():
-    assert copilot_log._result_text({"other": "x"}) == ""
-    assert copilot_log._result_text("plain string") == "plain string"
-    assert copilot_log._result_text(None) == ""
-    assert copilot_log._result_text([1, 2, 3]) == "[1, 2, 3]"
-    assert copilot_log._result_text({1, 2}) == ""
+    actual_result_text = copilot_log._result_text({"other": "x"})
+    assert actual_result_text == ""
+    actual_result_text = copilot_log._result_text("plain string")
+    assert actual_result_text == "plain string"
+    actual_result_text = copilot_log._result_text(None)
+    assert actual_result_text == ""
+    actual_result_text = copilot_log._result_text([1, 2, 3])
+    assert actual_result_text == "[1, 2, 3]"
+    actual_result_text = copilot_log._result_text({1, 2})
+    assert actual_result_text == ""
 
 
 def test_copilot_attachment_lookup_skips_empty_and_captures_variants():
-    _write_events_log("attachments", _hand_lines("attachment_variants.jsonl"))
+    write_events_log(
+        sources.COPILOT_STATE_ROOT,
+        "attachments",
+        _hand_lines("attachment_variants.jsonl"),
+    )
     records = copilot_log.get_state_attachments("attachments")
     lookup = copilot_log._attachment_lookup(
         [{"display_name": "", "path": "", "type": "image/png"}, *records]
@@ -431,9 +432,10 @@ def test_copilot_inline_image_from_data_url():
 
 
 def test_copilot_inline_image_bad_data_url_base64_returns_none():
-    assert (
-        copilot_log._inline_image_bytes({"data_url": "data:image/png;base64,A"}) is None
+    actual_inline_image_bytes = copilot_log._inline_image_bytes(
+        {"data_url": "data:image/png;base64,A"}
     )
+    assert actual_inline_image_bytes is None
 
 
 def test_copilot_inline_image_from_inline_data_field():
@@ -447,7 +449,8 @@ def test_copilot_inline_image_from_inline_data_field():
 
 
 def test_copilot_inline_image_bad_inline_data_returns_none():
-    assert copilot_log._inline_image_bytes({"data": "A"}) is None
+    actual_inline_image_bytes = copilot_log._inline_image_bytes({"data": "A"})
+    assert actual_inline_image_bytes is None
 
 
 def test_copilot_path_image_guesses_extension_from_type_when_no_suffix(
@@ -465,29 +468,20 @@ def test_copilot_path_image_guesses_extension_from_type_when_no_suffix(
 
 
 def test_copilot_output_identifier_without_created_at_omits_date():
-    assert copilot_log.output_identifier({"id": "abcdef1234"}) == "abcdef12"
-
-
-def test_copilot_unique_identifier_increments_on_collision():
-    used = set()
-    actual_identifier = copilot_log._unique_identifier("day_id", used)
-    assert actual_identifier == "day_id"
-    actual_identifier = copilot_log._unique_identifier("day_id", used)
-    assert actual_identifier == "day_id-2"
-    actual_identifier = copilot_log._unique_identifier("day_id", used)
-    assert actual_identifier == "day_id-3"
+    actual_output_identifier = copilot_log.output_identifier({"id": "abcdef1234"})
+    assert actual_output_identifier == "abcdef12"
 
 
 # -- session extraction integration ------------------------------------------
 
 
 def test_copilot_session_prefers_events_log_tools_over_db_files(tmp_path):
-    db_path = _native_db_copy(
+    db_path = native_db_copy(
         tmp_path,
         "INSERT INTO session_files (session_id, file_path, tool_name, turn_index) VALUES (?, ?, ?, ?)",
         (SESSION_ID, "/tmp/from_db.py", "edit", 0),
     )
-    _install_native_events()
+    install_native_events(sources.COPILOT_STATE_ROOT)
     with get_db_connection(db_path) as conn:
         session = get_session_by_id(conn, SESSION_ID)
         actual = copilot_log.extract_session(conn, session)
@@ -499,16 +493,17 @@ def test_copilot_session_prefers_events_log_tools_over_db_files(tmp_path):
 
 
 def test_copilot_extract_all_reports_error_when_no_sessions(tmp_path, capsys):
-    db_path = _native_db_copy(tmp_path, "DELETE FROM sessions")
+    db_path = native_db_copy(tmp_path, "DELETE FROM sessions")
     with get_db_connection(db_path) as conn:
         rc = copilot_log._extract_all(conn, None)
     assert rc == 1
-    assert "no Copilot sessions" in capsys.readouterr().err
+    captured = capsys.readouterr()
+    assert "no Copilot sessions" in captured.err
 
 
 def test_copilot_extract_all_writes_one_file_per_session(tmp_path, monkeypatch, capsys):
-    _install_native_events()
-    db_path = _native_db_copy(tmp_path, "UPDATE sessions SET cwd=?", (str(tmp_path),))
+    install_native_events(sources.COPILOT_STATE_ROOT)
+    db_path = native_db_copy(tmp_path, "UPDATE sessions SET cwd=?", (str(tmp_path),))
     monkeypatch.chdir(tmp_path)
     output = tmp_path / "output"
     with get_db_connection(db_path) as conn:
@@ -520,13 +515,14 @@ def test_copilot_extract_all_writes_one_file_per_session(tmp_path, monkeypatch, 
     expected["cwd"] = str(tmp_path)
     assert written.suffix == ".json"
     assert actual == expected
-    assert "done: 1/1 session(s) written" in capsys.readouterr().err
+    captured = capsys.readouterr()
+    assert "done: 1/1 session(s) written" in captured.err
 
 
 def test_copilot_extract_all_skips_session_that_fails_to_extract(
     tmp_path, monkeypatch, capsys
 ):
-    db_path = _native_db_copy(tmp_path, "UPDATE sessions SET cwd=?", (str(tmp_path),))
+    db_path = native_db_copy(tmp_path, "UPDATE sessions SET cwd=?", (str(tmp_path),))
     monkeypatch.chdir(tmp_path)
 
     def boom(*args, **kwargs):
@@ -542,7 +538,7 @@ def test_copilot_extract_all_skips_session_that_fails_to_extract(
 
 
 def test_copilot_extract_all_reports_write_failure(tmp_path, monkeypatch, capsys):
-    db_path = _native_db_copy(tmp_path, "UPDATE sessions SET cwd=?", (str(tmp_path),))
+    db_path = native_db_copy(tmp_path, "UPDATE sessions SET cwd=?", (str(tmp_path),))
     monkeypatch.chdir(tmp_path)
     original_write_text = Path.write_text
 
@@ -653,19 +649,20 @@ def test_copilot_main_reports_output_write_error(tmp_path, capsys):
             str(output),
         ]
     )
+    captured = capsys.readouterr()
     assert status == 1
-    assert "error:" in capsys.readouterr().err
+    assert "error:" in captured.err
 
 
 @pytest.mark.parametrize("selector", [True, False])
 def test_copilot_cli_stdout_is_json(selector, capsys):
-    _install_native_events()
+    install_native_events(sources.COPILOT_STATE_ROOT)
     args = ["--db", str(DATABASE), "--output", "-"]
     if selector:
         args.insert(0, SESSION_ID)
     status = copilot_log.main(args)
-    assert status == 0
     captured = capsys.readouterr()
+    assert status == 0
     envelope = json.loads(captured.out)
     assert envelope["harness"] == "copilot"
     assert envelope["events"]
@@ -681,7 +678,7 @@ def test_copilot_cli_rejects_removed_flags(flag):
 
 
 def test_copilot_cli_tool_result_cap(tmp_path):
-    _install_native_events()
+    install_native_events(sources.COPILOT_STATE_ROOT)
     output = tmp_path / "session.json"
     status = copilot_log.main(
         [
@@ -721,7 +718,7 @@ def test_copilot_cli_tool_result_cap(tmp_path):
 def test_copilot_empty_session_exports_json(tmp_path, capsys, destination, contents):
     db_path = _make_test_db(tmp_path, "empty", [])
     if contents is not None:
-        _write_events_log("empty", [contents])
+        write_events_log(sources.COPILOT_STATE_ROOT, "empty", [contents])
     output = tmp_path / "output"
     output.mkdir()
     args = ["--db", str(db_path)]
@@ -752,7 +749,7 @@ def test_copilot_empty_session_exports_json(tmp_path, capsys, destination, conte
 def test_copilot_db_file_fallback_preserves_names_and_targets(tmp_path):
     session_id = SESSION_ID
     target = " /tmp/a -> b.py "
-    db_path = _native_db_copy(
+    db_path = native_db_copy(
         tmp_path,
         "INSERT INTO session_files (session_id, file_path, tool_name, turn_index) VALUES (?, ?, ?, ?)",
         (session_id, target, "edit", 0),
@@ -793,8 +790,8 @@ def test_copilot_size_warning_uses_current_flag(
             output,
         ]
     )
-    assert status == 0
     captured = capsys.readouterr()
+    assert status == 0
     assert "warning:" in captured.err
     assert "--tool-result-bytes" in captured.err
     if destination == "stdout":
@@ -824,7 +821,7 @@ def test_copilot_tool_result_cap_boundaries(cap):
 def test_copilot_all_default_destination_and_colliding_names(
     tmp_path, monkeypatch, explicit_root
 ):
-    db_path = _native_db_copy(tmp_path, "UPDATE sessions SET cwd=?", (str(tmp_path),))
+    db_path = native_db_copy(tmp_path, "UPDATE sessions SET cwd=?", (str(tmp_path),))
     # Duplicate only the database identity and turns to exercise output-name collision.
     with sqlite3.connect(db_path) as conn:
         conn.execute(
@@ -878,7 +875,7 @@ def test_native_messages_keep_order_identity_and_complete_results():
     # Enlarge the captured result, retaining the native call/message links.
     completion_records = []
     for record in source.state_records:
-        if record["type"] == "tool.execution_complete":
+        if record["type"] == copilot_protocol.TOOL_EXECUTION_COMPLETE:
             completion_records.append(record)
     complete = next(iter(completion_records))
     complete["data"]["result"]["content"] = "é" * 20000
@@ -891,14 +888,16 @@ def test_native_messages_keep_order_identity_and_complete_results():
     assert actual_roles == ["user", "assistant", "assistant"]
     native_messages = []
     for record in source.state_records:
-        if record["type"] in ("user.message", "assistant.message"):
+        if record["type"] in (
+            copilot_protocol.USER_MESSAGE,
+            copilot_protocol.ASSISTANT_MESSAGE,
+        ):
             native_messages.append(record)
-    native = native_messages
     actual_message_ids = []
     for event in events:
         actual_message_ids.append(event["id"])
     native_message_ids = []
-    for record in native:
+    for record in native_messages:
         native_message_ids.append(record["id"])
     assert actual_message_ids == native_message_ids
     interpreted_calls = []
@@ -916,7 +915,7 @@ def test_native_repeated_or_missing_results_are_not_lost():
     source = native_tool_source()
     completion_records = []
     for record in source.state_records:
-        if record["type"] == "tool.execution_complete":
+        if record["type"] == copilot_protocol.TOOL_EXECUTION_COMPLETE:
             completion_records.append(record)
     complete = next(iter(completion_records))
     # Duplicate completion is retained as unmatched; it must not overwrite the first.
@@ -934,7 +933,7 @@ def test_native_repeated_or_missing_results_are_not_lost():
     assert session["unmatched_tool_results"][0]["id"] == "repeat"
     records_without_results = []
     for record in source.state_records:
-        if record["type"] != "tool.execution_complete":
+        if record["type"] != copilot_protocol.TOOL_EXECUTION_COMPLETE:
             records_without_results.append(record)
     source.state_records = records_without_results
     session = copilot_log.interpret_source(source)
@@ -952,7 +951,7 @@ def test_native_image_ownership_uses_its_record_despite_timestamp():
     # Misleading timestamps must not transfer the image to a later human message.
     native_users = []
     for record in source.state_records:
-        if record["type"] == "user.message":
+        if record["type"] == copilot_protocol.USER_MESSAGE:
             native_users.append(record)
     user = next(iter(native_users))
     user["timestamp"] = "2099-01-01T00:00:00Z"
@@ -966,10 +965,9 @@ def test_native_image_ownership_uses_its_record_despite_timestamp():
     for event in session["events"]:
         if event["role"] == "user":
             user_messages.append(event)
-    users = user_messages
-    assert len(users) == 2
-    assert base64.b64decode(users[0]["images"][0]["data"]) == PNG
-    assert not users[1].get("images")
+    assert len(user_messages) == 2
+    assert base64.b64decode(user_messages[0]["images"][0]["data"]) == PNG
+    assert not user_messages[1].get("images")
 
 
 @pytest.mark.parametrize(
@@ -979,7 +977,7 @@ def test_native_empty_and_structured_results_survive(result):
     source = native_tool_source()
     completion_records = []
     for record in source.state_records:
-        if record["type"] == "tool.execution_complete":
+        if record["type"] == copilot_protocol.TOOL_EXECUTION_COMPLETE:
             completion_records.append(record)
     complete = next(iter(completion_records))
     complete["data"]["result"] = result
@@ -992,7 +990,8 @@ def test_native_empty_and_structured_results_survive(result):
     [call] = interpreted_calls
     assert call["result_record"]["content"] == result
     assert call["is_error"] is True
-    assert call["result"] == copilot_log._result_text(result)
+    expected_result = copilot_log._result_text(result)
+    assert call["result"] == expected_result
     assert call["result_record"]["is_error"] is True
 
 
@@ -1000,17 +999,17 @@ def test_native_tool_results_match_ids_instead_of_completion_order():
     source = native_tool_source()
     native_assistants = []
     for record in source.state_records:
-        if record["type"] == "assistant.message":
+        if record["type"] == copilot_protocol.ASSISTANT_MESSAGE:
             native_assistants.append(record)
     request = next(iter(native_assistants))
     execution_records = []
     for record in source.state_records:
-        if record["type"] == "tool.execution_start":
+        if record["type"] == copilot_protocol.TOOL_EXECUTION_START:
             execution_records.append(record)
     start = next(iter(execution_records))
     completion_records = []
     for record in source.state_records:
-        if record["type"] == "tool.execution_complete":
+        if record["type"] == copilot_protocol.TOOL_EXECUTION_COMPLETE:
             completion_records.append(record)
     complete = next(iter(completion_records))
     # Add a concurrent opaque request and finish it before the captured call.
@@ -1031,16 +1030,15 @@ def test_native_tool_results_match_ids_instead_of_completion_order():
     for event in session["events"]:
         for call in event.get("tool_calls", []):
             interpreted_calls.append(call)
-    calls = interpreted_calls
     actual_call_ids = []
-    for call in calls:
+    for call in interpreted_calls:
         actual_call_ids.append(call["id"])
     assert actual_call_ids == [complete["data"]["toolCallId"], "other"]
-    assert "CAPTURE_STDOUT_OK" in calls[0]["result"]
-    assert calls[0]["execution"]["input"]["extra"] == ["execution-only"]
-    assert calls[0]["execution"]["id"] == start["id"]
-    assert calls[1]["result"] == "other output"
-    assert calls[1]["input"] == {"nested": [1, {"keep": True}]}
+    assert "CAPTURE_STDOUT_OK" in interpreted_calls[0]["result"]
+    assert interpreted_calls[0]["execution"]["input"]["extra"] == ["execution-only"]
+    assert interpreted_calls[0]["execution"]["id"] == start["id"]
+    assert interpreted_calls[1]["result"] == "other output"
+    assert interpreted_calls[1]["input"] == {"nested": [1, {"keep": True}]}
     assert session["unsupported_tools"] == ["unknown"]
 
 
@@ -1049,14 +1047,14 @@ def test_native_start_without_request_uses_only_recorded_parent(parent):
     source = native_tool_source()
     native_assistants = []
     for record in source.state_records:
-        if record["type"] == "assistant.message":
+        if record["type"] == copilot_protocol.ASSISTANT_MESSAGE:
             native_assistants.append(record)
     request = next(iter(native_assistants))
     request["data"]["toolRequests"] = []
     if not parent:
         execution_records = []
         for record in source.state_records:
-            if record["type"] == "tool.execution_start":
+            if record["type"] == copilot_protocol.TOOL_EXECUTION_START:
                 execution_records.append(record)
         start = next(iter(execution_records))
         start["parentId"] = "unrecorded-message"
@@ -1089,7 +1087,7 @@ def test_partial_state_keeps_database_prose_and_unowned_activity():
     assert native_tool_names == ["bash"]
     completion_records = []
     for record in source.state_records:
-        if record["type"] == "tool.execution_complete":
+        if record["type"] == copilot_protocol.TOOL_EXECUTION_COMPLETE:
             completion_records.append(record)
     source.state_records = completion_records
     session = copilot_log.interpret_source(source)
@@ -1131,7 +1129,7 @@ def test_owned_images_keep_distinct_paths_and_deduplicate_tokens():
     source = single_image_source()
     native_users = []
     for record in source.state_records:
-        if record["type"] == "user.message":
+        if record["type"] == copilot_protocol.USER_MESSAGE:
             native_users.append(record)
     user = next(iter(native_users))
     user["data"]["content"] = "[image: pixel.png] [image:   ] compare"
@@ -1163,7 +1161,7 @@ def test_empty_transformation_retains_submitted_user_input():
     source = native_prose_source()
     users = []
     for record in source.state_records:
-        if record["type"] == "user.message":
+        if record["type"] == copilot_protocol.USER_MESSAGE:
             users.append(record)
     [user] = users
     # Keep only the native input and record an empty transformation, without attachments.
@@ -1183,17 +1181,18 @@ def test_empty_transformation_retains_submitted_user_input():
 
 
 def test_attachment_shape_boundaries_and_shell_input():
-    assert copilot_log._attachment_ref({"path": "/tmp/shot.png"}) == {
-        "name": "shot.png",
-        "path": "/tmp/shot.png",
-    }
-    assert copilot_log._attachment_ref({"path": "/tmp/file.txt"}) is None
-    assert (
-        copilot_log._attachment_ref({"data_url": "data:image/png;base64,AAAA"}) is None
+    actual_attachment_ref = copilot_log._attachment_ref({"path": "/tmp/shot.png"})
+    assert actual_attachment_ref == {"name": "shot.png", "path": "/tmp/shot.png"}
+    actual_attachment_ref = copilot_log._attachment_ref({"path": "/tmp/file.txt"})
+    assert actual_attachment_ref is None
+    actual_attachment_ref = copilot_log._attachment_ref(
+        {"data_url": "data:image/png;base64,AAAA"}
     )
-    assert copilot_log._same_image(
+    assert actual_attachment_ref is None
+    actual_same_image = copilot_log._same_image(
         {"name": "p.png"}, {"name": "p.png", "path": "/p.png"}
     )
+    assert actual_same_image
     source = sources.CopilotSource(
         {"id": "s"},
         [
@@ -1258,7 +1257,7 @@ def test_copilot_reports_claude_tool_names_as_unsupported(name):
     source = native_tool_source()
     native_assistants = []
     for record in source.state_records:
-        if record["type"] == "assistant.message":
+        if record["type"] == copilot_protocol.ASSISTANT_MESSAGE:
             native_assistants.append(record)
     request = next(iter(native_assistants))["data"]["toolRequests"][0]
     # Rename only the native tool request; complete input and call links must survive.
@@ -1349,7 +1348,7 @@ def test_native_result_without_execution_start_does_not_invent_one():
     source = native_tool_source()
     records_without_starts = []
     for record in source.state_records:
-        if record["type"] != "tool.execution_start":
+        if record["type"] != copilot_protocol.TOOL_EXECUTION_START:
             records_without_starts.append(record)
     source.state_records = records_without_starts
     session = copilot_log.interpret_source(source)
@@ -1367,11 +1366,11 @@ def test_response_only_results_preserve_supplemental_file_activity_order():
     users = []
     responses = []
     for record in source.state_records:
-        if record["type"] == "user.message":
+        if record["type"] == copilot_protocol.USER_MESSAGE:
             users.append(record)
         if (
-            record["type"] == "human_response.recorded"
-            and record["data"]["response"]["responseKind"] == "ask_user"
+            record["type"] == copilot_protocol.HUMAN_RESPONSE_RECORDED
+            and record["data"]["response"]["responseKind"] == copilot_protocol.ASK_USER
         ):
             responses.append(record)
     assert users and responses and source.files, (
@@ -1397,8 +1396,8 @@ def test_copilot_cli_rejects_invalid_existing_sidecar(
     tmp_path, capsys, destination, contents
 ):
     # Keep the populated native database: corrupt sidecars must not use fallback.
-    db_path = _native_db_copy(tmp_path, "UPDATE sessions SET cwd=?", (str(Path.cwd()),))
-    path = _write_events_log(SESSION_ID, [contents])
+    db_path = native_db_copy(tmp_path, "UPDATE sessions SET cwd=?", (str(Path.cwd()),))
+    path = write_events_log(sources.COPILOT_STATE_ROOT, SESSION_ID, [contents])
     if contents == "directory":
         path.unlink()
         path.mkdir()
@@ -1423,8 +1422,8 @@ def test_copilot_cli_rejects_invalid_existing_sidecar(
 def test_copilot_cli_reports_unreadable_sidecar(
     tmp_path, monkeypatch, capsys, destination
 ):
-    db_path = _native_db_copy(tmp_path, "UPDATE sessions SET cwd=?", (str(Path.cwd()),))
-    path = _write_events_log(SESSION_ID, _native_lines())
+    db_path = native_db_copy(tmp_path, "UPDATE sessions SET cwd=?", (str(Path.cwd()),))
+    path = write_events_log(sources.COPILOT_STATE_ROOT, SESSION_ID, native_lines())
     original_open = Path.open
 
     def unreadable(self, *args, **kwargs):
@@ -1449,7 +1448,11 @@ def test_copilot_cli_reports_unreadable_sidecar(
 def test_copilot_cli_preserves_native_content_with_bounded_diagnostics(capsys):
     expected = copilot_log.build_raw_envelope(native_source())
     # Retain the complete capture, adding blank and malformed/non-object lines.
-    path = _write_events_log(SESSION_ID, ["", "42", *_native_lines(), *(["bad"] * 6)])
+    path = write_events_log(
+        sources.COPILOT_STATE_ROOT,
+        SESSION_ID,
+        ["", "42", *native_lines(), *(["bad"] * 6)],
+    )
     status = copilot_log.main([SESSION_ID, "--db", str(DATABASE), "--output", "-"])
     captured = capsys.readouterr()
     assert status == 0
@@ -1469,7 +1472,7 @@ def test_copilot_cli_preserves_database_fallback(contents, capsys):
         metadata = get_session_by_id(conn, SESSION_ID)
         expected = copilot_log.extract_session(conn, metadata)
     if contents is not None:
-        _write_events_log(SESSION_ID, [contents])
+        write_events_log(sources.COPILOT_STATE_ROOT, SESSION_ID, [contents])
     status = copilot_log.main([SESSION_ID, "--db", str(DATABASE), "--output", "-"])
     captured = capsys.readouterr()
     assert status == 0
@@ -1493,7 +1496,7 @@ def test_copilot_batch_attempts_all_and_retains_successes(
                 (session_id,),
             )
     if failure == "sidecar":
-        _write_events_log("broken", ["bad"])
+        write_events_log(sources.COPILOT_STATE_ROOT, "broken", ["bad"])
     elif failure == "database":
         original = sources.get_session_turns
 
@@ -1531,7 +1534,7 @@ def test_copilot_cli_reports_database_failure(
         with sqlite3.connect(db_path) as conn:
             conn.execute("CREATE TABLE sessions (id TEXT)")
     elif problem == "turns":
-        db_path = _native_db_copy(
+        db_path = native_db_copy(
             tmp_path, "UPDATE sessions SET cwd=?", (str(Path.cwd()),)
         )
         with sqlite3.connect(db_path) as conn:
@@ -1586,7 +1589,7 @@ def test_copilot_cli_reports_stdout_failure(monkeypatch, capsys):
 
 
 def test_copilot_batch_without_selected_sessions_fails(tmp_path, capsys):
-    db_path = _native_db_copy(tmp_path, "DELETE FROM sessions")
+    db_path = native_db_copy(tmp_path, "DELETE FROM sessions")
     status = copilot_log.main(["--db", str(db_path)], project_root=tmp_path / "output")
     captured = capsys.readouterr()
     assert status == 1
@@ -1596,14 +1599,14 @@ def test_copilot_batch_without_selected_sessions_fails(tmp_path, capsys):
 
 
 def test_copilot_batch_exports_populated_and_empty_sessions(tmp_path, capsys):
-    db_path = _native_db_copy(tmp_path, "UPDATE sessions SET cwd=?", (str(Path.cwd()),))
+    db_path = native_db_copy(tmp_path, "UPDATE sessions SET cwd=?", (str(Path.cwd()),))
     # Add one identity without turns; retain the populated native session intact.
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             "INSERT INTO sessions (id,cwd,created_at) SELECT 'empty',cwd,NULL FROM sessions WHERE id=?",
             (SESSION_ID,),
         )
-    _install_native_events()
+    install_native_events(sources.COPILOT_STATE_ROOT)
     output = tmp_path / "output"
     status = copilot_log.main(["--db", str(db_path)], project_root=output)
     captured = capsys.readouterr()
@@ -1627,7 +1630,7 @@ def test_copilot_batch_exports_populated_and_empty_sessions(tmp_path, capsys):
 
 @pytest.mark.parametrize("batch", [False, True])
 def test_copilot_cli_rejects_non_string_database_identity(tmp_path, capsys, batch):
-    db_path = _native_db_copy(tmp_path)
+    db_path = native_db_copy(tmp_path)
     # Remove SQLite's TEXT affinity to simulate an incompatible required schema.
     with sqlite3.connect(db_path) as conn:
         conn.execute("ALTER TABLE sessions RENAME TO original_sessions")
@@ -1652,7 +1655,7 @@ def test_copilot_cli_rejects_non_string_database_identity(tmp_path, capsys, batc
 
 @pytest.mark.parametrize("mode", ["stdout", "explicit", "default", "batch"])
 def test_full_copilot_identity_in_all_output_modes(mode, tmp_path, capsys):
-    db_path = _native_db_copy(tmp_path)
+    db_path = native_db_copy(tmp_path)
     with sqlite3.connect(db_path) as conn:
         conn.execute("UPDATE sessions SET cwd = ?", (str(Path.cwd()),))
     with get_db_connection(db_path) as conn:
@@ -1677,7 +1680,7 @@ def test_full_copilot_identity_in_all_output_modes(mode, tmp_path, capsys):
 
 
 def test_copilot_prefix_collision_keeps_full_identities(tmp_path, capsys):
-    db_path = _native_db_copy(tmp_path)
+    db_path = native_db_copy(tmp_path)
     # Duplicate just the native session row, holding date and prefix constant.
     with sqlite3.connect(db_path) as conn:
         conn.execute(
@@ -1689,7 +1692,8 @@ def test_copilot_prefix_collision_keeps_full_identities(tmp_path, capsys):
             ("abcdefgh-2222", str(Path.cwd()), "2026-01-01T12:00:00Z"),
         )
     status = copilot_log.main(["--all", "--db", str(db_path)], project_root=tmp_path)
-    assert status == 0, capsys.readouterr().err
+    captured = capsys.readouterr()
+    assert status == 0, captured.err
     identities = set()
     names = set()
     for path in tmp_path.glob("*.json"):

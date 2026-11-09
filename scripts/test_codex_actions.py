@@ -4,8 +4,9 @@ import json
 from copy import deepcopy
 
 import pytest
-from codex_capture import TRANSCRIPT
+from codex_fixture import TRANSCRIPT
 
+from session_log_extractors import codex_protocol
 from session_log_extractors.codex_sources import CodexSource, load_entries
 from session_log_extractors.extract_codex_session_log import interpret_source
 from session_log_extractors.session_log_envelope import export_session
@@ -28,9 +29,9 @@ def _facts(session, field):
 
 def _call(name, arguments, call_id="call"):
     return {
-        "type": "response_item",
+        "type": codex_protocol.RESPONSE_ITEM,
         "payload": {
-            "type": "function_call",
+            "type": codex_protocol.FUNCTION_CALL,
             "name": name,
             "call_id": call_id,
             "arguments": json.dumps(arguments),
@@ -40,9 +41,9 @@ def _call(name, arguments, call_id="call"):
 
 def _result(output, call_id="call", **fields):
     return {
-        "type": "response_item",
+        "type": codex_protocol.RESPONSE_ITEM,
         "payload": {
-            "type": "function_call_output",
+            "type": codex_protocol.FUNCTION_CALL_OUTPUT,
             "call_id": call_id,
             "output": output,
             **fields,
@@ -53,7 +54,7 @@ def _result(output, call_id="call", **fields):
 def _patch(changes, **fields):
     # Controlled legacy completion: the native capture has no direct patch call.
     return {
-        "type": "event_msg",
+        "type": codex_protocol.EVENT_MSG,
         "payload": {"type": "patch_apply_end", "changes": changes, **fields},
     }
 
@@ -66,9 +67,9 @@ def test_native_file_changes_and_tasks_survive_json_caps(limit):
     for entry in entries:
         payload = entry.get("payload", {})
         item = payload.get("item", {})
-        if item.get("type") == "FileChange":
+        if item.get("type") == codex_protocol.FILE_CHANGE:
             recorded_changes.append(item)
-        if payload.get("name") == "spawn_agent":
+        if payload.get("name") == codex_protocol.SPAWN_AGENT:
             spawn = payload
     assert recorded_changes, "Native file-change completion evidence is required"
     assert spawn is not None, "A real subagent request is required"
@@ -130,7 +131,7 @@ def test_patch_attempts_keep_moves_and_complete_input_without_confirmation():
 def test_success_alone_never_confirms_a_patch(output):
     session = _interpret(
         [
-            _call("apply_patch", "*** Update File: a\n@@\n-x\n+y"),
+            _call(codex_protocol.APPLY_PATCH, "*** Update File: a\n@@\n-x\n+y"),
             _result(output),
         ]
     )
@@ -144,7 +145,7 @@ def test_success_alone_never_confirms_a_patch(output):
 def test_explicit_completion_confirms_only_its_path_and_retains_native_event():
     session = _interpret(
         [
-            _call("apply_patch", "*** Update File: a\n*** Update File: b"),
+            _call(codex_protocol.APPLY_PATCH, "*** Update File: a\n*** Update File: b"),
             _patch(
                 {"a": {"type": "update", "unified_diff": "@@ -1 +1 @@\n-x\n+y\n"}},
                 call_id="call",
@@ -212,7 +213,11 @@ def test_opaque_shell_and_javascript_do_not_create_actions_or_tasks():
                 "exec",
                 'await tools.apply_patch("*** Add File: invented"); spawn_agent({message:"guess"})',
             ),
-            _call("exec_command", {"cmd": "cat /tmp/foo/SKILL.md; rm x"}, "other"),
+            _call(
+                codex_protocol.EXEC_COMMAND,
+                {"cmd": "cat /tmp/foo/SKILL.md; rm x"},
+                "other",
+            ),
         ]
     )
 
@@ -227,7 +232,10 @@ def test_opaque_shell_and_javascript_do_not_create_actions_or_tasks():
 def test_controlled_move_completion_requires_success_and_keeps_destination(success):
     session = _interpret(
         [
-            _call("apply_patch", {"content": "*** Update File: a\n*** Move to: b"}),
+            _call(
+                codex_protocol.APPLY_PATCH,
+                {"content": "*** Update File: a\n*** Move to: b"},
+            ),
             _patch(
                 {"a": {"type": "update", "move_path": "b"}},
                 call_id="call",
@@ -246,7 +254,7 @@ def test_controlled_move_completion_requires_success_and_keeps_destination(succe
 def test_unmatched_and_ambiguous_paths_keep_completion_on_native_event():
     session = _interpret(
         [
-            _call("apply_patch", "*** Update File: a\n*** Update File: a"),
+            _call(codex_protocol.APPLY_PATCH, "*** Update File: a\n*** Update File: a"),
             _patch(
                 {"a": {"type": "delete"}, "other": {"type": "future", "unknown": [1]}},
                 call_id="call",
@@ -269,7 +277,7 @@ def test_unmatched_and_ambiguous_paths_keep_completion_on_native_event():
 
 @pytest.mark.parametrize("arguments", [None, {}, {"patch": 42}, 42, "no headers"])
 def test_malformed_patch_payloads_remain_complete_without_invented_actions(arguments):
-    session = _interpret([_call("apply_patch", arguments)])
+    session = _interpret([_call(codex_protocol.APPLY_PATCH, arguments)])
 
     envelope = export_session(session, 0)
 
@@ -286,7 +294,7 @@ def test_malformed_patch_payloads_remain_complete_without_invented_actions(argum
     ],
 )
 def test_missing_task_fields_are_not_substituted(arguments):
-    session = _interpret([_call("spawn_agent", arguments)])
+    session = _interpret([_call(codex_protocol.SPAWN_AGENT, arguments)])
 
     tasks = _facts(export_session(session, 0), "subagent_tasks")
 
@@ -306,7 +314,7 @@ def test_missing_task_fields_are_not_substituted(arguments):
 def test_error_results_never_confirm_patch_actions(output):
     session = _interpret(
         [
-            _call("apply_patch", "*** Add File: a\n+attempt"),
+            _call(codex_protocol.APPLY_PATCH, "*** Add File: a\n+attempt"),
             _result(output, is_error=True),
         ]
     )
@@ -324,7 +332,7 @@ def test_structured_read_events_preserve_unknown_paths_errors_and_native_order()
     for entry in entries:
         item = entry.get("payload", {}).get("item", {})
         if (
-            item.get("type") == "CommandExecution"
+            item.get("type") == codex_protocol.COMMAND_EXECUTION
             and item.get("parsed_cmd", [{}])[0].get("type") == "read"
         ):
             selected = entry
@@ -383,7 +391,7 @@ def test_successful_identical_diff_is_a_noop_not_a_confirmed_change():
 def test_same_path_without_call_id_cannot_confirm_an_earlier_attempt():
     session = _interpret(
         [
-            _call("apply_patch", "*** Delete File: same"),
+            _call(codex_protocol.APPLY_PATCH, "*** Delete File: same"),
             _patch({"same": {"type": "delete"}}, success=True),
         ]
     )
@@ -399,8 +407,8 @@ def test_same_path_without_call_id_cannot_confirm_an_earlier_attempt():
 def test_completed_patch_with_conflicting_call_ids_does_not_borrow_ownership():
     session = _interpret(
         [
-            _call("apply_patch", "*** Delete File: same", "first"),
-            _call("apply_patch", "*** Delete File: same", "second"),
+            _call(codex_protocol.APPLY_PATCH, "*** Delete File: same", "first"),
+            _call(codex_protocol.APPLY_PATCH, "*** Delete File: same", "second"),
             _patch({"same": {"type": "delete"}}, call_id="first", success=True),
         ]
     )
@@ -419,19 +427,19 @@ def test_subagent_identity_after_result_still_matches_the_recorded_call_id():
     activity = None
     for entry in entries:
         payload = entry.get("payload", {})
-        if payload.get("name") == "spawn_agent":
+        if payload.get("name") == codex_protocol.SPAWN_AGENT:
             call = entry
     assert call is not None, "Native spawn_agent is required"
     for entry in entries:
         payload = entry.get("payload", {})
         item = payload.get("item", {})
         if (
-            item.get("type") == "SubAgentActivity"
+            item.get("type") == codex_protocol.SUBAGENT_ACTIVITY
             and item.get("id") == call["payload"]["call_id"]
         ):
             activity = entry
         if (
-            payload.get("type") == "function_call_output"
+            payload.get("type") == codex_protocol.FUNCTION_CALL_OUTPUT
             and payload.get("call_id") == call["payload"]["call_id"]
         ):
             result = entry
@@ -448,7 +456,7 @@ def test_patch_paths_keep_recorded_whitespace_and_unicode():
     source_path = " café file "
     destination_path = " moved file "
     patch = "*** Update File: " + source_path + "\n*** Move to: " + destination_path
-    session = _interpret([_call("apply_patch", patch)])
+    session = _interpret([_call(codex_protocol.APPLY_PATCH, patch)])
 
     (action,) = _facts(export_session(session, 0), "file_actions")
 
@@ -469,7 +477,7 @@ def test_successful_move_to_same_path_is_not_confirmation():
 def test_result_without_execution_status_keeps_the_native_completion_outcome():
     session = _interpret(
         [
-            _call("apply_patch", "*** Delete File: a"),
+            _call(codex_protocol.APPLY_PATCH, "*** Delete File: a"),
             _patch({"a": {"type": "delete"}}, call_id="call", success=True),
             _result({"details": "No execution status in this result"}),
         ]

@@ -43,3 +43,13 @@ PERMISSION_DENIAL_KINDS = frozenset(
     )
 )
 SETTINGS_DENIAL_KINDS = frozenset((DENIED_BY_RULES, DENIED_CONTENT_POLICY))
+ASSISTANT_MESSAGE = "assistant.message"
+BINARY_ASSET = "session.binary_asset"
+SESSION_START = "session.start"
+BASH = "bash"
+SQL = "sql"
+TASK_COMPLETE = "task_complete"
+READ_BASH = "read_bash"
+SOURCE_USER = "user"
+SOURCE_SYSTEM = "system"
+ROLE_ASSISTANT = "assistant"

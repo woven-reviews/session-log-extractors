@@ -7,9 +7,9 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
-from codex_capture import TRANSCRIPT
+from codex_fixture import TRANSCRIPT
 
-from session_log_extractors import codex_sources
+from session_log_extractors import codex_protocol, codex_sources
 from session_log_extractors import extract_codex_session_log as codex
 from session_log_extractors.session_log_envelope import export_session
 
@@ -18,7 +18,10 @@ def _bookkeeping_records():
     records = []
     for line in TRANSCRIPT.read_text().splitlines():
         record = json.loads(line)
-        if record.get("type") in ("session_meta", "turn_context"):
+        if record.get("type") in (
+            codex_protocol.SESSION_META,
+            codex_protocol.TURN_CONTEXT,
+        ):
             records.append(record)
     assert records, "Native capture must contain bookkeeping metadata"
     return records

@@ -36,7 +36,8 @@ COPILOT_DB = COPILOT_ROOT / "native/session-store.db"
 
 def test_package_imports():
     assert session_log_extractors is not None
-    assert raw_filename("claude", "smoke") == "claude_session_log_raw_smoke.json"
+    filename = raw_filename("claude", "smoke")
+    assert filename == "claude_session_log_raw_smoke.json"
 
 
 @pytest.mark.parametrize("harness", ["claude", "codex", "copilot"])
@@ -52,11 +53,13 @@ def test_help_uses_call_time_output_root(harness, tmp_path, monkeypatch, capsys)
         with pytest.raises(SystemExit) as exc:
             module.main(["--help"])
         assert exc.value.code == 0
-        assert str(cwd) in capsys.readouterr().out
+        captured = capsys.readouterr()
+        assert str(cwd) in captured.out
     with pytest.raises(SystemExit) as exc:
         module.main(["--help"], project_root=tmp_path / "explicit")
     assert exc.value.code == 0
-    assert str(tmp_path / "explicit") in capsys.readouterr().out
+    captured = capsys.readouterr()
+    assert str(tmp_path / "explicit") in captured.out
 
 
 @pytest.mark.parametrize(

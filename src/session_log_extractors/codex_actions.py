@@ -4,6 +4,27 @@ import re
 from enum import StrEnum
 from typing import Final
 
+from session_log_extractors.codex_protocol import (
+    APPLY_PATCH as APPLY_PATCH,
+)
+from session_log_extractors.codex_protocol import (
+    COMMAND_EXECUTION as COMMAND_EXECUTION,
+)
+from session_log_extractors.codex_protocol import (
+    COMPLETED as COMPLETED,
+)
+from session_log_extractors.codex_protocol import (
+    FAILED as FAILED,
+)
+from session_log_extractors.codex_protocol import (
+    FILE_CHANGE as FILE_CHANGE,
+)
+from session_log_extractors.codex_protocol import (
+    SPAWN_AGENT as SPAWN_AGENT,
+)
+from session_log_extractors.codex_protocol import (
+    SUBAGENT_ACTIVITY as SUBAGENT_ACTIVITY,
+)
 from session_log_extractors.json_types import JsonValue, json_value, parse_json
 from session_log_extractors.session_model import (
     ActionActivityReference,
@@ -16,14 +37,6 @@ from session_log_extractors.session_model import (
     ToolCall,
     ToolExecutionOutcome,
 )
-
-APPLY_PATCH: Final = "apply_patch"
-SPAWN_AGENT: Final = "spawn_agent"
-SUBAGENT_ACTIVITY: Final = "SubAgentActivity"
-FILE_CHANGE: Final = "FileChange"
-COMMAND_EXECUTION: Final = "CommandExecution"
-COMPLETED: Final = "completed"
-FAILED: Final = "failed"
 
 
 class _NativeFileChange(StrEnum):

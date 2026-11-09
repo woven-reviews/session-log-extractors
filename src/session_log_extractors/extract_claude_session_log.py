@@ -49,6 +49,17 @@ from session_log_extractors.claude_decisions import (
     _attach_decisions,
     parse_permission_denial,
 )
+from session_log_extractors.claude_protocol import (
+    ASSISTANT_RECORD,
+    ATTACHMENT_RECORD,
+    IMAGE_BLOCK,
+    SUMMARY_RECORD,
+    SYSTEM_RECORD,
+    TEXT_BLOCK,
+    TOOL_RESULT_BLOCK,
+    TOOL_USE_BLOCK,
+    USER_RECORD,
+)
 from session_log_extractors.claude_questions import (
     ASK_USER_QUESTION,
     _attach_questions,
@@ -84,6 +95,9 @@ from session_log_extractors.session_model import (
     SubagentSummary,
     ToolCall,
     ToolResult,
+)
+from session_log_extractors.session_selection import (
+    newest as newest,
 )
 from session_log_extractors.tool_inputs.claude import input_schema
 
@@ -188,13 +202,6 @@ def _jsonl_files(directory: Path) -> List[Path]:
     if not directory.is_dir():
         return []
     return [p for p in directory.iterdir() if p.is_file() and p.suffix == ".jsonl"]
-
-
-def newest(paths: Iterable[Path]) -> Optional[Path]:
-    paths = list(paths)
-    if not paths:
-        return None
-    return max(paths, key=lambda p: p.stat().st_mtime)
 
 
 def select_transcript(
@@ -303,7 +310,7 @@ def _content_blocks(entry: Dict[str, JsonValue]) -> List[JsonValue]:
     if content is None:
         return []
     if isinstance(content, str):
-        return [{"type": "text", "text": content}]
+        return [{"type": TEXT_BLOCK, "text": content}]
     if isinstance(content, list):
         return content
     return []
@@ -312,7 +319,7 @@ def _content_blocks(entry: Dict[str, JsonValue]) -> List[JsonValue]:
 def _is_tool_result_entry(entry: Dict[str, JsonValue]) -> bool:
     """True if this user-role entry is a tool result, not a human message."""
     for block in _content_blocks(entry):
-        if isinstance(block, dict) and block.get("type") == "tool_result":
+        if isinstance(block, dict) and block.get("type") == TOOL_RESULT_BLOCK:
             return True
     # Some versions stash the result under a top-level toolUseResult and leave
     # content empty; treat those as tool results too.
@@ -325,7 +332,7 @@ def _human_text(entry: Dict[str, JsonValue]) -> str:
     """Concatenate the text blocks of a (user or assistant) message."""
     parts: List[str] = []
     for block in _content_blocks(entry):
-        if isinstance(block, dict) and block.get("type") == "text":
+        if isinstance(block, dict) and block.get("type") == TEXT_BLOCK:
             txt = block.get("text")
             if isinstance(txt, str):
                 parts.append(txt)
@@ -338,7 +345,7 @@ def _image_sources(entry: Dict[str, JsonValue]) -> List[Dict[str, JsonValue]]:
     """Base64 image ``source`` dicts attached to a message, in order."""
     out: List[Dict[str, JsonValue]] = []
     for block in _content_blocks(entry):
-        if isinstance(block, dict) and block.get("type") == "image":
+        if isinstance(block, dict) and block.get("type") == IMAGE_BLOCK:
             src = block.get("source")
             if (
                 isinstance(src, dict)
@@ -455,10 +462,10 @@ def _ambiguous_call_ids(entries: List[Dict[str, JsonValue]]) -> set[str]:
     counts: Counter[str] = Counter()
     interaction_ids = _interaction_call_ids(entries)
     for entry in entries:
-        if entry.get("type") != "assistant" or entry.get("isSidechain") is True:
+        if entry.get("type") != ASSISTANT_RECORD or entry.get("isSidechain") is True:
             continue
         for block in _content_blocks(entry):
-            if not isinstance(block, dict) or block.get("type") != "tool_use":
+            if not isinstance(block, dict) or block.get("type") != TOOL_USE_BLOCK:
                 continue
             tool_id = block.get("id")
             if isinstance(tool_id, str) and tool_id:
@@ -474,18 +481,18 @@ def _interaction_call_ids(entries: List[Dict[str, JsonValue]]) -> set[str]:
     """Limit stricter ambiguous-ID handling to observed interaction facts."""
     ids: set[str] = set()
     for entry in entries:
-        if entry.get("type") not in {"assistant", "user"}:
+        if entry.get("type") not in {ASSISTANT_RECORD, USER_RECORD}:
             continue
         for block in _content_blocks(entry):
             if not isinstance(block, dict):
                 continue
             if (
-                block.get("type") == "tool_use"
+                block.get("type") == TOOL_USE_BLOCK
                 and string_value(block.get("name")) in PLAN_TOOLS | INTERACTION_TOOLS
             ):
                 value = block.get("id")
             elif (
-                block.get("type") == "tool_result"
+                block.get("type") == TOOL_RESULT_BLOCK
                 and parse_permission_denial(_result_block_text(block)) is not None
             ):
                 value = block.get("tool_use_id")
@@ -526,20 +533,20 @@ class _ClaudeInterpreter:
 
     def consume(self, entry: Dict[str, JsonValue]) -> None:
         etype = entry.get("type")
-        if etype in ("summary", "system"):
+        if etype in (SUMMARY_RECORD, SYSTEM_RECORD):
             return
         if entry.get("isSidechain") is True:
-            if etype == "user" and not _is_tool_result_entry(entry):
+            if etype == USER_RECORD and not _is_tool_result_entry(entry):
                 self.subagent_count += 1
             return
-        if etype == "user":
+        if etype == USER_RECORD:
             if _is_tool_result_entry(entry):
                 self.results(entry)
             else:
                 self.user(entry)
-        elif etype == "assistant":
+        elif etype == ASSISTANT_RECORD:
             self.assistant(entry)
-        elif etype == "attachment":
+        elif etype == ATTACHMENT_RECORD:
             self.queued_message(entry)
 
     def user(self, entry: Dict[str, JsonValue]) -> None:
@@ -602,11 +609,11 @@ class _ClaudeInterpreter:
         for block in _content_blocks(entry):
             if not isinstance(block, dict):
                 continue
-            if block.get("type") == "text":
+            if block.get("type") == TEXT_BLOCK:
                 text = block.get("text", "")
                 if isinstance(text, str) and text.strip():
                     texts.append(text.strip())
-            elif block.get("type") == "tool_use":
+            elif block.get("type") == TOOL_USE_BLOCK:
                 calls.append(self.call(block))
         if texts or calls:
             message = assistant_event(
@@ -662,7 +669,7 @@ class _ClaudeInterpreter:
         blocks = [
             block
             for block in _content_blocks(entry)
-            if isinstance(block, dict) and block.get("type") == "tool_result"
+            if isinstance(block, dict) and block.get("type") == TOOL_RESULT_BLOCK
         ]
         unmatched: List[ToolResult] = []
         payload = entry.get("toolUseResult")
@@ -851,7 +858,7 @@ def summarize_subagent_source(source: ClaudeSource) -> Optional[SubagentSummary]
     # The spawning prompt is the first real (non-tool-result) user message.
     task = ""
     for e in entries:
-        if e.get("type") == "user" and not _is_tool_result_entry(e):
+        if e.get("type") == USER_RECORD and not _is_tool_result_entry(e):
             t = clean_user_text(_human_text(e))
             if t:
                 task = t
@@ -872,14 +879,14 @@ def _subagent_activity(entries: List[Dict[str, JsonValue]]) -> Tuple[List[str], 
     tools: List[str] = []
     result = ""
     for entry in entries:
-        if entry.get("type") != "assistant":
+        if entry.get("type") != ASSISTANT_RECORD:
             continue
         for block in _content_blocks(entry):
             if not isinstance(block, dict):
                 continue
-            if block.get("type") == "tool_use":
+            if block.get("type") == TOOL_USE_BLOCK:
                 tools.append(string_value(block.get("name")) or "tool")
-            elif block.get("type") == "text":
+            elif block.get("type") == TEXT_BLOCK:
                 text = block.get("text")
                 if isinstance(text, str) and text.strip():
                     result = text.strip()

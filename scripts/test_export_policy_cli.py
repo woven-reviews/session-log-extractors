@@ -2,10 +2,10 @@
 
 import json
 from copy import deepcopy
-from pathlib import Path
 
 import pytest
-from codex_capture import TRANSCRIPT as CODEX_TRANSCRIPT
+from claude_fixture import TRANSCRIPT as CLAUDE_TRANSCRIPT
+from codex_fixture import TRANSCRIPT as CODEX_TRANSCRIPT
 from copilot_fixture import DATABASE, SESSION_ID, native_records
 
 from session_log_extractors import copilot_sources
@@ -13,9 +13,6 @@ from session_log_extractors import extract_claude_session_log as claude
 from session_log_extractors import extract_codex_session_log as codex
 from session_log_extractors import extract_copilot_session_log as copilot
 from session_log_extractors import session_log_envelope as envelope
-
-CLAUDE_ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312" / "native"
-(CLAUDE_TRANSCRIPT,) = CLAUDE_ROOT.glob("*.jsonl")
 
 
 @pytest.fixture(params=[claude, codex, copilot], ids=["claude", "codex", "copilot"])
@@ -57,8 +54,9 @@ def test_production_serialization_is_repeatable_across_destinations(
     for name in ("first.json", "second.json"):
         path = tmp_path / name
         status = module.main([*options, "--output", str(path)])
+        captured = capsys.readouterr()
         assert status == 0
-        assert capsys.readouterr().out == ""
+        assert captured.out == ""
         file_payloads.append(path.read_bytes())
     expected = stdout_payloads[0]
     assert json.loads(expected)["events"], "Capture must include conversation events"
@@ -86,23 +84,23 @@ def test_production_limits(production_cli, limit, stdout, tmp_path, capsys):
     if limit is not None:
         options.extend(["--tool-result-bytes", str(limit)])
     status = module.main(options)
-    assert status == 0
     captured = capsys.readouterr()
+    assert status == 0
     exported = json.loads(captured.out if stdout else path.read_text())
-    actual_limit = 8192 if limit is None else limit
-    assert exported["truncation"]["tool_result_max_bytes"] == actual_limit
+    expected_limit = 8192 if limit is None else limit
+    assert exported["truncation"]["tool_result_max_bytes"] == expected_limit
     actual_calls = _text_calls(exported)
     assert len(actual_calls) == len(original_calls)
     for actual, full in zip(actual_calls, original_calls, strict=True):
         text = full["result"]
         expected = (
             text
-            if actual_limit < 0
-            else text.encode()[:actual_limit].decode(errors="ignore")
+            if expected_limit < 0
+            else text.encode()[:expected_limit].decode(errors="ignore")
         )
         assert actual["result"] == expected
         assert actual["result_bytes"] == len(text.encode())
-        assert actual["result_truncated"] is (0 <= actual_limit < len(text.encode()))
+        assert actual["result_truncated"] is (0 <= expected_limit < len(text.encode()))
         assert actual["input"] == full["input"]
     if not stdout:
         assert captured.out == ""
@@ -142,8 +140,8 @@ def test_production_warning_counts_all_fields(
     status = module.main(
         [*args, "--output", "-" if stdout else str(path), "--tool-result-bytes", "0"]
     )
-    assert status == 0
     captured = capsys.readouterr()
+    assert status == 0
     payload = captured.out if stdout else path.read_text()
     exported = json.loads(payload)
     assert len(payload.encode()) > 8 * 1024 * 1024
@@ -162,7 +160,8 @@ def test_cli_help_exposes_shared_default(production_cli, capsys):
     with pytest.raises(SystemExit) as raised:
         module.main(["--help"])
     assert raised.value.code == 0
-    assert "default: 8192" in capsys.readouterr().out
+    captured = capsys.readouterr()
+    assert "default: 8192" in captured.out
 
 
 def test_native_edited_plan_beyond_cap_remains_structured():

@@ -6,6 +6,21 @@ validate native fields or reconstruct payloads from the types below.
 
 from typing import Literal, TypeAlias, TypedDict
 
+from session_log_extractors.claude_protocol import (
+    AGENT_TOOL,
+    ASK_USER_QUESTION,
+    BASH_TOOL,
+    CREATE_TOOL,
+    EDIT_TOOL,
+    EXIT_PLAN_MODE,
+    LEGACY_EXIT_PLAN_MODE,
+    MULTI_EDIT_TOOL,
+    NOTEBOOK_EDIT_TOOL,
+    READ_TOOL,
+    SKILL_TOOL,
+    TASK_TOOL,
+    WRITE_TOOL,
+)
 from session_log_extractors.json_types import JsonValue
 from session_log_extractors.question_types import QuestionOption
 
@@ -114,24 +129,24 @@ ToolInputSchema: TypeAlias = Literal[
 ]
 
 _INPUT_SCHEMAS: dict[str, ToolInputSchema] = {
-    "Bash": "Bash",
-    "Read": "Read",
-    "AskUserQuestion": "AskUserQuestion",
-    "ExitPlanMode": "ExitPlanMode",
-    "Skill": "Skill",
-    "Agent": "Agent",
-    "Task": "Task",
-    "Write": "Write",
-    "Edit": "Edit",
-    "MultiEdit": "MultiEdit",
-    "NotebookEdit": "NotebookEdit",
-    "Create": "Create",
+    BASH_TOOL: BASH_TOOL,
+    READ_TOOL: READ_TOOL,
+    ASK_USER_QUESTION: ASK_USER_QUESTION,
+    EXIT_PLAN_MODE: EXIT_PLAN_MODE,
+    SKILL_TOOL: SKILL_TOOL,
+    AGENT_TOOL: AGENT_TOOL,
+    TASK_TOOL: TASK_TOOL,
+    WRITE_TOOL: WRITE_TOOL,
+    EDIT_TOOL: EDIT_TOOL,
+    MULTI_EDIT_TOOL: MULTI_EDIT_TOOL,
+    NOTEBOOK_EDIT_TOOL: NOTEBOOK_EDIT_TOOL,
+    CREATE_TOOL: CREATE_TOOL,
 }
 
 
 def input_schema(name: str, payload: ToolInput) -> ToolInputSchema:
     """Recognize Claude's tool vocabulary without validating or filtering input."""
-    canonical = "ExitPlanMode" if name == "exit_plan_mode" else name
+    canonical = EXIT_PLAN_MODE if name == LEGACY_EXIT_PLAN_MODE else name
     schema = _INPUT_SCHEMAS.get(canonical)
     if schema is not None and isinstance(payload, dict):
         return schema

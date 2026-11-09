@@ -3,8 +3,9 @@
 from copy import deepcopy
 
 import pytest
-from codex_capture import TRANSCRIPT, exec_interactions
+from codex_fixture import TRANSCRIPT, exec_interactions
 
+from session_log_extractors import codex_protocol
 from session_log_extractors.codex_sources import CodexSource, load_entries
 from session_log_extractors.extract_codex_session_log import interpret_source
 from session_log_extractors.session_log_envelope import export_session
@@ -141,11 +142,14 @@ def _controlled_user(text):
     entries = load_entries(TRANSCRIPT)
     for entry in entries:
         payload = entry["payload"]
-        if entry["type"] != "response_item" or payload.get("role") != "user":
+        if (
+            entry["type"] != codex_protocol.RESPONSE_ITEM
+            or payload.get("role") != "user"
+        ):
             continue
         metadata = payload.get("internal_chat_message_metadata_passthrough", {})
-        if metadata.get("content_item_kinds") == ["user.text"]:
-            payload["content"] = [{"type": "input_text", "text": text}]
+        if metadata.get("content_item_kinds") == [codex_protocol.USER_TEXT]:
+            payload["content"] = [{"type": codex_protocol.INPUT_TEXT, "text": text}]
             return entry
     raise AssertionError("Native candidate text required")
 
@@ -282,7 +286,10 @@ def test_native_generated_plan_wording_can_change_without_changing_ownership():
     expected_texts = []
     for entry in entries:
         payload = entry["payload"]
-        if entry["type"] != "response_item" or payload.get("role") != "assistant":
+        if (
+            entry["type"] != codex_protocol.RESPONSE_ITEM
+            or payload.get("role") != "assistant"
+        ):
             continue
         for block in payload.get("content", []):
             text = block.get("text", "")

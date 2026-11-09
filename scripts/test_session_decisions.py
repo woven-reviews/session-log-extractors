@@ -2,12 +2,14 @@
 
 import json
 from copy import deepcopy
-from pathlib import Path
 
 import pytest
-from codex_capture import TRANSCRIPT as CODEX_TRANSCRIPT
+from claude_fixture import ROOT as CLAUDE_ROOT
+from claude_fixture import TRANSCRIPT as CLAUDE_TRANSCRIPT
+from codex_fixture import TRANSCRIPT as CODEX_TRANSCRIPT
 from copilot_fixture import native_records
 
+from session_log_extractors import claude_protocol, codex_protocol, copilot_protocol
 from session_log_extractors import extract_claude_session_log as claude
 from session_log_extractors.claude_sources import read_source
 from session_log_extractors.codex_sources import CodexSource, load_entries
@@ -29,9 +31,6 @@ from session_log_extractors.session_model import (
     Session,
     ToolCall,
 )
-
-CLAUDE_ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312"
-(CLAUDE_TRANSCRIPT,) = (CLAUDE_ROOT / "native").glob("*.jsonl")
 
 
 @pytest.mark.parametrize("source", list(RefusalSource))
@@ -248,13 +247,13 @@ def _claude_interactions():
     records = read_source(CLAUDE_TRANSCRIPT).entries
     calls = {}
     for record in records:
-        if record.get("type") == "assistant":
+        if record.get("type") == claude_protocol.ASSISTANT_RECORD:
             for block in record["message"]["content"]:
-                if block.get("type") == "tool_use":
+                if block.get("type") == claude_protocol.TOOL_USE_BLOCK:
                     calls[block["id"]] = block
     interactions = []
     for record in records:
-        if record.get("type") != "user":
+        if record.get("type") != claude_protocol.USER_RECORD:
             continue
         content = record["message"]["content"]
         if not isinstance(content, list):
@@ -275,7 +274,7 @@ def test_claude_native_denial_variants_have_evidenced_call_owners():
     for call, record, result in _claude_interactions():
         # Question cancellation and plan rejection use this marker too. Select
         # the capture's actual permission-gated actions before interpreting it.
-        if call["name"] not in ("Write", "Bash"):
+        if call["name"] not in (claude_protocol.WRITE_TOOL, claude_protocol.BASH_TOOL):
             continue
         variant = record.get("toolDenialKind")
         if variant not in sources:
@@ -337,7 +336,7 @@ def test_claude_native_edited_approval_retains_both_plan_versions():
         call, record, _ = interaction
         result = record.get("toolUseResult")
         if (
-            call["name"] == "ExitPlanMode"
+            call["name"] == claude_protocol.EXIT_PLAN_MODE
             and isinstance(result, dict)
             and result.get("planWasEdited") is True
         ):
@@ -397,7 +396,7 @@ def test_claude_native_plan_tool_error_does_not_establish_rejection():
     for call, record, result in _claude_interactions():
         content = result.get("content")
         if (
-            call["name"] == "ExitPlanMode"
+            call["name"] == claude_protocol.EXIT_PLAN_MODE
             and isinstance(content, str)
             and content.startswith("<tool_use_error>")
         ):
@@ -406,7 +405,7 @@ def test_claude_native_plan_tool_error_does_not_establish_rejection():
     call, record, result = errors[0]
     assistants = []
     for entry in read_source(CLAUDE_TRANSCRIPT).entries:
-        if entry.get("type") != "assistant":
+        if entry.get("type") != claude_protocol.ASSISTANT_RECORD:
             continue
         for block in claude._content_blocks(entry):
             if isinstance(block, dict) and block.get("id") == call["id"]:
@@ -493,18 +492,18 @@ def test_copilot_native_plan_decisions_keep_content_and_feedback():
     records = native_records()
     for record in records:
         if (
-            record["type"] == "tool.execution_start"
-            and record["data"].get("toolName") == "exit_plan_mode"
+            record["type"] == copilot_protocol.TOOL_EXECUTION_START
+            and record["data"].get("toolName") == copilot_protocol.EXIT_PLAN_MODE
         ):
             starts[record["data"]["toolCallId"]] = record["data"]
     outcomes = set()
     feedback = []
     for record in records:
-        if record["type"] != "human_response.recorded":
+        if record["type"] != copilot_protocol.HUMAN_RESPONSE_RECORDED:
             continue
         data = record["data"]
         response = data["response"]
-        if response.get("responseKind") != "exit_plan_mode":
+        if response.get("responseKind") != copilot_protocol.EXIT_PLAN_MODE:
             continue
         start = starts[data["toolCallId"]]
         session = _copilot_plan_records(data, start)
@@ -534,8 +533,8 @@ def test_copilot_native_permission_feedback_is_not_a_settings_explanation():
     for record in native_records():
         data = record["data"]
         if (
-            record["type"] == "permission.completed"
-            and data.get("result", {}).get("kind") == "denied-interactively-by-user"
+            record["type"] == copilot_protocol.PERMISSION_COMPLETED
+            and data.get("result", {}).get("kind") == copilot_protocol.DENIED_BY_USER
         ):
             assert data["decisionSource"] == "human_response"
             refusals.append(
@@ -552,11 +551,11 @@ def test_copilot_native_permission_feedback_is_not_a_settings_explanation():
                     ],
                 )
             )
-        if record["type"] == "tool.execution_complete":
+        if record["type"] == copilot_protocol.TOOL_EXECUTION_COMPLETE:
             error = data.get("error", {})
-            if error.get("code") == "denied" and error.get("message", "").startswith(
-                "Permission to run this tool was denied due to the following rules:"
-            ):
+            if error.get("code") == copilot_protocol.DENIED_ERROR and error.get(
+                "message", ""
+            ).startswith(copilot_protocol.SETTINGS_REFUSAL_PREFIX):
                 refusals.append(
                     PermissionRefusal(
                         ref="settings",
@@ -598,11 +597,17 @@ def _codex_native_refusal_evidence(entries):
     results = []
     for entry in entries:
         payload = entry["payload"]
-        if entry["type"] != "response_item":
+        if entry["type"] != codex_protocol.RESPONSE_ITEM:
             continue
-        if payload.get("type") in ("function_call", "custom_tool_call"):
+        if payload.get("type") in (
+            codex_protocol.FUNCTION_CALL,
+            codex_protocol.CUSTOM_TOOL_CALL,
+        ):
             calls[payload["call_id"]] = payload
-        if payload.get("type") in ("function_call_output", "custom_tool_call_output"):
+        if payload.get("type") in (
+            codex_protocol.FUNCTION_CALL_OUTPUT,
+            codex_protocol.CUSTOM_TOOL_CALL_OUTPUT,
+        ):
             results.append(payload)
     cancellations = []
     settings = []

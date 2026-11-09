@@ -5,8 +5,9 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
-from codex_capture import TRANSCRIPT, question_interaction, response_items
+from codex_fixture import TRANSCRIPT, question_interaction, response_items
 
+from session_log_extractors import codex_protocol
 from session_log_extractors.codex_sources import CodexSource, load_entries
 from session_log_extractors.extract_codex_session_log import interpret_source
 from session_log_extractors.session_log_envelope import export_session
@@ -44,8 +45,8 @@ def test_native_question_text_and_options_match_recorded_fields():
     session = _interpret(entries)
     questions = session["interaction_questions"]
     native_calls = []
-    for entry in response_items(entries, "function_call"):
-        if entry["payload"]["name"] == "request_user_input":
+    for entry in response_items(entries, codex_protocol.FUNCTION_CALL):
+        if entry["payload"]["name"] == codex_protocol.REQUEST_USER_INPUT:
             native_calls.append(entry["payload"])
     assert len(native_calls) >= 3, "Capture lacks question workflows"
     expected_question_count = 0
@@ -117,7 +118,7 @@ def test_interpretation_attaches_canonical_questions_and_responses_before_export
     responses = []
     for message in session["events"]:
         for call in message.get("tool_calls", []):
-            if call["name"] != "request_user_input":
+            if call["name"] != codex_protocol.REQUEST_USER_INPUT:
                 assert "interaction_questions" not in call
                 assert "question_responses" not in call
                 continue

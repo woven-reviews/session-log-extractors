@@ -1,7 +1,8 @@
-"""Explicit selection and small native-record helpers for the Codex test capture."""
+"""Offline Codex fixture selection and native-record helpers for tests."""
 
 from pathlib import Path
 
+from session_log_extractors import codex_protocol
 from session_log_extractors.codex_sources import load_entries
 
 ROOT = Path(__file__).parent / "fixtures" / "codex" / "0.166.0"
@@ -22,7 +23,7 @@ def response_items(entries, kind):
     matches = []
     for entry in entries:
         if (
-            entry.get("type") == "response_item"
+            entry.get("type") == codex_protocol.RESPONSE_ITEM
             and entry["payload"].get("type") == kind
         ):
             matches.append(entry)
@@ -35,7 +36,7 @@ def human_message(entries):
         payload = entry["payload"]
         metadata = payload.get("internal_chat_message_metadata_passthrough", {})
         if payload.get("role") == "user" and metadata.get("content_item_kinds") == [
-            "user.text"
+            codex_protocol.USER_TEXT
         ]:
             return entry
     raise AssertionError("Capture lacks a native human text message")
@@ -48,7 +49,7 @@ def image_message(entries):
             continue
         images = []
         for block in payload.get("content", []):
-            if block.get("type") == "input_image":
+            if block.get("type") == codex_protocol.INPUT_IMAGE:
                 images.append(block)
         if len(images) == 2:
             return entry
@@ -59,7 +60,7 @@ def exec_interactions():
     """Two recorded same-name calls and their ID-matched results for boundaries."""
     entries = load_entries(TRANSCRIPT)
     calls = []
-    for entry in response_items(entries, "custom_tool_call"):
+    for entry in response_items(entries, codex_protocol.CUSTOM_TOOL_CALL):
         if entry["payload"]["name"] == "exec":
             calls.append(entry)
             if len(calls) == 2:
@@ -67,7 +68,7 @@ def exec_interactions():
     assert len(calls) == 2
     results = []
     for call in calls:
-        for entry in response_items(entries, "custom_tool_call_output"):
+        for entry in response_items(entries, codex_protocol.CUSTOM_TOOL_CALL_OUTPUT):
             if entry["payload"]["call_id"] == call["payload"]["call_id"]:
                 results.append(entry)
                 break
@@ -78,10 +79,10 @@ def exec_interactions():
 def question_interaction():
     """One native request/answer pair, without unrelated calls in the full session."""
     entries = load_entries(TRANSCRIPT)
-    for call in response_items(entries, "function_call"):
-        if call["payload"]["name"] != "request_user_input":
+    for call in response_items(entries, codex_protocol.FUNCTION_CALL):
+        if call["payload"]["name"] != codex_protocol.REQUEST_USER_INPUT:
             continue
-        for result in response_items(entries, "function_call_output"):
+        for result in response_items(entries, codex_protocol.FUNCTION_CALL_OUTPUT):
             if result["payload"]["call_id"] == call["payload"]["call_id"]:
                 return [human_message(entries), call, result]
     raise AssertionError("Capture lacks an ID-matched structured question result")

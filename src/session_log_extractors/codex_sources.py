@@ -8,14 +8,22 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
+from session_log_extractors.codex_protocol import (
+    SESSION_META as SESSION_META,
+)
+from session_log_extractors.codex_protocol import TURN_CONTEXT
 from session_log_extractors.json_types import JsonValue, parse_json
 from session_log_extractors.jsonl_sources import load_records
+from session_log_extractors.session_selection import (
+    cwd_matches as _cwd_matches,
+)
+from session_log_extractors.session_selection import (
+    newest as newest,
+)
 from session_log_extractors.session_selection import (
     read_recorded_id,
     select_recorded_id,
 )
-
-SESSION_META = "session_meta"
 
 CODEX_SESSIONS_ROOT = Path.home() / ".codex" / "sessions"
 
@@ -53,13 +61,6 @@ def _jsonl_files(root: Path) -> List[Path]:
     return [p for p in root.rglob("*.jsonl") if p.is_file()]
 
 
-def newest(paths: Iterable[Path]) -> Optional[Path]:
-    paths = list(paths)
-    if not paths:
-        return None
-    return max(paths, key=lambda p: p.stat().st_mtime)
-
-
 def session_id_from_file(path: Path) -> Optional[str]:
     try:
         with path.open("r", encoding="utf-8", errors="replace") as fh:
@@ -93,37 +94,13 @@ def session_cwd_from_file(path: Path) -> Optional[str]:
                     cwd = payload.get("cwd")
                     if isinstance(cwd, str) and cwd:
                         return cwd
-                if obj.get("type") == "turn_context":
+                if obj.get("type") == TURN_CONTEXT:
                     cwd = payload.get("cwd")
                     if isinstance(cwd, str) and cwd:
                         return cwd
     except OSError:
         return None
     return None
-
-
-def _paths_overlap(a: Path, b: Path) -> bool:
-    try:
-        a.resolve().relative_to(b.resolve())
-        return True
-    except ValueError:
-        pass
-    try:
-        b.resolve().relative_to(a.resolve())
-        return True
-    except ValueError:
-        return False
-
-
-def _cwd_matches(
-    transcript_cwd: Optional[str], cwd: Path, strict: bool = False
-) -> bool:
-    if not transcript_cwd:
-        return False
-    rec = Path(transcript_cwd).expanduser()
-    if strict:
-        return rec.resolve() == cwd.resolve()
-    return _paths_overlap(rec, cwd)
 
 
 def matching_transcripts(root: Path, cwd: Path, strict: bool = False) -> List[Path]:
@@ -279,7 +256,7 @@ def read_source(path: Path) -> CodexSource:
             if isinstance(boundary, int) and not isinstance(boundary, bool):
                 source.history_start_ordinal = boundary
             id_seen = True
-        if line <= 80 and entry.get("type") in (SESSION_META, "turn_context"):
+        if line <= 80 and entry.get("type") in (SESSION_META, TURN_CONTEXT):
             cwd = payload.get("cwd")
             if source.cwd is None and isinstance(cwd, str) and cwd:
                 source.cwd = cwd

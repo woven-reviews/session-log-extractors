@@ -61,7 +61,14 @@ from session_log_extractors.copilot_interactions import (
     subagent_summaries,
 )
 from session_log_extractors.copilot_protocol import (
+    ASSISTANT_MESSAGE,
+    BINARY_ASSET,
+    PERMISSION_COMPLETED,
+    PERMISSION_REQUESTED,
+    SKILL_INVOKED,
     TOOL_EXECUTION_COMPLETE,
+    TOOL_EXECUTION_START,
+    USER_MESSAGE,
 )
 from session_log_extractors.copilot_questions import (
     CopilotQuestionInterpretation,
@@ -99,10 +106,14 @@ from session_log_extractors.session_model import (
     Message,
     NativeIdentity,
     PermissionDecision,
+    PermissionStatus,
     Session,
     ToolCall,
     ToolResult,
     UserMessage,
+)
+from session_log_extractors.session_output import (
+    unique_identifier as _unique_identifier,
 )
 from session_log_extractors.tool_inputs.copilot import input_schema
 
@@ -201,7 +212,7 @@ def _binary_assets(
     for obj in events:
         asset = obj.get("data")
         if (
-            obj.get("type") == "session.binary_asset"
+            obj.get("type") == BINARY_ASSET
             and isinstance(asset, dict)
             and isinstance(asset.get("assetId"), str)
             and isinstance(asset.get("data"), str)
@@ -269,7 +280,7 @@ def _attachments_from_events(
     attachments: List[Dict[str, JsonValue]] = []
     for obj in events:
         data = obj.get("data")
-        if obj.get("type") != "user.message" or not isinstance(data, dict):
+        if obj.get("type") != USER_MESSAGE or not isinstance(data, dict):
             continue
         items = data.get("attachments")
         if isinstance(items, list):
@@ -302,7 +313,7 @@ def _permission_request(
     return PermissionDecision(
         tool=_string(description) or "tool",
         request_id=request_id,
-        status="pending",
+        status=PermissionStatus.PENDING,
         native_decision=None,
         feedback="",
         ts=_string(record.get("timestamp")),
@@ -322,7 +333,7 @@ def _permission_completion(
     return PermissionDecision(
         tool=request["tool"] if request is not None else "tool",
         request_id=_string(data.get("requestId")),
-        status="completed",
+        status=PermissionStatus.COMPLETED,
         native_decision=_string(result.get("kind")),
         feedback=_string(result.get("feedback")) or "",
         ts=timestamp,
@@ -340,12 +351,12 @@ def _permissions_from_events(
         data = record.get("data")
         if not isinstance(data, dict):
             continue
-        if record.get("type") == "permission.requested":
+        if record.get("type") == PERMISSION_REQUESTED:
             request = _permission_request(record, data)
             request_id = _string(data.get("requestId"))
             if request is not None and request_id is not None:
                 requests[request_id] = request
-        elif record.get("type") == "permission.completed":
+        elif record.get("type") == PERMISSION_COMPLETED:
             request_id = _string(data.get("requestId"))
             request = requests.get(request_id) if request_id is not None else None
             decisions.append(_permission_completion(record, data, request))
@@ -370,7 +381,7 @@ def _skills_from_events(
     """Extract Copilot's first-class ``skill.invoked`` events."""
     skills: List[Dict[str, JsonValue]] = []
     for obj in events:
-        if not isinstance(obj, dict) or obj.get("type") != "skill.invoked":
+        if not isinstance(obj, dict) or obj.get("type") != SKILL_INVOKED:
             continue
         data = obj.get("data")
         if not isinstance(data, dict):
@@ -534,16 +545,6 @@ def output_identifier(session: Dict[str, JsonValue]) -> str:
     if date and date != "unknown":
         return f"{date}_{short_id}"
     return short_id
-
-
-def _unique_identifier(base: str, used: set[str]) -> str:
-    ident = base
-    suffix = 2
-    while ident in used:
-        ident = f"{base}-{suffix}"
-        suffix += 1
-    used.add(ident)
-    return ident
 
 
 @dataclass(frozen=True)
@@ -957,13 +958,13 @@ class _CopilotSessionBuilder:
 
     def build(self) -> list[Message]:
         handlers = {
-            "user.message": self.user_message,
+            USER_MESSAGE: self.user_message,
             "tool.user_requested": self.user_shell,
-            "assistant.message": self.assistant_message,
+            ASSISTANT_MESSAGE: self.assistant_message,
             "system.message": self.activity,
             "system.notification": self.activity,
             "instruction.update": self.activity,
-            "tool.execution_start": self.start,
+            TOOL_EXECUTION_START: self.start,
             TOOL_EXECUTION_COMPLETE: self.complete,
         }
         for position, record in enumerate(self.source.state_records):
@@ -1056,7 +1057,7 @@ def _apply_database_fallbacks(
     """Supplement partial native activity without guessing message ownership."""
     events = builder.events
     has_native_messages = any(
-        record.get("type") in ("user.message", "assistant.message")
+        record.get("type") in (USER_MESSAGE, ASSISTANT_MESSAGE)
         for record in source.state_records
     )
     if not has_native_messages:

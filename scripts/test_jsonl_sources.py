@@ -4,13 +4,11 @@ import json
 from pathlib import Path
 
 import pytest
-from codex_capture import TRANSCRIPT as CODEX_TRANSCRIPT
+from claude_fixture import TRANSCRIPT as CLAUDE_TRANSCRIPT
+from codex_fixture import TRANSCRIPT as CODEX_TRANSCRIPT
 
 from session_log_extractors.jsonl_sources import load_jsonl_objects as load_entries
 from session_log_extractors.jsonl_sources import load_records
-
-CLAUDE_ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312" / "native"
-(CLAUDE_TRANSCRIPT,) = CLAUDE_ROOT.glob("*.jsonl")
 
 
 @pytest.mark.parametrize("transcript", [CLAUDE_TRANSCRIPT, CODEX_TRANSCRIPT])
@@ -33,7 +31,8 @@ def test_load_records_preserves_native_objects_around_malformed_lines(
     records = load_records(path)
 
     assert records == [(2, first_record), (5, second_record)]
-    assert capsys.readouterr().err == (
+    captured = capsys.readouterr()
+    assert captured.err == (
         f"warning: {path}: skipping malformed JSON on line 3\n"
         f"warning: {path}: skipping non-object JSON on line 4\n"
         f"warning: {path}: skipping malformed JSON on line 6\n"
@@ -78,7 +77,8 @@ def test_blank_input_is_valid_and_silent(content, tmp_path, capsys):
     records = load_records(path)
 
     assert records == []
-    assert capsys.readouterr().err == ""
+    captured = capsys.readouterr()
+    assert captured.err == ""
 
 
 @pytest.mark.parametrize("content", ["null", "[]", "42", "true", '"text"', "bad"])
@@ -115,7 +115,8 @@ def test_load_entries_counts_non_dict_and_skips_blank_lines(tmp_path, capsys):
     for entry in entries:
         entry_types.append(entry["type"])
     assert entry_types == ["user"]
-    assert "skipped 6 malformed/non-object records total" in capsys.readouterr().err
+    captured = capsys.readouterr()
+    assert "skipped 6 malformed/non-object records total" in captured.err
 
 
 def test_load_entries_warns_once_for_many_bad_lines(tmp_path, capsys):
@@ -148,10 +149,8 @@ def test_transcript_preserves_objects_and_line_numbers(tmp_path, capsys):
 
 
 def test_load_entries_skips_malformed_lines_with_warning(tmp_path, capsys):
-    native_root = Path(__file__).parent / "fixtures" / "claude" / "2.1.312" / "native"
-    [transcript] = native_root.glob("*.jsonl")
     # Keep two captured records; add corruption which a completed capture cannot supply.
-    recorded_lines = transcript.read_text().splitlines()[:2]
+    recorded_lines = CLAUDE_TRANSCRIPT.read_text().splitlines()[:2]
     expected_records = []
     for line in recorded_lines:
         expected_records.append(json.loads(line))
@@ -161,4 +160,5 @@ def test_load_entries_skips_malformed_lines_with_warning(tmp_path, capsys):
     actual_records = load_entries(path)
 
     assert actual_records == expected_records
-    assert "skipping malformed JSON on line 3" in capsys.readouterr().err
+    captured = capsys.readouterr()
+    assert "skipping malformed JSON on line 3" in captured.err

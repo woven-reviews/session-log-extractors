@@ -8,15 +8,15 @@ import sys
 from pathlib import Path
 
 import pytest
-from codex_capture import CHILD_TRANSCRIPT as CODEX_CHILD
-from codex_capture import TRANSCRIPT as CODEX_TRANSCRIPT
+from claude_fixture import TRANSCRIPT as CLAUDE_TRANSCRIPT
+from codex_fixture import CHILD_TRANSCRIPT as CODEX_CHILD
+from codex_fixture import TRANSCRIPT as CODEX_TRANSCRIPT
 from copilot_fixture import DATABASE
 
 from session_log_extractors import codex_sources, copilot_sources
 from session_log_extractors import extract_claude_session_log as claude
 
 FIXTURES = Path(__file__).parent / "fixtures"
-(CLAUDE_TRANSCRIPT,) = (FIXTURES / "claude" / "2.1.312" / "native").glob("*.jsonl")
 
 
 @pytest.fixture(params=["claude", "codex", "copilot"])

@@ -18,9 +18,11 @@ from copy import deepcopy
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
+from claude_fixture import CHILD_TRANSCRIPT as SUBAGENT
+from claude_fixture import ROOT, TRANSCRIPT
 
+from session_log_extractors import claude_protocol, session_log_envelope
 from session_log_extractors import extract_claude_session_log as eclog
-from session_log_extractors import session_log_envelope
 from session_log_extractors.claude_decisions import parse_permission_denial
 from session_log_extractors.claude_sources import (
     ClaudeSource,
@@ -45,7 +47,6 @@ from session_log_extractors.extract_claude_session_log import (
     load_entries,
     load_subagents,
     main,
-    newest,
     resolve_project_dir,
     select_transcript,
     session_cwd,
@@ -59,10 +60,6 @@ from session_log_extractors.session_log_envelope import (
     write_envelope,
 )
 from session_log_extractors.session_model import Session
-
-ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312"
-(TRANSCRIPT,) = (ROOT / "native").glob("*.jsonl")
-(SUBAGENT,) = (TRANSCRIPT.with_suffix("") / "subagents").glob("*.jsonl")
 
 
 def _recorded_session_entries():
@@ -97,7 +94,7 @@ def _content_block(entry, kind):
 def _recorded_user_message(marker):
     matches = []
     for entry in _recorded_session_entries():
-        if entry.get("type") != "user":
+        if entry.get("type") != claude_protocol.USER_RECORD:
             continue
         if entry.get("isMeta") or entry.get("isCompactSummary"):
             continue
@@ -110,13 +107,13 @@ def _recorded_user_message(marker):
 def _recorded_result_for_call(entries, call):
     matches = []
     for entry in entries:
-        if entry.get("type") != "user":
+        if entry.get("type") != claude_protocol.USER_RECORD:
             continue
 
         for block in _content_blocks(entry):
             if not isinstance(block, dict):
                 continue
-            if block.get("type") != "tool_result":
+            if block.get("type") != claude_protocol.TOOL_RESULT_BLOCK:
                 continue
             if block.get("tool_use_id") == call["id"]:
                 matches.append(entry)
@@ -132,13 +129,13 @@ def _recorded_tool_interactions(name, input_contains="", result_contains=""):
     entries = _recorded_session_entries()
     matches = []
     for assistant in entries:
-        if assistant.get("type") != "assistant":
+        if assistant.get("type") != claude_protocol.ASSISTANT_RECORD:
             continue
 
         for call in _content_blocks(assistant):
             if not isinstance(call, dict):
                 continue
-            if call.get("type") != "tool_use":
+            if call.get("type") != claude_protocol.TOOL_USE_BLOCK:
                 continue
             if call.get("name") != name:
                 continue
@@ -147,7 +144,7 @@ def _recorded_tool_interactions(name, input_contains="", result_contains=""):
                 continue
 
             result = _recorded_result_for_call(entries, call)
-            result_block = _content_block(result, "tool_result")
+            result_block = _content_block(result, claude_protocol.TOOL_RESULT_BLOCK)
             result_text = _result_block_text(result_block)
             if result_contains in result_text:
                 matches.append((assistant, result))
@@ -233,8 +230,10 @@ def _plan_decisions_in(session):
 
 def _recorded_multiselect_interaction():
     matches = []
-    for assistant, result in _recorded_tool_interactions("AskUserQuestion"):
-        call = _content_block(assistant, "tool_use")
+    for assistant, result in _recorded_tool_interactions(
+        claude_protocol.ASK_USER_QUESTION
+    ):
+        call = _content_block(assistant, claude_protocol.TOOL_USE_BLOCK)
         questions = call["input"]["questions"]
         for question in questions:
             if question.get("multiSelect"):
@@ -245,8 +244,10 @@ def _recorded_multiselect_interaction():
 
 def _recorded_overlapping_options_interaction():
     matches = []
-    for assistant, result in _recorded_tool_interactions("AskUserQuestion"):
-        call = _content_block(assistant, "tool_use")
+    for assistant, result in _recorded_tool_interactions(
+        claude_protocol.ASK_USER_QUESTION
+    ):
+        call = _content_block(assistant, claude_protocol.TOOL_USE_BLOCK)
         questions = call["input"]["questions"]
         for question in questions:
             if _has_overlapping_labels(question["options"]):
@@ -292,7 +293,7 @@ def test_native_skill_and_command_invocations_are_retained():
     assert session["skills_used"] == ["capture-leaf"]
     calls = []
     for call in _tool_calls_in(session):
-        if call["name"] == "Skill":
+        if call["name"] == claude_protocol.SKILL_TOOL:
             calls.append(call)
     assert len(calls) >= 2
     skills = set()
@@ -324,19 +325,25 @@ def test_native_multiselect_answer():
 
 
 def test_permission_denial_bare():
-    _, result = _recorded_tool_interaction("Write", "denied-feedback.txt")
-    assert (
-        parse_permission_denial(_content_block(result, "tool_result")["content"]) == ""
+    _, result = _recorded_tool_interaction(
+        claude_protocol.WRITE_TOOL, "denied-feedback.txt"
     )
+    actual_parse_permission_denial = parse_permission_denial(
+        _content_block(result, "tool_result")["content"]
+    )
+    assert actual_parse_permission_denial == ""
 
 
 def test_native_settings_denial_is_recorded():
-    entries = _recorded_tool_interaction("Bash", "CAPTURE_SETTINGS_REFUSAL")
+    entries = _recorded_tool_interaction(
+        claude_protocol.BASH_TOOL, "CAPTURE_SETTINGS_REFUSAL"
+    )
     _, result_entry = entries
-    result = _content_block(result_entry, "tool_result")["content"]
+    result = _content_block(result_entry, claude_protocol.TOOL_RESULT_BLOCK)["content"]
     assert isinstance(result, str)
     assert result.strip()
-    assert parse_permission_denial(result) == ""
+    actual_parse_permission_denial = parse_permission_denial(result)
+    assert actual_parse_permission_denial == ""
     interpreted_session = eclog.interpret_source(
         ClaudeSource(Path("session.jsonl"), entries)
     )
@@ -350,7 +357,7 @@ def test_native_settings_denial_is_recorded():
 
 def test_custom_answer_matches_no_option():
     entries = _recorded_tool_interaction(
-        "AskUserQuestion", result_contains="CAPTURE_CUSTOM_PLAIN_MOSS"
+        claude_protocol.ASK_USER_QUESTION, result_contains="CAPTURE_CUSTOM_PLAIN_MOSS"
     )
 
     session = eclog.interpret_source(ClaudeSource(Path("session.jsonl"), entries))
@@ -378,18 +385,22 @@ def test_multi_question_anchors_on_its_own_text():
 
 def test_task_notification_is_stripped_to_empty():
     entry = _recorded_user_message("<task-notification>")
-    assert clean_user_text(_human_text(entry)) == ""
+    actual_human_text = _human_text(entry)
+    actual_clean_user_text = clean_user_text(actual_human_text)
+    assert actual_clean_user_text == ""
 
 
 def test_bash_output_is_stripped_to_empty():
     entry = _recorded_user_message("<bash-stdout>CAPTURE_USER_STDOUT_1")
-    assert clean_user_text(entry["message"]["content"]) == ""
+    actual_clean_user_text = clean_user_text(entry["message"]["content"])
+    assert actual_clean_user_text == ""
 
 
 def test_bash_input_survives_cleaning_for_detection():
     entry = _recorded_user_message("<bash-input>printf")
     text = entry["message"]["content"]
-    assert clean_user_text(text) == text
+    actual_clean_user_text = clean_user_text(text)
+    assert actual_clean_user_text == text
     assert "CAPTURE_USER_STDOUT_1" in text
 
 
@@ -404,10 +415,12 @@ def test_strict_candidate_dirs_skip_parents():
 
 def test_encode_project_path_does_not_collapse_runs():
     # Windows paths have adjacent non-alnums (":" then "\") -- one dash each.
-    assert (
-        encode_project_path(PureWindowsPath(r"C:\Users\me\proj")) == "C--Users-me-proj"
+    actual_encode_project_path = encode_project_path(
+        PureWindowsPath("C:\\Users\\me\\proj")
     )
-    assert encode_project_path(PurePosixPath("/Users/me/proj")) == "-Users-me-proj"
+    assert actual_encode_project_path == "C--Users-me-proj"
+    actual_encode_project_path = encode_project_path(PurePosixPath("/Users/me/proj"))
+    assert actual_encode_project_path == "-Users-me-proj"
 
 
 def test_build_events_inlines_pasted_images_as_base64():
@@ -421,7 +434,7 @@ def test_build_events_inlines_pasted_images_as_base64():
     recorded_image_data = []
     for entry in entries:
         for block in entry["message"]["content"]:
-            if block["type"] == "image":
+            if block["type"] == claude_protocol.IMAGE_BLOCK:
                 recorded_image_data.append(block["source"]["data"])
 
     events = build_events(entries)
@@ -449,7 +462,8 @@ def test_build_events_inlines_pasted_images_as_base64():
 
 def test_build_events_attaches_tool_results_to_their_call():
     events = build_events(
-        _recorded_tool_interaction("Read", "multibyte.txt"), tool_result_max_bytes=100
+        _recorded_tool_interaction(claude_protocol.READ_TOOL, "multibyte.txt"),
+        tool_result_max_bytes=100,
     )
     call = _single_tool_call_in(events)
     assert call["name"] == "Read"
@@ -461,7 +475,7 @@ def test_build_events_attaches_tool_results_to_their_call():
 
 def test_large_native_result_reaches_envelope_size_warning():
     events = build_events(
-        _recorded_tool_interaction("Read", "multibyte.txt"),
+        _recorded_tool_interaction(claude_protocol.READ_TOOL, "multibyte.txt"),
         tool_result_max_bytes=100_000,
     )
     # Repeated native Read results simulate a long session without checking in 8 MB.
@@ -496,13 +510,13 @@ def test_build_events_preserves_large_write_inputs():
     entries = _recorded_session_entries()
     recorded_write_inputs = []
     for entry in entries:
-        if entry.get("type") != "assistant":
+        if entry.get("type") != claude_protocol.ASSISTANT_RECORD:
             continue
         for block in _content_blocks(entry):
             if (
                 not isinstance(block, dict)
-                or block.get("type") != "tool_use"
-                or block.get("name") != "Write"
+                or block.get("type") != claude_protocol.TOOL_USE_BLOCK
+                or block.get("name") != claude_protocol.WRITE_TOOL
             ):
                 continue
             file_path = Path(block["input"]["file_path"])
@@ -519,7 +533,7 @@ def test_build_events_preserves_large_write_inputs():
     for event in events:
         for call in event.get("tool_calls", []):
             if (
-                call["name"] == "Write"
+                call["name"] == claude_protocol.WRITE_TOOL
                 and Path(call["input"]["file_path"]).name == "large-input.txt"
             ):
                 extracted_write_inputs.append(call["input"])
@@ -544,7 +558,8 @@ def test_messages_skip_sidechain_and_retain_meta():
     session = eclog.interpret_source(
         ClaudeSource(Path("session.jsonl"), entries + sidechain)
     )
-    assert build_events(entries + sidechain) == expected
+    actual_build_events = build_events(entries + sidechain)
+    assert actual_build_events == expected
     expected_meta_ids = []
     actual_meta_ids = []
     for entry in meta_entries:
@@ -570,7 +585,7 @@ def test_build_events_surfaces_slash_command_invocations():
 
 def test_plan_approved_is_captured():
     entries = _recorded_tool_interaction(
-        "ExitPlanMode", result_contains="## Approved Plan:\n"
+        claude_protocol.EXIT_PLAN_MODE, result_contains="## Approved Plan:\n"
     )
     interpreted_session = eclog.interpret_source(
         ClaudeSource(Path("session.jsonl"), entries)
@@ -584,7 +599,7 @@ def test_plan_approved_is_captured():
 
 def test_plan_approved_with_edit_keeps_final_version():
     entries = _recorded_tool_interaction(
-        "ExitPlanMode", result_contains="(edited by user):"
+        claude_protocol.EXIT_PLAN_MODE, result_contains="(edited by user):"
     )
     interpreted_session = eclog.interpret_source(
         ClaudeSource(Path("session.jsonl"), entries)
@@ -604,7 +619,7 @@ def test_plan_approved_with_edit_keeps_final_version():
 
 def test_plan_rejected_keeps_steering_message():
     entries = _recorded_tool_interaction(
-        "ExitPlanMode", result_contains="CAPTURE_PLAN_REJECT_1:"
+        claude_protocol.EXIT_PLAN_MODE, result_contains="CAPTURE_PLAN_REJECT_1:"
     )
     interpreted_session = eclog.interpret_source(
         ClaudeSource(Path("session.jsonl"), entries)
@@ -643,7 +658,7 @@ def test_plan_rejection_reason_is_captured():
 
 def test_plan_without_result_is_marked_undecided():
     assistant, _ = _recorded_tool_interaction(
-        "ExitPlanMode", result_contains="## Approved Plan:\n"
+        claude_protocol.EXIT_PLAN_MODE, result_contains="## Approved Plan:\n"
     )
     interpreted_session = eclog.interpret_source(
         ClaudeSource(Path("session.jsonl"), [assistant])
@@ -673,7 +688,8 @@ class _patched_projects_root:
 
 
 def test_resolve_project_dir_explicit_wins():
-    assert resolve_project_dir("/some/explicit", Path("/cwd")) == Path("/some/explicit")
+    actual_resolve_project_dir = resolve_project_dir("/some/explicit", Path("/cwd"))
+    assert actual_resolve_project_dir == Path("/some/explicit")
 
 
 def test_resolve_project_dir_matches_parent_unless_strict():
@@ -681,29 +697,22 @@ def test_resolve_project_dir_matches_parent_unless_strict():
         cwd = Path("/Users/me/work/app")
         parent_encoded = encode_project_path(Path("/Users/me/work"))
         (root / parent_encoded).mkdir(parents=True)
-        assert resolve_project_dir(None, cwd, strict=False) == root / parent_encoded
-        assert resolve_project_dir(None, cwd, strict=True) is None
+        actual_resolve_project_dir = resolve_project_dir(None, cwd, strict=False)
+        assert actual_resolve_project_dir == root / parent_encoded
+        actual_resolve_project_dir = resolve_project_dir(None, cwd, strict=True)
+        assert actual_resolve_project_dir is None
 
 
 def test_jsonl_files_missing_dir_is_empty():
-    assert _jsonl_files(Path(tempfile.mkdtemp()) / "nope") == []
-
-
-def test_newest_empty_and_picks_latest_mtime():
-    assert newest([]) is None
-    tmp = Path(tempfile.mkdtemp())
-    a, b = tmp / "a.jsonl", tmp / "b.jsonl"
-    a.write_bytes(TRANSCRIPT.read_bytes())
-    b.write_bytes(TRANSCRIPT.read_bytes())
-    os.utime(a, (1, 1))
-    os.utime(b, (1000, 1000))
-    assert newest([a, b]) == b
+    actual_jsonl_files = _jsonl_files(Path(tempfile.mkdtemp()) / "nope")
+    assert actual_jsonl_files == []
 
 
 def test_select_transcript_explicit_transcript_wins():
     f = Path(tempfile.mkdtemp()) / "a.jsonl"
     f.write_bytes(TRANSCRIPT.read_bytes())
-    assert select_transcript(None, str(f), None) == f
+    actual_select_transcript = select_transcript(None, str(f), None)
+    assert actual_select_transcript == f
 
 
 def test_select_transcript_explicit_transcript_missing_raises():
@@ -714,7 +723,8 @@ def test_select_transcript_explicit_transcript_missing_raises():
 def test_select_transcript_selector_as_file_path():
     f = Path(tempfile.mkdtemp()) / "sess.jsonl"
     f.write_bytes(TRANSCRIPT.read_bytes())
-    assert select_transcript(str(f), None, None) == f
+    actual_select_transcript = select_transcript(str(f), None, None)
+    assert actual_select_transcript == f
 
 
 def _copy_with_session_id(path, session_id):
@@ -768,7 +778,8 @@ def test_select_transcript_no_selector_picks_newest_in_project_dir():
     b.write_bytes(TRANSCRIPT.read_bytes())
     os.utime(a, (1, 1))
     os.utime(b, (1000, 1000))
-    assert select_transcript(None, None, str(proj)) == b
+    actual_select_transcript = select_transcript(None, None, str(proj))
+    assert actual_select_transcript == b
 
 
 def test_select_transcript_strict_no_match_mentions_strict():
@@ -793,7 +804,8 @@ def test_select_transcript_global_fallback_picks_newest_anywhere():
         unrelated.mkdir()
         f = unrelated / "s1.jsonl"
         f.write_bytes(TRANSCRIPT.read_bytes())
-        assert select_transcript(None, None, None, strict=False) == f
+        actual_select_transcript = select_transcript(None, None, None, strict=False)
+        assert actual_select_transcript == f
 
 
 # --------------------------------------------------------------------------- #
@@ -803,48 +815,64 @@ def test_select_transcript_global_fallback_picks_newest_anywhere():
 
 def test_content_blocks_handles_none_and_non_list_content():
     entry = _recorded_user_message("Remember **CAPTURE_CONTEXT_CEDAR_73**")
-    assert _content_blocks(entry) == [
+    actual_content_blocks = _content_blocks(entry)
+    assert actual_content_blocks == [
         {"type": "text", "text": entry["message"]["content"]}
     ]
     # Malformed content containers cannot be obtained from the native capture.
     entry["message"]["content"] = None
-    assert _content_blocks(entry) == []
+    actual_content_blocks = _content_blocks(entry)
+    assert actual_content_blocks == []
     entry["message"]["content"] = {"weird": True}
-    assert _content_blocks(entry) == []
+    actual_content_blocks = _content_blocks(entry)
+    assert actual_content_blocks == []
 
 
 def test_tool_descriptor_shell_search_and_fallback():
-    assistant, _ = _recorded_tool_interaction("Bash", "CAPTURE_BASH_OK")
-    call = _content_block(assistant, "tool_use")
+    assistant, _ = _recorded_tool_interaction(
+        claude_protocol.BASH_TOOL, "CAPTURE_BASH_OK"
+    )
+    call = _content_block(assistant, claude_protocol.TOOL_USE_BLOCK)
     descriptor = tool_descriptor(call["name"], call["input"])
     assert isinstance(descriptor, str)
     assert descriptor.strip()
     # The current CLI has no Grep tool; retain its legacy descriptor boundary.
-    assert tool_descriptor("Grep", {"pattern": "foo"}) == "foo"
-    assert tool_descriptor("X", {"odd": 1}) == '{"odd": 1}'
-    assert tool_descriptor("X", None) == ""
-    assert tool_descriptor("X", "raw string input") == "raw string input"
+    actual_tool_descriptor = tool_descriptor("Grep", {"pattern": "foo"})
+    assert actual_tool_descriptor == "foo"
+    actual_tool_descriptor = tool_descriptor("X", {"odd": 1})
+    assert actual_tool_descriptor == '{"odd": 1}'
+    actual_tool_descriptor = tool_descriptor("X", None)
+    assert actual_tool_descriptor == ""
+    actual_tool_descriptor = tool_descriptor("X", "raw string input")
+    assert actual_tool_descriptor == "raw string input"
 
 
 def test_extract_file_path_variants():
-    assistant, _ = _recorded_tool_interaction("Read", "multibyte.txt")
-    read_input = _content_block(assistant, "tool_use")["input"]
-    assert extract_file_path(read_input) == "/tmp/CAPTURE_ROOT/workspace/multibyte.txt"
-    assistant, _ = _recorded_tool_interaction("NotebookEdit", "sample.ipynb")
-    notebook_input = _content_block(assistant, "tool_use")["input"]
-    assert (
-        extract_file_path(notebook_input) == "/tmp/CAPTURE_ROOT/workspace/sample.ipynb"
+    assistant, _ = _recorded_tool_interaction(
+        claude_protocol.READ_TOOL, "multibyte.txt"
     )
-    assert extract_file_path({}) is None
-    assert extract_file_path("nope") is None
+    read_input = _content_block(assistant, claude_protocol.TOOL_USE_BLOCK)["input"]
+    actual_extract_file_path = extract_file_path(read_input)
+    assert actual_extract_file_path == "/tmp/CAPTURE_ROOT/workspace/multibyte.txt"
+    assistant, _ = _recorded_tool_interaction(
+        claude_protocol.NOTEBOOK_EDIT_TOOL, "sample.ipynb"
+    )
+    notebook_input = _content_block(assistant, claude_protocol.TOOL_USE_BLOCK)["input"]
+    actual_extract_file_path = extract_file_path(notebook_input)
+    assert actual_extract_file_path == "/tmp/CAPTURE_ROOT/workspace/sample.ipynb"
+    actual_extract_file_path = extract_file_path({})
+    assert actual_extract_file_path is None
+    actual_extract_file_path = extract_file_path("nope")
+    assert actual_extract_file_path is None
 
 
 def test_is_tool_result_entry_true_for_bare_tool_use_result():
-    _, entry = _recorded_tool_interaction("Bash", "CAPTURE_BASH_OK")
+    _, entry = _recorded_tool_interaction(claude_protocol.BASH_TOOL, "CAPTURE_BASH_OK")
     # Legacy top-level result shape: remove only the result block carrying its ID.
     entry["message"]["content"] = []
     assert entry["toolUseResult"]
-    assert _is_tool_result_entry(entry) is True
+    actual_is_tool_result_entry = _is_tool_result_entry(entry)
+    assert actual_is_tool_result_entry is True
 
 
 def test_human_text_includes_plain_string_blocks():
@@ -852,28 +880,33 @@ def test_human_text_includes_plain_string_blocks():
     text = entry["message"]["content"]
     # Legacy content accepts raw strings inside a block list.
     entry["message"]["content"] = [text]
-    assert _human_text(entry) == text
+    actual_human_text = _human_text(entry)
+    assert actual_human_text == text
 
 
 def test_clean_user_text_empty_input_is_empty():
-    assert clean_user_text("") == ""
-    assert clean_user_text(None) == ""
+    actual_clean_user_text = clean_user_text("")
+    assert actual_clean_user_text == ""
+    actual_clean_user_text = clean_user_text(None)
+    assert actual_clean_user_text == ""
 
 
 def test_result_block_text_flattens_list_content():
-    _, result = _recorded_tool_interaction("Agent")
-    block = _content_block(result, "tool_result")
+    _, result = _recorded_tool_interaction(claude_protocol.AGENT_TOOL)
+    block = _content_block(result, claude_protocol.TOOL_RESULT_BLOCK)
     recorded_texts = []
     for part in block["content"]:
-        if part.get("type") == "text":
+        if part.get("type") == claude_protocol.TEXT_BLOCK:
             recorded_texts.append(part["text"])
     original = _require_single_match(recorded_texts, "result text")
-    assert _result_block_text(block) == original
+    actual_result_block_text = _result_block_text(block)
+    assert actual_result_block_text == original
     # Repeat the captured text block to exercise multi-block flattening.
     block["content"].append(
         deepcopy(_require_single_match(block["content"], "result content block"))
     )
-    assert _result_block_text(block) == original + " " + original
+    actual_result_block_text = _result_block_text(block)
+    assert actual_result_block_text == original + " " + original
 
 
 def test_native_session_keeps_commands_shell_subagents_and_files():
@@ -904,7 +937,7 @@ def test_native_session_keeps_multiselect_answers():
 
     multiselect_calls = []
     for call in _tool_calls_in(session):
-        if call["name"] != "AskUserQuestion":
+        if call["name"] != claude_protocol.ASK_USER_QUESTION:
             continue
         for question in call["input"]["questions"]:
             if question.get("multiSelect"):
@@ -922,7 +955,7 @@ def test_native_session_keeps_user_write_denial():
 
     write_calls = []
     for call in _tool_calls_in(session):
-        if call["name"] == "Write":
+        if call["name"] == claude_protocol.WRITE_TOOL:
             write_calls.append(call)
     assert write_calls
     denied_writes = []
@@ -939,16 +972,20 @@ def test_build_events_retains_unmatched_results_and_skips_invalid_blocks():
     entries = [
         {"type": "summary"},
         {
-            "type": "assistant",
+            "type": claude_protocol.ASSISTANT_RECORD,
             "timestamp": None,
             "message": {"content": ["x"]},  # non-dict block, skipped
         },
         {
-            "type": "user",
+            "type": claude_protocol.USER_RECORD,
             "timestamp": None,
             "message": {
                 "content": [
-                    {"type": "tool_result", "tool_use_id": "unknown", "content": "x"}
+                    {
+                        "type": claude_protocol.TOOL_RESULT_BLOCK,
+                        "tool_use_id": "unknown",
+                        "content": "x",
+                    }
                 ]
             },
         },
@@ -973,39 +1010,54 @@ def test_first_timestamp_comes_from_the_native_capture():
     for entry in entries:
         if entry.get("timestamp"):
             recorded_timestamps.add(entry["timestamp"])
-    assert first_timestamp(entries) in recorded_timestamps
+    actual_first_timestamp = first_timestamp(entries)
+    assert actual_first_timestamp in recorded_timestamps
 
 
 def test_session_cwd_comes_from_the_native_capture():
-    assert session_cwd(_recorded_session_entries()) == "/tmp/CAPTURE_ROOT/workspace"
+    actual_session_cwd = session_cwd(_recorded_session_entries())
+    assert actual_session_cwd == "/tmp/CAPTURE_ROOT/workspace"
 
 
 def test_synthetic_model_is_excluded():
-    assistant, _ = _recorded_tool_interaction("Read", "multibyte.txt")
+    assistant, _ = _recorded_tool_interaction(
+        claude_protocol.READ_TOOL, "multibyte.txt"
+    )
     assistant["message"]["model"] = "<synthetic>"
-    assert session_models([assistant]) == []
+    actual_session_models = session_models([assistant])
+    assert actual_session_models == []
 
 
 def test_metadata_is_absent_when_not_recorded():
-    assistant, _ = _recorded_tool_interaction("Read", "multibyte.txt")
+    assistant, _ = _recorded_tool_interaction(
+        claude_protocol.READ_TOOL, "multibyte.txt"
+    )
     assistant["timestamp"] = None
     assistant.pop("cwd", None)
-    assert first_timestamp([assistant]) is None
-    assert session_cwd([assistant]) is None
+    actual_first_timestamp = first_timestamp([assistant])
+    assert actual_first_timestamp is None
+    actual_session_cwd = session_cwd([assistant])
+    assert actual_session_cwd is None
 
 
 def test_first_timestamp_skips_messages_without_timestamps():
-    assistant, _ = _recorded_tool_interaction("Read", "multibyte.txt")
+    assistant, _ = _recorded_tool_interaction(
+        claude_protocol.READ_TOOL, "multibyte.txt"
+    )
     assistant["timestamp"] = None
     user = _recorded_user_message("Remember **CAPTURE_CONTEXT_CEDAR_73**")
     user["timestamp"] = "2026-01-01T00:00:00Z"
-    assert first_timestamp([assistant, user]) == "2026-01-01T00:00:00Z"
+    actual_first_timestamp = first_timestamp([assistant, user])
+    assert actual_first_timestamp == "2026-01-01T00:00:00Z"
 
 
 def test_empty_session_has_no_metadata():
-    assert first_timestamp([]) is None
-    assert session_models([]) == []
-    assert session_cwd([]) is None
+    actual_first_timestamp = first_timestamp([])
+    assert actual_first_timestamp is None
+    actual_session_models = session_models([])
+    assert actual_session_models == []
+    actual_session_cwd = session_cwd([])
+    assert actual_session_cwd is None
 
 
 def test_native_resumed_session_lists_multiple_models():
@@ -1050,9 +1102,12 @@ def test_build_raw_envelope_preserves_metadata_and_events():
     envelope = build_raw_envelope(Path("/wherever/sess123.jsonl"), entries)
     assert envelope["session_id"] == _capture_session_id()
     assert envelope["cwd"] == "/tmp/CAPTURE_ROOT/workspace"
-    assert envelope["started_at"] == first_timestamp(entries)
-    assert envelope["models"] == session_models(entries)
-    assert envelope["events"] == build_events(entries)
+    expected_started_at = first_timestamp(entries)
+    assert envelope["started_at"] == expected_started_at
+    expected_models = session_models(entries)
+    assert envelope["models"] == expected_models
+    expected_events = build_events(entries)
+    assert envelope["events"] == expected_events
 
 
 def test_build_raw_envelope_retains_empty_session():
@@ -1088,20 +1143,24 @@ def test_summarize_subagent_reads_meta_task_and_result(tmp_path):
 def test_summarize_subagent_returns_none_for_empty_file():
     sub = Path(tempfile.mkdtemp()) / "agent-2.jsonl"
     sub.write_text("")
-    assert summarize_subagent(sub) is None
+    actual_summarize_subagent = summarize_subagent(sub)
+    assert actual_summarize_subagent is None
 
 
 def test_load_subagents_missing_dir_is_empty():
     transcript = Path(tempfile.mkdtemp()) / "sess.jsonl"
-    assert load_subagents(transcript) == []
+    actual_load_subagents = load_subagents(transcript)
+    assert actual_load_subagents == []
 
 
 def test_load_subagents_reads_sidecar_dir(tmp_path):
     transcript = tmp_path / TRANSCRIPT.name
     shutil.copyfile(TRANSCRIPT, transcript)
     shutil.copytree(SUBAGENT.parent, tmp_path / TRANSCRIPT.stem / "subagents")
-    assert load_subagents(transcript) == load_subagents(TRANSCRIPT)
-    assert len(load_subagents(transcript)) == 1
+    copied_subagents = load_subagents(transcript)
+    fixture_subagents = load_subagents(TRANSCRIPT)
+    assert copied_subagents == fixture_subagents
+    assert len(copied_subagents) == 1
 
 
 def test_native_subagent_summary_retains_evidence_without_guessing_ownership():
@@ -1115,7 +1174,7 @@ def test_native_subagent_summary_retains_evidence_without_guessing_ownership():
     assert subs[0]["agent_type"] == meta["agentType"]
     task_entries = []
     for entry in load_entries(SUBAGENT):
-        if entry.get("type") != "user":
+        if entry.get("type") != claude_protocol.USER_RECORD:
             continue
         if _is_tool_result_entry(entry):
             continue
@@ -1173,9 +1232,8 @@ def test_main_writes_json_to_explicit_output():
         rc = main(["--transcript", str(transcript), "--output", str(out_file)])
     assert rc == 0
     assert out_file.exists()
-    assert json.loads(out_file.read_text())["events"] == build_events(
-        _recorded_session_entries()
-    )
+    expected_events = build_events(_recorded_session_entries())
+    assert json.loads(out_file.read_text())["events"] == expected_events
     assert list(out_dir.iterdir()) == [out_file]
 
 
@@ -1187,9 +1245,8 @@ def test_main_stdout_outputs_json():
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         rc = main(["--transcript", str(transcript), "--output", "-"])
     assert rc == 0
-    assert json.loads(out.getvalue())["events"] == build_events(
-        _recorded_session_entries()
-    )
+    expected_events = build_events(_recorded_session_entries())
+    assert json.loads(out.getvalue())["events"] == expected_events
 
 
 def test_main_errors_for_missing_transcript():
@@ -1289,7 +1346,8 @@ def test_cli_stdout_preserves_markdown_and_images(
     assert "using transcript:" in captured.err
     assert envelope["schema"] == "raw-session-log/1"
     assert envelope["session_id"] == _capture_session_id()
-    assert envelope["events"] == build_events(entries, 3)
+    expected_events = build_events(entries, 3)
+    assert envelope["events"] == expected_events
     user = _require_single_match(envelope["events"], "image message")
     assert user["text"] == "# Keep **recorded Markdown**"
     assert len(user["images"]) == 2
@@ -1331,7 +1389,8 @@ def test_cli_file_preserves_markdown_and_images(
     envelope = json.loads((output / filename).read_text())
     assert envelope["schema"] == "raw-session-log/1"
     assert envelope["session_id"] == _capture_session_id()
-    assert envelope["events"] == build_events(entries, 3)
+    expected_events = build_events(entries, 3)
+    assert envelope["events"] == expected_events
     user = _require_single_match(envelope["events"], "image message")
     assert user["text"] == "# Keep **recorded Markdown**"
     assert len(user["images"]) == 2
@@ -1350,13 +1409,11 @@ def test_cli_batch_emits_only_json(
     if not explicit_root:
         output.mkdir()
         monkeypatch.chdir(output)
-    assert (
-        main(
-            all_flag + ["--project-dir", str(project)],
-            project_root=output if explicit_root else None,
-        )
-        == 0
+    exit_status = main(
+        all_flag + ["--project-dir", str(project)],
+        project_root=output if explicit_root else None,
     )
+    assert exit_status == 0
     output_names = []
     for path in output.iterdir():
         output_names.append(path.name)
@@ -1365,9 +1422,8 @@ def test_cli_batch_emits_only_json(
         "claude_session_log_raw_b.json",
     ]
     for path in output.iterdir():
-        assert json.loads(path.read_text())["events"] == build_events(
-            _recorded_session_entries()
-        )
+        expected_events = build_events(_recorded_session_entries())
+        assert json.loads(path.read_text())["events"] == expected_events
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "done: 2/2" in captured.err
@@ -1380,35 +1436,37 @@ def test_cli_rejects_retired_output_flags(flag, tmp_path, capsys):
     with pytest.raises(SystemExit) as exc:
         main([*flag, "--project-dir", str(tmp_path), "--output", str(tmp_path / "out")])
     assert exc.value.code == 2
-    assert "unrecognized arguments" in capsys.readouterr().err
+    captured = capsys.readouterr()
+    assert "unrecognized arguments" in captured.err
 
 
 @pytest.mark.parametrize("limit", [0, 17, -1])
 @pytest.mark.parametrize("transcript", [TRANSCRIPT])
 def test_cli_preserves_native_payloads(transcript, limit, capsys):
-    assert (
-        main(
-            [
-                "--transcript",
-                str(transcript),
-                "--output",
-                "-",
-                "--tool-result-bytes",
-                str(limit),
-            ]
-        )
-        == 0
+    exit_status = main(
+        [
+            "--transcript",
+            str(transcript),
+            "--output",
+            "-",
+            "--tool-result-bytes",
+            str(limit),
+        ]
     )
     captured = capsys.readouterr()
+    assert exit_status == 0
     envelope = json.loads(captured.out)
     entries = load_entries(transcript)
     expected_events = build_events(entries, limit)
     assert envelope["events"] == expected_events
     assert envelope["schema"] == "raw-session-log/1"
     assert envelope["session_id"] == _capture_session_id()
-    assert envelope["cwd"] == session_cwd(entries)
-    assert envelope["started_at"] == first_timestamp(entries)
-    assert envelope["models"] == session_models(entries)
+    expected_cwd = session_cwd(entries)
+    assert envelope["cwd"] == expected_cwd
+    expected_started_at = first_timestamp(entries)
+    assert envelope["started_at"] == expected_started_at
+    expected_models = session_models(entries)
+    assert envelope["models"] == expected_models
     assert envelope["truncation"] == {"tool_result_max_bytes": limit}
     question_calls = []
     for call in _tool_calls_in(envelope):
@@ -1427,8 +1485,10 @@ def test_cli_single_selection_paths(selector, tmp_path, capsys):
     args = ["--project-dir", str(tmp_path), "--output", "-"]
     if selector != "newest":
         args += [str(transcript) if selector == "path" else TRANSCRIPT.stem[:8]]
-    assert main(args) == 0
-    assert json.loads(capsys.readouterr().out)["session_id"] == _capture_session_id()
+    exit_status = main(args)
+    captured = capsys.readouterr()
+    assert exit_status == 0
+    assert json.loads(captured.out)["session_id"] == _capture_session_id()
 
 
 @pytest.mark.parametrize("mode", ["single", "batch"])
@@ -1442,8 +1502,9 @@ def test_cli_reports_write_errors(mode, tmp_path, capsys):
     else:
         (output / "claude_session_log_raw_session.json").mkdir()
         args = ["--all", "--project-dir", str(tmp_path), "--output", str(output)]
-    assert main(args) == 1
+    exit_status = main(args)
     captured = capsys.readouterr()
+    assert exit_status == 1
     assert captured.out == ""
     assert "error" in captured.err
 
@@ -1474,17 +1535,20 @@ def test_cli_retains_malformed_line_diagnostics(tmp_path, capsys):
     # Append a deliberately interrupted record to a captured call/result pair.
     with transcript.open("a") as stream:
         stream.write('{"partial')
-    assert main(["--transcript", str(transcript), "--output", "-"]) == 0
+    exit_status = main(["--transcript", str(transcript), "--output", "-"])
     captured = capsys.readouterr()
-    assert json.loads(captured.out)["events"] == build_events(entries)
+    assert exit_status == 0
+    expected_events = build_events(entries)
+    assert json.loads(captured.out)["events"] == expected_events
     assert "skipping malformed JSON on line 3" in captured.err
 
 
 def test_cli_file_keeps_size_warning(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(session_log_envelope, "SIZE_WARN_BYTES", 1)
     output = tmp_path / "session.json"
-    assert main(["--transcript", str(TRANSCRIPT), "--output", str(output)]) == 0
+    exit_status = main(["--transcript", str(TRANSCRIPT), "--output", str(output)])
     captured = capsys.readouterr()
+    assert exit_status == 0
     assert captured.out == ""
     assert "session-log uploads are capped" in captured.err
     assert json.loads(output.read_text())["harness"] == "claude"
@@ -1493,8 +1557,9 @@ def test_cli_file_keeps_size_warning(tmp_path, monkeypatch, capsys):
 def test_cli_stdout_keeps_size_warning(monkeypatch, capsys):
     monkeypatch.setattr(session_log_envelope, "SIZE_WARN_BYTES", 1)
     transcript = TRANSCRIPT
-    assert main(["--transcript", str(transcript), "--output", "-"]) == 0
+    exit_status = main(["--transcript", str(transcript), "--output", "-"])
     captured = capsys.readouterr()
+    assert exit_status == 0
     assert json.loads(captured.out)["harness"] == "claude"
     assert "warning: stdout JSON is" in captured.err
     assert "consider a lower --tool-result-bytes" in captured.err
@@ -1508,7 +1573,7 @@ def test_cli_exports_empty_sessions(destination, contents, tmp_path, capsys):
     entries = []
     if contents == "native":
         for entry in _recorded_session_entries():
-            if entry.get("type") == "system":
+            if entry.get("type") == claude_protocol.SYSTEM_RECORD:
                 entries.append(entry)
         assert entries, "Capture must contain bookkeeping records"
         _write_jsonl(transcript, entries)
@@ -1538,9 +1603,12 @@ def test_cli_exports_empty_sessions(destination, contents, tmp_path, capsys):
     expected_id = _capture_session_id() if contents == "native" else "session"
     assert envelope["session_id"] == expected_id
     assert envelope["events"] == []
-    assert envelope["cwd"] == session_cwd(entries)
-    assert envelope["started_at"] == first_timestamp(entries)
-    assert envelope["models"] == session_models(entries)
+    expected_cwd = session_cwd(entries)
+    assert envelope["cwd"] == expected_cwd
+    expected_started_at = first_timestamp(entries)
+    assert envelope["started_at"] == expected_started_at
+    expected_models = session_models(entries)
+    assert envelope["models"] == expected_models
     assert "warning:" not in captured.err
 
 
@@ -1557,7 +1625,8 @@ def test_cli_default_root_uses_current_directory(batch, tmp_path, monkeypatch):
             if batch
             else ["--transcript", str(transcript)]
         )
-        assert main(arguments) == 0
+        exit_status = main(arguments)
+        assert exit_status == 0
         assert json.loads((output / "claude_session_log_raw_session.json").read_text())[
             "events"
         ]
@@ -1570,7 +1639,7 @@ def test_interpret_supplied_source_without_filesystem(limit, fixture, monkeypatc
     if fixture == "images":
         entries = [_recorded_user_message("CAPTURE_IMAGES_SAME:")]
     elif fixture == "multibyte":
-        entries = _recorded_tool_interaction("Read", "multibyte.txt")
+        entries = _recorded_tool_interaction(claude_protocol.READ_TOOL, "multibyte.txt")
     source = ClaudeSource(Path("/unavailable/session.jsonl"), entries)
     expected_events = build_events(entries, limit)
     expected_id = _capture_session_id()
@@ -1583,13 +1652,14 @@ def test_interpret_supplied_source_without_filesystem(limit, fixture, monkeypatc
             guard.setattr(Path, method, forbidden)
         session = eclog.interpret_source(source)
         assert session["session_id"] == expected_id
-        assert (
-            session_log_envelope.export_session(session, limit)["events"]
-            == expected_events
-        )
-        assert session["cwd"] == session_cwd(entries)
-        assert session["started_at"] == first_timestamp(entries)
-        assert session["models"] == session_models(entries)
+        exported = session_log_envelope.export_session(session, limit)
+        assert exported["events"] == expected_events
+        expected_cwd = session_cwd(entries)
+        assert session["cwd"] == expected_cwd
+        expected_started_at = first_timestamp(entries)
+        assert session["started_at"] == expected_started_at
+        expected_models = session_models(entries)
+        assert session["models"] == expected_models
         empty_session = eclog.interpret_source(ClaudeSource(source.path, []))
         assert empty_session["events"] == []
 
@@ -1609,8 +1679,12 @@ def test_interpret_supplied_subagent_without_filesystem(with_metadata, monkeypat
 
     monkeypatch.setattr(Path, "open", forbidden)
     monkeypatch.setattr(Path, "is_file", forbidden)
-    assert eclog.summarize_subagent_source(source) == expected
-    assert eclog.summarize_subagent_source(ClaudeSource(source.path, [])) is None
+    actual_summarize_subagent_source = eclog.summarize_subagent_source(source)
+    assert actual_summarize_subagent_source == expected
+    actual_summarize_subagent_source = eclog.summarize_subagent_source(
+        ClaudeSource(source.path, [])
+    )
+    assert actual_summarize_subagent_source is None
 
 
 @pytest.mark.parametrize("metadata", [None, "bad JSON", "[]", "null", "{}"])
@@ -1621,7 +1695,8 @@ def test_source_reader_metadata_fallback(metadata, tmp_path):
         transcript.with_suffix(".meta.json").write_text(metadata)
     source = read_source(transcript, read_metadata=True)
     assert source.path == transcript
-    assert eclog.summarize_subagent_source(source)["agent_type"] == "subagent"
+    actual_summarize_subagent_source = eclog.summarize_subagent_source(source)
+    assert actual_summarize_subagent_source["agent_type"] == "subagent"
 
 
 def test_source_reader_metadata_read_error(tmp_path, monkeypatch):
@@ -1636,7 +1711,8 @@ def test_source_reader_metadata_read_error(tmp_path, monkeypatch):
         raise OSError("unreadable metadata")
 
     monkeypatch.setattr(Path, "read_text", unreadable)
-    assert read_source(transcript, read_metadata=True).metadata == {}
+    actual_read_source = read_source(transcript, read_metadata=True)
+    assert actual_read_source.metadata == {}
 
 
 def test_source_reader_keeps_diagnostics_and_read_errors(tmp_path, capsys):
@@ -1644,14 +1720,16 @@ def test_source_reader_keeps_diagnostics_and_read_errors(tmp_path, capsys):
     transcript.write_bytes(b'\n{"type":"user"}\ninvalid\n{"text":"\xff"}\n[]\n')
     source = read_source(transcript)
     assert source.entries == [{"type": "user"}, {"text": "\ufffd"}]
-    assert "skipping malformed JSON on line 3" in capsys.readouterr().err
+    captured = capsys.readouterr()
+    assert "skipping malformed JSON on line 3" in captured.err
     with pytest.raises(FileNotFoundError):
         read_source(tmp_path / "missing.jsonl")
 
 
 def test_source_reader_discovers_sidecars_in_filename_order(tmp_path):
     transcript = tmp_path / "session.jsonl"
-    assert read_subagent_sources(transcript) == []
+    actual_read_subagent_sources = read_subagent_sources(transcript)
+    assert actual_read_subagent_sources == []
     directory = tmp_path / "session" / "subagents"
     directory.mkdir(parents=True)
     for name in ["b", "a"]:
@@ -1686,7 +1764,7 @@ def test_subagent_reader_skips_empty_metadata_and_preserves_summary_order(tmp_pa
         # Vary timestamps and label each task so ordering remains observable.
         for entry in entries:
             entry["timestamp"] = timestamp
-            if entry.get("type") == "user":
+            if entry.get("type") == claude_protocol.USER_RECORD:
                 entry["message"]["content"] = name
         _write_jsonl(directory / f"{name}.jsonl", entries)
     (directory / "empty.jsonl").touch()
@@ -1710,11 +1788,12 @@ def test_main_source_does_not_read_sidecars_or_metadata(monkeypatch):
         guard.setattr(Path, "is_file", forbidden)
         guard.setattr(Path, "read_text", forbidden)
         envelope = extract_transcript(transcript)
-    assert envelope == build_raw_envelope(transcript, entries)
+    expected_envelope = build_raw_envelope(transcript, entries)
+    assert envelope == expected_envelope
 
 
 def test_interpretation_retains_full_results_until_shared_export():
-    entries = _recorded_tool_interaction("Read", "multibyte.txt")
+    entries = _recorded_tool_interaction(claude_protocol.READ_TOOL, "multibyte.txt")
     source = ClaudeSource(Path("/unavailable/session.jsonl"), entries)
     session = eclog.interpret_source(source)
     call = _single_tool_call_in(session["events"])
@@ -1734,23 +1813,31 @@ def test_cli_reaches_shared_exporter(monkeypatch, capsys):
         return original(session, tool_result_max_bytes)
 
     monkeypatch.setattr(session_log_envelope, "export_session", exporting)
-    assert main(["--transcript", str(TRANSCRIPT), "--output", "-"]) == 0
-    assert json.loads(capsys.readouterr().out)["events"]
+    exit_status = main(["--transcript", str(TRANSCRIPT), "--output", "-"])
+    captured = capsys.readouterr()
+    assert exit_status == 0
+    assert json.loads(captured.out)["events"]
     assert len(seen) == 1
 
 
 @pytest.mark.parametrize("same_id", [False, True])
 def test_repeated_calls_keep_order_and_native_result_associations(same_id):
-    assistant, result = _recorded_tool_interaction("Read", "multibyte.txt")
+    assistant, result = _recorded_tool_interaction(
+        claude_protocol.READ_TOOL, "multibyte.txt"
+    )
     again = deepcopy(assistant)
     again_result = deepcopy(result)
-    first_call = _content_block(assistant, "tool_use")
-    second_call = _content_block(again, "tool_use")
+    first_call = _content_block(assistant, claude_protocol.TOOL_USE_BLOCK)
+    second_call = _content_block(again, claude_protocol.TOOL_USE_BLOCK)
     # Repeat the captured Read, changing only identity/output to expose association.
     if not same_id:
         second_call["id"] = "second-call"
-    _content_block(again_result, "tool_result")["tool_use_id"] = second_call["id"]
-    _content_block(again_result, "tool_result")["content"] = "second output"
+    _content_block(again_result, claude_protocol.TOOL_RESULT_BLOCK)["tool_use_id"] = (
+        second_call["id"]
+    )
+    _content_block(again_result, claude_protocol.TOOL_RESULT_BLOCK)["content"] = (
+        "second output"
+    )
     if same_id:
         entries = [assistant, result, again, again_result]
     else:
@@ -1774,8 +1861,10 @@ def test_repeated_calls_keep_order_and_native_result_associations(same_id):
 
 @pytest.mark.parametrize("result_kind", ["missing", "empty", "null", "error"])
 def test_missing_and_empty_results_preserve_claude_json_contract(result_kind):
-    assistant, result = _recorded_tool_interaction("Read", "multibyte.txt")
-    block = _content_block(result, "tool_result")
+    assistant, result = _recorded_tool_interaction(
+        claude_protocol.READ_TOOL, "multibyte.txt"
+    )
+    block = _content_block(result, claude_protocol.TOOL_RESULT_BLOCK)
     # Keep the captured association; vary only the result boundary under test.
     block["content"] = None if result_kind == "null" else ""
     if result_kind == "error":
@@ -1795,12 +1884,14 @@ def test_missing_and_empty_results_preserve_claude_json_contract(result_kind):
 
 def test_images_remain_owned_by_their_recorded_user_event():
     image_entries = [_recorded_user_message("CAPTURE_IMAGES_SAME:")]
-    assistant, result = _recorded_tool_interaction("Read", "multibyte.txt")
+    assistant, result = _recorded_tool_interaction(
+        claude_protocol.READ_TOOL, "multibyte.txt"
+    )
     # Put captured image blocks on result/assistant records: the existing Claude
     # JSON contract includes only human message images; expansion is deferred.
     images = []
     for block in image_entries[0]["message"]["content"]:
-        if block["type"] == "image":
+        if block["type"] == claude_protocol.IMAGE_BLOCK:
             images.append(block)
     assistant["message"]["content"].extend(deepcopy(images))
     result["message"]["content"].extend(deepcopy(images))
@@ -1819,7 +1910,7 @@ def test_images_remain_owned_by_their_recorded_user_event():
 
 
 def test_recorded_skills_deduplicate_and_ignore_empty_names():
-    pairs = _recorded_tool_interactions("Skill", "capture-leaf")
+    pairs = _recorded_tool_interactions(claude_protocol.SKILL_TOOL, "capture-leaf")
     assert len(pairs) >= 2
     entries = []
     for pair in pairs:
@@ -1827,7 +1918,7 @@ def test_recorded_skills_deduplicate_and_ignore_empty_names():
     # Add the same empty-name boundary to each native invocation; none is chosen
     # by occurrence, timestamp, or ID when the invocations are semantically equal.
     for assistant, _ in pairs:
-        skill = _content_block(assistant, "tool_use")
+        skill = _content_block(assistant, claude_protocol.TOOL_USE_BLOCK)
         empty = deepcopy(skill)
         empty["input"] = {"skill": ""}
         assistant["message"]["content"].append(empty)
@@ -1837,7 +1928,7 @@ def test_recorded_skills_deduplicate_and_ignore_empty_names():
     assert interpreted_session["skills_used"] == ["capture-leaf"]
     calls = []
     for call in _tool_calls_in(interpreted_session):
-        if call["name"] == "Skill":
+        if call["name"] == claude_protocol.SKILL_TOOL:
             calls.append(call)
     assert len(calls) == 2 * len(pairs)
     named_skill_count = 0
@@ -1878,7 +1969,7 @@ def test_question_stays_with_its_call_across_a_later_user_message():
 
 def test_plan_stays_with_its_call_across_a_later_user_message():
     assistant, result = _recorded_tool_interaction(
-        "ExitPlanMode", result_contains="## Approved Plan:\n"
+        claude_protocol.EXIT_PLAN_MODE, result_contains="## Approved Plan:\n"
     )
     later = _recorded_user_message("Remember **CAPTURE_CONTEXT_CEDAR_73**")
     # Insert a human message between the recorded call and its result.
@@ -1902,7 +1993,9 @@ def test_plan_stays_with_its_call_across_a_later_user_message():
 
 
 def test_permission_denial_stays_with_its_call_across_a_later_user_message():
-    assistant, result = _recorded_tool_interaction("Bash", "CAPTURE_SETTINGS_REFUSAL")
+    assistant, result = _recorded_tool_interaction(
+        claude_protocol.BASH_TOOL, "CAPTURE_SETTINGS_REFUSAL"
+    )
     later = _recorded_user_message("Remember **CAPTURE_CONTEXT_CEDAR_73**")
     # Insert a human message between the recorded call and its result.
 
@@ -1925,7 +2018,9 @@ def test_permission_denial_stays_with_its_call_across_a_later_user_message():
 
 
 def test_native_message_and_result_identities_survive_interpretation():
-    assistant, result = _recorded_tool_interaction("Read", "multibyte.txt")
+    assistant, result = _recorded_tool_interaction(
+        claude_protocol.READ_TOOL, "multibyte.txt"
+    )
     session = eclog.interpret_source(
         ClaudeSource(Path("session.jsonl"), [assistant, result])
     )
@@ -1940,9 +2035,11 @@ def test_native_message_and_result_identities_survive_interpretation():
 
 
 def test_unmatched_result_retains_content_without_inventing_an_owner():
-    assistant, result = _recorded_tool_interaction("Read", "multibyte.txt")
+    assistant, result = _recorded_tool_interaction(
+        claude_protocol.READ_TOOL, "multibyte.txt"
+    )
     # Change only the result ID so the captured result has no matching call.
-    block = _content_block(result, "tool_result")
+    block = _content_block(result, claude_protocol.TOOL_RESULT_BLOCK)
     block["tool_use_id"] = "unknown-call"
     session = eclog.interpret_source(
         ClaudeSource(Path("session.jsonl"), [assistant, result])
@@ -1959,7 +2056,7 @@ def test_unmatched_result_retains_content_without_inventing_an_owner():
 def test_malformed_question_options_preserve_input_and_allow_extraction(options):
     assistant, result = _recorded_multiselect_interaction()
     entries = [assistant, result]
-    block = _content_block(assistant, "tool_use")
+    block = _content_block(assistant, claude_protocol.TOOL_USE_BLOCK)
     # Vary only the options container in the audited question fixture.
     _native_question_in(block["input"], multi_select=True)["options"] = options
     session = eclog.interpret_source(ClaudeSource(Path("session.jsonl"), entries))
@@ -1977,7 +2074,9 @@ def test_malformed_question_options_preserve_input_and_allow_extraction(options)
 
 @pytest.mark.parametrize("payload", [{"stdout": "output"}, "output", {}, "", False])
 def test_top_level_result_preserves_payload_without_inventing_an_owner(payload):
-    assistant, result = _recorded_tool_interaction("Read", "multibyte.txt")
+    assistant, result = _recorded_tool_interaction(
+        claude_protocol.READ_TOOL, "multibyte.txt"
+    )
     # Model the older result-only shape by moving the captured result to the
     # top level and removing the block that carries its call ID.
     result["message"]["content"] = []
@@ -1998,7 +2097,9 @@ def test_top_level_result_preserves_payload_without_inventing_an_owner(payload):
 
 
 def test_top_level_result_does_not_duplicate_a_recorded_result_block():
-    assistant, result = _recorded_tool_interaction("Read", "multibyte.txt")
+    assistant, result = _recorded_tool_interaction(
+        claude_protocol.READ_TOOL, "multibyte.txt"
+    )
     result["toolUseResult"] = {"stdout": "duplicate output"}
     session = eclog.interpret_source(
         ClaudeSource(Path("session.jsonl"), [assistant, result])
@@ -2008,9 +2109,11 @@ def test_top_level_result_does_not_duplicate_a_recorded_result_block():
 
 
 def test_unknown_tool_payload_is_preserved_and_reported(tmp_path, capsys):
-    assistant, result = _recorded_tool_interaction("Read", "multibyte.txt")
+    assistant, result = _recorded_tool_interaction(
+        claude_protocol.READ_TOOL, "multibyte.txt"
+    )
     # Change only the captured tool name and extend its input to model a plugin.
-    block = _content_block(assistant, "tool_use")
+    block = _content_block(assistant, claude_protocol.TOOL_USE_BLOCK)
     block["name"] = "plugin__DeployService"
     block["input"]["plugin_options"] = {
         "targets": [None, True, 1.5, {"region": "east"}]
@@ -2044,7 +2147,7 @@ def test_unknown_tool_payload_is_preserved_and_reported(tmp_path, capsys):
 def test_question_options_are_checked_without_losing_recorded_payload():
     assistant, result = _recorded_multiselect_interaction()
     entries = [assistant, result]
-    block = _content_block(assistant, "tool_use")
+    block = _content_block(assistant, claude_protocol.TOOL_USE_BLOCK)
     options = _native_question_in(block["input"], multi_select=True)["options"]
     # Extend a recorded option and introduce malformed known fields. Semantic
     # parsing uses checked options while the complete native input survives.
@@ -2077,9 +2180,11 @@ def test_question_options_are_checked_without_losing_recorded_payload():
 
 @pytest.mark.parametrize("name", ["bash", "view", "edit", "create", "skill"])
 def test_claude_reports_copilot_tool_names_as_unsupported(name):
-    assistant, result = _recorded_tool_interaction("Read", "multibyte.txt")
+    assistant, result = _recorded_tool_interaction(
+        claude_protocol.READ_TOOL, "multibyte.txt"
+    )
     # Change only the captured name to the other harness's vocabulary.
-    block = _content_block(assistant, "tool_use")
+    block = _content_block(assistant, claude_protocol.TOOL_USE_BLOCK)
     block["name"] = name
     session = eclog.interpret_source(
         ClaudeSource(Path("session.jsonl"), [assistant, result])
@@ -2097,18 +2202,18 @@ def test_claude_reports_copilot_tool_names_as_unsupported(name):
 def _plan_result_variant(text):
     # Legacy rejection-reason wording is absent from the current CLI capture.
     assistant, result = _recorded_tool_interaction(
-        "ExitPlanMode", result_contains="CAPTURE_PLAN_REJECT_1:"
+        claude_protocol.EXIT_PLAN_MODE, result_contains="CAPTURE_PLAN_REJECT_1:"
     )
-    _content_block(result, "tool_result")["content"] = text
+    _content_block(result, claude_protocol.TOOL_RESULT_BLOCK)["content"] = text
     return [assistant, result]
 
 
 def test_legacy_edited_heading_preserves_explicit_version_evidence():
     # The earlier audited plan fixture echoed an unchanged plan under this heading.
     assistant, result = _recorded_tool_interaction(
-        "ExitPlanMode", result_contains="## Approved Plan:\n"
+        claude_protocol.EXIT_PLAN_MODE, result_contains="## Approved Plan:\n"
     )
-    block = _content_block(result, "tool_result")
+    block = _content_block(result, claude_protocol.TOOL_RESULT_BLOCK)
     block["content"] = block["content"].replace(
         "## Approved Plan:", "## Approved Plan (edited by user):"
     )
@@ -2137,7 +2242,7 @@ def test_legacy_image_media_types_are_preserved(media_type):
     ).decode()
     sources = []
     for block in _content_blocks(entry):
-        if isinstance(block, dict) and block.get("type") == "image":
+        if isinstance(block, dict) and block.get("type") == claude_protocol.IMAGE_BLOCK:
             sources.append(block["source"])
     assert sources
     for source in sources:
@@ -2152,8 +2257,10 @@ def test_legacy_image_media_types_are_preserved(media_type):
 
 def test_legacy_dont_ask_denial_without_command_is_recorded():
     # Claude 2.1.292 omitted the command from its settings denial preamble.
-    assistant, result = _recorded_tool_interaction("Bash", "CAPTURE_SETTINGS_REFUSAL")
-    _content_block(result, "tool_result")["content"] = (
+    assistant, result = _recorded_tool_interaction(
+        claude_protocol.BASH_TOOL, "CAPTURE_SETTINGS_REFUSAL"
+    )
+    _content_block(result, claude_protocol.TOOL_RESULT_BLOCK)["content"] = (
         "Permission to use Bash has been denied."
     )
     interpreted_session = eclog.interpret_source(
@@ -2170,7 +2277,7 @@ def _question_text_replacements(entries):
         for block in _content_blocks(entry):
             if not isinstance(block, dict):
                 continue
-            if block.get("name") != "AskUserQuestion":
+            if block.get("name") != claude_protocol.ASK_USER_QUESTION:
                 continue
             for question in block["input"]["questions"]:
                 for field in ("question", "header"):
@@ -2209,11 +2316,14 @@ def varied_native_entries():
             if not isinstance(block, dict):
                 continue
             block_type = block.get("type")
-            if entry.get("type") == "assistant" and block_type == "text":
+            if (
+                entry.get("type") == claude_protocol.ASSISTANT_RECORD
+                and block_type == "text"
+            ):
                 block["text"] = "A different generated response."
-            if block_type == "tool_use":
+            if block_type == claude_protocol.TOOL_USE_BLOCK:
                 block["id"] = "regenerated-" + block["id"]
-            elif block_type == "tool_result":
+            elif block_type == claude_protocol.TOOL_RESULT_BLOCK:
                 block["tool_use_id"] = "regenerated-" + block["tool_use_id"]
         content = entry.get("message", {}).get("content")
         if isinstance(content, list):
@@ -2271,10 +2381,12 @@ def test_tool_selection_tolerates_changed_capture(varied_native_entries, monkeyp
     monkeypatch.setattr(
         __name__ + "._recorded_session_entries", lambda: varied_native_entries
     )
-    assistant, result = _recorded_tool_interaction("Read", "multibyte.txt")
+    assistant, result = _recorded_tool_interaction(
+        claude_protocol.READ_TOOL, "multibyte.txt"
+    )
 
-    call = _content_block(assistant, "tool_use")
-    result_block = _content_block(result, "tool_result")
+    call = _content_block(assistant, claude_protocol.TOOL_USE_BLOCK)
+    result_block = _content_block(result, claude_protocol.TOOL_RESULT_BLOCK)
     assert Path(call["input"]["file_path"]).name == "multibyte.txt"
     assert result_block["tool_use_id"] == call["id"]
     assert "CAPTURE_MULTIBYTE" in result_block["content"]
@@ -2296,7 +2408,9 @@ def test_user_message_selection_tolerates_changed_capture(
 def test_fixture_selection_rejects_missing_or_ambiguous_activity(
     duplicate, monkeypatch
 ):
-    assistant, result = _recorded_tool_interaction("Read", "multibyte.txt")
+    assistant, result = _recorded_tool_interaction(
+        claude_protocol.READ_TOOL, "multibyte.txt"
+    )
     entries = [assistant, deepcopy(assistant), result] if duplicate else []
     monkeypatch.setattr(__name__ + "._recorded_session_entries", lambda: entries)
     message = "Expected one Read activity" if duplicate else "Missing Read activity"
@@ -2354,7 +2468,8 @@ def test_cli_batch_retains_successes_after_failure(
         (output / "claude_session_log_raw_populated.json").read_text()
     )
     assert empty["events"] == []
-    assert populated["events"] == build_events(_recorded_session_entries())
+    expected_events = build_events(_recorded_session_entries())
+    assert populated["events"] == expected_events
 
 
 def test_cli_batch_reports_output_directory_failure(tmp_path, capsys):
@@ -2402,7 +2517,8 @@ def test_cli_diagnoses_non_objects_without_losing_valid_records(tmp_path, capsys
 
     captured = capsys.readouterr()
     assert status == 0
-    assert json.loads(captured.out)["events"] == build_events(entries)
+    expected_events = build_events(entries)
+    assert json.loads(captured.out)["events"] == expected_events
     assert str(transcript) in captured.err
     assert "line 4" in captured.err
     assert "line 5" in captured.err

@@ -3,6 +3,12 @@
 import re
 from typing import Final
 
+from session_log_extractors.codex_protocol import (
+    READ_SKILL,
+    SELECTED_SKILL_INSTRUCTIONS,
+    SKILL,
+    SKILLS_READ,
+)
 from session_log_extractors.json_types import JsonValue, json_value
 from session_log_extractors.session_model import (
     ActionActivityReference,
@@ -22,7 +28,7 @@ _SKILL_TOKEN = re.compile(r"(?<![\w\[$])\$([A-Za-z0-9][\w:.-]*)")
 _SLASH = re.compile(r"^\s*(/[A-Za-z0-9][\w:.-]*)(?:[ \t]+(.*))?$", re.DOTALL)
 _COMMAND = re.compile(r"<command-name>\s*(/[^<]+?)\s*</command-name>")
 _ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.DOTALL)
-_SKILL_TOOLS: Final = frozenset(("skill", "read_skill", "skills.read"))
+_SKILL_TOOLS: Final = frozenset((SKILL, READ_SKILL, SKILLS_READ))
 
 
 def _evidence(field: str, value: JsonValue) -> list[ActionEvidence]:
@@ -141,15 +147,13 @@ def _selected_expansions(session: Session) -> None:
         invocation["evidence"].extend(
             _evidence("selected_skill.message_id", message.get("id"))
             + _evidence("selected_skill.content", message.get("text"))
-            + _evidence("content_item_kinds", ["skills.selected_skill_instructions"])
+            + _evidence("content_item_kinds", [SELECTED_SKILL_INSTRUCTIONS])
         )
 
 
 def _call_invocation(call: ToolCall, message: Message, index: int) -> None:
     name = call["name"].replace("__", ".").lower()
-    canonical = (
-        "skills.read" if name.endswith("skills.read") else name.rsplit(".", 1)[-1]
-    )
+    canonical = SKILLS_READ if name.endswith(SKILLS_READ) else name.rsplit(".", 1)[-1]
     arguments = json_value(call.get("input"))
     if canonical not in _SKILL_TOOLS or not isinstance(arguments, dict):
         return

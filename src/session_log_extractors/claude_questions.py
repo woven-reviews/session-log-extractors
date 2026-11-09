@@ -6,11 +6,18 @@ call. Repeated keys, missing IDs, and duplicate call IDs retain ambiguity.
 
 import re
 
+from session_log_extractors.claude_content import result_text as _result_text
+from session_log_extractors.claude_protocol import (
+    ASK_USER_QUESTION as ASK_USER_QUESTION,
+)
+from session_log_extractors.claude_protocol import (
+    REJECTED_PREFIX,
+    REJECTED_RESULT,
+    SETTINGS_RULE,
+    USER_REJECTED,
+)
 from session_log_extractors.json_types import JsonValue
 from session_log_extractors.session_model import (
-    REFUSAL_CANDIDATE,
-    REFUSAL_SETTINGS,
-    REFUSAL_UNKNOWN,
     Message,
     Question,
     QuestionActivityReference,
@@ -21,16 +28,12 @@ from session_log_extractors.session_model import (
     QuestionResponse,
     QuestionResponseOutcome,
     QuestionSelection,
+    RefusalSource,
     ToolCall,
     ToolResult,
 )
 
-ASK_USER_QUESTION = "AskUserQuestion"
 _NOTES_ONLY = "(notes only)"
-_USER_REJECTED = "user-rejected"
-_REJECTED_RESULT = "User rejected tool use"
-_REJECTED_PREFIX = "The user doesn't want to proceed with this tool use."
-_SETTINGS_DENIED = "permission-rule"
 _RECOMMENDED = "(Recommended)"
 _TEXT_PREFIXES = ("Your questions have been answered: ", "The user answered: ")
 _TEXT_SUFFIXES = (
@@ -173,29 +176,14 @@ def _selections(value: str, question: Question) -> list[QuestionSelection]:
     return selections
 
 
-def _result_text(content: JsonValue) -> str:
-    if isinstance(content, str):
-        return content
-    if not isinstance(content, list):
-        return ""
-    parts: list[str] = []
-    for block in content:
-        if not isinstance(block, dict) or block.get("type") != "text":
-            continue
-        text = block.get("text")
-        if isinstance(text, str):
-            parts.append(text)
-    return " ".join(parts)
-
-
 def _denial_evidence(record: ToolResult) -> QuestionEvidence | None:
     kind = record.get("native_denial_kind")
     if kind:
         return QuestionEvidence(field="toolDenialKind", value=kind)
-    if record.get("native_result") == _REJECTED_RESULT:
-        return QuestionEvidence(field="toolUseResult", value=_REJECTED_RESULT)
+    if record.get("native_result") == REJECTED_RESULT:
+        return QuestionEvidence(field="toolUseResult", value=REJECTED_RESULT)
     content = _result_text(record.get("content"))
-    if content.startswith(_REJECTED_PREFIX):
+    if content.startswith(REJECTED_PREFIX):
         return QuestionEvidence(
             field="tool_result.content", value=record.get("content")
         )
@@ -308,11 +296,11 @@ class _ClaudeQuestionInterpreter:
         activity: QuestionActivityReference | None,
         denial: QuestionEvidence,
     ) -> None:
-        refusal = QuestionRefusal(by=REFUSAL_UNKNOWN)
-        if denial["field"] != "toolDenialKind" or denial["value"] == _USER_REJECTED:
-            refusal["by"] = REFUSAL_CANDIDATE
-        elif record.get("native_denial_kind") == _SETTINGS_DENIED:
-            refusal["by"] = REFUSAL_SETTINGS
+        refusal = QuestionRefusal(by=RefusalSource.UNKNOWN.value)
+        if denial["field"] != "toolDenialKind" or denial["value"] == USER_REJECTED:
+            refusal["by"] = RefusalSource.CANDIDATE.value
+        elif record.get("native_denial_kind") == SETTINGS_RULE:
+            refusal["by"] = RefusalSource.SETTINGS.value
         evidence = [denial]
         if activity is not None:
             evidence = activity["evidence"] + evidence

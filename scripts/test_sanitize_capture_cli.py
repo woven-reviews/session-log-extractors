@@ -30,11 +30,14 @@ def test_cli_produces_repeatable_output_and_reports_with_no_input_changes(
         "--format",
         "jsonl",
     ]
-    assert main(args) == 0
+    exit_status = main(args)
+    assert exit_status == 0
     first_report = capsys.readouterr().out
     first_output = output.read_bytes()
-    assert main(args) == 0
-    assert capsys.readouterr().out == first_report
+    exit_status = main(args)
+    captured = capsys.readouterr()
+    assert exit_status == 0
+    assert captured.out == first_report
     assert output.read_bytes() == first_output
     assert source.read_bytes() == original
     assert json.loads(first_output) == {"uuid": "native-id", "text": "[REDACTED_EMAIL]"}
@@ -110,7 +113,8 @@ def test_entrypoints_use_the_same_rules_and_report(
     assert error.value.code == 0
     assert output.read_text() == "[REDACTED_EMAIL]"
     assert json.loads(report.read_text())["redactions"][1]["matches"] == 1
-    assert capsys.readouterr().out == ""
+    captured = capsys.readouterr()
+    assert captured.out == ""
 
 
 @pytest.fixture
@@ -137,9 +141,11 @@ def test_cli_rejects_source_as_output(sanitizer_files, capsys):
         str(report),
     ]
 
-    assert main(args) == 1
+    exit_status = main(args)
+    assert exit_status == 1
 
-    assert "error:" in capsys.readouterr().err
+    captured = capsys.readouterr()
+    assert "error:" in captured.err
     assert source.read_text() == "private-malformed-content"
     assert rules.read_text() == "{}"
 
@@ -157,9 +163,11 @@ def test_cli_rejects_rules_as_output(sanitizer_files, capsys):
         str(report),
     ]
 
-    assert main(args) == 1
+    exit_status = main(args)
+    assert exit_status == 1
 
-    assert "error:" in capsys.readouterr().err
+    captured = capsys.readouterr()
+    assert "error:" in captured.err
     assert source.read_text() == "private-malformed-content"
     assert rules.read_text() == "{}"
 
@@ -177,9 +185,11 @@ def test_cli_rejects_report_as_output(sanitizer_files, capsys):
         str(report),
     ]
 
-    assert main(args) == 1
+    exit_status = main(args)
+    assert exit_status == 1
 
-    assert "error:" in capsys.readouterr().err
+    captured = capsys.readouterr()
+    assert "error:" in captured.err
     assert source.read_text() == "private-malformed-content"
     assert rules.read_text() == "{}"
 
@@ -197,9 +207,11 @@ def test_cli_rejects_symlink_to_source_as_output(sanitizer_files, capsys):
         str(report),
     ]
 
-    assert main(args) == 1
+    exit_status = main(args)
+    assert exit_status == 1
 
-    assert "error:" in capsys.readouterr().err
+    captured = capsys.readouterr()
+    assert "error:" in captured.err
     assert source.read_text() == "private-malformed-content"
     assert rules.read_text() == "{}"
 
@@ -217,9 +229,11 @@ def test_cli_rejects_hardlink_to_source_as_output(sanitizer_files, capsys):
         str(report),
     ]
 
-    assert main(args) == 1
+    exit_status = main(args)
+    assert exit_status == 1
 
-    assert "error:" in capsys.readouterr().err
+    captured = capsys.readouterr()
+    assert "error:" in captured.err
     assert source.read_text() == "private-malformed-content"
     assert rules.read_text() == "{}"
 
@@ -229,7 +243,8 @@ def test_cli_reports_missing_source_without_echoing_source(sanitizer_files, caps
     source.unlink()
     args = [str(source), "--rules", str(rules), "--output", str(output)]
 
-    assert main(args) == 1
+    exit_status = main(args)
+    assert exit_status == 1
 
     captured = capsys.readouterr()
     assert captured.out == ""
@@ -242,7 +257,8 @@ def test_cli_reports_invalid_rules_without_echoing_source(sanitizer_files, capsy
     rules.write_text('{"unexpected": true}')
     args = [str(source), "--rules", str(rules), "--output", str(output)]
 
-    assert main(args) == 1
+    exit_status = main(args)
+    assert exit_status == 1
 
     captured = capsys.readouterr()
     assert captured.out == ""
@@ -258,7 +274,8 @@ def test_cli_reports_invalid_jsonl_without_echoing_source(sanitizer_files, capsy
         "jsonl",
     ]
 
-    assert main(args) == 1
+    exit_status = main(args)
+    assert exit_status == 1
 
     captured = capsys.readouterr()
     assert captured.out == ""
@@ -271,7 +288,8 @@ def test_cli_reports_invalid_utf8_without_echoing_source(sanitizer_files, capsys
     source.write_bytes(b"\xff")
     args = [str(source), "--rules", str(rules), "--output", str(output)]
 
-    assert main(args) == 1
+    exit_status = main(args)
+    assert exit_status == 1
 
     captured = capsys.readouterr()
     assert captured.out == ""
@@ -284,7 +302,8 @@ def test_cli_reports_unwritable_output_without_echoing_source(sanitizer_files, c
     output.mkdir()
     args = [str(source), "--rules", str(rules), "--output", str(output)]
 
-    assert main(args) == 1
+    exit_status = main(args)
+    assert exit_status == 1
 
     captured = capsys.readouterr()
     assert captured.out == ""
@@ -299,21 +318,19 @@ def test_cli_rejects_hard_linked_output_and_report_without_writing(tmp_path, cap
     rules.write_text("{}")
     output.write_text("existing artifact")
     os.link(output, report)
-    assert (
-        main(
-            [
-                str(source),
-                "--rules",
-                str(rules),
-                "--output",
-                str(output),
-                "--report",
-                str(report),
-            ]
-        )
-        == 1
+    exit_status = main(
+        [
+            str(source),
+            "--rules",
+            str(rules),
+            "--output",
+            str(output),
+            "--report",
+            str(report),
+        ]
     )
     captured = capsys.readouterr()
+    assert exit_status == 1
     assert "Output and report must use different files" in captured.err
     assert captured.out == ""
     assert output.read_text() == report.read_text() == "existing artifact"

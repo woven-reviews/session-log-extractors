@@ -5,7 +5,7 @@ import json
 from copy import deepcopy
 
 import pytest
-from codex_capture import (
+from codex_fixture import (
     ASSETS,
     CHILD_TRANSCRIPT,
     TRANSCRIPT,
@@ -13,6 +13,7 @@ from codex_capture import (
     question_interaction,
 )
 
+from session_log_extractors import codex_protocol
 from session_log_extractors import extract_codex_session_log as codex
 from session_log_extractors.session_log_envelope import export_session
 
@@ -27,7 +28,9 @@ def test_native_human_text_preserves_literal_harness_markup():
         for block in payload.get("content", []):
             if block.get(
                 "type"
-            ) == "input_text" and "CAPTURE_LITERAL_FENCED" in block.get("text", ""):
+            ) == codex_protocol.INPUT_TEXT and "CAPTURE_LITERAL_FENCED" in block.get(
+                "text", ""
+            ):
                 expected[payload["id"]] = block["text"]
     assert expected, "The capture must contain the operator-controlled fenced XML"
 
@@ -45,7 +48,9 @@ def test_native_repeated_skill_expansions_retain_recorded_identity():
     for entry in source.entries:
         payload = entry["payload"]
         metadata = payload.get("internal_chat_message_metadata_passthrough", {})
-        if metadata.get("content_item_kinds") == ["skills.selected_skill_instructions"]:
+        if metadata.get("content_item_kinds") == [
+            codex_protocol.SELECTED_SKILL_INSTRUCTIONS
+        ]:
             recorded.append(payload)
     assert len(recorded) == 2, "Both real native skill invocations are required"
 
@@ -87,12 +92,18 @@ def test_native_calls_keep_complete_inputs_results_and_recorded_ownership():
     requests = []
     results = []
     for entry in source.entries:
-        if entry["type"] != "response_item":
+        if entry["type"] != codex_protocol.RESPONSE_ITEM:
             continue
         payload = entry["payload"]
-        if payload.get("type") in ("function_call", "custom_tool_call"):
+        if payload.get("type") in (
+            codex_protocol.FUNCTION_CALL,
+            codex_protocol.CUSTOM_TOOL_CALL,
+        ):
             requests.append(payload)
-        elif payload.get("type") in ("function_call_output", "custom_tool_call_output"):
+        elif payload.get("type") in (
+            codex_protocol.FUNCTION_CALL_OUTPUT,
+            codex_protocol.CUSTOM_TOOL_CALL_OUTPUT,
+        ):
             results.append(payload)
     assert len(calls) == len(requests) > 2
     large_inputs = []
@@ -172,7 +183,10 @@ def test_native_patch_details_keep_added_content_diffs_and_long_paths():
     expected = []
     for entry in source.entries:
         item = entry["payload"].get("item", {})
-        if item.get("type") == "FileChange" and item.get("status") == "completed":
+        if (
+            item.get("type") == codex_protocol.FILE_CHANGE
+            and item.get("status") == "completed"
+        ):
             expected.append(item)
     assert len(expected) >= 3
     session = codex.interpret_source(source)
@@ -205,9 +219,9 @@ def test_native_child_interpretation_excludes_inherited_parent_history():
     inherited_call_ids = []
     for entry in source.entries:
         payload = entry["payload"]
-        if entry["type"] == "response_item" and payload.get("type") in (
-            "function_call",
-            "custom_tool_call",
+        if entry["type"] == codex_protocol.RESPONSE_ITEM and payload.get("type") in (
+            codex_protocol.FUNCTION_CALL,
+            codex_protocol.CUSTOM_TOOL_CALL,
         ):
             destination = (
                 expected_call_ids
@@ -228,7 +242,7 @@ def test_native_user_shell_preserves_command_and_both_stream_markers():
     for entry in source.entries:
         payload = entry["payload"]
         metadata = payload.get("internal_chat_message_metadata_passthrough", {})
-        if metadata.get("content_item_kinds") == ["shell.user_command"]:
+        if metadata.get("content_item_kinds") == [codex_protocol.USER_SHELL_COMMAND]:
             expected.append(payload)
     assert len(expected) == 1
     session = codex.interpret_source(source)
@@ -250,7 +264,10 @@ def test_native_image_results_keep_structured_payload_separate_from_attachments(
         content = call["result_record"]["content"]
         if isinstance(content, list):
             for block in content:
-                if isinstance(block, dict) and block.get("type") == "input_image":
+                if (
+                    isinstance(block, dict)
+                    and block.get("type") == codex_protocol.INPUT_IMAGE
+                ):
                     returned_images.append(block)
     assert len(returned_images) == 1
     raw = base64.b64decode(returned_images[0]["image_url"].split(",", 1)[1])
@@ -375,9 +392,9 @@ def test_native_cancellations_and_settings_refusal_remain_distinct():
     settings_refusals = []
     for entry in source.entries:
         payload = entry["payload"]
-        if entry["type"] != "response_item" or payload.get("type") not in (
-            "function_call_output",
-            "custom_tool_call_output",
+        if entry["type"] != codex_protocol.RESPONSE_ITEM or payload.get("type") not in (
+            codex_protocol.FUNCTION_CALL_OUTPUT,
+            codex_protocol.CUSTOM_TOOL_CALL_OUTPUT,
         ):
             continue
         output = payload["output"]
@@ -417,7 +434,8 @@ def test_recorded_human_provenance_preserves_outer_whitespace():
 
 
 @pytest.mark.parametrize(
-    "kind", ["skills.selected_skill_instructions", "shell.user_command"]
+    "kind",
+    [codex_protocol.SELECTED_SKILL_INSTRUCTIONS, codex_protocol.USER_SHELL_COMMAND],
 )
 def test_legacy_event_view_preserves_recorded_native_user_semantics(kind):
     source = codex.read_source(TRANSCRIPT)
