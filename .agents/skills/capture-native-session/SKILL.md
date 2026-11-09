@@ -7,7 +7,7 @@ description: Capture faithful native Claude Code, Codex, or GitHub Copilot CLI s
 
 Run the normal interactive CLI through tmux, choosing individual prompts and navigation from observed screens. This is the standard fixture capture process for Claude, Codex, and Copilot, replacing scripted headless fixture generation. Do not use print/headless mode, an SDK, app-server, or a predetermined conversation script.
 
-Keep one complete main conversation per harness, including later scenarios and exact-session resume. Subagents have their own native sidecars; they do not replace the main conversation. Different tests use recorded IDs to find evidence within this same fixture, rather than splitting it into scenario fixtures.
+Keep one complete main conversation per harness, including later scenarios and exact-session resume. Child evidence is harness-specific: Claude uses sidecars, Codex has separate child rollouts, and Copilot records child activity inline with agent scope. Children do not replace the main conversation. Tests select evidence by tool names, structured properties, prepared assets, or operator markers, then use recorded IDs to associate the selected records. Keep one complete fixture rather than splitting it by scenario.
 
 Prefer native evidence for supported behavior: these CLI transcript formats are unstable third-party interfaces. Attempt the supported conversation targets even when existing tests already cover a branch or the interaction may not increase measured coverage. Keep malformed input and controlled filesystem failures in separate boundary tests.
 

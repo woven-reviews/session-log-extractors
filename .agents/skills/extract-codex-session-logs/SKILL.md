@@ -28,9 +28,20 @@ The container only gets read-only access to `~/.codex/sessions` (not the user's 
 
 This checkout check is mandatory. If extraction reports no matching transcripts, stop and say so; do not re-run it from a broader directory or without the repository scoping.
 
+## Output destinations
+
+Keep output inside the shared checkout. For batch export, `--output ./exports`
+selects a directory beneath the checkout; destinations outside the checkout are
+unsupported by this Docker workflow. The helper above always uses `--all`;
+a positional ID appended to it does not switch to single-session extraction.
+To extract one session, invoke the same mounted script with a session selector
+and omit `--all`. In that mode, `--output ./exports/session.json` names a file,
+while `--output -` writes stdout. Replace any batch `--output` argument too;
+do not pass a batch directory as a single-session file destination.
+
 ## What gets written
 
-One file per session: `codex_session_log_raw_<identifier>.json`. It carries the full conversation, full tool inputs, tool results capped at 4 KB with their original size recorded, and pasted images inlined as base64. Recorded Markdown remains message content inside the JSON.
+One file per session: `codex_session_log_raw_<identifier>.json`. It carries the full conversation, full tool inputs, textual tool results capped at 8,192 bytes by default with their original size recorded, and pasted images inlined as base64. Recorded Markdown remains message content inside the JSON.
 
 Codex stores images out of band — as a filesystem path, a data URL, or raw base64 — so the envelope is what makes them portable. An image that will not resolve (most often a path whose file has since been deleted) is recorded in the envelope as `{"unavailable": true, "ref": ...}` rather than dropped, so "pasted a screenshot we can no longer read" stays distinguishable from "pasted nothing".
 
