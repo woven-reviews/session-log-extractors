@@ -301,13 +301,13 @@ def image_refs_from_user_message_payload(
     return refs
 
 
-def _decode_arguments(arguments: JsonValue) -> JsonValue:
-    if isinstance(arguments, str):
+def _decode_json_string(value: JsonValue) -> JsonValue:
+    if isinstance(value, str):
         try:
-            return parse_json(arguments)
+            return parse_json(value)
         except json.JSONDecodeError:
-            return arguments
-    return arguments
+            return value
+    return value
 
 
 def _skill_name(name: str, args: object) -> str | None:
@@ -326,7 +326,7 @@ def skill_refs_from_call(
     name: str, arguments: JsonValue
 ) -> List[Dict[str, Optional[str]]]:
     """Return skill names and definition paths evidenced by a tool call."""
-    args = _decode_arguments(arguments)
+    args = _decode_json_string(arguments)
     refs: List[Dict[str, Optional[str]]] = []
 
     def add(value: str, path: Optional[str] = None) -> None:
@@ -381,7 +381,7 @@ def _collaboration_mode(payload: Dict[str, JsonValue]) -> str:
 
 def _plan_update(arguments: JsonValue) -> Optional[PlanUpdate]:
     """Decode one structured update_plan call for first-class rendering."""
-    args = _decode_arguments(arguments)
+    args = _decode_json_string(arguments)
     if not isinstance(args, dict):
         return None
     plan = args.get("plan")
@@ -407,7 +407,7 @@ def _plan_update(arguments: JsonValue) -> Optional[PlanUpdate]:
 
 
 def _flatten_result_text(output: JsonValue) -> str:
-    output = _decode_arguments(output)
+    output = _decode_json_string(output)
     if isinstance(output, str):
         return output
     if isinstance(output, (int, float, bool)):
@@ -432,7 +432,7 @@ def _flatten_result_text(output: JsonValue) -> str:
 
 
 def patch_paths(arguments: JsonValue) -> List[str]:
-    args = _decode_arguments(arguments)
+    args = _decode_json_string(arguments)
     if isinstance(args, dict):
         text = args.get("patch") or args.get("input") or args.get("content")
     else:
@@ -576,7 +576,7 @@ def _new_tool_call(payload: dict[str, JsonValue]) -> ToolCall:
     arguments = payload.get("arguments")
     if arguments is None:
         arguments = payload.get("input")
-    decoded = _decode_arguments(arguments)
+    decoded = _decode_json_string(arguments)
     call = ToolCall(
         name=name, input=decoded, input_schema=codex_input_schema(name, decoded)
     )

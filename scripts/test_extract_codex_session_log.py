@@ -35,7 +35,7 @@ from session_log_extractors.codex_sources import (
     session_id_from_file,
 )
 from session_log_extractors.extract_codex_session_log import (
-    _decode_arguments,
+    _decode_json_string,
     _extract_all,
     _flatten_result_text,
     _image_bytes_and_ext,
@@ -978,13 +978,14 @@ def test_plan_update_requires_list_of_steps_with_str_step():
     }
 
 
-def test_decode_arguments_passthrough_and_parse():
-    actual_decode_arguments = _decode_arguments(123)
-    assert actual_decode_arguments == 123
-    actual_decode_arguments = _decode_arguments("not json")
-    assert actual_decode_arguments == "not json"
-    actual_decode_arguments = _decode_arguments(json.dumps({"a": 1}))
-    assert actual_decode_arguments == {"a": 1}
+def test_decode_json_string_passthrough_and_parse():
+    non_string = _decode_json_string(123)
+    invalid_json = _decode_json_string("not json")
+    encoded_object = _decode_json_string(json.dumps({"a": 1}))
+
+    assert non_string == 123
+    assert invalid_json == "not json"
+    assert encoded_object == {"a": 1}
 
 
 def test_flatten_result_text_variants():
