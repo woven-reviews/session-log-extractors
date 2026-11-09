@@ -8,14 +8,10 @@ session semantics remain available on the model for other consumers.
 """
 
 from enum import StrEnum
-from typing import Final, Literal, Never, NotRequired, Required, TypeAlias, TypedDict
+from typing import Literal, Never, NotRequired, Required, TypeAlias, TypedDict
 
 from session_log_extractors.json_types import JsonValue
 from session_log_extractors.tool_inputs import ToolInput, ToolInputSchema
-
-REFUSAL_CANDIDATE: Final = "candidate"
-REFUSAL_SETTINGS: Final = "settings"
-REFUSAL_UNKNOWN: Final = "unknown"
 
 
 class Image(TypedDict, total=False):

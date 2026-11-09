@@ -18,9 +18,6 @@ from session_log_extractors.claude_protocol import (
 )
 from session_log_extractors.json_types import JsonValue
 from session_log_extractors.session_model import (
-    REFUSAL_CANDIDATE,
-    REFUSAL_SETTINGS,
-    REFUSAL_UNKNOWN,
     Message,
     Question,
     QuestionActivityReference,
@@ -31,6 +28,7 @@ from session_log_extractors.session_model import (
     QuestionResponse,
     QuestionResponseOutcome,
     QuestionSelection,
+    RefusalSource,
     ToolCall,
     ToolResult,
 )
@@ -298,11 +296,11 @@ class _ClaudeQuestionInterpreter:
         activity: QuestionActivityReference | None,
         denial: QuestionEvidence,
     ) -> None:
-        refusal = QuestionRefusal(by=REFUSAL_UNKNOWN)
+        refusal = QuestionRefusal(by=RefusalSource.UNKNOWN.value)
         if denial["field"] != "toolDenialKind" or denial["value"] == USER_REJECTED:
-            refusal["by"] = REFUSAL_CANDIDATE
+            refusal["by"] = RefusalSource.CANDIDATE.value
         elif record.get("native_denial_kind") == SETTINGS_RULE:
-            refusal["by"] = REFUSAL_SETTINGS
+            refusal["by"] = RefusalSource.SETTINGS.value
         evidence = [denial]
         if activity is not None:
             evidence = activity["evidence"] + evidence

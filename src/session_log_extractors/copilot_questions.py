@@ -12,7 +12,6 @@ from session_log_extractors.copilot_protocol import (
 )
 from session_log_extractors.json_types import JsonValue, string_value
 from session_log_extractors.session_model import (
-    AuthorshipSource,
     Message,
     Question,
     QuestionActivityReference,
@@ -22,6 +21,7 @@ from session_log_extractors.session_model import (
     QuestionResponse,
     QuestionResponseOutcome,
     QuestionSelection,
+    RefusalSource,
     ToolCall,
 )
 
@@ -220,7 +220,7 @@ class _CopilotQuestionInterpreter:
             question = next(iter(group.questions.values()))
         response = self.response(record, question, group, position)
         response["outcome"] = QuestionResponseOutcome.CANCELLED
-        response["cancellation"] = {"by": AuthorshipSource.CANDIDATE.value}
+        response["cancellation"] = {"by": RefusalSource.CANDIDATE.value}
         result = data.get("result")
         explanation = (
             string_value(result.get("content")) if isinstance(result, dict) else None
