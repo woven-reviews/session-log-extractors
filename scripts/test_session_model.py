@@ -5,8 +5,9 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
-from codex_capture import TRANSCRIPT as CODEX_TRANSCRIPT
-from codex_capture import human_message, question_interaction
+from claude_fixture import TRANSCRIPT
+from codex_fixture import TRANSCRIPT as CODEX_TRANSCRIPT
+from codex_fixture import human_message, question_interaction
 from copilot_fixture import native_records
 
 from session_log_extractors import claude_protocol, copilot_protocol
@@ -39,9 +40,6 @@ from session_log_extractors.session_model import (
     ToolCall,
     UserMessage,
 )
-
-ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312"
-(TRANSCRIPT,) = (ROOT / "native").glob("*.jsonl")
 
 
 def test_question_occurrences_and_response_states_are_independent():

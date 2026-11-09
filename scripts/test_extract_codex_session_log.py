@@ -15,7 +15,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from codex_capture import (
+from codex_fixture import (
     ASSETS,
     TRANSCRIPT,
     exec_interactions,

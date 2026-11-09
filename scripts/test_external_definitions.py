@@ -4,15 +4,13 @@ import json
 from pathlib import Path
 
 import pytest
-from codex_capture import TRANSCRIPT as CODEX_TRANSCRIPT
+from claude_fixture import TRANSCRIPT
+from codex_fixture import TRANSCRIPT as CODEX_TRANSCRIPT
 from copilot_fixture import native_source
 
 from session_log_extractors import extract_claude_session_log as claude
 from session_log_extractors import extract_codex_session_log as codex
 from session_log_extractors import extract_copilot_session_log as copilot
-
-ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312"
-(TRANSCRIPT,) = (ROOT / "native").glob("*.jsonl")
 
 
 def test_codex_invocations_do_not_load_definitions(monkeypatch):

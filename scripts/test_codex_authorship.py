@@ -1,9 +1,9 @@
-"""Authorship contracts against the complete interactive Codex capture."""
+"""Authorship contracts against the complete interactive Codex fixture."""
 
 import json
 from copy import deepcopy
 
-import codex_capture as capture
+import codex_fixture as fixture
 import pytest
 
 from session_log_extractors import codex_protocol
@@ -15,7 +15,7 @@ META = "internal_chat_message_metadata_passthrough"
 
 
 def _source():
-    return codex.read_source(capture.TRANSCRIPT)
+    return codex.read_source(fixture.TRANSCRIPT)
 
 
 def _message(session, native):
@@ -33,7 +33,7 @@ def _sources(message):
 
 
 def _native_kind(source, kind):
-    for entry in capture.response_items(source.entries, "message"):
+    for entry in fixture.response_items(source.entries, "message"):
         metadata = entry["payload"].get(META, {})
         if metadata.get("content_item_kinds") == [kind]:
             return entry
@@ -42,7 +42,7 @@ def _native_kind(source, kind):
 
 def test_native_candidate_and_injected_blocks_reach_production_json(capsys):
     source = _source()
-    native = capture.human_message(source.entries)
+    native = fixture.human_message(source.entries)
     context = _native_kind(source, codex_protocol.ENVIRONMENT_CONTEXT)
     session = codex.interpret_source(source)
     candidate = _message(session, native)
@@ -56,7 +56,7 @@ def test_native_candidate_and_injected_blocks_reach_production_json(capsys):
     assert span["ts"] == context["timestamp"]
     assert span["markers"]
     original = deepcopy(session)
-    result = codex.main(["--transcript", str(capture.TRANSCRIPT), "--output", "-"])
+    result = codex.main(["--transcript", str(fixture.TRANSCRIPT), "--output", "-"])
     assert result == 0
     cli_events = json.loads(capsys.readouterr().out)["events"]
     exported = export_session(session)
@@ -68,7 +68,7 @@ def test_native_candidate_and_injected_blocks_reach_production_json(capsys):
 
 def test_mixed_native_blocks_keep_codepoint_offsets_and_recorded_markers():
     source = _source()
-    native = capture.human_message(source.entries)
+    native = fixture.human_message(source.entries)
     context = _native_kind(source, codex_protocol.ENVIRONMENT_CONTEXT)
     # Combine captured blocks, changing only candidate text for the Unicode edge.
     payload = native["payload"]
@@ -101,7 +101,7 @@ def test_mixed_native_blocks_keep_codepoint_offsets_and_recorded_markers():
 )
 def test_unsupported_evidence_stays_unknown_and_preserved(change):
     source = _source()
-    native = capture.human_message(source.entries)
+    native = fixture.human_message(source.entries)
     meta = native["payload"][META]
     if change == "missing":
         native["payload"].pop(META)
@@ -137,7 +137,7 @@ def test_native_images_keep_candidate_prompt_and_image_ownership():
     checked = 0
     session = codex.interpret_source(source)
     exported = export_session(session)
-    for native in capture.response_items(source.entries, "message"):
+    for native in fixture.response_items(source.entries, "message"):
         payload = native["payload"]
         if "user.image" not in payload.get(META, {}).get("content_item_kinds", []):
             continue
@@ -160,7 +160,7 @@ def test_native_skill_expansion_is_harness_but_its_selection_is_candidate():
     session = codex.interpret_source(source)
     selections = []
     expansions = []
-    for native in capture.response_items(source.entries, "message"):
+    for native in fixture.response_items(source.entries, "message"):
         payload = native["payload"]
         kinds = payload.get(META, {}).get("content_item_kinds", [])
         if kinds == [codex_protocol.SELECTED_SKILL_INSTRUCTIONS]:
@@ -194,10 +194,10 @@ def test_native_user_shell_command_and_outcome_remain_candidate_activity():
 
 @pytest.mark.parametrize("child", [False, True])
 def test_native_agent_deliveries_are_other_agent_without_inherited_human_inputs(child):
-    path = capture.CHILD_TRANSCRIPT if child else capture.TRANSCRIPT
+    path = fixture.CHILD_TRANSCRIPT if child else fixture.TRANSCRIPT
     source = codex.read_source(path)
     session = codex.interpret_source(source)
-    messages = capture.response_items(source.entries, codex_protocol.AGENT_MESSAGE)
+    messages = fixture.response_items(source.entries, codex_protocol.AGENT_MESSAGE)
     native = messages[-1]
     message = _message(session, native)
     assert _sources(message) == ["other_agent"]
@@ -219,7 +219,7 @@ def test_native_agent_deliveries_are_other_agent_without_inherited_human_inputs(
 @pytest.mark.parametrize("evidence", ["kind_only", "provenance_only"])
 def test_recorded_evidence_supplies_authorship_independently_of_role(evidence):
     source = _source()
-    native = capture.human_message(source.entries)
+    native = fixture.human_message(source.entries)
     key = "content_item_metadata" if evidence == "kind_only" else "content_item_kinds"
     native["payload"][META].pop(key)
     native["payload"]["role"] = "assistant"
@@ -258,7 +258,7 @@ def test_text_representation_boundaries_preserve_ranges_without_evidence(content
 @pytest.mark.parametrize("value", [[], [False], [{"future": None}], "invalid"])
 def test_malformed_provenance_never_becomes_candidate(value):
     source = _source()
-    native = capture.human_message(source.entries)
+    native = fixture.human_message(source.entries)
     native["payload"][META]["content_item_metadata"] = value
     session = codex.interpret_source(source)
     message = _message(session, native)
@@ -270,7 +270,7 @@ def test_all_native_human_text_preserves_words_and_candidate_authorship():
     session = codex.interpret_source(source)
     checked = 0
     literal_xml_seen = False
-    for native in capture.response_items(source.entries, "message"):
+    for native in fixture.response_items(source.entries, "message"):
         payload = native["payload"]
         if payload.get(META, {}).get("content_item_kinds") != [
             codex_protocol.USER_TEXT
@@ -290,7 +290,7 @@ def test_all_native_human_text_preserves_words_and_candidate_authorship():
 @pytest.mark.parametrize("same_input", [True, False])
 def test_legacy_image_views_preserve_ownership_and_content_timestamps(same_input):
     source = _source()
-    native = capture.image_message(source.entries)
+    native = fixture.image_message(source.entries)
     source.entries = [native]
     original = codex.interpret_source(source)["events"][0]
     event_text = original["text"] if same_input else "A distinct input"
@@ -336,7 +336,7 @@ def test_missing_shell_structure_preserves_unknown_text():
 def test_shell_lookalike_in_recorded_human_input_stays_candidate():
     source = _source()
     shell = _native_kind(source, codex_protocol.USER_SHELL_COMMAND)
-    human = capture.human_message(source.entries)
+    human = fixture.human_message(source.entries)
     # The human can paste a shell transcript literally. Keep human provenance.
     text = shell["payload"]["content"][0]["text"]
     human["payload"]["content"][0]["text"] = text
@@ -351,7 +351,7 @@ def test_shell_lookalike_in_recorded_human_input_stays_candidate():
 )
 def test_incomplete_agent_evidence_remains_unknown(change):
     source = _source()
-    native = capture.response_items(source.entries, codex_protocol.AGENT_MESSAGE)[0]
+    native = fixture.response_items(source.entries, codex_protocol.AGENT_MESSAGE)[0]
     payload = native["payload"]
     if change == "missing_author":
         payload.pop("author")
@@ -369,7 +369,7 @@ def test_incomplete_agent_evidence_remains_unknown(change):
 
 @pytest.mark.parametrize("child", [False, True])
 def test_complete_native_capture_has_no_unresolved_text_activity(child):
-    path = capture.CHILD_TRANSCRIPT if child else capture.TRANSCRIPT
+    path = fixture.CHILD_TRANSCRIPT if child else fixture.TRANSCRIPT
     source = codex.read_source(path)
     session = codex.interpret_source(source)
     exported = export_session(session)
@@ -400,7 +400,7 @@ def test_complete_native_capture_has_no_unresolved_text_activity(child):
 )
 def test_primary_response_recognition_does_not_hide_conflicting_evidence(change):
     source = _source()
-    for entry in capture.response_items(source.entries, "message"):
+    for entry in fixture.response_items(source.entries, "message"):
         if entry["payload"].get("role") == "assistant":
             payload = entry["payload"]
             break

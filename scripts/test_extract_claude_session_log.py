@@ -18,6 +18,8 @@ from copy import deepcopy
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
+from claude_fixture import CHILD_TRANSCRIPT as SUBAGENT
+from claude_fixture import ROOT, TRANSCRIPT
 
 from session_log_extractors import claude_protocol, session_log_envelope
 from session_log_extractors import extract_claude_session_log as eclog
@@ -58,10 +60,6 @@ from session_log_extractors.session_log_envelope import (
     write_envelope,
 )
 from session_log_extractors.session_model import Session
-
-ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312"
-(TRANSCRIPT,) = (ROOT / "native").glob("*.jsonl")
-(SUBAGENT,) = (TRANSCRIPT.with_suffix("") / "subagents").glob("*.jsonl")
 
 
 def _recorded_session_entries():

@@ -6,6 +6,11 @@ Tests explicitly select **2.1.312**, captured interactively on 2026-10-30.
 The process auto-updated to 2.1.314 for exact-session resumes; both versions
 contributed to this one complete session.
 
+`scripts/claude_fixture.py` provides the selected transcript, child transcript,
+and asset paths for offline tests. Like `codex_fixture.py` and
+`copilot_fixture.py`, it reads existing fixture data; the agent capture workflow
+creates new captures.
+
 ### Capture provenance
 
 The source run is `20261030T143456Z`. Detailed coverage, launch records, file

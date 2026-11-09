@@ -2,10 +2,10 @@
 
 import json
 from copy import deepcopy
-from pathlib import Path
 
 import pytest
-from codex_capture import TRANSCRIPT as CODEX_TRANSCRIPT
+from claude_fixture import TRANSCRIPT
+from codex_fixture import TRANSCRIPT as CODEX_TRANSCRIPT
 from copilot_fixture import native_records, native_source
 
 from session_log_extractors import claude_protocol, codex_protocol, copilot_protocol
@@ -28,9 +28,6 @@ from session_log_extractors.session_model import (
     ToolExecutionOutcome,
     UserMessage,
 )
-
-ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312"
-(TRANSCRIPT,) = (ROOT / "native").glob("*.jsonl")
 
 
 @pytest.mark.parametrize("outcome", list(ToolExecutionOutcome))

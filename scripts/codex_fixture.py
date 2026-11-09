@@ -1,4 +1,4 @@
-"""Explicit selection and small native-record helpers for the Codex test capture."""
+"""Offline Codex fixture selection and native-record helpers for tests."""
 
 from pathlib import Path
 

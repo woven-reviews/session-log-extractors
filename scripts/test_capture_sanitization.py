@@ -1,11 +1,12 @@
 """Deterministic redaction of captured text and native JSON records."""
 
 import json
-from pathlib import Path
 
 import pytest
-from codex_capture import CHILD_TRANSCRIPT, image_message
-from codex_capture import TRANSCRIPT as CODEX_TRANSCRIPT
+from claude_fixture import CHILD_TRANSCRIPT as SUBAGENT
+from claude_fixture import TRANSCRIPT
+from codex_fixture import CHILD_TRANSCRIPT, image_message
+from codex_fixture import TRANSCRIPT as CODEX_TRANSCRIPT
 
 from session_log_extractors.capture_sanitization import (
     LiteralReplacement,
@@ -14,10 +15,6 @@ from session_log_extractors.capture_sanitization import (
     sanitize_capture,
 )
 from session_log_extractors.json_types import parse_json
-
-ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312"
-(TRANSCRIPT,) = (ROOT / "native").glob("*.jsonl")
-(SUBAGENT,) = (TRANSCRIPT.with_suffix("") / "subagents").glob("*.jsonl")
 
 
 def test_literal_replacements_are_longest_first_and_do_not_cascade():

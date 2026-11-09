@@ -4,7 +4,7 @@ import json
 from copy import deepcopy
 
 import pytest
-from codex_capture import TRANSCRIPT, question_interaction
+from codex_fixture import TRANSCRIPT, question_interaction
 
 from session_log_extractors import codex_protocol
 from session_log_extractors.codex_sources import read_source

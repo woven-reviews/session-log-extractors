@@ -1,16 +1,13 @@
 """Input schema recognition preserves native payloads and unknown fields."""
 
 from copy import deepcopy
-from pathlib import Path
 
 import pytest
+from claude_fixture import TRANSCRIPT
 
 from session_log_extractors import claude_protocol
 from session_log_extractors.claude_sources import read_source
 from session_log_extractors.tool_inputs.claude import input_schema
-
-ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312"
-(TRANSCRIPT,) = (ROOT / "native").glob("*.jsonl")
 
 
 def _recorded_tool_calls(tool_name):

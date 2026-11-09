@@ -4,13 +4,11 @@ import json
 from pathlib import Path
 
 import pytest
-from codex_capture import TRANSCRIPT as CODEX_TRANSCRIPT
+from claude_fixture import TRANSCRIPT as CLAUDE_TRANSCRIPT
+from codex_fixture import TRANSCRIPT as CODEX_TRANSCRIPT
 
 from session_log_extractors.jsonl_sources import load_jsonl_objects as load_entries
 from session_log_extractors.jsonl_sources import load_records
-
-CLAUDE_ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312" / "native"
-(CLAUDE_TRANSCRIPT,) = CLAUDE_ROOT.glob("*.jsonl")
 
 
 @pytest.mark.parametrize("transcript", [CLAUDE_TRANSCRIPT, CODEX_TRANSCRIPT])
@@ -151,10 +149,8 @@ def test_transcript_preserves_objects_and_line_numbers(tmp_path, capsys):
 
 
 def test_load_entries_skips_malformed_lines_with_warning(tmp_path, capsys):
-    native_root = Path(__file__).parent / "fixtures" / "claude" / "2.1.312" / "native"
-    [transcript] = native_root.glob("*.jsonl")
     # Keep two captured records; add corruption which a completed capture cannot supply.
-    recorded_lines = transcript.read_text().splitlines()[:2]
+    recorded_lines = CLAUDE_TRANSCRIPT.read_text().splitlines()[:2]
     expected_records = []
     for line in recorded_lines:
         expected_records.append(json.loads(line))

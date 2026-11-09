@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 import pytest
-from codex_capture import ASSETS, TRANSCRIPT, image_message
+from codex_fixture import ASSETS, TRANSCRIPT, image_message
 
 from session_log_extractors import codex_protocol
 from session_log_extractors import codex_sources as sources

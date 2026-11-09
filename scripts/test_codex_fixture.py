@@ -5,7 +5,7 @@ import json
 from copy import deepcopy
 
 import pytest
-from codex_capture import (
+from codex_fixture import (
     ASSETS,
     CHILD_TRANSCRIPT,
     TRANSCRIPT,

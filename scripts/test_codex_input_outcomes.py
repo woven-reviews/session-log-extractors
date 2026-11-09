@@ -7,7 +7,7 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
-from codex_capture import TRANSCRIPT
+from codex_fixture import TRANSCRIPT
 
 from session_log_extractors import codex_protocol, codex_sources
 from session_log_extractors import extract_codex_session_log as codex

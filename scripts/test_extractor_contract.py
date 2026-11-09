@@ -8,8 +8,9 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
-from codex_capture import CHILD_TRANSCRIPT, question_interaction
-from codex_capture import TRANSCRIPT as CODEX_TRANSCRIPT
+from claude_fixture import TRANSCRIPT
+from codex_fixture import CHILD_TRANSCRIPT, question_interaction
+from codex_fixture import TRANSCRIPT as CODEX_TRANSCRIPT
 from copilot_fixture import DATABASE, SESSION_ID, native_source, native_tool_source
 
 from session_log_extractors import (
@@ -24,10 +25,6 @@ from session_log_extractors import extract_copilot_session_log as copilot
 from session_log_extractors.claude_sources import ClaudeSource
 from session_log_extractors.codex_sources import CodexSource
 from session_log_extractors.session_log_envelope import export_session
-
-ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312"
-(TRANSCRIPT,) = (ROOT / "native").glob("*.jsonl")
-
 
 FIXTURES = Path(__file__).parent / "fixtures" / "claude"
 

@@ -60,11 +60,11 @@ untracked at `captures/codex/0.166.0/20261030T194718Z/`.
 ## Post-generation test audit
 
 Reviewed `test_extract_codex_session_log.py`, `test_codex_sources.py`,
-`test_codex_tool_inputs.py`, `test_codex_capture.py`, Codex cases in
+`test_codex_tool_inputs.py`, `test_codex_fixture.py`, Codex cases in
 `test_capture_sanitization.py`, `test_external_definitions.py`,
 `test_extractor_contract.py`, `test_session_model.py`, `test_import_contracts.py`,
 and `tests/test_smoke.py`,
-plus the retired generator/support tests. `codex_capture.py` contains only explicit
+plus the retired generator/support tests. `codex_fixture.py` contains only explicit
 current-fixture paths and small native-record helpers, without version discovery.
 
 Resolved findings: retired-fixture reads; exact generated prose/model baselines;

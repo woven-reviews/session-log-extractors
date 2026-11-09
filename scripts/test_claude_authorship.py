@@ -2,17 +2,14 @@
 
 import json
 from copy import deepcopy
-from pathlib import Path
 
 import pytest
+from claude_fixture import TRANSCRIPT
 
 from session_log_extractors import claude_protocol
 from session_log_extractors import extract_claude_session_log as claude
 from session_log_extractors.claude_sources import ClaudeSource
 from session_log_extractors.session_log_envelope import export_session
-
-ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312"
-(TRANSCRIPT,) = (ROOT / "native").glob("*.jsonl")
 
 
 def _recorded_user(marker):

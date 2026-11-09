@@ -5,7 +5,7 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
-from codex_capture import TRANSCRIPT, question_interaction, response_items
+from codex_fixture import TRANSCRIPT, question_interaction, response_items
 
 from session_log_extractors import codex_protocol
 from session_log_extractors.codex_sources import CodexSource, load_entries

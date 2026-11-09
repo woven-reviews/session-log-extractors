@@ -2,10 +2,10 @@
 
 import json
 from copy import deepcopy
-from pathlib import Path
 
 import pytest
-from codex_capture import TRANSCRIPT as CODEX_TRANSCRIPT
+from claude_fixture import TRANSCRIPT as CLAUDE_TRANSCRIPT
+from codex_fixture import TRANSCRIPT as CODEX_TRANSCRIPT
 from copilot_fixture import DATABASE, SESSION_ID, native_records
 
 from session_log_extractors import copilot_sources
@@ -13,9 +13,6 @@ from session_log_extractors import extract_claude_session_log as claude
 from session_log_extractors import extract_codex_session_log as codex
 from session_log_extractors import extract_copilot_session_log as copilot
 from session_log_extractors import session_log_envelope as envelope
-
-CLAUDE_ROOT = Path(__file__).parent / "fixtures" / "claude" / "2.1.312" / "native"
-(CLAUDE_TRANSCRIPT,) = CLAUDE_ROOT.glob("*.jsonl")
 
 
 @pytest.fixture(params=[claude, codex, copilot], ids=["claude", "codex", "copilot"])
