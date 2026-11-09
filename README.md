@@ -28,16 +28,20 @@ Use `--help` on each script for its complete interface. Common options are:
 | --- | --- |
 | Positional session ID | Export one session. A unique exact recorded ID wins; otherwise a unique literal prefix is required. Matching is case-sensitive. |
 | `--all` | Export every matching project session; this is the default with no explicit selection. |
-| `--strict` | Require the exact recorded working directory rather than parent/descendant project matching. |
+| `--strict` | Require the exact recorded working directory rather than parent/descendant project matching, and disable the global fallback. |
 | `--output ./exports` | Choose a batch output directory. |
 | `--output ./session.json` | Choose a single-session file destination. |
-| `--output -` | Write one session to stdout (newest matching session if no selector is supplied); diagnostics stay on stderr. |
+| `--output -` | Write one session to stdout; without a selector, choose the newest project match or fall back to the newest global session. Diagnostics stay on stderr. |
 | `--tool-result-bytes N` | Cap textual tool results at N UTF-8 bytes; default **8,192**, zero clips nonempty text, any negative value retains full text. |
 
 Claude and Codex also accept `--transcript PATH`. Codex accepts a transcript
 path as its positional selection and `--sessions-root DIR` for discovery. Copilot accepts
 `--db PATH` for its SQLite store; it also reads the corresponding native session
 state and attachments. Copilot has no direct JSONL/state-root CLI flag.
+
+For all three harnesses, `--output -` without a selector can export another
+project's session when no project match exists. Use `--strict` or an explicit
+selector when project isolation is required.
 
 Explicit selection never falls back to a newest unrelated session. Missing or
 ambiguous IDs fail with exit 1 and stderr diagnostics, without changing output
