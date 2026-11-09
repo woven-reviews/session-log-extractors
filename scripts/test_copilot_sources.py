@@ -260,10 +260,10 @@ def test_copilot_loaded_inputs_interpret_without_io(with_state, monkeypatch):
     monkeypatch.setattr(Path, "is_file", forbidden)
     monkeypatch.setattr(Path, "exists", forbidden)
     assert loaded.session == session
-    actual_envelope = copilot.build_raw_envelope(loaded)
-    assert actual_envelope == expected
-    actual_envelope = copilot.build_raw_envelope(loaded)
-    assert actual_envelope == expected
+    first_envelope = copilot.build_raw_envelope(loaded)
+    repeated_envelope = copilot.build_raw_envelope(loaded)
+    assert first_envelope == expected
+    assert repeated_envelope == expected
 
 
 def test_copilot_extraction_reads_and_parses_state_once(monkeypatch):

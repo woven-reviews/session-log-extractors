@@ -397,14 +397,13 @@ def test_codex_summary_options_and_shell_command():
     ]
 
     session = _interpret(entries)
-    assert session["files_changed"] == []
     user_messages = _users(entries)
-    assert len(user_messages) == 3
     response = _calls(entries)[0]["question_responses"][0]
+
+    assert session["files_changed"] == []
+    assert len(user_messages) == 3
     assert response["selections"][0]["label"] == "QUAL"
-    user_messages = _users(entries)
     assert user_messages[1]["text"] == "<bash-stdout>ignored</bash-stdout>"
-    user_messages = _users(entries)
     assert user_messages[2]["shell_command"] == "ls -la"
 
 
@@ -1123,7 +1122,6 @@ def test_interpret_function_call_before_any_user_turn_creates_turn():
     ]
     interpreted_calls = _calls(entries)
     assert interpreted_calls[0]["name"] == "shell"
-    interpreted_calls = _calls(entries)
     assert interpreted_calls[0]["input"] == {"command": "ls"}
 
 
@@ -1186,7 +1184,6 @@ def test_interpret_empty_tool_input_is_preserved():
     ]
     interpreted_calls = _calls(entries)
     assert interpreted_calls[0]["name"] == "noop_tool"
-    interpreted_calls = _calls(entries)
     assert interpreted_calls[0]["input"] == ""
 
 
@@ -1554,7 +1551,6 @@ def test_interpret_tagged_command_without_leading_slash_is_ignored():
     ]
     user_messages = _users(entries)
     assert "command" not in user_messages[0]
-    user_messages = _users(entries)
     assert user_messages[0]["text"] == entries[0]["payload"]["message"]
 
 
