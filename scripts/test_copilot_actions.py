@@ -370,9 +370,9 @@ def test_enrichment_preserves_all_existing_json_and_model_content(monkeypatch):
                 call.pop(field, None)
 
     assert enriched == baseline
-    exported = export_session(enriched, 17)
-    exported_2 = export_session(baseline, 17)
-    assert exported == exported_2
+    exported_enriched = export_session(enriched, 17)
+    exported_baseline = export_session(baseline, 17)
+    assert exported_enriched == exported_baseline
 
 
 def test_database_only_facts_survive_without_conversation():

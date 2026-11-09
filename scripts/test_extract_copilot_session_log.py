@@ -990,8 +990,8 @@ def test_native_empty_and_structured_results_survive(result):
     [call] = interpreted_calls
     assert call["result_record"]["content"] == result
     assert call["is_error"] is True
-    actual_result_text = copilot_log._result_text(result)
-    assert call["result"] == actual_result_text
+    expected_result = copilot_log._result_text(result)
+    assert call["result"] == expected_result
     assert call["result_record"]["is_error"] is True
 
 

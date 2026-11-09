@@ -87,20 +87,20 @@ def test_production_limits(production_cli, limit, stdout, tmp_path, capsys):
     captured = capsys.readouterr()
     assert status == 0
     exported = json.loads(captured.out if stdout else path.read_text())
-    actual_limit = 8192 if limit is None else limit
-    assert exported["truncation"]["tool_result_max_bytes"] == actual_limit
+    expected_limit = 8192 if limit is None else limit
+    assert exported["truncation"]["tool_result_max_bytes"] == expected_limit
     actual_calls = _text_calls(exported)
     assert len(actual_calls) == len(original_calls)
     for actual, full in zip(actual_calls, original_calls, strict=True):
         text = full["result"]
         expected = (
             text
-            if actual_limit < 0
-            else text.encode()[:actual_limit].decode(errors="ignore")
+            if expected_limit < 0
+            else text.encode()[:expected_limit].decode(errors="ignore")
         )
         assert actual["result"] == expected
         assert actual["result_bytes"] == len(text.encode())
-        assert actual["result_truncated"] is (0 <= actual_limit < len(text.encode()))
+        assert actual["result_truncated"] is (0 <= expected_limit < len(text.encode()))
         assert actual["input"] == full["input"]
     if not stdout:
         assert captured.out == ""

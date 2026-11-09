@@ -1102,12 +1102,12 @@ def test_build_raw_envelope_preserves_metadata_and_events():
     envelope = build_raw_envelope(Path("/wherever/sess123.jsonl"), entries)
     assert envelope["session_id"] == _capture_session_id()
     assert envelope["cwd"] == "/tmp/CAPTURE_ROOT/workspace"
-    actual_first_timestamp = first_timestamp(entries)
-    assert envelope["started_at"] == actual_first_timestamp
-    actual_session_models = session_models(entries)
-    assert envelope["models"] == actual_session_models
-    actual_build_events = build_events(entries)
-    assert envelope["events"] == actual_build_events
+    expected_started_at = first_timestamp(entries)
+    assert envelope["started_at"] == expected_started_at
+    expected_models = session_models(entries)
+    assert envelope["models"] == expected_models
+    expected_events = build_events(entries)
+    assert envelope["events"] == expected_events
 
 
 def test_build_raw_envelope_retains_empty_session():
@@ -1232,8 +1232,8 @@ def test_main_writes_json_to_explicit_output():
         rc = main(["--transcript", str(transcript), "--output", str(out_file)])
     assert rc == 0
     assert out_file.exists()
-    actual_build_events = build_events(_recorded_session_entries())
-    assert json.loads(out_file.read_text())["events"] == actual_build_events
+    expected_events = build_events(_recorded_session_entries())
+    assert json.loads(out_file.read_text())["events"] == expected_events
     assert list(out_dir.iterdir()) == [out_file]
 
 
@@ -1245,8 +1245,8 @@ def test_main_stdout_outputs_json():
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         rc = main(["--transcript", str(transcript), "--output", "-"])
     assert rc == 0
-    actual_build_events = build_events(_recorded_session_entries())
-    assert json.loads(out.getvalue())["events"] == actual_build_events
+    expected_events = build_events(_recorded_session_entries())
+    assert json.loads(out.getvalue())["events"] == expected_events
 
 
 def test_main_errors_for_missing_transcript():
@@ -1346,8 +1346,8 @@ def test_cli_stdout_preserves_markdown_and_images(
     assert "using transcript:" in captured.err
     assert envelope["schema"] == "raw-session-log/1"
     assert envelope["session_id"] == _capture_session_id()
-    actual_build_events = build_events(entries, 3)
-    assert envelope["events"] == actual_build_events
+    expected_events = build_events(entries, 3)
+    assert envelope["events"] == expected_events
     user = _require_single_match(envelope["events"], "image message")
     assert user["text"] == "# Keep **recorded Markdown**"
     assert len(user["images"]) == 2
@@ -1389,8 +1389,8 @@ def test_cli_file_preserves_markdown_and_images(
     envelope = json.loads((output / filename).read_text())
     assert envelope["schema"] == "raw-session-log/1"
     assert envelope["session_id"] == _capture_session_id()
-    actual_build_events = build_events(entries, 3)
-    assert envelope["events"] == actual_build_events
+    expected_events = build_events(entries, 3)
+    assert envelope["events"] == expected_events
     user = _require_single_match(envelope["events"], "image message")
     assert user["text"] == "# Keep **recorded Markdown**"
     assert len(user["images"]) == 2
@@ -1422,8 +1422,8 @@ def test_cli_batch_emits_only_json(
         "claude_session_log_raw_b.json",
     ]
     for path in output.iterdir():
-        actual_build_events = build_events(_recorded_session_entries())
-        assert json.loads(path.read_text())["events"] == actual_build_events
+        expected_events = build_events(_recorded_session_entries())
+        assert json.loads(path.read_text())["events"] == expected_events
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "done: 2/2" in captured.err
@@ -1461,12 +1461,12 @@ def test_cli_preserves_native_payloads(transcript, limit, capsys):
     assert envelope["events"] == expected_events
     assert envelope["schema"] == "raw-session-log/1"
     assert envelope["session_id"] == _capture_session_id()
-    actual_session_cwd = session_cwd(entries)
-    assert envelope["cwd"] == actual_session_cwd
-    actual_first_timestamp = first_timestamp(entries)
-    assert envelope["started_at"] == actual_first_timestamp
-    actual_session_models = session_models(entries)
-    assert envelope["models"] == actual_session_models
+    expected_cwd = session_cwd(entries)
+    assert envelope["cwd"] == expected_cwd
+    expected_started_at = first_timestamp(entries)
+    assert envelope["started_at"] == expected_started_at
+    expected_models = session_models(entries)
+    assert envelope["models"] == expected_models
     assert envelope["truncation"] == {"tool_result_max_bytes": limit}
     question_calls = []
     for call in _tool_calls_in(envelope):
@@ -1538,8 +1538,8 @@ def test_cli_retains_malformed_line_diagnostics(tmp_path, capsys):
     exit_status = main(["--transcript", str(transcript), "--output", "-"])
     captured = capsys.readouterr()
     assert exit_status == 0
-    actual_build_events = build_events(entries)
-    assert json.loads(captured.out)["events"] == actual_build_events
+    expected_events = build_events(entries)
+    assert json.loads(captured.out)["events"] == expected_events
     assert "skipping malformed JSON on line 3" in captured.err
 
 
@@ -1603,12 +1603,12 @@ def test_cli_exports_empty_sessions(destination, contents, tmp_path, capsys):
     expected_id = _capture_session_id() if contents == "native" else "session"
     assert envelope["session_id"] == expected_id
     assert envelope["events"] == []
-    actual_session_cwd = session_cwd(entries)
-    assert envelope["cwd"] == actual_session_cwd
-    actual_first_timestamp = first_timestamp(entries)
-    assert envelope["started_at"] == actual_first_timestamp
-    actual_session_models = session_models(entries)
-    assert envelope["models"] == actual_session_models
+    expected_cwd = session_cwd(entries)
+    assert envelope["cwd"] == expected_cwd
+    expected_started_at = first_timestamp(entries)
+    assert envelope["started_at"] == expected_started_at
+    expected_models = session_models(entries)
+    assert envelope["models"] == expected_models
     assert "warning:" not in captured.err
 
 
@@ -1654,12 +1654,12 @@ def test_interpret_supplied_source_without_filesystem(limit, fixture, monkeypatc
         assert session["session_id"] == expected_id
         exported = session_log_envelope.export_session(session, limit)
         assert exported["events"] == expected_events
-        actual_session_cwd = session_cwd(entries)
-        assert session["cwd"] == actual_session_cwd
-        actual_first_timestamp = first_timestamp(entries)
-        assert session["started_at"] == actual_first_timestamp
-        actual_session_models = session_models(entries)
-        assert session["models"] == actual_session_models
+        expected_cwd = session_cwd(entries)
+        assert session["cwd"] == expected_cwd
+        expected_started_at = first_timestamp(entries)
+        assert session["started_at"] == expected_started_at
+        expected_models = session_models(entries)
+        assert session["models"] == expected_models
         empty_session = eclog.interpret_source(ClaudeSource(source.path, []))
         assert empty_session["events"] == []
 
@@ -1788,8 +1788,8 @@ def test_main_source_does_not_read_sidecars_or_metadata(monkeypatch):
         guard.setattr(Path, "is_file", forbidden)
         guard.setattr(Path, "read_text", forbidden)
         envelope = extract_transcript(transcript)
-    actual_envelope = build_raw_envelope(transcript, entries)
-    assert envelope == actual_envelope
+    expected_envelope = build_raw_envelope(transcript, entries)
+    assert envelope == expected_envelope
 
 
 def test_interpretation_retains_full_results_until_shared_export():
@@ -2468,8 +2468,8 @@ def test_cli_batch_retains_successes_after_failure(
         (output / "claude_session_log_raw_populated.json").read_text()
     )
     assert empty["events"] == []
-    actual_build_events = build_events(_recorded_session_entries())
-    assert populated["events"] == actual_build_events
+    expected_events = build_events(_recorded_session_entries())
+    assert populated["events"] == expected_events
 
 
 def test_cli_batch_reports_output_directory_failure(tmp_path, capsys):
@@ -2517,8 +2517,8 @@ def test_cli_diagnoses_non_objects_without_losing_valid_records(tmp_path, capsys
 
     captured = capsys.readouterr()
     assert status == 0
-    actual_build_events = build_events(entries)
-    assert json.loads(captured.out)["events"] == actual_build_events
+    expected_events = build_events(entries)
+    assert json.loads(captured.out)["events"] == expected_events
     assert str(transcript) in captured.err
     assert "line 4" in captured.err
     assert "line 5" in captured.err

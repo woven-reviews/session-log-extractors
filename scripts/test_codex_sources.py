@@ -151,8 +151,8 @@ def test_reader_preserves_diagnostics_and_source_order(tmp_path, capsys):
     # Insert malformed/non-record lines around native records, without reordering.
     path.write_text("\n".join(["bad", "", "null", lines[0], "bad"] + lines[1:]))
     source = sources.read_source(path)
-    actual_load_entries = sources.load_entries(TRANSCRIPT)
-    assert source.entries == actual_load_entries
+    expected_entries = sources.load_entries(TRANSCRIPT)
+    assert source.entries == expected_entries
     captured = capsys.readouterr()
     assert captured.err == (
         f"warning: {path}: skipping malformed JSON on line 1\n"

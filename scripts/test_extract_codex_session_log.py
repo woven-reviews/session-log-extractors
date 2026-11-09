@@ -1493,9 +1493,9 @@ def test_main_single_session_writes_only_json(tmp_path):
     status = main(["--transcript", str(TRANSCRIPT), "--output", str(destination)])
     assert status == 0
     envelope = json.loads(destination.read_text())
-    actual_load_entries = load_entries(TRANSCRIPT)
-    actual_session_models = session_models(actual_load_entries)
-    assert envelope["models"] == actual_session_models
+    recorded_entries = load_entries(TRANSCRIPT)
+    expected_models = session_models(recorded_entries)
+    assert envelope["models"] == expected_models
     assert len(envelope["models"]) == 2
     assert list(tmp_path.iterdir()) == [destination]
 

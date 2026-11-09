@@ -106,8 +106,8 @@ def test_source_reader_keeps_connection_owned_by_caller(tmp_path, monkeypatch):
         source = sources.read_source(conn, metadata)
         assert source.session == metadata
         assert source.session is not metadata
-        actual_get_session_turns = sources.get_session_turns(conn, metadata["id"])
-        assert source.turns == actual_get_session_turns
+        expected_turns = sources.get_session_turns(conn, metadata["id"])
+        assert source.turns == expected_turns
         assert source.state_records == []
         # Loading neither closes the caller's connection nor changes read-only mode.
         with pytest.raises(sqlite3.OperationalError, match="readonly"):
