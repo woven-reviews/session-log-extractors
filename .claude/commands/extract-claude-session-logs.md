@@ -9,7 +9,7 @@ Run the session log extractor and report what it wrote. It runs in Docker (see [
 
 **Scoping.** Run from inside this repo's checkout, a candidate clone of it, or a subdirectory of either, the extractor resolves your session from your working directory alone — no clone-naming convention required. Run from anywhere else (no `scripts/extract_claude_session_log.py` at the resolved git root), it does *not* fall back to whatever session is newest anywhere on disk — it prints the message above and does nothing. If that happens, stop and say so; do not re-run without the scoping.
 
-The container gets read-only access to `~/.claude/projects` plus read-write access to this checkout.
+The container gets read-only access to `~/.claude/projects` plus read-write access to this checkout. Output destinations must stay inside this shared checkout; destinations outside the checkout are unsupported. For batch export, use `--output ./exports`. For a single session, use a file destination such as `--output ./exports/session.json`, or stdout with `--output -`.
 
 **What the container runs.** The image supplies Python and the installed shared exporter package. The
 script it runs is this checkout's own `scripts/extract_claude_session_log.py`
@@ -21,10 +21,10 @@ that mode `--output` names the JSON file, not a directory.
 
 Defaults to `--all`, writing one JSON file per session into the repo root:
 `claude_session_log_raw_<session-id>.json`. Each envelope carries the conversation,
-full tool inputs, tool results capped at 4 KB with their original size recorded,
+full tool inputs, textual tool results capped at 8,192 bytes by default with their original size recorded,
 and pasted images inlined as base64. Markdown inside recorded messages is preserved.
 
-Pass-through args (optional): `--output DIR` for a different directory, `--strict`
+Pass-through args (optional): `--output ./exports` for a batch directory inside the checkout, `--strict`
 to only export sessions started in this exact directory (no parent-dir walk, no
 newest-anywhere fallback), or a single session id / `--output -` to extract just
 one. For a single session, `--output PATH` names the JSON file and `--output -`

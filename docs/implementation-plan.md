@@ -1,6 +1,11 @@
-# JSON extraction implementation plan
+# Historical JSON extraction implementation plan
 
-Refactor the existing extractors into the [target architecture](architecture.md),
+This document records the original migration rationale and intended sequence,
+not current implementation status or contributor policy. See the
+[current architecture](architecture.md) and [AGENTS.md](../AGENTS.md) for those.
+The historical steps below are retained as intent, not instructions to reapply.
+
+Refactor the existing extractors into the shared architecture,
 preserving the [extraction information contract](../scripts/fixtures/README.md).
 Use small, human-reviewable changes. For harness-specific work, proceed
 Claude → Codex → Copilot. This records the agreed intent and migration order;
@@ -11,10 +16,11 @@ individual tickets provide the detailed breakdown.
    existing coverage gates. Enable correctness, common-bug, import, and complexity
    checks. Start with Ruff's default limits: cyclomatic complexity **10**,
    statements per function **50**, branches **12**, and arguments **5**. These are
-   configurable starting points, not universal quality standards. Inventory
-   existing violations and document narrow temporary exceptions, removing them
-   as the affected code is refactored. Require justification in review for
-   suppressions or threshold changes. Keep mechanical formatting separate from
+   configurable starting points, not universal quality standards. The original
+   plan allowed
+   temporary exceptions with review justification. That allowance is superseded:
+   current AGENTS.md prohibits suppressions, broadened exceptions, and weakened
+   lint/type settings or thresholds. Keep mechanical formatting separate from
    behavior changes.
 
 1. **Remove Markdown output and presentation code.**
@@ -54,21 +60,30 @@ individual tickets provide the detailed breakdown.
    and stdout output use the same serialization. Make intentional behavioral
    corrections separately identifiable and tested.
 
-Throughout, preserve meaningful test assertions as code moves, retire
-presentation-only tests with their code, and add targeted tests for changed
-behavior or exposed gaps. Run configured lint checks and both **95% coverage
-gates** before committing: `pytest --cov --cov-fail-under=95 --cov-report=xml`
-and `diff-cover coverage.xml --compare-branch=origin/main --fail-under=95`, after
-fetching `origin/main`. Never run paid fixture
-generators in tests. Extract helpers around meaningful responsibilities rather
-than arbitrary fragments chosen only to satisfy complexity limits.
+## Current verification and remaining proposals
 
-Completion means all three harnesses produce the contracted JSON through their
-adapters and the shared exporter, with the package structure in place, guardrails
-enforced, and no Markdown presentation dependency.
+Use the authoritative [AGENTS.md checks](../AGENTS.md) before committing:
+Ruff, strict package-wide mypy, Import Linter, and all five coverage gates
+(overall, changed-line, Claude, Codex, Copilot), each at least **95%**.
+Do not run paid capture during tests. The scripted fixture generators and their
+fake-CLI tests have been retired.
 
-Comprehensive native-fixture capture, improved capture coverage, human-approved
-whole-output baselines, and fresh-capture drift checks remain deferred. Existing
-captures are weak evidence; use the current tests as regression protection without
-claiming complete native-format coverage. Frontend work belongs to the consuming
-application and is outside this refactor.
+All three harnesses now use the public reader/interpreter protocol and shared
+exporter. General runtime semantic validation, approved whole-output baselines,
+and an automated fresh-capture drift workflow remain unfinished. Generated
+wording changes must not require rewritten prose assertions or approval of a
+new prose baseline; exact controlled serialization and behavioral checks remain
+appropriate.
+
+Interactive captures now cover substantial native behavior. Their evidence is
+specific: Codex has no captured edited-plan editor or native IDE classification;
+Copilot has no native notebook editing or question preview/annotation fields;
+Claude peer-origin boundaries are controlled cases rather than evidence from
+its selected capture. Consult the linked
+[fixture provenance and limitations](../scripts/fixtures/README.md#native-evidence-and-limits)
+for current details. Historical capture journals and sanitization history are
+provenance claims, not newly revalidated observations.
+
+Frontend presentation and consumer upload handling belong to the consuming
+application. The original migration did not require general planning lifecycles,
+child-conversation graphs, external definition loading, or new display models.
