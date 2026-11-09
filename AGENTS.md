@@ -94,8 +94,10 @@ appropriate scope: shared concepts in shared modules, harness-specific concepts
 in harness-owned modules. Use those definitions consistently in construction,
 comparisons, and mappings. Keep native protocol values distinct from normalized
 domain values, even when their spellings match. Ordinary prose and one-off
-display text do not require constants. Serialization tests may use explicit
-literal expectations to independently verify the external contract.
+display text do not require constants. Tests should spell native protocol
+values and serialized output as literals in the inputs they build and the
+results they expect, so a misspelled constant cannot change both sides of a
+check. Tests may use the constants to select evidence from captured fixtures.
 
 When adding shared model fields, choose names and types that distinguish
 recorded data from derived conclusions. Separate values with different meanings
