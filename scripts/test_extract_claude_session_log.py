@@ -1157,11 +1157,10 @@ def test_load_subagents_reads_sidecar_dir(tmp_path):
     transcript = tmp_path / TRANSCRIPT.name
     shutil.copyfile(TRANSCRIPT, transcript)
     shutil.copytree(SUBAGENT.parent, tmp_path / TRANSCRIPT.stem / "subagents")
-    actual_load_subagents = load_subagents(transcript)
-    actual_load_subagents = load_subagents(TRANSCRIPT)
-    assert actual_load_subagents == actual_load_subagents
-    actual_load_subagents = load_subagents(transcript)
-    assert len(actual_load_subagents) == 1
+    copied_subagents = load_subagents(transcript)
+    fixture_subagents = load_subagents(TRANSCRIPT)
+    assert copied_subagents == fixture_subagents
+    assert len(copied_subagents) == 1
 
 
 def test_native_subagent_summary_retains_evidence_without_guessing_ownership():
