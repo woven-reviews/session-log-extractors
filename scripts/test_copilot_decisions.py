@@ -199,7 +199,7 @@ def _controlled_session(calls):
     }
 
 
-def _permission_record(kind=copilot_protocol.DENIED_BY_USER):
+def _permission_record(kind="denied-interactively-by-user"):
     return {
         "id": "denial",
         "type": copilot_protocol.PERMISSION_COMPLETED,
@@ -357,7 +357,7 @@ def test_settings_refusal_can_be_recorded_in_tool_result(result):
     assert refusal["explanation"]
 
 
-@pytest.mark.parametrize("code", [copilot_protocol.DENIED_ERROR, "tool_error"])
+@pytest.mark.parametrize("code", ["denied", "tool_error"])
 def test_unknown_tool_denial_is_distinct_from_candidate_feedback(code):
     session = _controlled_session([])
     record = {
@@ -501,7 +501,7 @@ def test_tool_denial_merges_only_through_same_agent_parent_and_call(
         "agentId": agent,
         "data": {
             "toolCallId": call_id,
-            "error": {"code": copilot_protocol.DENIED_ERROR},
+            "error": {"code": "denied"},
         },
     }
     interpret_decisions(session, [permission, result], native_session_id="s")
@@ -578,9 +578,9 @@ def test_native_plan_and_denial_tests_tolerate_reworded_generated_prose():
 @pytest.mark.parametrize(
     "kind,expected_source",
     [
-        (copilot_protocol.DENIED_BY_RULES, "settings"),
-        (copilot_protocol.DENIED_CONTENT_POLICY, "settings"),
-        (copilot_protocol.DENIED_UNAVAILABLE, "unknown"),
+        ("denied-by-rules", "settings"),
+        ("denied-by-content-exclusion-policy", "settings"),
+        ("denied-no-approval-rule-and-could-not-request-from-user", "unknown"),
     ],
 )
 def test_native_noninteractive_denial_variants_never_claim_candidate_feedback(
@@ -599,9 +599,7 @@ def test_native_noninteractive_denial_variants_never_claim_candidate_feedback(
     assert "candidate_feedback" not in refusal
 
 
-@pytest.mark.parametrize(
-    "result", [None, copilot_protocol.DENIED_ERROR, {}, {"kind": "denied-future"}]
-)
+@pytest.mark.parametrize("result", [None, "denied", {}, {"kind": "denied-future"}])
 def test_unsupported_permission_payload_does_not_invent_a_refusal(result):
     session = _controlled_session([])
     record = _permission_record()

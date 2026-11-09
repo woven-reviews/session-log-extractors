@@ -155,7 +155,7 @@ def test_whole_request_cancellation_does_not_guess_a_question_in_a_group():
             continue
         if record["type"] == copilot_protocol.TOOL_EXECUTION_COMPLETE:
             record["data"]["toolTelemetry"]["properties"]["elicitation_action"] = (
-                copilot_protocol.ELICITATION_CANCEL
+                "cancel"
             )
             record["data"]["result"] = None
         retained.append(record)
@@ -505,7 +505,7 @@ def test_cancellation_without_its_request_remains_a_response_only_result():
     for record in source.state_records:
         if record["type"] == copilot_protocol.TOOL_EXECUTION_COMPLETE:
             record["data"]["toolTelemetry"]["properties"]["elicitation_action"] = (
-                copilot_protocol.ELICITATION_CANCEL
+                "cancel"
             )
             completions.append(record)
     source.state_records = completions

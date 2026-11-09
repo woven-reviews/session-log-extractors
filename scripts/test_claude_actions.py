@@ -99,14 +99,7 @@ def test_native_actions_tasks_and_invocations_survive_production_export(limit):
 
 @pytest.mark.parametrize(
     "name",
-    [
-        claude_protocol.READ_TOOL,
-        claude_protocol.WRITE_TOOL,
-        claude_protocol.EDIT_TOOL,
-        claude_protocol.NOTEBOOK_EDIT_TOOL,
-        claude_protocol.MULTI_EDIT_TOOL,
-        claude_protocol.CREATE_TOOL,
-    ],
+    ["Read", "Write", "Edit", "NotebookEdit", "MultiEdit", "Create"],
 )
 @pytest.mark.parametrize("result_kind", ["missing", "success", "failure"])
 def test_controlled_attempts_never_confirm_from_success_or_prose(name, result_kind):
@@ -162,12 +155,7 @@ def _user(text, native_id="message", **fields):
 
 @pytest.mark.parametrize(
     "name",
-    [
-        claude_protocol.EDIT_TOOL,
-        claude_protocol.MULTI_EDIT_TOOL,
-        claude_protocol.WRITE_TOOL,
-        claude_protocol.CREATE_TOOL,
-    ],
+    ["Edit", "MultiEdit", "Write", "Create"],
 )
 @pytest.mark.parametrize(
     "patch", [[], [{"lines": ["-same", "+same"]}], [{"lines": ["-before", "+after"]}]]
@@ -205,7 +193,7 @@ def test_controlled_incomplete_change_evidence_stays_unconfirmed(payload):
 
 @pytest.mark.parametrize("payload", [None, {}, {"file_path": None}, {"path": ""}])
 def test_missing_and_empty_paths_remain_distinct(payload):
-    session = _session([_call(claude_protocol.CREATE_TOOL, payload)])
+    session = _session([_call("Create", payload)])
 
     expected_path = "" if payload == {"path": ""} else None
     assert session["file_actions"][0]["path"] == expected_path
