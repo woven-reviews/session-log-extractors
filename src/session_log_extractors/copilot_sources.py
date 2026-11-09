@@ -7,6 +7,7 @@ ordinary records and bytes, so interpretation never needs a live connection.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
@@ -29,6 +30,7 @@ COPILOT_DB = Path.home() / ".copilot" / "session-store.db"
 COPILOT_STATE_ROOT = Path.home() / ".copilot" / "session-state"
 
 ImageInputs = Dict[str, Optional[bytes]]
+ImageReader = Callable[[str], Optional[bytes]]
 
 
 @dataclass
@@ -293,7 +295,10 @@ def get_session_models(conn: sqlite3.Connection, session_id: str) -> List[str]:
 
 
 def read_source(
-    conn: sqlite3.Connection, session: Dict[str, JsonValue]
+    conn: sqlite3.Connection,
+    session: Dict[str, JsonValue],
+    *,
+    state_path: Path | None = None,
 ) -> CopilotSource:
     """Snapshot required rows and state once; leave connection ownership intact."""
     session_id = session["id"]
@@ -304,7 +309,9 @@ def read_source(
         turns=get_session_turns(conn, session_id),
         files=get_session_files(conn, session_id),
         attachments=get_session_attachments(conn, session_id),
-        state_records=load_state_records(session_id),
+        state_records=load_state_records(session_id)
+        if state_path is None
+        else load_jsonl_objects(state_path),
         models=get_session_models(conn, session_id),
     )
 
@@ -317,11 +324,14 @@ def read_image(path_value: str) -> Optional[bytes]:
         return None
 
 
-def load_image_inputs(refs: Iterable[Dict[str, JsonValue]]) -> ImageInputs:
+def load_image_inputs(
+    refs: Iterable[Dict[str, JsonValue]], *, reader: ImageReader | None = None
+) -> ImageInputs:
     """Read each referenced path once, retaining unresolved paths as well."""
     images: ImageInputs = {}
+    read = read_image if reader is None else reader
     for ref in refs:
         path = ref.get("path")
         if isinstance(path, str) and path.strip() and path not in images:
-            images[path] = read_image(path)
+            images[path] = read(path)
     return images

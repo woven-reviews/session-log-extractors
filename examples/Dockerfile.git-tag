@@ -1,0 +1,7 @@
+# Assessment image pattern; build from any empty directory after v1 publication.
+FROM python:3.11-slim
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir \
+    "session-log-extractors @ git+https://github.com/woven-reviews/session-log-extractors.git@v1.0.0"
+ENTRYPOINT ["session-log"]

@@ -1,0 +1,7 @@
+{
+  "hooks": {
+    "PreToolUse": [{"hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/bin/session-log-hook.exe", "args": ["pre", "claude"], "timeout": 15}]}],
+    "Stop": [{"hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/bin/session-log-hook.exe", "args": ["stop", "claude"], "timeout": 15}]}],
+    "SessionStart": [{"hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/bin/session-log-hook.exe", "args": ["notice", "claude"], "timeout": 15}]}]
+  }
+}

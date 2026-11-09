@@ -1,0 +1,40 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$PLUGIN_ROOT/bin/session-log-hook.exe\" pre codex",
+            "commandWindows": "powershell.exe -NoProfile -NonInteractive -Command \"& (Join-Path ([Environment]::GetEnvironmentVariable('PLUGIN_ROOT')) 'bin/session-log-hook.exe') pre codex; exit (Get-Variable LASTEXITCODE -ValueOnly)\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$PLUGIN_ROOT/bin/session-log-hook.exe\" stop codex",
+            "commandWindows": "powershell.exe -NoProfile -NonInteractive -Command \"& (Join-Path ([Environment]::GetEnvironmentVariable('PLUGIN_ROOT')) 'bin/session-log-hook.exe') stop codex; exit (Get-Variable LASTEXITCODE -ValueOnly)\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$PLUGIN_ROOT/bin/session-log-hook.exe\" notice codex",
+            "commandWindows": "powershell.exe -NoProfile -NonInteractive -Command \"& (Join-Path ([Environment]::GetEnvironmentVariable('PLUGIN_ROOT')) 'bin/session-log-hook.exe') notice codex; exit (Get-Variable LASTEXITCODE -ValueOnly)\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

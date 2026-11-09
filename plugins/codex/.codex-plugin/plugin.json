@@ -1,0 +1,6 @@
+{
+  "name": "session-log-capture",
+  "version": "1.0.0",
+  "description": "Capture configured assessment sessions through Docker",
+  "hooks": "./hooks/hooks.json"
+}

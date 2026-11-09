@@ -4,9 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "session-log-extractors"
-version = "0.0.0"
+version = "1.0.0"
 description = "Reusable extractors for Claude, Codex, and Copilot session logs"
 requires-python = ">=3.11"
+readme = "README.md"
+
+[project.urls]
+Repository = "https://github.com/woven-reviews/session-log-extractors"
+Issues = "https://github.com/woven-reviews/session-log-extractors/issues"
+
+[project.scripts]
+session-log = "session_log_extractors.cli:main"
 
 [project.optional-dependencies]
 test = [

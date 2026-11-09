@@ -4,6 +4,22 @@ Reusable JSON extractors for Claude Code, Codex, and GitHub Copilot CLI sessions
 They preserve the recorded conversation, inline available images, and attach
 structured facts supported by native evidence.
 
+The v1 package exposes `session-log claude`, `session-log codex`, and
+`session-log copilot` with the existing JSON export options. After v1 is
+published, Python consumers can install the immutable Git tag:
+
+```sh
+python -m pip install 'git+https://github.com/woven-reviews/session-log-extractors.git@v1.0.0'
+session-log claude --transcript /path/to/session.jsonl --output session.json
+```
+
+Assessment candidates can instead use the prebuilt Docker image and harness
+plugins without host Python or a local image build. See
+[assessment capture setup](docs/capture.md) and the
+[release and publication checks](docs/release.md). The
+[Git tag Dockerfile pattern](examples/Dockerfile.git-tag) installs the same tag
+during an image build without package-registry or Git credentials.
+
 ## Extract sessions
 
 Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and run
