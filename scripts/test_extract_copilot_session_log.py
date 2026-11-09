@@ -872,7 +872,7 @@ def test_output_identifier_rejects_non_string_ids(session_id):
 
 def test_native_messages_keep_order_identity_and_complete_results():
     source = native_tool_source()
-    # Enlarge the captured result, retaining the native_messages call/message links.
+    # Enlarge the captured result, retaining the native call/message links.
     completion_records = []
     for record in source.state_records:
         if record["type"] == copilot_protocol.TOOL_EXECUTION_COMPLETE:
