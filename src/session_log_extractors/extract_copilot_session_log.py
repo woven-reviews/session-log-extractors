@@ -553,6 +553,8 @@ class CopilotRequest:
 
     connection: sqlite3.Connection
     session: dict[str, JsonValue]
+    state_path: Path | None = None
+    image_reader: copilot_sources.ImageReader | None = None
 
 
 def _identity(
@@ -1024,12 +1026,18 @@ def _file_events(source: CopilotSource) -> list[Message]:
 
 
 def read_source(
-    conn: sqlite3.Connection, session: Dict[str, JsonValue]
+    conn: sqlite3.Connection,
+    session: Dict[str, JsonValue],
+    *,
+    state_path: Path | None = None,
+    image_reader: copilot_sources.ImageReader | None = None,
 ) -> CopilotSource:
     """Snapshot native records and referenced external image bytes."""
-    source = copilot_sources.read_source(conn, session)
+    source = copilot_sources.read_source(conn, session, state_path=state_path)
     attachments = source.attachments + _attachments_from_events(source.state_records)
-    source.image_inputs = copilot_sources.load_image_inputs(attachments)
+    source.image_inputs = copilot_sources.load_image_inputs(
+        attachments, reader=image_reader
+    )
     return source
 
 
@@ -1192,7 +1200,12 @@ class CopilotExtractor(Extractor[CopilotRequest, CopilotSource]):
     """Public Copilot stage adapter; connection ownership stays with orchestration."""
 
     def read_source(self, request: CopilotRequest) -> CopilotSource:
-        return read_source(request.connection, request.session)
+        return read_source(
+            request.connection,
+            request.session,
+            state_path=request.state_path,
+            image_reader=request.image_reader,
+        )
 
     def interpret_source(self, source: CopilotSource) -> Session:
         return interpret_source(source)

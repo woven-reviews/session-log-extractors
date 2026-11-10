@@ -1,0 +1,21 @@
+name: host-hooks
+on:
+  push:
+  pull_request:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  native-host:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.12.11"
+          python-version: "3.11"
+      - run: uv sync --locked --extra test
+      - run: uv run --locked pytest tests/test_capture_host_hooks.py -q

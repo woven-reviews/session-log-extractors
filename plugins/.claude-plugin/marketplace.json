@@ -1,0 +1,5 @@
+{
+  "name": "woven-session-logs",
+  "owner": {"name": "Woven"},
+  "plugins": [{"name": "session-log-capture", "source": "./claude", "version": "1.0.0", "description": "Capture configured assessment sessions through Docker"}]
+}

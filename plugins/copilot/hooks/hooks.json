@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "type": "command",
+        "bash": "sh \"$COPILOT_PLUGIN_ROOT/hooks/capture.sh\" pre copilot",
+        "powershell": "& (Join-Path $env:COPILOT_PLUGIN_ROOT 'hooks/capture.ps1') pre copilot",
+        "timeoutSec": 15
+      }
+    ],
+    "agentStop": [
+      {
+        "type": "command",
+        "bash": "sh \"$COPILOT_PLUGIN_ROOT/hooks/capture.sh\" stop copilot",
+        "powershell": "& (Join-Path $env:COPILOT_PLUGIN_ROOT 'hooks/capture.ps1') stop copilot",
+        "timeoutSec": 15
+      }
+    ],
+    "sessionStart": [
+      {
+        "type": "command",
+        "bash": "sh \"$COPILOT_PLUGIN_ROOT/hooks/capture.sh\" notice copilot",
+        "powershell": "& (Join-Path $env:COPILOT_PLUGIN_ROOT 'hooks/capture.ps1') notice copilot",
+        "timeoutSec": 15
+      }
+    ]
+  }
+}

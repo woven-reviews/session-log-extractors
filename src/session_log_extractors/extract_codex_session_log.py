@@ -57,7 +57,7 @@ import json
 import re
 import sys
 from collections.abc import Mapping
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Dict, List, Optional, Tuple
 
 from session_log_extractors import codex_sources
@@ -239,7 +239,7 @@ def assistant_text_from_payload(payload: Dict[str, JsonValue]) -> str:
 def _image_ref_from_string(value: str) -> Optional[Dict[str, JsonValue]]:
     if value.startswith("data:image/"):
         return {"type": "data_url", "data_url": value}
-    if value.startswith(("/", "~")):
+    if value.startswith(("/", "~")) or PureWindowsPath(value).is_absolute():
         return {"type": "path", "path": value}
     return None
 
@@ -894,8 +894,15 @@ def build_raw_envelope(
 class CodexExtractor(Extractor[Path, CodexSource]):
     """Public Codex reader/interpreter adapter."""
 
+    def __init__(
+        self, *, image_reader: codex_sources.ImageReader | None = None
+    ) -> None:
+        self._image_reader = image_reader
+
     def read_source(self, request: Path) -> CodexSource:
-        return read_source(request)
+        if self._image_reader is None:
+            return read_source(request)
+        return read_source(request, image_reader=self._image_reader)
 
     def interpret_source(self, source: CodexSource) -> Session:
         return interpret_source(source)
@@ -1036,7 +1043,9 @@ def build_arg_parser(project_root: Optional[Path] = None) -> argparse.ArgumentPa
     return parser
 
 
-def read_source(path: Path) -> CodexSource:
+def read_source(
+    path: Path, *, image_reader: codex_sources.ImageReader | None = None
+) -> CodexSource:
     """Load native records, metadata, and optional path image inputs."""
     source = codex_sources.read_source(path)
     refs = []
@@ -1046,7 +1055,7 @@ def read_source(path: Path) -> CodexSource:
             refs.extend(image_refs_from_event(payload))
         if entry.get("type") == RESPONSE_ITEM and payload.get("role") == ROLE_USER:
             refs.extend(image_refs_from_user_message_payload(payload))
-    source.image_inputs = codex_sources.load_image_inputs(refs)
+    source.image_inputs = codex_sources.load_image_inputs(refs, reader=image_reader)
     return source
 
 

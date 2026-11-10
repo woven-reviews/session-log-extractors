@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -28,6 +29,7 @@ from session_log_extractors.session_selection import (
 CODEX_SESSIONS_ROOT = Path.home() / ".codex" / "sessions"
 
 ImageInputs = Dict[str, Optional[Tuple[bytes, str]]]
+ImageReader = Callable[[str], Optional[Tuple[bytes, str]]]
 
 
 @dataclass
@@ -272,11 +274,14 @@ def read_image(path_value: str) -> Optional[Tuple[bytes, str]]:
         return None
 
 
-def load_image_inputs(refs: Iterable[Dict[str, JsonValue]]) -> ImageInputs:
+def load_image_inputs(
+    refs: Iterable[Dict[str, JsonValue]], *, reader: ImageReader | None = None
+) -> ImageInputs:
     """Snapshot referenced path assets, retaining unresolved paths too."""
     images: ImageInputs = {}
+    read = read_image if reader is None else reader
     for ref in refs:
         path = ref.get("path")
         if ref.get("type") == "path" and isinstance(path, str) and path not in images:
-            images[path] = read_image(path)
+            images[path] = read(path)
     return images
