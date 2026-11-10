@@ -7,17 +7,17 @@ verify the approved artifacts before the QUAL-2324 assessment canary.
 ## Build and publish
 
 Run the checks in [AGENTS.md](../AGENTS.md). The tag-triggered release workflow
-also requires the reusable Python checks and the native launcher matrix on
+also requires the reusable Python checks and the native host-hook matrix on
 macOS, Linux, and Windows.
 
 After approval, create the immutable `v1.0.0` tag on the approved commit and push
 it. Do not move or reuse a published version tag. The workflow checks that the
-tag matches `pyproject.toml`, builds the wheel and source distribution, compiles
-host bundles for amd64/arm64 on all three operating systems, and publishes a
-Linux amd64/arm64 capture image to GHCR. Go is a maintainer build dependency;
-the bundles contain executables, so candidates need no Go installation.
+tag matches `pyproject.toml`, builds the wheel and source distribution, packages
+architecture-independent POSIX and Windows hook bundles, and publishes a
+Linux amd64/arm64 capture image to GHCR. Hooks are shell and PowerShell text;
+there is no host binary build.
 
-The workflow creates a draft GitHub release with the distributions, six plugin
+The workflow creates a draft GitHub release with the distributions, two plugin
 archives, `capture-image.txt`, and `SHA256SUMS`. The image reference includes its
 manifest digest. Configure the GHCR package for public anonymous access before
 publishing the draft release. Image registry and assessment Git authentication
@@ -37,13 +37,15 @@ are separate: the image must be downloadable without GitHub credentials.
    install its harness plugin. Confirm the configured checkout is active and an
    unrelated checkout is inactive. Review the harness's normal hook trust UI.
 5. Verify the live plugin path, including Docker unavailable then repaired,
-   final-turn capture, a slow pull, a slow upload, concurrent turns, and recovery
-   after a transient failure. Confirm source mounts are individual files and
+   final-turn capture, a missing cached image, a slow upload, concurrent turns,
+   and recovery after a transient failure. Confirm mounts include only the
+   configured checkout, selected source files, and capture state, never a home
+   directory or its ancestors; confirm
    the candidate's branch, index, and working files remain unchanged.
 
 All three host operating systems need the live plugin checks before the canary.
-The native host CI matrix verifies the executable and command strings; it does
-not replace testing the installed harness and Docker together. Paid native
+The native host CI matrix verifies shell/PowerShell readiness and command
+definitions; it does not replace testing the installed harness and Docker together. Paid native
 harness sessions require separate explicit authorization.
 
 ## Local verification without publication
@@ -66,16 +68,12 @@ These tests invoke the plugin's declared hook command with committed native
 fixture copies, transfer synthetic runtime credentials, and upload to a
 disposable local Git target. They verify the live container mounts and remove
 their own labeled containers on exit. They run no model sessions or real GitHub
-uploads. One probe delays Docker acquisition for 35 seconds; another delays
-each Git upload for 35 seconds while another turn arrives. These controlled
-delays establish handoff and queue behavior, not published-image download speed.
+uploads. One probe delays each Git upload for 35 seconds while another turn
+arrives. Another requires a cached image and checks recovery after an absent
+image is restored. These probes establish queue behavior, not published-image
+download speed. First pulls are a candidate setup step outside the agent.
 
-```sh
-cd launcher
-go test -race ./...
-go vet ./...
-```
-
-Build all six plugin archives with `sh scripts/package-plugins.sh OUTPUT_DIR`.
-Only the host binary is platform-specific. The capture image runs Linux Python
-and Git on Docker Engine or Docker Desktop with Linux containers.
+Build both text plugin archives with `sh scripts/package-plugins.sh OUTPUT_DIR`.
+The capture image runs Linux Python and Git on Docker Engine or Docker Desktop
+with Linux containers. Native Windows hook checks run in the host CI matrix;
+macOS/Linux tests exercise POSIX hooks.

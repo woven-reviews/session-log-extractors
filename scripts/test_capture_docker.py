@@ -6,7 +6,6 @@ process, real GitHub upload, or host home-directory mount runs in these tests.
 
 import json
 import os
-import shlex
 import shutil
 import subprocess
 import time
@@ -38,21 +37,12 @@ class _DockerCapture:
 @pytest.fixture
 def docker_capture(capture, tmp_path):
     _module, job, repo, remote = capture
-    executable = tmp_path / "plugin with spaces" / "bin" / "session-log-hook.exe"
+    executable = tmp_path / "plugin with spaces" / "hooks" / "capture.sh"
     executable.parent.mkdir(parents=True)
-    subprocess.run(
-        ["go", "build", "-o", str(executable), "."],
-        cwd=ROOT / "launcher",
-        check=True,
-    )
+    shutil.copyfile(ROOT / "hooks/capture.sh", executable)
     git(repo, "remote", "add", "origin", ASSESSMENT_REMOTE)
-    (repo / ".session-log.json").write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "image": os.environ["SESSION_LOG_TEST_IMAGE"],
-            }
-        )
+    (repo / ".session-log-capture").write_text(
+        os.environ["SESSION_LOG_TEST_IMAGE"] + "\n"
     )
     state = repo / ".git" / "session-log-capture"
     state.mkdir()
@@ -101,8 +91,16 @@ def _invoke_hook(context, action, extra_env=None):
     command = handler["command"].replace(
         "${CLAUDE_PLUGIN_ROOT}", str(context.executable.parent.parent)
     )
+    arguments = []
+    for argument in handler["args"]:
+        arguments.append(
+            argument.replace(
+                "${CLAUDE_PLUGIN_ROOT}", str(context.executable.parent.parent)
+            )
+        )
     return subprocess.run(
-        [command, *handler["args"]],
+        [command, *arguments],
+        cwd=context.repository,
         input=payload,
         capture_output=True,
         text=True,
@@ -121,7 +119,7 @@ def _wait_for(context, path, *, present):
     while path.exists() is not present:
         if time.monotonic() >= deadline:
             errors = []
-            for name in ("launcher.log", "last_error"):
+            for name in ("last_error",):
                 if (context.state / name).exists():
                     errors.append((context.state / name).read_text())
             pytest.fail("Capture did not finish: " + "\n".join(errors))
@@ -179,7 +177,7 @@ def _assert_scoped_mounts(context):
         check=True,
     ).stdout.split()
     assert identifiers, "Expected a running worker during the delayed upload"
-    expected = {str(context.state), context.job.transcript}
+    expected = {str(context.state), str(context.repository), context.job.transcript}
     for identifier in identifiers:
         result = subprocess.run(
             ["docker", "inspect", identifier],
@@ -226,41 +224,22 @@ def test_readiness_recovers_after_docker_connection_is_repaired(docker_capture):
     assert recovered.returncode == 0, recovered.stderr
 
 
-@pytest.mark.skipif(
-    os.name == "nt", reason="POSIX delay probe; Windows launcher has native CI"
-)
-def test_detached_handoff_survives_docker_start_delayed_beyond_hook_timeout(
-    docker_capture,
-):
+def test_missing_cached_image_denies_tools_without_automatic_pull(docker_capture):
     context = docker_capture
-    real_docker = shutil.which("docker")
-    assert real_docker
-    directory = context.state / "delayed-cli"
-    directory.mkdir()
-    marker = context.state / "delay-finished"
-    wrapper = directory / "docker"
-    # Delay the first actual container acquisition, then invoke real Docker.
-    # This is a lifecycle probe, not a native model or fixture generator fake.
-    wrapper.write_text(
-        '#!/bin/sh\nif [ "$1" = run ] && [ ! -f '
-        + shlex.quote(str(marker))
-        + " ]; then sleep 35; touch "
-        + shlex.quote(str(marker))
-        + "; fi\nexec "
-        + shlex.quote(real_docker)
-        + ' "$@"\n'
+    missing = "sha256:" + "0" * 64
+    (context.repository / ".session-log-capture").write_text(missing + "\n")
+    result = _invoke_hook(context, "pre")
+    assert result.returncode == 2
+    assert f"docker pull {missing}" in result.stderr
+    stopped = _invoke_hook(context, "stop")
+    assert stopped.returncode == 0
+    signals = list((context.state / "incoming").glob("*.json"))
+    assert len(signals) == 1
+    (context.repository / ".session-log-capture").write_text(
+        os.environ["SESSION_LOG_TEST_IMAGE"] + "\n"
     )
-    wrapper.chmod(0o755)
-    started = time.monotonic()
-    result = _invoke_hook(
-        context, "stop", {"PATH": str(directory) + os.pathsep + os.environ["PATH"]}
-    )
-    assert result.returncode == 0, result.stderr
-    assert time.monotonic() - started < 15
+    recovered = _invoke_hook(context, "stop")
+    assert recovered.returncode == 0, recovered.stderr
     _wait_for_empty_queue(context)
-    assert marker.exists()
-    assert time.monotonic() - started >= 35
-    envelope = json.loads(
-        git(context.remote, "show", f"session-logs:{context.job.output_path}")
-    )
-    assert envelope["events"]
+    assert not list((context.state / "incoming").glob("*.json"))
+    assert git(context.remote, "rev-list", "--count", "session-logs") == "1"

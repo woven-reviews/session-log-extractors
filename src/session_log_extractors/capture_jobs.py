@@ -42,6 +42,7 @@ class CaptureJob:
     remote: str
     state_log: str = ""
     mounts: tuple[SourceMount, ...] = ()
+    checkout_mount: str = ""
 
     def __post_init__(self) -> None:
         Harness(self.harness)
@@ -60,7 +61,14 @@ class CaptureJob:
         for mount in self.mounts:
             if source == native_path(mount.recorded):
                 return Path(mount.mounted)
-        if self.mounts:
+        checkout = native_path(self.repo)
+        if self.checkout_mount and source.is_relative_to(checkout):
+            mounted_root = Path(self.checkout_mount)
+            path = mounted_root.joinpath(*source.relative_to(checkout).parts)
+            if not path.resolve().is_relative_to(mounted_root.resolve()):
+                raise ValueError("source symlink escapes the mounted checkout")
+            return path
+        if self.mounts or self.checkout_mount:
             raise ValueError("source file is not explicitly mounted")
         return Path(recorded)
 
@@ -78,6 +86,7 @@ class CaptureJob:
                 "repo": self.repo,
                 "remote": self.remote,
                 "state_log": self.state_log,
+                "checkout_mount": self.checkout_mount,
                 "mounts": [
                     {"recorded": mount.recorded, "mounted": mount.mounted}
                     for mount in self.mounts
@@ -92,7 +101,7 @@ def load_job(path: Path) -> CaptureJob:
         raise ValueError("capture request must be an object")
     required = ("harness", "session_id", "transcript", "repo", "remote")
     fields: dict[str, str] = {}
-    for key in (*required, "state_log"):
+    for key in (*required, "state_log", "checkout_mount"):
         item = value.get(key, "" if key not in required else None)
         if not isinstance(item, str):
             raise ValueError(f"capture request requires string {key}")

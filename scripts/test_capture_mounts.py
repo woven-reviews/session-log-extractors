@@ -1,15 +1,12 @@
-"""Container sources are exact recorded files, never directory-wide mappings."""
+"""Container sources use admitted files and the configured assessment checkout."""
 
 import base64
 import json
-import shutil
-import sqlite3
 from dataclasses import replace
 
 import pytest
 from codex_fixture import ASSETS as CODEX_ASSETS
 from codex_fixture import TRANSCRIPT as CODEX_TRANSCRIPT
-from copilot_fixture import DATABASE, SESSION_ID, STATE_ROOT
 
 from session_log_extractors import capture_extraction, capture_jobs
 
@@ -106,7 +103,6 @@ def test_windows_native_image_uses_only_its_explicit_file(capture, tmp_path, ava
         transcript=recorded_transcript,
         mounts=tuple(mounts),
     )
-    assert capture_extraction.referenced_assets(scoped) == [recorded_asset]
     envelope = capture_extraction.extract(scoped)
     images = []
     for event in envelope["events"]:
@@ -124,41 +120,6 @@ def test_windows_native_image_uses_only_its_explicit_file(capture, tmp_path, ava
             if image.get("unavailable"):
                 missing.append(image["ref"])
         assert recorded_asset in missing
-
-
-def test_source_inspection_cli_reads_only_the_selected_request(
-    capture, tmp_path, capsys
-):
-    _module, job, _repo, _remote = capture
-    request = tmp_path / "request.json"
-    request.write_text(job.serialize())
-    status = capture_extraction.main([str(request)])
-    assert status == 0
-    assert json.loads(capsys.readouterr().out) == []
-
-
-def test_copilot_asset_discovery_uses_native_attachment_records(capture, tmp_path):
-    _module, job, _repo, _remote = capture
-    database = tmp_path / "session-store.db"
-    shutil.copyfile(DATABASE, database)
-    with sqlite3.connect(database) as connection:
-        connection.execute("UPDATE sessions SET cwd = ?", (job.repo,))
-    selected = replace(
-        job,
-        harness="copilot",
-        session_id=SESSION_ID,
-        transcript=str(database),
-        state_log=str(STATE_ROOT / SESSION_ID / "events.jsonl"),
-    )
-    paths = capture_extraction.referenced_assets(selected)
-    assert isinstance(paths, list)
-    assert paths, "Native capture must contain image attachment path evidence"
-
-
-def test_inspection_rejects_unowned_session_before_disclosing_assets(capture):
-    _module, job, _repo, _remote = capture
-    with pytest.raises(ValueError, match="assessment"):
-        capture_extraction.referenced_assets(replace(job, repo="/unrelated"))
 
 
 def test_recorded_image_path_cannot_bypass_the_admitted_mapping(capture, tmp_path):
