@@ -243,32 +243,38 @@ def select_transcript(
         where = f" in {proj}" if proj is not None else ""
         raise FileNotFoundError(f"no transcript matching {selector!r}{where}")
 
-    store = Path(project_dir).expanduser() if project_dir else None
-    boundary = None if strict else RepositoryBoundary.discover(cwd)
-    return _implicit_transcript(cwd, proj if strict else store, boundary)
-
-
-def _implicit_transcript(
-    cwd: Path, project: Path | None, boundary: RepositoryBoundary | None
-) -> Path:
-    if boundary is not None:
-        picked = newest(
-            repository_transcripts(PROJECTS_ROOT, boundary, project_dir=project)
+    if strict:
+        picked = newest(_jsonl_files(proj)) if proj is not None else None
+        if picked is not None:
+            return picked
+        raise FileNotFoundError(
+            f"no Claude Code transcript for {cwd} under {PROJECTS_ROOT} "
+            "(--strict: exact project directory only)"
         )
-        if picked is not None:
-            return picked
-        raise FileNotFoundError(f"no Claude transcripts in Git repository from {cwd}")
+    picked = newest(_repository_transcripts(project_dir, cwd))
+    if picked is not None:
+        return picked
+    raise FileNotFoundError(f"no Claude transcripts in Git repository from {cwd}")
 
-    # Newest in the resolved project dir.
-    if project is not None:
-        picked = newest(_jsonl_files(project))
-        if picked is not None:
-            return picked
 
-    raise FileNotFoundError(
-        f"no Claude Code transcript for {cwd} under {PROJECTS_ROOT} "
-        "(--strict: exact project directory only)"
-    )
+def _repository_transcripts(project_dir: Optional[str], cwd: Path) -> list[Path]:
+    """Check recorded directories, optionally within one named project store."""
+    store = Path(project_dir).expanduser() if project_dir else None
+    boundary = RepositoryBoundary.discover(cwd)
+    return repository_transcripts(PROJECTS_ROOT, boundary, project_dir=store)
+
+
+def _strict_transcripts(project_dir: Optional[str], cwd: Path) -> list[Path]:
+    """List the named store, or the exact encoded invocation store."""
+    project = resolve_project_dir(project_dir, cwd, strict=True)
+    if project is None or not project.is_dir():
+        where = project if project is not None else PROJECTS_ROOT
+        print(f"error: no project transcript dir found: {where}", file=sys.stderr)
+        return []
+    files = _jsonl_files(project)
+    if not files:
+        print(f"error: no .jsonl transcripts in {project}", file=sys.stderr)
+    return files
 
 
 def _explicit_transcript(transcript: str) -> Path:
@@ -996,27 +1002,6 @@ def extract_transcript(
     return session_log_envelope.export_session(session, tool_result_max_bytes)
 
 
-def _batch_transcripts(
-    project_dir: Path | None,
-    cwd: Path,
-    strict: bool,
-    *,
-    boundary: RepositoryBoundary | None = None,
-) -> list[Path]:
-    if boundary is not None:
-        files = repository_transcripts(PROJECTS_ROOT, boundary, project_dir=project_dir)
-    else:
-        project = project_dir or resolve_project_dir(None, cwd, strict=strict)
-        if project is None or not project.is_dir():
-            where = project if project is not None else PROJECTS_ROOT
-            print(f"error: no project transcript dir found: {where}", file=sys.stderr)
-            return []
-        files = _jsonl_files(project)
-        if not files:
-            print(f"error: no .jsonl transcripts in {project}", file=sys.stderr)
-    return sorted(files, key=lambda path: path.stat().st_mtime)
-
-
 def _extract_all(
     files: List[Path],
     output: Optional[str],
@@ -1027,6 +1012,7 @@ def _extract_all(
     """Write every selected Claude source, one JSON file each."""
     cwd = Path.cwd()
     project_root = cwd if project_root is None else project_root
+    files = sorted(files, key=lambda path: path.stat().st_mtime)
     if not files:
         print(
             f"error: no Claude transcripts for {cwd} under {PROJECTS_ROOT}",
@@ -1077,12 +1063,11 @@ def main(
     try:
         # all-sessions is the default; a session id, --transcript or stdout opts out
         if args.all or not (args.session or args.transcript or args.output == "-"):
-            proj = Path(args.project_dir).expanduser() if args.project_dir else None
             out = None if args.output == "-" else args.output
-            boundary = (
-                RepositoryBoundary.discover(Path.cwd()) if not args.strict else None
-            )
-            files = _batch_transcripts(proj, Path.cwd(), args.strict, boundary=boundary)
+            if args.strict:
+                files = _strict_transcripts(args.project_dir, Path.cwd())
+            else:
+                files = _repository_transcripts(args.project_dir, Path.cwd())
             return _extract_all(
                 files,
                 out,
