@@ -41,13 +41,37 @@ def test_empty_session_has_no_directory():
 def test_repository_store_skips_invalid_inputs_and_nonfiles(tmp_path, capsys):
     store = tmp_path / "store"
     store.mkdir()
-    # Invalid JSON and a directory named like a transcript are controlled
-    # discovery failures that a successful native capture cannot supply.
-    (store / "invalid.jsonl").write_text("not JSON\n")
+    # Invalid JSON, an unreadable file and a directory named like a transcript
+    # are controlled discovery failures that a native capture cannot supply.
+    invalid = store / "invalid.jsonl"
+    invalid.write_text("not JSON\n")
+    unreadable = store / "unreadable.jsonl"
+    unreadable.write_text("{}\n")
+    unreadable.chmod(0)
     (store / "directory.jsonl").mkdir()
     boundary = RepositoryBoundary((tmp_path.resolve(),))
 
     selected = repository_transcripts(tmp_path, boundary, project_dir=store)
 
+    stderr = capsys.readouterr().err
     assert selected == []
-    assert "skipping Claude source" in capsys.readouterr().err
+    assert f"skipping {invalid}: no usable recorded directory evidence" in stderr
+    assert f"skipping Claude source {unreadable}" in stderr
+
+
+def test_unrelated_transcript_tail_is_not_parsed_during_discovery(tmp_path, capsys):
+    store = tmp_path / "store"
+    store.mkdir()
+    unrelated = store / "unrelated.jsonl"
+    # A session still being written can end in a partial record. Discovery
+    # needs only the first recorded directory, so the tail stays unread.
+    unrelated.write_text(TRANSCRIPT.read_text() + '{"partial": \n')
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    boundary = RepositoryBoundary((repository.resolve(),))
+
+    selected = repository_transcripts(tmp_path, boundary, project_dir=store)
+
+    stderr = capsys.readouterr().err
+    assert selected == []
+    assert stderr == ""
