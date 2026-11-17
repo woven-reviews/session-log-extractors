@@ -19,12 +19,20 @@ _GIT_BARE_FIELD = "bare"
 _GIT_PRUNABLE_FIELD = "prunable"
 
 
+def _source_identity(path: Path) -> Path:
+    """Resolve aliases; an unresolvable link remains its own unreadable source."""
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError):
+        return path
+
+
 def unique_paths(paths: Iterable[Path]) -> list[Path]:
     """Retain first discovery order while collapsing resolved source aliases."""
     unique = []
     seen = set()
     for path in paths:
-        resolved = path.resolve()
+        resolved = _source_identity(path)
         if resolved not in seen:
             seen.add(resolved)
             unique.append(path)

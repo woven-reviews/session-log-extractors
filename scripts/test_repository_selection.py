@@ -331,6 +331,23 @@ def test_source_alias_is_exported_once(tmp_path, checkouts, harness):
     assert len(_output_names(output)) == 1
 
 
+def test_looping_store_entry_does_not_stop_export(tmp_path, checkouts, harness):
+    main, _ = checkouts
+    home = tmp_path / "home"
+    transcript = _capture(home, harness, "included", str(main))
+    # A transcript-named symlink to itself is a controlled filesystem fault that
+    # no native capture contains; resolving it raises before Python 3.13.
+    loop = transcript.parent.parent / "looping" / transcript.name
+    loop.parent.mkdir()
+    loop.symlink_to(loop)
+    output = tmp_path / "exports"
+
+    result = _cli(harness, home, main, "--output", str(output))
+
+    assert result.returncode == 0, result.stderr
+    assert len(_output_names(output)) == 1
+
+
 def test_copilot_resume_does_not_override_start_directory(tmp_path, checkouts):
     main, _ = checkouts
     home = tmp_path / "home"
