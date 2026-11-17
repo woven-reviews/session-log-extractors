@@ -14,6 +14,7 @@ from copilot_fixture import (
     single_image_source,
     write_events_log,
 )
+from repository_fixture import init_checkout
 
 from session_log_extractors import copilot_sources as sources
 from session_log_extractors import extract_copilot_session_log as copilot
@@ -208,17 +209,25 @@ def test_directory_selection(recorded_cwd, strict, matches):
     assert actual == ([session] if matches else [])
 
 
-def test_newest_fallback_and_deterministic_ties():
-    first = sources.CopilotSource(sources.CopilotSession(Path("a"), "a", "/workspace"))
-    second = sources.CopilotSource(sources.CopilotSession(Path("b"), "b", "/elsewhere"))
-    actual = sources.newest_session([second, first], Path("/workspace"))
-    assert actual == first
-    actual = sources.newest_session([first, second], Path("/missing"))
-    assert actual == second
-    actual = sources.newest_session([second, first], Path("/missing"), True)
-    assert actual is None
-    actual = sources.newest_session([], Path("/missing"))
-    assert actual is None
+def test_newest_repository_selection_and_deterministic_ties(tmp_path):
+    init_checkout(tmp_path)
+    first = sources.CopilotSource(sources.CopilotSession(Path("a"), "a", str(tmp_path)))
+    second = sources.CopilotSource(
+        sources.CopilotSession(Path("b"), "b", str(tmp_path / "child"))
+    )
+    unrelated = sources.CopilotSource(
+        sources.CopilotSession(Path("c"), "c", str(tmp_path.parent))
+    )
+
+    newest = sources.newest_session([second, first, unrelated], tmp_path)
+    strict = sources.newest_session([second, unrelated], tmp_path, True)
+    no_match = sources.newest_session([unrelated], tmp_path)
+    empty = sources.newest_session([], tmp_path)
+
+    assert newest == second
+    assert strict is None
+    assert no_match is None
+    assert empty is None
 
 
 def test_duplicate_recorded_ids_are_ambiguous():

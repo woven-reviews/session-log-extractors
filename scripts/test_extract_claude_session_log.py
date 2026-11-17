@@ -20,6 +20,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 import pytest
 from claude_fixture import CHILD_TRANSCRIPT as SUBAGENT
 from claude_fixture import ROOT, TRANSCRIPT
+from repository_fixture import init_checkout
 
 from session_log_extractors import claude_protocol, session_log_envelope
 from session_log_extractors import extract_claude_session_log as eclog
@@ -771,14 +772,24 @@ def test_select_transcript_selector_not_found_without_project_dir():
         assert str(exc_info.value) == "no transcript matching 'some-id'"
 
 
-def test_select_transcript_no_selector_picks_newest_in_project_dir():
+def _write_session_with_cwd(path, cwd):
+    """Keep the complete native conversation, changing only session directory evidence."""
+    entries = _recorded_session_entries()
+    for entry in entries:
+        if "cwd" in entry:
+            entry["cwd"] = str(cwd)
+    _write_jsonl(path, entries)
+    return entries
+
+
+def test_strict_selection_picks_newest_in_project_dir():
     proj = Path(tempfile.mkdtemp())
     a, b = proj / "a.jsonl", proj / "b.jsonl"
     a.write_bytes(TRANSCRIPT.read_bytes())
     b.write_bytes(TRANSCRIPT.read_bytes())
     os.utime(a, (1, 1))
     os.utime(b, (1000, 1000))
-    actual_select_transcript = select_transcript(None, None, str(proj))
+    actual_select_transcript = select_transcript(None, None, str(proj), strict=True)
     assert actual_select_transcript == b
 
 
@@ -795,17 +806,17 @@ def test_select_transcript_no_match_anywhere_raises():
         with pytest.raises(FileNotFoundError) as exc_info:
             select_transcript(None, None, None, strict=False)
 
-        assert "could not locate" in str(exc_info.value)
+        assert "no Claude transcripts" in str(exc_info.value)
 
 
-def test_select_transcript_global_fallback_picks_newest_anywhere():
+def test_select_transcript_never_falls_back_to_unrelated_store():
     with _patched_projects_root() as root:
         unrelated = root / "-some-other-project"
         unrelated.mkdir()
         f = unrelated / "s1.jsonl"
         f.write_bytes(TRANSCRIPT.read_bytes())
-        actual_select_transcript = select_transcript(None, None, None, strict=False)
-        assert actual_select_transcript == f
+        with pytest.raises(FileNotFoundError, match="no Claude transcripts"):
+            select_transcript(None, None, None)
 
 
 # --------------------------------------------------------------------------- #
@@ -1254,13 +1265,16 @@ def test_main_default_mode_errors_when_no_project_dir_found():
         with contextlib.redirect_stderr(err):
             rc = main([])
         assert rc == 1
-        assert "no project transcript dir found" in err.getvalue()
+        assert "no Claude transcripts" in err.getvalue()
 
 
-def test_main_all_mode_extracts_every_session():
-    proj = Path(tempfile.mkdtemp())
-    _write_jsonl(proj / "a.jsonl", _recorded_session_entries())
-    _write_jsonl(proj / "b.jsonl", _recorded_session_entries())
+def test_main_all_mode_extracts_every_session(tmp_path, monkeypatch):
+    init_checkout(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    proj = tmp_path / "store"
+    proj.mkdir()
+    _write_session_with_cwd(proj / "a.jsonl", tmp_path)
+    _write_session_with_cwd(proj / "b.jsonl", tmp_path)
     out_dir = Path(tempfile.mkdtemp())
     err = io.StringIO()
     with contextlib.redirect_stderr(err):
@@ -1274,7 +1288,7 @@ def test_main_all_mode_extracts_every_session():
 def test_extract_all_reports_error_for_missing_project_dir():
     err = io.StringIO()
     with contextlib.redirect_stderr(err):
-        rc = main(["--all", "--project-dir", "/no/such/project/dir"])
+        rc = main(["--all", "--strict", "--project-dir", "/no/such/project/dir"])
     assert rc == 1
     assert "no project transcript dir found" in err.getvalue()
 
@@ -1283,7 +1297,7 @@ def test_extract_all_reports_error_for_no_jsonl_files():
     proj = Path(tempfile.mkdtemp())
     err = io.StringIO()
     with contextlib.redirect_stderr(err):
-        rc = main(["--all", "--project-dir", str(proj)])
+        rc = main(["--all", "--strict", "--project-dir", str(proj)])
     assert rc == 1
     assert "no .jsonl transcripts" in err.getvalue()
 
@@ -1392,10 +1406,12 @@ def test_cli_file_preserves_markdown_and_images(
 def test_cli_batch_emits_only_json(
     all_flag, tmp_path, monkeypatch, capsys, explicit_root
 ):
+    init_checkout(tmp_path)
+    monkeypatch.chdir(tmp_path)
     project = tmp_path / "project"
     project.mkdir()
     for name in ["a", "b"]:
-        shutil.copyfile(TRANSCRIPT, project / f"{name}.jsonl")
+        _write_session_with_cwd(project / f"{name}.jsonl", tmp_path)
     output = tmp_path / "output"
     if not explicit_root:
         output.mkdir()
@@ -1470,9 +1486,11 @@ def test_cli_preserves_native_payloads(transcript, limit, capsys):
 
 
 @pytest.mark.parametrize("selector", ["path", "prefix", "newest"])
-def test_cli_single_selection_paths(selector, tmp_path, capsys):
+def test_cli_single_selection_paths(selector, tmp_path, capsys, monkeypatch):
+    init_checkout(tmp_path)
+    monkeypatch.chdir(tmp_path)
     transcript = tmp_path / "session-123.jsonl"
-    _write_jsonl(transcript, _recorded_session_entries())
+    _write_session_with_cwd(transcript, tmp_path)
     args = ["--project-dir", str(tmp_path), "--output", "-"]
     if selector != "newest":
         args += [str(transcript) if selector == "path" else TRANSCRIPT.stem[:8]]
@@ -1560,6 +1578,8 @@ def test_cli_stdout_keeps_size_warning(monkeypatch, capsys):
 @pytest.mark.parametrize("destination", ["stdout", "explicit", "default", "batch"])
 @pytest.mark.parametrize("contents", ["", " \n\t", '{"unrelated":true}\n', "native"])
 def test_cli_exports_empty_sessions(destination, contents, tmp_path, capsys):
+    # Ownership-free sources remain explicitly selectable. Strict store batches
+    # exercise their export contract without claiming repository ownership.
     transcript = tmp_path / "session.jsonl"
     entries = []
     if contents == "native":
@@ -1579,7 +1599,14 @@ def test_cli_exports_empty_sessions(destination, contents, tmp_path, capsys):
         target = output / "custom.json"
         args += ["--output", str(target)]
     elif destination == "batch":
-        args = ["--all", "--project-dir", str(tmp_path), "--output", str(output)]
+        args = [
+            "--all",
+            "--strict",
+            "--project-dir",
+            str(tmp_path),
+            "--output",
+            str(output),
+        ]
 
     status = main(args, project_root=output)
 
@@ -1605,8 +1632,9 @@ def test_cli_exports_empty_sessions(destination, contents, tmp_path, capsys):
 
 @pytest.mark.parametrize("batch", [False, True])
 def test_cli_default_root_uses_current_directory(batch, tmp_path, monkeypatch):
+    init_checkout(tmp_path)
     transcript = tmp_path / "session.jsonl"
-    shutil.copyfile(TRANSCRIPT, transcript)
+    _write_session_with_cwd(transcript, tmp_path)
     for name in ["first", "second"]:
         output = tmp_path / name
         output.mkdir()
@@ -2444,7 +2472,9 @@ def test_cli_batch_retains_successes_after_failure(
 
         monkeypatch.setattr(Path, "open", open_transcript)
 
-    status = main(["--all", "--project-dir", str(project), "--output", str(output)])
+    status = main(
+        ["--all", "--strict", "--project-dir", str(project), "--output", str(output)]
+    )
 
     captured = capsys.readouterr()
     assert status == 1
@@ -2468,7 +2498,9 @@ def test_cli_batch_reports_output_directory_failure(tmp_path, capsys):
     output = tmp_path / "output"
     output.touch()
 
-    status = main(["--all", "--project-dir", str(tmp_path), "--output", str(output)])
+    status = main(
+        ["--all", "--strict", "--project-dir", str(tmp_path), "--output", str(output)]
+    )
 
     captured = capsys.readouterr()
     assert status == 1
@@ -2531,13 +2563,16 @@ def test_cli_tolerates_skipped_records_in_empty_session(tmp_path, capsys):
 
 
 def test_cli_batch_exports_every_empty_session(tmp_path, capsys):
+    # Strict store selection intentionally includes blank, ownership-free files.
     project = tmp_path / "project"
     project.mkdir()
     (project / "blank.jsonl").touch()
     (project / "object.jsonl").write_text("{}")
     output = tmp_path / "output"
 
-    status = main(["--all", "--project-dir", str(project), "--output", str(output)])
+    status = main(
+        ["--all", "--strict", "--project-dir", str(project), "--output", str(output)]
+    )
 
     captured = capsys.readouterr()
     assert status == 0
@@ -2564,10 +2599,12 @@ def test_cli_help_explains_empty_and_failure_outcomes(capsys):
 
 @pytest.mark.parametrize("mode", ["stdout", "explicit", "default", "batch"])
 def test_recorded_identity_survives_renaming_in_all_output_modes(
-    mode, tmp_path, capsys
+    mode, tmp_path, capsys, monkeypatch
 ):
+    init_checkout(tmp_path)
+    monkeypatch.chdir(tmp_path)
     transcript = tmp_path / "renamed.jsonl"
-    shutil.copyfile(TRANSCRIPT, transcript)
+    _write_session_with_cwd(transcript, tmp_path)
     source = read_source(transcript)
     recorded_ids = set()
     for entry in source.entries:
@@ -2637,7 +2674,7 @@ def test_claude_identity_conflict_uses_cli_error_handling(batch, tmp_path, capsy
             stream.write(json.dumps(entry) + "\n")
     args = ["--transcript", str(transcript), "--output", "-"]
     if batch:
-        args = ["--all", "--project-dir", str(tmp_path)]
+        args = ["--all", "--strict", "--project-dir", str(tmp_path)]
     status = main(args, project_root=tmp_path)
     captured = capsys.readouterr()
     assert status == 1

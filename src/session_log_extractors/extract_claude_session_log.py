@@ -104,7 +104,6 @@ from session_log_extractors.session_output import (
     unique_identifier as _unique_identifier,
 )
 from session_log_extractors.session_selection import (
-    REPOSITORY_FLAG,
     RepositoryBoundary,
 )
 from session_log_extractors.session_selection import (
@@ -220,24 +219,11 @@ def select_transcript(
     transcript: Optional[str],
     project_dir: Optional[str],
     strict: bool = False,
-    *,
-    repository: bool = False,
 ) -> Path:
-    """Pick the transcript file to parse, following the documented precedence.
+    """Prefer an explicit path/ID, otherwise select the newest repository session.
 
-    Precedence:
-      1. ``--transcript PATH`` (explicit file).
-      2. positional ``selector`` that is itself a path to an existing file.
-      3. positional ``selector`` as a case-sensitive recorded ID: unique exact
-         match, otherwise unique literal prefix in the resolved project dir.
-      4. newest ``.jsonl`` in the resolved project dir.
-      5. newest ``.jsonl`` across every project dir (global fallback).
-
-    In ``strict`` mode the project dir must match the cwd exactly (no
-    parent-walk) and the global fallback (step 5) is disabled, so the script
-    only ever reads sessions started in the current directory.
-
-    Raises ``FileNotFoundError`` with a clear message when nothing resolves.
+    Explicit selection retains its project-store lookup and bypasses Git. Strict
+    selection uses the exact encoded invocation store. There is no global fallback.
     """
     cwd = Path.cwd()
 
@@ -258,12 +244,12 @@ def select_transcript(
         raise FileNotFoundError(f"no transcript matching {selector!r}{where}")
 
     store = Path(project_dir).expanduser() if project_dir else None
-    boundary = RepositoryBoundary.discover(cwd) if repository else None
-    return _implicit_transcript(cwd, store if repository else proj, strict, boundary)
+    boundary = None if strict else RepositoryBoundary.discover(cwd)
+    return _implicit_transcript(cwd, proj if strict else store, boundary)
 
 
 def _implicit_transcript(
-    cwd: Path, project: Path | None, strict: bool, boundary: RepositoryBoundary | None
+    cwd: Path, project: Path | None, boundary: RepositoryBoundary | None
 ) -> Path:
     if boundary is not None:
         picked = newest(
@@ -279,20 +265,9 @@ def _implicit_transcript(
         if picked is not None:
             return picked
 
-    # Strict mode: never reach past the cwd's own project dir.
-    if strict:
-        raise FileNotFoundError(
-            f"no Claude Code transcript for {cwd} under {PROJECTS_ROOT} "
-            "(--strict: parent-walk and global fallback disabled)"
-        )
-
-    picked = _newest_global_transcript()
-    if picked is not None:
-        return picked
-
     raise FileNotFoundError(
-        "could not locate any Claude Code transcript "
-        f"(looked under {PROJECTS_ROOT}); pass --transcript PATH"
+        f"no Claude Code transcript for {cwd} under {PROJECTS_ROOT} "
+        "(--strict: exact project directory only)"
     )
 
 
@@ -309,14 +284,6 @@ def _selector_path(selector: Optional[str]) -> Optional[Path]:
         if path.is_file():
             return path
     return None
-
-
-def _newest_global_transcript() -> Optional[Path]:
-    all_files: List[Path] = []
-    if PROJECTS_ROOT.is_dir():
-        for directory in PROJECTS_ROOT.iterdir():
-            all_files.extend(_jsonl_files(directory))
-    return newest(all_files)
 
 
 # --------------------------------------------------------------------------- #
@@ -942,11 +909,10 @@ def build_arg_parser(project_root: Optional[Path] = None) -> argparse.ArgumentPa
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            "Selection precedence:\n"
-            "  --transcript PATH  >  positional file path  >  positional session id\n"
-            "  >  newest .jsonl in the resolved project dir  >  newest .jsonl anywhere.\n\n"
-            "The project dir is resolved from the current working directory by\n"
-            "encoding its path (non-alphanumerics -> '-') under ~/.claude/projects/."
+            "Selection precedence: --transcript PATH > positional file path > recorded ID\n"
+            "> newest eligible repository session. No global fallback.\n"
+            "Without an explicit selector, export all repository sessions, including\n"
+            "registered worktrees and subdirectories. --strict uses the exact cwd store."
         ),
     )
     p.add_argument(
@@ -963,29 +929,24 @@ def build_arg_parser(project_root: Optional[Path] = None) -> argparse.ArgumentPa
         "--project-dir",
         metavar="PATH",
         help=(
-            "override the encoded project dir under ~/.claude/projects/ "
-            "(default: resolved from the current working directory)"
+            "limit discovery to this project store; default automatic selection "
+            "checks recorded directories across all ~/.claude/projects stores"
         ),
     )
-    selection = p.add_mutually_exclusive_group()
-    selection.add_argument(
-        REPOSITORY_FLAG,
-        action="store_true",
-        help="select sessions from this Git repository and its registered worktrees, including subdirectories; no global fallback",
-    )
-    selection.add_argument(
+    p.add_argument(
         "--strict",
         action="store_true",
         help=(
-            "only read sessions started in the current directory: disable the "
-            "parent-dir walk and the newest-anywhere global fallback"
+            "only read the exact invocation directory’s project store; "
+            "exclude subdirectories and other worktrees without Git discovery"
         ),
     )
     p.add_argument(
         "--all",
         action="store_true",
         help=(
-            "extract every session in the resolved project dir, one file per "
+            "extract every eligible repository session, including registered "
+            "worktrees and subdirectories, one file per "
             "session named claude_session_log_raw_<session-id>.json "
             "(in this mode --output is "
             "treated as the output directory; positional selector is ignored). "
@@ -1119,7 +1080,7 @@ def main(
             proj = Path(args.project_dir).expanduser() if args.project_dir else None
             out = None if args.output == "-" else args.output
             boundary = (
-                RepositoryBoundary.discover(Path.cwd()) if args.repository else None
+                RepositoryBoundary.discover(Path.cwd()) if not args.strict else None
             )
             files = _batch_transcripts(proj, Path.cwd(), args.strict, boundary=boundary)
             return _extract_all(
@@ -1138,7 +1099,6 @@ def main(
             transcript=args.transcript,
             project_dir=args.project_dir,
             strict=args.strict,
-            repository=args.repository,
         )
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)

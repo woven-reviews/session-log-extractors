@@ -16,7 +16,8 @@ uv run --locked python scripts/extract_codex_session_log.py
 uv run --locked python scripts/extract_copilot_session_log.py
 ```
 
-By default, each command exports all sessions matching the current project.
+By default, each command exports all sessions belonging to the current Git
+repository, including registered linked worktrees and checkout subdirectories.
 The repository scripts write to the checkout root, including when invoked from
 subdirectories. Filenames are `<harness>_session_log_raw_<session-id>.json`.
 Upload those JSON files with their inline images; no image description pass or
@@ -27,12 +28,11 @@ Use `--help` on each script for its complete interface. Common options are:
 | Selection or option | Behavior |
 | --- | --- |
 | Positional session ID | Export one session. A unique exact recorded ID wins; otherwise a unique literal prefix is required. Matching is case-sensitive. |
-| `--all` | Export every matching project session; this is the default with no explicit selection. |
-| `--repository` | Select sessions started at or beneath this Git repository's main checkout or registered linked worktrees. Works from checkout subdirectories; never falls back globally. Cannot be combined with `--strict`. |
-| `--strict` | Require the exact recorded working directory rather than parent/descendant project matching, and disable the global fallback. |
+| `--all` | Export every session started in this repository’s main checkout or registered linked worktrees, including subdirectories; this is the default with no explicit selection. |
+| `--strict` | Restrict automatic selection to the exact invocation directory, excluding subdirectories and other worktrees. Does not require Git discovery. |
 | `--output ./exports` | Choose a batch output directory. |
 | `--output ./session.json` | Choose a single-session file destination. |
-| `--output -` | Write one session to stdout; without a selector, choose the newest project match or fall back to the newest global session. Diagnostics stay on stderr. |
+| `--output -` | Write one session to stdout; without a selector, choose the newest eligible repository session. There is no global fallback. Diagnostics stay on stderr. |
 | `--tool-result-bytes N` | Cap textual tool results at N UTF-8 bytes; default **8,192**, zero clips nonempty text, any negative value retains full text. |
 
 Claude and Codex also accept `--transcript PATH`. Codex accepts a transcript
@@ -42,17 +42,13 @@ reads `~/.copilot/session-state/*/events.jsonl` and its referenced images; use
 are no longer used. See the [database removal audit](docs/copilot-event-sources.md)
 for compatibility and migration details.
 
-For all three harnesses, `--output -` without a selector can export another
-project's session when no project match exists. Use `--repository`, `--strict`,
-or an explicit selector when project isolation is required.
-
 For a manual repository-wide export, run from anywhere inside the intended
 checkout (including a registered linked worktree):
 
 ```sh
-uv run --locked python scripts/extract_claude_session_log.py --repository --output ./exports
-uv run --locked python scripts/extract_codex_session_log.py --repository --output ./exports
-uv run --locked python scripts/extract_copilot_session_log.py --repository --output ./exports
+uv run --locked python scripts/extract_claude_session_log.py --all --output ./exports
+uv run --locked python scripts/extract_codex_session_log.py --all --output ./exports
+uv run --locked python scripts/extract_copilot_session_log.py --all --output ./exports
 ```
 
 Git must be available. The containing repository's worktree registry defines
@@ -65,10 +61,10 @@ since encoded directory names alone cannot establish ownership. Use
 the Git boundary exits 1 without writing an export or changing existing files.
 
 Explicit IDs, transcript paths, and their precedence retain the existing rules
-even with `--repository`, and do not require Git discovery. Store overrides still
+and do not require Git discovery. Store overrides still
 limit where sources are read. `--strict` retains its legacy exact invocation
-directory behavior, excluding child directories and other worktrees. Neither
-mode changes automatic hooks that explicitly identify one session. Existing
+directory behavior, excluding child directories and other worktrees. This
+change does not affect automatic hooks that explicitly identify one session. Existing
 export files are never cleaned up automatically.
 
 Explicit selection never falls back to a newest unrelated session. Missing or
@@ -108,7 +104,9 @@ For mounted extraction, follow the repository helpers for
 [Claude](.claude/commands/extract-claude-session-logs.md),
 [Codex](.agents/skills/extract-codex-session-logs/SKILL.md), or
 [Copilot](.agents/skills/extract-copilot-session-logs/SKILL.md).
-They verify the checkout and mount its native sources read-only. Output must
+They verify the checkout and mount its native sources, registered linked
+worktrees, and shared Git directory read-only. The current checkout remains
+writable for exports. The image includes Git for repository discovery. Output must
 stay inside the shared checkout, for example batch `--output ./exports`.
 Destinations outside the checkout are unsupported by these workflows.
 Single-session `--output` names a file, not a batch directory.

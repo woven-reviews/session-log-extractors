@@ -161,21 +161,11 @@ def select_transcript(
     transcript: Optional[str],
     sessions_root: Optional[str],
     strict: bool = False,
-    *,
-    repository: bool = False,
 ) -> Path:
-    """Pick a Codex transcript.
+    """Prefer an explicit path/ID, otherwise select the newest repository session.
 
-    Precedence:
-      1. --transcript PATH
-      2. positional selector that is an existing file
-      3. positional selector as case-sensitive recorded ID (unique exact, then prefix)
-      4. newest transcript whose recorded cwd overlaps the current cwd
-      5. newest transcript anywhere under ~/.codex/sessions
-
-    In ``strict`` mode step 4 requires an exact cwd match and step 5 (newest
-    anywhere) is disabled, so only sessions started in the current directory
-    are ever selected.
+    Explicit selection bypasses Git discovery. Strict selection instead requires
+    the exact invocation directory. Automatic selection never falls back globally.
     """
     if transcript:
         p = Path(transcript).expanduser()
@@ -193,37 +183,15 @@ def select_transcript(
         return _select_prefix(_jsonl_files(root), selector)
 
     cwd = Path.cwd()
-    boundary = RepositoryBoundary.discover(cwd) if repository else None
-    return _implicit_transcript(root, cwd, strict, boundary)
-
-
-def _implicit_transcript(
-    root: Path, cwd: Path, strict: bool, boundary: RepositoryBoundary | None
-) -> Path:
-    if boundary is not None:
-        picked = newest(repository_transcripts(root, boundary))
-        if picked is not None:
-            return picked
-        raise FileNotFoundError(f"no Codex transcripts in Git repository from {cwd}")
-
-    picked = newest(matching_transcripts(root, cwd, strict))
-    if picked is not None:
-        return picked
-
     if strict:
-        raise FileNotFoundError(
-            f"no Codex transcript for {cwd} under {root} "
-            "(--strict: cwd-overlap and newest-anywhere fallback disabled)"
-        )
-
-    picked = newest(_automatic_transcripts(root))
+        files = matching_transcripts(root, cwd, strict=True)
+    else:
+        files = repository_transcripts(root, RepositoryBoundary.discover(cwd))
+    picked = newest(files)
     if picked is not None:
         return picked
-
-    raise FileNotFoundError(
-        f"could not locate any Codex transcript (looked under {root}); "
-        "pass --transcript PATH"
-    )
+    mode = " (--strict: exact cwd match only)" if strict else " in Git repository"
+    raise FileNotFoundError(f"no Codex transcript for {cwd} under {root}{mode}")
 
 
 class _CodexSelectionIdentity:

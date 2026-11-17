@@ -15,12 +15,29 @@ Run the Copilot session-log extractor for every Copilot CLI session associated w
 image="rfp-monster-session-log-extractor:local"
 docker build -q -f scripts/Dockerfile -t "$image" . >/dev/null
 mounts=(-v "$PWD:$PWD" -v /tmp:/tmp:ro)
+git_common=$(git rev-parse --path-format=absolute --git-common-dir)
+mounts+=(-v "$git_common:$git_common:ro")
+git_safe_count=1
+git_env=(-e GIT_CONFIG_KEY_0=safe.directory -e "GIT_CONFIG_VALUE_0=$PWD")
+while IFS= read -r -d '' field; do
+  case "$field" in
+    'worktree '*)
+      worktree_path=${field#worktree }
+      if [ -d "$worktree_path" ] && [ "$worktree_path" != "$PWD" ]; then
+        mounts+=(-v "$worktree_path:$worktree_path:ro")
+        git_env+=(-e "GIT_CONFIG_KEY_$git_safe_count=safe.directory" -e "GIT_CONFIG_VALUE_$git_safe_count=$worktree_path")
+        git_safe_count=$((git_safe_count + 1))
+      fi
+      ;;
+  esac
+done < <(git worktree list --porcelain -z)
+git_env+=(-e "GIT_CONFIG_COUNT=$git_safe_count")
 [ -d "$HOME/.copilot" ] && mounts+=(-v "$HOME/.copilot:$HOME/.copilot:ro")
-docker run --rm -e HOME="$HOME" -u "$(id -u):$(id -g)" -w "$PWD" "${mounts[@]}" "$image" \
+docker run --rm -e HOME="$HOME" -u "$(id -u):$(id -g)" -w "$PWD" "${git_env[@]}" "${mounts[@]}" "$image" \
   "$PWD/scripts/extract_copilot_session_log.py" --all --output "$PWD"
 ```
 
-The container only gets read-only access to `~/.copilot` (not the user's whole home directory), read-only access to `/tmp` for referenced attachments, and read-write access to this checkout — nothing else on the machine is exposed to it.
+The container only gets read-only access to `~/.copilot` (not the user's whole home directory), read-only access to `/tmp` for referenced attachments, read-only access to registered linked worktrees and the shared Git directory, and read-write access to this checkout.
 
 The command runs the verified checkout's script, whose project root is the checkout. `--output "$PWD"` also sets the destination explicitly.
 
@@ -37,6 +54,10 @@ To extract one session, invoke the same mounted script with a session selector
 and omit `--all`. In that mode, `--output ./exports/session.json` names a file,
 while `--output -` writes stdout. Replace any batch `--output` argument too;
 do not pass a batch directory as a single-session file destination.
+
+The default `--all` selection covers the main checkout and registered linked
+worktrees, including subdirectories. It never falls back to ancestor directories
+or unrelated repositories.
 
 ## What gets written
 

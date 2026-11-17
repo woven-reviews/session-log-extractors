@@ -116,7 +116,7 @@ from session_log_extractors.session_model import (
 from session_log_extractors.session_output import (
     unique_identifier as _unique_identifier,
 )
-from session_log_extractors.session_selection import REPOSITORY_FLAG, RepositoryBoundary
+from session_log_extractors.session_selection import RepositoryBoundary
 from session_log_extractors.tool_inputs.copilot import input_schema
 
 _COPILOT_IMAGE_REF = re.compile(r"\[image:\s*([^\]]+?)\s*\]", re.IGNORECASE)
@@ -1122,25 +1122,20 @@ def build_arg_parser(project_root: Optional[Path] = None) -> argparse.ArgumentPa
         default=None,
         help=f"Copilot session-state directory (default: {copilot_sources.COPILOT_STATE_ROOT})",
     )
-    selection = parser.add_mutually_exclusive_group()
-    selection.add_argument(
-        REPOSITORY_FLAG,
-        action="store_true",
-        help="select sessions from this Git repository and its registered worktrees, including subdirectories; no global fallback",
-    )
-    selection.add_argument(
+    parser.add_argument(
         "--strict",
         action="store_true",
         help=(
             "only export sessions started in the current working directory exactly "
-            "(no parent/descendant overlap, no newest-anywhere fallback)"
+            "(exclude subdirectories and other worktrees; no Git discovery)"
         ),
     )
     parser.add_argument(
         "--all",
         action="store_true",
         help=(
-            "extract every session for the current repository into the "
+            "extract every session for the current Git repository and its "
+            "registered worktrees, including subdirectories, into the "
             "project root, one file per session named "
             "copilot_session_log_raw_<identifier>.json (in this mode --output is treated "
             "as the output directory; positional selector is ignored). This is "
@@ -1219,14 +1214,7 @@ def _select_session(
         if session is None:
             print(f"error: no session found matching {args.session!r}", file=sys.stderr)
         return session
-    if args.repository:
-        boundary = RepositoryBoundary.discover(Path.cwd())
-        eligible = copilot_sources.repository_sessions(sessions, boundary)
-        session = copilot_sources.newest_recorded_session(eligible)
-    else:
-        session = copilot_sources.newest_session(
-            sessions, Path.cwd(), strict=args.strict
-        )
+    session = copilot_sources.newest_session(sessions, Path.cwd(), strict=args.strict)
     if session is None:
         print(
             f"error: no Copilot sessions for {Path.cwd()}"
@@ -1278,7 +1266,7 @@ def main(
         sessions = copilot_sources.discover_sessions(root)
         if args.all or (not args.session and args.output != "-"):
             out = None if args.output == "-" else args.output
-            if args.repository:
+            if not args.strict:
                 boundary = RepositoryBoundary.discover(Path.cwd())
                 sessions = copilot_sources.repository_sessions(sessions, boundary)
             else:

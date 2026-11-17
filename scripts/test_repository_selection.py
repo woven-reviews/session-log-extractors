@@ -50,8 +50,9 @@ def _output_names(directory):
 
 
 @pytest.mark.parametrize("location", ["root", "child", "linked", "linked-child"])
+@pytest.mark.parametrize("batch_flags", [[], ["--all"]])
 def test_repository_batch_and_newest_share_worktree_boundary(
-    tmp_path, checkouts, harness, location
+    tmp_path, checkouts, harness, location, batch_flags
 ):
     main, linked = checkouts
     invocation = {
@@ -75,7 +76,7 @@ def test_repository_batch_and_newest_share_worktree_boundary(
         _capture(home, harness, f"id{index}-session", str(directory), index + 1)
     output = tmp_path / "exports"
 
-    batch = _cli(harness, home, invocation, "--repository", "--output", str(output))
+    batch = _cli(harness, home, invocation, *batch_flags, "--output", str(output))
 
     assert batch.returncode == 0, batch.stderr
     expected = []
@@ -85,7 +86,7 @@ def test_repository_batch_and_newest_share_worktree_boundary(
             ident = f"2026-10-30_id{index}-sess"
         expected.append(f"{harness}_session_log_raw_{ident}.json")
     assert _output_names(output) == expected
-    latest = _cli(harness, home, invocation, "--repository", "--output", "-")
+    latest = _cli(harness, home, invocation, "--output", "-")
     assert latest.returncode == 0, latest.stderr
     selected = json.loads(latest.stdout)
     expected_latest = json.loads((output / expected[-1]).read_text())
@@ -108,7 +109,7 @@ def test_no_match_never_falls_back_or_writes(tmp_path, checkouts, harness, desti
     else:
         args = ["--output", str(output)]
 
-    result = _cli(harness, home, main, "--repository", *args)
+    result = _cli(harness, home, main, *args)
 
     assert result.returncode == 1, result.stderr
     assert result.stdout == ""
@@ -122,7 +123,7 @@ def test_missing_directory_is_diagnosed_and_excluded(tmp_path, checkouts, harnes
     home = tmp_path / "home"
     path = _capture(home, harness, "missing-cwd", None)
 
-    result = _cli(harness, home, main, "--repository", "--output", "-")
+    result = _cli(harness, home, main, "--output", "-")
 
     assert result.returncode == 1
     assert result.stdout == ""
@@ -137,7 +138,7 @@ def test_repository_requires_git_boundary(tmp_path, harness, batch):
 
     output = tmp_path / "exports"
     destination = str(output) if batch else "-"
-    result = _cli(harness, home, tmp_path, "--repository", "--output", destination)
+    result = _cli(harness, home, tmp_path, "--output", destination)
 
     assert result.returncode == 1
     assert result.stdout == ""
@@ -145,10 +146,10 @@ def test_repository_requires_git_boundary(tmp_path, harness, batch):
     assert not output.exists()
 
 
-def test_strict_and_repository_are_mutually_exclusive(tmp_path, harness):
-    result = _cli(harness, tmp_path, tmp_path, "--strict", "--repository")
+def test_repository_flag_is_not_part_of_the_cli(tmp_path, harness):
+    result = _cli(harness, tmp_path, tmp_path, "--repository")
     assert result.returncode == 2
-    assert "not allowed with argument" in result.stderr
+    assert "unrecognized arguments: --repository" in result.stderr
 
 
 def test_explicit_selection_bypasses_repository_discovery(tmp_path, harness):
@@ -159,8 +160,8 @@ def test_explicit_selection_bypasses_repository_discovery(tmp_path, harness):
     else:
         args = ["--transcript", str(transcript)]
 
-    baseline = _cli(harness, home, tmp_path, *args, "--output", "-")
-    selected = _cli(harness, home, tmp_path, "--repository", *args, "--output", "-")
+    baseline = _cli(harness, home, tmp_path, "--strict", *args, "--output", "-")
+    selected = _cli(harness, home, tmp_path, *args, "--output", "-")
 
     assert baseline.returncode == 0, baseline.stderr
     assert selected.returncode == 0, selected.stderr
@@ -287,7 +288,7 @@ def test_claude_encoded_collision_cannot_establish_ownership(tmp_path, checkouts
     shutil.copyfile(store / "included.jsonl", nested / "agent-child.jsonl")
 
     output = tmp_path / "exports"
-    result = _cli("claude", home, main, "--repository", "--output", str(output))
+    result = _cli("claude", home, main, "--output", str(output))
 
     assert result.returncode == 0, result.stderr
     assert _output_names(output) == ["claude_session_log_raw_included.json"]
@@ -303,7 +304,7 @@ def test_claude_cross_store_filename_collisions_retain_both_sources(
     other.rename(other.with_name("main.jsonl"))
     output = tmp_path / "exports"
 
-    result = _cli("claude", home, main, "--repository", "--output", str(output))
+    result = _cli("claude", home, main, "--output", str(output))
 
     assert result.returncode == 0, result.stderr
     assert _output_names(output) == [
@@ -324,7 +325,7 @@ def test_source_alias_is_exported_once(tmp_path, checkouts, harness):
     alias.symlink_to(transcript.parent, target_is_directory=True)
     output = tmp_path / "exports"
 
-    result = _cli(harness, home, main, "--repository", "--output", str(output))
+    result = _cli(harness, home, main, "--output", str(output))
 
     assert result.returncode == 0, result.stderr
     assert len(_output_names(output)) == 1
@@ -345,7 +346,7 @@ def test_copilot_resume_does_not_override_start_directory(tmp_path, checkouts):
     assert resume_count > 0
     transcript.write_text("\n".join(entries))
 
-    result = _cli("copilot", home, main, "--repository", "--output", "-")
+    result = _cli("copilot", home, main, "--output", "-")
 
     assert result.returncode == 1
     assert result.stdout == ""
@@ -365,7 +366,7 @@ def test_strict_still_selects_only_invocation_directory(tmp_path, checkouts, har
             log.rename(store / log.name)
 
     strict = _cli(harness, home, child, "--strict", "--output", "-")
-    repository = _cli(harness, home, child, "--repository", "--output", "-")
+    repository = _cli(harness, home, child, "--output", "-")
 
     assert strict.returncode == 0, strict.stderr
     assert repository.returncode == 0, repository.stderr
@@ -383,7 +384,7 @@ def test_nested_registered_checkout_does_not_duplicate_exports(
     _capture(home, harness, "included", str(nested))
     output = tmp_path / "exports"
 
-    result = _cli(harness, home, main, "--repository", "--output", str(output))
+    result = _cli(harness, home, main, "--output", str(output))
 
     assert result.returncode == 0, result.stderr
     assert len(_output_names(output)) == 1
@@ -407,7 +408,6 @@ def test_explicit_id_selection_keeps_legacy_scope_without_git(tmp_path, harness)
         home,
         tmp_path,
         "selected",
-        "--repository",
         *store_args,
         "--output",
         "-",
@@ -426,7 +426,7 @@ def test_script_exports_repository_session_from_child_directory(
     script = Path(__file__).parent / f"extract_{harness}_session_log.py"
 
     result = subprocess.run(
-        [sys.executable, str(script), "--repository", "--output", "-"],
+        [sys.executable, str(script), "--output", "-"],
         cwd=main / "backend",
         env=dict(os.environ, HOME=str(home)),
         capture_output=True,
@@ -461,8 +461,8 @@ def test_repository_keeps_codex_child_and_excludes_guardian(tmp_path, checkouts)
     os.utime(child, (2, 2))
     output = tmp_path / "exports"
 
-    batch = _cli("codex", home, main, "--repository", "--output", str(output))
-    latest = _cli("codex", home, main, "--repository", "--output", "-")
+    batch = _cli("codex", home, main, "--output", str(output))
+    latest = _cli("codex", home, main, "--output", "-")
 
     assert batch.returncode == 0, batch.stderr
     assert _output_names(output) == [

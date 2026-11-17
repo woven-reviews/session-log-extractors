@@ -30,6 +30,7 @@ from copilot_fixture import (
     single_image_source,
     write_events_log,
 )
+from repository_fixture import init_checkout
 
 from session_log_extractors import copilot_protocol
 from session_log_extractors import copilot_sources as sources
@@ -805,6 +806,7 @@ def test_exact_match_wins_over_prefix(tmp_path):
 
 @pytest.mark.parametrize("batch_args", [[], ["--all"]])
 def test_batch_discovers_event_only_sessions(tmp_path, batch_args):
+    init_checkout(tmp_path)
     _session(tmp_path, "abc")
     _session(tmp_path, "abc-later")
     result = _cli(tmp_path, *batch_args, "--output", str(tmp_path))
@@ -816,6 +818,7 @@ def test_batch_discovers_event_only_sessions(tmp_path, batch_args):
 
 
 def test_recent_activity_beats_creation_time(tmp_path):
+    init_checkout(tmp_path)
     old = _session(tmp_path, "older", start="2025-01-01T00:00:00Z")
     _session(tmp_path, "newer", start="2026-01-01T00:00:00Z")
     database = tmp_path / ".copilot" / "session-store.db"
@@ -894,6 +897,7 @@ def test_event_cli_preserves_full_identity_in_every_destination(tmp_path, capsys
 def test_event_batch_preserves_collisions_and_default_output(
     tmp_path, monkeypatch, explicit_root
 ):
+    init_checkout(tmp_path)
     monkeypatch.chdir(tmp_path)
     root = _installed_session(tmp_path, "abcdefgh-first")
     _installed_session(tmp_path, "abcdefgh-second")

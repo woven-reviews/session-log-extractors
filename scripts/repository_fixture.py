@@ -26,6 +26,12 @@ def _git(cwd, *args):
     )
 
 
+def init_checkout(path):
+    """Give a prepared test directory a real Git checkout boundary."""
+    path.mkdir(parents=True, exist_ok=True)
+    _git(path, "init")
+
+
 def make_checkouts(tmp_path):
     main = tmp_path / "assessment"
     main.mkdir()

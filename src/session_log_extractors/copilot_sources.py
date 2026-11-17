@@ -164,9 +164,11 @@ def repository_sessions(
 def newest_session(
     sessions: list[CopilotSource], cwd: Path, strict: bool = False
 ) -> CopilotSource | None:
-    """Prefer matching evidence, then globally if legacy fallback permits it."""
-    matches = matching_sessions(sessions, cwd, strict)
-    candidates = matches if matches or strict else sessions
+    """Choose the newest repository session, or exact cwd evidence with strict."""
+    if strict:
+        candidates = matching_sessions(sessions, cwd, strict=True)
+    else:
+        candidates = repository_sessions(sessions, RepositoryBoundary.discover(cwd))
     return newest_recorded_session(candidates)
 
 

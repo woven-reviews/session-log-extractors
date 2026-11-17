@@ -12,6 +12,7 @@ from pathlib import Path
 
 import codex_fixture as fixture
 import pytest
+from repository_fixture import init_checkout
 
 from session_log_extractors import codex_sources as sources
 from session_log_extractors import extract_codex_session_log as codex
@@ -52,6 +53,7 @@ def _message(session, native):
 
 @pytest.fixture
 def rollouts(tmp_path, monkeypatch):
+    init_checkout(tmp_path)
     monkeypatch.chdir(tmp_path)
     root = tmp_path / "sessions"
     root.mkdir()
@@ -82,10 +84,10 @@ def test_bulk_exports_main_and_child_but_skips_newer_guardian(rollouts, bulk_fla
     assert sorted(ids) == ["child-recorded-id", "main-recorded-id"]
 
 
-@pytest.mark.parametrize("global_fallback", [False, True])
-def test_newest_skips_guardian_and_keeps_child(rollouts, global_fallback, monkeypatch):
+@pytest.mark.parametrize("from_child", [False, True])
+def test_newest_skips_guardian_and_keeps_child(rollouts, from_child, monkeypatch):
     root, paths = rollouts
-    if global_fallback:
+    if from_child:
         elsewhere = root.parent / "elsewhere"
         elsewhere.mkdir()
         monkeypatch.chdir(elsewhere)

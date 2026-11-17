@@ -14,7 +14,6 @@ from session_log_extractors.json_types import JsonValue, parse_json
 
 Source = TypeVar("Source")
 
-REPOSITORY_FLAG = "--repository"
 _GIT_WORKTREE_PREFIX = "worktree "
 _GIT_BARE_FIELD = "bare"
 _GIT_PRUNABLE_FIELD = "prunable"
@@ -51,8 +50,13 @@ def _git_output(cwd: Path, *args: str) -> str:
             check=True,
         )
     except (OSError, subprocess.CalledProcessError) as exc:
+        detail = str(exc)
+        if isinstance(exc, subprocess.CalledProcessError) and isinstance(
+            exc.stderr, str
+        ):
+            detail = exc.stderr.strip() or detail
         raise FileNotFoundError(
-            f"cannot establish Git repository boundary from {cwd}: {exc}"
+            f"cannot establish Git repository boundary from {cwd}: {detail}"
         ) from exc
     return result.stdout
 

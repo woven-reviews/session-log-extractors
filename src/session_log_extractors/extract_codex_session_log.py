@@ -145,7 +145,7 @@ from session_log_extractors.session_model import (
 from session_log_extractors.session_output import (
     unique_identifier as _unique_identifier,
 )
-from session_log_extractors.session_selection import REPOSITORY_FLAG, RepositoryBoundary
+from session_log_extractors.session_selection import RepositoryBoundary
 from session_log_extractors.tool_inputs.codex import input_schema as codex_input_schema
 
 _IMAGE_EXT = {
@@ -977,8 +977,8 @@ def build_arg_parser(project_root: Optional[Path] = None) -> argparse.ArgumentPa
             "With no session selector, all matching project sessions are exported.\n"
             "Single-session selection precedence:\n"
             "  --transcript PATH > positional file path > positional session id/prefix\n"
-            "  > newest transcript whose recorded cwd overlaps the current cwd\n"
-            "  > newest transcript anywhere under ~/.codex/sessions.\n"
+            "  > newest session in this repository, including registered worktrees\n"
+            "  and subdirectories. No global fallback.\n"
             "Use --output - without a selector to print only that newest session.\n"
             "Blank files and objects with no events export events: []; no format gate.\n"
             "Skipped malformed/non-object records are diagnosed on stderr.\n"
@@ -1001,27 +1001,21 @@ def build_arg_parser(project_root: Optional[Path] = None) -> argparse.ArgumentPa
         metavar="PATH",
         help="override Codex sessions root (default: ~/.codex/sessions)",
     )
-    selection = parser.add_mutually_exclusive_group()
-    selection.add_argument(
-        REPOSITORY_FLAG,
-        action="store_true",
-        help="select sessions from this Git repository and its registered worktrees, including subdirectories; no global fallback",
-    )
-    selection.add_argument(
+    parser.add_argument(
         "--strict",
         action="store_true",
         help=(
             "only read sessions started in the current directory: require an "
-            "exact recorded-cwd match (no overlap) and disable the "
-            "newest-anywhere global fallback"
+            "exact recorded-cwd match without Git discovery; "
+            "exclude subdirectories and other worktrees"
         ),
     )
     parser.add_argument(
         "--all",
         action="store_true",
         help=(
-            "extract every Codex session whose recorded cwd overlaps the current "
-            "working directory, one file per session named "
+            "extract every Codex session in this repository, including registered "
+            "worktrees and subdirectories, one file per session named "
             "codex_session_log_raw_<session-id>.json (in this mode --output is treated "
             "as the output directory; positional selector is ignored). This is "
             "the default when no session selector is supplied"
@@ -1085,16 +1079,14 @@ def _extract_source(source: CodexSource, tool_result_max_bytes: int) -> Envelope
     return export_session(session, tool_result_max_bytes)
 
 
-def _batch_transcripts(
-    sessions_root: str | None, strict: bool, repository: bool
-) -> list[Path]:
+def _batch_transcripts(sessions_root: str | None, strict: bool) -> list[Path]:
     root = (
         Path(sessions_root).expanduser()
         if sessions_root
         else codex_sources.CODEX_SESSIONS_ROOT
     )
     cwd = Path.cwd()
-    if repository:
+    if not strict:
         boundary = RepositoryBoundary.discover(cwd)
         return codex_sources.repository_transcripts(root, boundary)
     return codex_sources.matching_transcripts(root, cwd, strict)
@@ -1166,7 +1158,7 @@ def main(
         default_all = not args.session and not args.transcript and args.output != "-"
         if args.all or default_all:
             out = None if args.output == "-" else args.output
-            files = _batch_transcripts(args.sessions_root, args.strict, args.repository)
+            files = _batch_transcripts(args.sessions_root, args.strict)
             return _extract_all(
                 files,
                 out,
@@ -1183,7 +1175,6 @@ def main(
             transcript=args.transcript,
             sessions_root=args.sessions_root,
             strict=args.strict,
-            repository=args.repository,
         )
     except OSError as exc:
         print(f"error: {exc}", file=sys.stderr)

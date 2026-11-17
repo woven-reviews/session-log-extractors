@@ -16,14 +16,31 @@ Run the Codex session-log extractor for every Codex transcript associated with t
 image="rfp-monster-session-log-extractor:local"
 docker build -q -f scripts/Dockerfile -t "$image" . >/dev/null
 mounts=(-v "$PWD:$PWD" -v /tmp:/tmp:ro)
+git_common=$(git rev-parse --path-format=absolute --git-common-dir)
+mounts+=(-v "$git_common:$git_common:ro")
+git_safe_count=1
+git_env=(-e GIT_CONFIG_KEY_0=safe.directory -e "GIT_CONFIG_VALUE_0=$PWD")
+while IFS= read -r -d '' field; do
+  case "$field" in
+    'worktree '*)
+      worktree_path=${field#worktree }
+      if [ -d "$worktree_path" ] && [ "$worktree_path" != "$PWD" ]; then
+        mounts+=(-v "$worktree_path:$worktree_path:ro")
+        git_env+=(-e "GIT_CONFIG_KEY_$git_safe_count=safe.directory" -e "GIT_CONFIG_VALUE_$git_safe_count=$worktree_path")
+        git_safe_count=$((git_safe_count + 1))
+      fi
+      ;;
+  esac
+done < <(git worktree list --porcelain -z)
+git_env+=(-e "GIT_CONFIG_COUNT=$git_safe_count")
 [ -d "$HOME/.codex/sessions" ] && mounts+=(-v "$HOME/.codex/sessions:$HOME/.codex/sessions:ro")
-docker run --rm -e HOME="$HOME" -u "$(id -u):$(id -g)" -w "$PWD" "${mounts[@]}" "$image" \
+docker run --rm -e HOME="$HOME" -u "$(id -u):$(id -g)" -w "$PWD" "${git_env[@]}" "${mounts[@]}" "$image" \
   "$PWD/scripts/extract_codex_session_log.py" --all
 ```
 
-The container only gets read-only access to `~/.codex/sessions` (not the user's whole home directory), read-only access to `/tmp` so temporary image sources can be inlined, and read-write access to this checkout — nothing else on the machine is exposed to it.
+The container only gets read-only access to `~/.codex/sessions` (not the user's whole home directory), read-only access to `/tmp` so temporary image sources can be inlined, read-only access to registered linked worktrees and the shared Git directory, and read-write access to this checkout.
 
-5. If the user supplied extra arguments after invoking the skill, append them after `--all`. Common supported arguments are `--output DIR`, `--sessions-root DIR`, and `--strict` (only export sessions started in this exact directory — no parent/descendant cwd overlap, no newest-anywhere fallback). `--tool-result-bytes N` changes the tool-result cap (negative for no cap).
+5. If the user supplied extra arguments after invoking the skill, append them after `--all`. Common supported arguments are `--output DIR`, `--sessions-root DIR`, and `--strict` (only export sessions started in this exact directory, excluding subdirectories and other worktrees). `--tool-result-bytes N` changes the tool-result cap (negative for no cap).
 6. Record the JSON files written from the command output for the final report.
 
 This checkout check is mandatory. If extraction reports no matching transcripts, stop and say so; do not re-run it from a broader directory or without the repository scoping.
@@ -38,6 +55,10 @@ To extract one session, invoke the same mounted script with a session selector
 and omit `--all`. In that mode, `--output ./exports/session.json` names a file,
 while `--output -` writes stdout. Replace any batch `--output` argument too;
 do not pass a batch directory as a single-session file destination.
+
+The default `--all` selection covers the main checkout and registered linked
+worktrees, including subdirectories. It never falls back to ancestor directories
+or unrelated repositories.
 
 ## What gets written
 
