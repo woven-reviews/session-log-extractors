@@ -141,3 +141,22 @@ moves, failed/missing/no-op completions, legacy slash commands, explicit skill
 links, and tool-recorded definitions unavailable in this capture. They do not
 claim those workflows were captured natively. Existing image, content, ownership,
 source-free interpretation, and export non-mutation checks remain in place.
+
+## Guardian and child rollout context (QUAL-3021)
+
+`test_codex_rollouts.py` uses the selected main and child captures above. Guardian
+cases are controlled mutations of the main capture, **not native guardian
+captures**. The first metadata payload receives `thread_source: "guardian_review"`
+and `source: {"subagent": {"other": "guardian"}}`, matching the ticket's observed
+first-line indicators; the capture already records `originator: "codex-tui"` and a
+project cwd. Independent-indicator and conflicting-indicator cases are explicit
+boundary mutations. Conversation records, including multiple prompts, stay intact.
+Filesystem selection tests change only metadata IDs/cwd and file modification
+times to arrange a main rollout, a child, and a newer guardian.
+
+Child boundary cases change only the first metadata boundary (missing/null,
+invalid, or zero), or append one copied native user block with a controlled ID
+and ordinal to represent a parent task delivered as `user.text`. They check
+retained uncertainty rather than claim that this delivery shape was captured.
+The unmodified native sidecar continues to verify recorded agent deliveries,
+inherited-history exclusion, source-free interpretation, and export ownership.
