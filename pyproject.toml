@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "session-log-extractors"
-version = "0.1.2"
+version = "0.1.3"
 description = "Reusable extractors for Claude, Codex, and Copilot session logs"
 requires-python = ">=3.11"
 
