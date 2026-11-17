@@ -2,7 +2,6 @@
 
 import json
 import shutil
-import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -11,7 +10,7 @@ import pytest
 from claude_fixture import TRANSCRIPT as CLAUDE_TRANSCRIPT
 from codex_fixture import CHILD_TRANSCRIPT as CODEX_CHILD
 from codex_fixture import TRANSCRIPT as CODEX_TRANSCRIPT
-from copilot_fixture import DATABASE
+from copilot_fixture import TRANSCRIPT as COPILOT_TRANSCRIPT
 
 from session_log_extractors import codex_sources, copilot_sources
 from session_log_extractors import extract_claude_session_log as claude
@@ -26,7 +25,11 @@ def harness(request):
 
 def _transcript_copy(harness, path, session_id):
     """Change only recorded identity in the complete native transcript."""
-    native = CLAUDE_TRANSCRIPT if harness == "claude" else CODEX_TRANSCRIPT
+    native = {
+        "claude": CLAUDE_TRANSCRIPT,
+        "codex": CODEX_TRANSCRIPT,
+        "copilot": COPILOT_TRANSCRIPT,
+    }[harness]
     records = []
     for line in native.read_text().splitlines():
         entry = json.loads(line)
@@ -34,6 +37,8 @@ def _transcript_copy(harness, path, session_id):
             entry["sessionId"] = session_id
         elif harness == "codex" and entry.get("type") == "session_meta":
             entry["payload"]["id"] = session_id
+        elif harness == "copilot" and entry.get("type") == "session.start":
+            entry["data"]["sessionId"] = session_id
         records.append(json.dumps(entry))
     path.write_text("\n".join(records) + "\n")
 
@@ -44,23 +49,11 @@ def _store(tmp_path, harness, session_ids):
         for index, session_id in enumerate(session_ids):
             _transcript_copy(harness, tmp_path / f"unrelated-{index}.jsonl", session_id)
         return tmp_path
-    database = tmp_path / "session-store.db"
-    shutil.copyfile(DATABASE, database)
-    with sqlite3.connect(database) as conn:
-        conn.row_factory = sqlite3.Row
-        row = dict(conn.execute("SELECT * FROM sessions").fetchone())
-        conn.execute("DELETE FROM sessions")
-        columns = ", ".join(row)
-        placeholders = ", ".join(["?"] * len(row))
-        for session_id in session_ids:
-            row["id"] = session_id
-            conn.execute(
-                f"INSERT INTO sessions ({columns}) VALUES ({placeholders})",
-                tuple(row.values()),
-            )
-        # Retain native conversation turns for the first controlled session.
-        conn.execute("UPDATE turns SET session_id = ?", (session_ids[0],))
-    return database
+    for index, session_id in enumerate(session_ids):
+        directory = tmp_path / f"unrelated-{index}"
+        directory.mkdir()
+        _transcript_copy(harness, directory / "events.jsonl", session_id)
+    return tmp_path
 
 
 def _select(harness, store, selector):
@@ -68,13 +61,17 @@ def _select(harness, store, selector):
         return claude.select_transcript(selector, None, str(store))
     if harness == "codex":
         return codex_sources.select_transcript(selector, None, str(store))
-    with copilot_sources.get_db_connection(store) as conn:
-        session = copilot_sources.get_session_by_id(conn, selector)
-    return session["id"] if session else None
+    sessions = copilot_sources.discover_sessions(store)
+    session = copilot_sources.get_session_by_id(sessions, selector)
+    return session.session.session_id if session else None
 
 
 def _cli(harness, store, selector, output):
-    option = {"claude": "--project-dir", "codex": "--sessions-root", "copilot": "--db"}
+    option = {
+        "claude": "--project-dir",
+        "codex": "--sessions-root",
+        "copilot": "--state-root",
+    }
     script = Path(__file__).parent / f"extract_{harness}_session_log.py"
     return subprocess.run(
         [

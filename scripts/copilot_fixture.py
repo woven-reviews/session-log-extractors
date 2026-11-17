@@ -1,8 +1,5 @@
 """The explicitly selected current Copilot capture, shared by offline tests."""
 
-import json
-import shutil
-import sqlite3
 from pathlib import Path
 
 from session_log_extractors import copilot_protocol
@@ -22,21 +19,7 @@ def native_records():
 
 def native_source():
     """Load the whole selected session without consulting the operator's store."""
-    rows = json.loads((ROOT / "native" / "session-store.json").read_text())
-    (session,) = rows["sessions"]
-    models = []
-    for usage in rows["assistant_usage_events"]:
-        model = usage["model"]
-        if model and model not in models:
-            models.append(model)
-    files = sorted(rows["session_files"], key=lambda row: row["first_seen_at"])
-    return sources.CopilotSource(
-        session,
-        rows["turns"],
-        files=files,
-        state_records=native_records(),
-        models=models,
-    )
+    return sources.read_source(TRANSCRIPT)
 
 
 def recorded_calls(session):
@@ -80,7 +63,6 @@ def native_tool_source():
             ):
                 selected.append(record)
     source.state_records = selected
-    source.files = []
     return source
 
 
@@ -101,7 +83,6 @@ def single_image_source():
     (user,) = users
     user["data"]["attachments"] = user["data"]["attachments"][:1]
     source.state_records = [user, *assets]
-    source.files = []
     return source
 
 
@@ -122,23 +103,7 @@ def native_prose_source():
             if record["data"].get("originatingMessageId") == user["data"]["messageId"]:
                 selected.append(record)
     source.state_records = selected
-    source.files = []
     return source
-
-
-def native_lines() -> list[str]:
-    """Read the selected native event log as physical JSONL lines."""
-    return TRANSCRIPT.read_text(encoding="utf-8").splitlines()
-
-
-def native_db_copy(directory: Path, sql: str = "", params=()) -> Path:
-    """Copy the capture database, optionally applying one controlled SQL edit."""
-    path = directory / "session-store.db"
-    shutil.copyfile(DATABASE, path)
-    if sql:
-        with sqlite3.connect(path) as connection:
-            connection.execute(sql, params)
-    return path
 
 
 def write_events_log(state_root: Path, session_id: str, lines: list[str]) -> Path:
@@ -148,8 +113,3 @@ def write_events_log(state_root: Path, session_id: str, lines: list[str]) -> Pat
     path = session_dir / "events.jsonl"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
-
-
-def install_native_events(state_root: Path) -> Path:
-    """Install the selected capture under an explicit isolated state directory."""
-    return write_events_log(state_root, SESSION_ID, native_lines())

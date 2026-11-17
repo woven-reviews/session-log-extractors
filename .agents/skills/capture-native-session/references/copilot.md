@@ -18,7 +18,7 @@ Identify this capture's session ID, associated event logs, database records, sid
 
 Use a consistent supported database snapshot/export when necessary, selecting only this session and its dependencies. Do not copy unrelated session history, modify the live store, or assume copying a live database file alone captures pending WAL data. If selected-session collection is unavailable, record the collection limitation before including private data in any repository bundle.
 
-Use the existing Copilot reader's documented public selection interface for validation. If it cannot select the exact captured log directly, use its supported database/session selection and record that distinction. Do not silently validate a newly discovered or newest unrelated session.
+Use the existing Copilot reader's documented public selection interface for validation. If it cannot select the exact captured log directly, use its supported recorded-ID selection and record that distinction. Do not silently validate a newly discovered or newest unrelated session.
 
 Try image attachment only through an actual terminal attachment/paste control. Verify persisted attachment content/media type and message ownership. Database attachments and event-log references may need separate collection; unavailable references remain explicit.
 
@@ -143,9 +143,9 @@ path-valued JSON keys. Rebuild SQLite from the sanitized data and check rows,
 foreign keys, and repeatable bytes. Binary image bytes are copied unchanged after
 visual inspection. Hash raw and sanitized files and retain per-rule counts.
 
-The public CLI selects `--db <selected-store> <uuid>`; it has no direct JSONL or
-state-root flag. For ordinary offline CLI checks use an isolated HOME containing
-the selected state layout. In-process tests can set `copilot_sources.COPILOT_STATE_ROOT`.
+The public CLI selects `<uuid> --state-root <selected-session-state>` without a
+database. Offline CLI checks may also use an isolated HOME containing the selected
+state layout. In-process tests can set `copilot_sources.COPILOT_STATE_ROOT`.
 Use `read_source`/`interpret_source` and the shared exporter for uncapped model
 validation. `copilot_interactions.subagent_summaries` separately summarizes inline
 children. Structured questions and responses are attached as

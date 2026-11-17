@@ -53,3 +53,5 @@ READ_BASH = "read_bash"
 SOURCE_USER = "user"
 SOURCE_SYSTEM = "system"
 ROLE_ASSISTANT = "assistant"
+
+SESSION_RESUME = "session.resume"

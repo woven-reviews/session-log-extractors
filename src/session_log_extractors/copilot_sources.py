@@ -1,244 +1,45 @@
-"""Copilot database discovery, native row/state readers, and image inputs.
-
-Connections are opened read-only and owned by the caller. Source snapshots hold
-ordinary records and bytes, so interpretation never needs a live connection.
-"""
+"""Copilot event-log discovery, lifecycle facts, and source snapshots."""
 
 from __future__ import annotations
 
-import sqlite3
+import sys
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
-from session_log_extractors.json_types import (
-    JsonValue,
-    json_value,
-    string_value,
+from session_log_extractors.copilot_protocol import (
+    ASSISTANT_MESSAGE,
+    SESSION_RESUME,
+    SESSION_START,
 )
-from session_log_extractors.jsonl_sources import (
-    load_jsonl_objects,
-    parse_jsonl_objects,
-)
-from session_log_extractors.session_selection import (
-    cwd_matches as _cwd_matches,
-)
-from session_log_extractors.session_selection import select_recorded_id
+from session_log_extractors.json_types import JsonValue, string_value
+from session_log_extractors.jsonl_sources import load_jsonl_objects, parse_jsonl_objects
+from session_log_extractors.session_selection import cwd_matches, select_recorded_id
 
-COPILOT_DB = Path.home() / ".copilot" / "session-store.db"
 COPILOT_STATE_ROOT = Path.home() / ".copilot" / "session-state"
-
 ImageInputs = Dict[str, Optional[bytes]]
+
+
+@dataclass(frozen=True)
+class CopilotSession:
+    """Recorded lifecycle facts used for discovery and the shared session."""
+
+    path: Path
+    session_id: str
+    cwd: str | None = None
+    started_at: str | None = None
+    last_activity_at: datetime | None = None
 
 
 @dataclass
 class CopilotSource:
-    """Loaded session metadata, native rows, ordered state, and optional images."""
+    """Loaded lifecycle facts, ordered native evidence, and optional image bytes."""
 
-    session: Dict[str, JsonValue]
-    turns: List[Dict[str, JsonValue]]
-    files: List[Dict[str, JsonValue]] = field(default_factory=list)
-    attachments: List[Dict[str, JsonValue]] = field(default_factory=list)
+    session: CopilotSession
     state_records: List[Dict[str, JsonValue]] = field(default_factory=list)
     models: List[str] = field(default_factory=list)
     image_inputs: ImageInputs = field(default_factory=dict)
-
-
-def get_db_connection(db_path: Path) -> sqlite3.Connection:
-    """Open a read-only connection to the Copilot session database."""
-    if not db_path.exists():
-        raise FileNotFoundError(f"Copilot database not found: {db_path}")
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ? LIMIT 1",
-        (name,),
-    ).fetchone()
-    return row is not None
-
-
-def _table_columns(conn: sqlite3.Connection, name: str) -> set[str]:
-    if not _table_exists(conn, name):
-        return set()
-    rows = conn.execute(f"PRAGMA table_info({name})").fetchall()
-    cols = set()
-    for row in rows:
-        if isinstance(row, sqlite3.Row):
-            col = row["name"]
-        else:
-            col = row[1]
-        if isinstance(col, str):
-            cols.add(col)
-    return cols
-
-
-def _row_record(row: sqlite3.Row) -> Dict[str, JsonValue]:
-    """Check SQLite's untyped cell values when snapshotting a native row."""
-    return {key: json_value(row[key]) for key in row.keys()}
-
-
-def matching_sessions(
-    conn: sqlite3.Connection, cwd: Path, strict: bool = False
-) -> List[Dict[str, JsonValue]]:
-    """Return every Copilot session whose cwd overlaps the given path.
-
-    In ``strict`` mode the recorded cwd must equal ``cwd`` exactly (no
-    ancestor/descendant overlap).
-    """
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT id, cwd, repository, branch, summary, created_at, updated_at
-        FROM sessions
-        ORDER BY created_at DESC
-    """)
-
-    sessions = []
-    for row in cursor:
-        session = _row_record(row)
-        if _cwd_matches(string_value(session.get("cwd")), cwd, strict=strict):
-            sessions.append(session)
-
-    return sessions
-
-
-def newest_session(
-    conn: sqlite3.Connection, cwd: Path, strict: bool = False
-) -> Optional[Dict[str, JsonValue]]:
-    """Return the most recently updated session for cwd (or newest globally)."""
-    sessions = matching_sessions(conn, cwd, strict=strict)
-    if not sessions and not strict:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT id, cwd, repository, branch, summary, created_at, updated_at
-            FROM sessions
-            ORDER BY updated_at DESC, created_at DESC
-            LIMIT 1
-        """)
-        row = cursor.fetchone()
-        return _row_record(row) if row else None
-    if not sessions:
-        return None
-    return max(
-        sessions,
-        key=lambda s: string_value(s.get("updated_at", s.get("created_at"))) or "",
-    )
-
-
-def get_session_by_id(
-    conn: sqlite3.Connection, session_id: str
-) -> Optional[Dict[str, JsonValue]]:
-    """Select a case-sensitive exact ID or unique literal prefix."""
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        SELECT id, cwd, repository, branch, summary, created_at, updated_at
-        FROM sessions
-        WHERE substr(id, 1, length(?)) = ? COLLATE BINARY
-    """,
-        (session_id, session_id),
-    )
-    candidates = []
-    for row in cursor:
-        record = _row_record(row)
-        recorded_id = string_value(record.get("id"))
-        if recorded_id is None:
-            raise ValueError("Copilot session id must be a string")
-        candidates.append((recorded_id, record))
-    return select_recorded_id(candidates, session_id)
-
-
-def get_session_turns(
-    conn: sqlite3.Connection, session_id: str
-) -> List[Dict[str, JsonValue]]:
-    """Retrieve all turns for a session."""
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        SELECT turn_index, user_message, assistant_response, timestamp
-        FROM turns
-        WHERE session_id = ?
-        ORDER BY turn_index
-    """,
-        (session_id,),
-    )
-    return [_row_record(row) for row in cursor]
-
-
-def get_session_checkpoints(
-    conn: sqlite3.Connection, session_id: str
-) -> List[Dict[str, JsonValue]]:
-    """Retrieve all checkpoints for a session."""
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        SELECT checkpoint_number, title, overview, created_at
-        FROM checkpoints
-        WHERE session_id = ?
-        ORDER BY checkpoint_number
-    """,
-        (session_id,),
-    )
-    return [_row_record(row) for row in cursor]
-
-
-def get_session_files(
-    conn: sqlite3.Connection, session_id: str
-) -> List[Dict[str, JsonValue]]:
-    """Retrieve all files touched in a session."""
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        SELECT file_path, tool_name, turn_index, first_seen_at
-        FROM session_files
-        WHERE session_id = ?
-        ORDER BY first_seen_at
-    """,
-        (session_id,),
-    )
-    return [_row_record(row) for row in cursor]
-
-
-def get_session_refs(
-    conn: sqlite3.Connection, session_id: str
-) -> List[Dict[str, JsonValue]]:
-    """Retrieve all refs (commits, PRs, issues) for a session."""
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        SELECT ref_type, ref_value, turn_index, created_at
-        FROM session_refs
-        WHERE session_id = ?
-        ORDER BY created_at
-    """,
-        (session_id,),
-    )
-    return [_row_record(row) for row in cursor]
-
-
-def get_session_attachments(
-    conn: sqlite3.Connection, session_id: str
-) -> List[Dict[str, JsonValue]]:
-    """Retrieve image attachment records for a session if available."""
-    cols = _table_columns(conn, "attachments")
-    required = {"session_id", "display_name", "path", "type"}
-    if not required.issubset(cols):
-        return []
-
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        SELECT display_name, path, type
-        FROM attachments
-        WHERE session_id = ?
-        ORDER BY rowid
-    """,
-        (session_id,),
-    )
-    return [_row_record(row) for row in cursor]
 
 
 def parse_state_records(lines: List[str]) -> List[Dict[str, JsonValue]]:
@@ -246,66 +47,128 @@ def parse_state_records(lines: List[str]) -> List[Dict[str, JsonValue]]:
     return parse_jsonl_objects(lines, "Copilot state records")
 
 
-def load_state_records(session_id: str) -> List[Dict[str, JsonValue]]:
-    """Read an optional transcript; existing invalid/unreadable evidence fails."""
-    events_path = COPILOT_STATE_ROOT / session_id / "events.jsonl"
+def load_state_records(session_id: str) -> list[dict[str, JsonValue]]:
+    """Read required native records for a known session directory."""
+    return load_jsonl_objects(COPILOT_STATE_ROOT / session_id / "events.jsonl")
+
+
+def _timestamp(value: JsonValue) -> datetime | None:
+    if not isinstance(value, str):
+        return None
     try:
-        return load_jsonl_objects(events_path)
-    except FileNotFoundError:
-        # A missing sidecar is supported; other read failures must propagate.
-        return []
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
-def get_session_models(conn: sqlite3.Connection, session_id: str) -> List[str]:
-    """Distinct model ids from the session's usage events, if available.
+def _lifecycle_cwd(data: dict[str, JsonValue]) -> str | None:
+    context = data.get("context")
+    return string_value(context.get("cwd")) if isinstance(context, dict) else None
 
-    Reads assistant_usage_events (Copilot CLI 1.0.90-5); falls back to the
-    events.usage_model layout that earlier CLIs are assumed to have written.
-    """
-    for table, column, order in (
-        ("assistant_usage_events", "model", "id"),
-        ("events", "usage_model", "timestamp"),
-    ):
-        cols = _table_columns(conn, table)
-        if {"session_id", column, order} <= set(cols):
-            break
-    else:
-        return []
 
-    cursor = conn.cursor()
-    cursor.execute(
-        f"""
-        SELECT {column} AS model
-        FROM {table}
-        WHERE session_id = ?
-          AND {column} IS NOT NULL
-          AND {column} != ''
-        ORDER BY {order}
-    """,
-        (session_id,),
+def _session_facts(path: Path, records: list[dict[str, JsonValue]]) -> CopilotSession:
+    session_id = None
+    start_cwd = None
+    resume_cwd = None
+    started_at = None
+    activity = []
+    for record in records:
+        stamp = _timestamp(record.get("timestamp"))
+        if stamp is not None:
+            activity.append(stamp)
+        data = record.get("data")
+        if not isinstance(data, dict) or record.get("agentId") is not None:
+            continue
+        if record.get("type") == SESSION_START:
+            identity = string_value(data.get("sessionId"))
+            if identity and session_id is not None and identity != session_id:
+                raise ValueError(f"conflicting recorded session IDs in {path}")
+            session_id = session_id or identity
+            start_cwd = start_cwd or _lifecycle_cwd(data)
+            started_at = started_at or string_value(data.get("startTime"))
+        elif record.get("type") == SESSION_RESUME:
+            resume_cwd = resume_cwd or _lifecycle_cwd(data)
+    if not session_id:
+        raise ValueError(
+            f"no recorded Copilot session ID in {path}; expected session.start"
+        )
+    return CopilotSession(
+        path,
+        session_id,
+        start_cwd or resume_cwd,
+        started_at,
+        max(activity) if activity else None,
     )
-    models: List[str] = []
-    for row in cursor:
-        model = row["model"]
-        if isinstance(model, str) and model not in models:
+
+
+def _used_models(records: list[dict[str, JsonValue]]) -> list[str]:
+    """Conversation producer evidence establishes use; configuration does not."""
+    models = []
+    for record in records:
+        data = record.get("data")
+        if record.get("type") != ASSISTANT_MESSAGE or not isinstance(data, dict):
+            continue
+        model = string_value(data.get("model"))
+        if model and model not in models:
             models.append(model)
     return models
 
 
-def read_source(
-    conn: sqlite3.Connection, session: Dict[str, JsonValue]
-) -> CopilotSource:
-    """Snapshot required rows and state once; leave connection ownership intact."""
-    session_id = session["id"]
-    if not isinstance(session_id, str):
-        raise TypeError("Copilot session id must be a string")
-    return CopilotSource(
-        session=dict(session),
-        turns=get_session_turns(conn, session_id),
-        files=get_session_files(conn, session_id),
-        attachments=get_session_attachments(conn, session_id),
-        state_records=load_state_records(session_id),
-        models=get_session_models(conn, session_id),
+def read_source(path: Path) -> CopilotSource:
+    """Read a required event log; retain complete records and lifecycle evidence."""
+    records = load_jsonl_objects(path)
+    return CopilotSource(_session_facts(path, records), records, _used_models(records))
+
+
+def discover_sessions(root: Path) -> list[CopilotSource]:
+    """Scan recorded identities; unrelated unavailable candidates are diagnosed."""
+    sessions = []
+    for path in sorted(root.glob("*/events.jsonl")):
+        try:
+            source = read_source(path)
+        except (OSError, ValueError) as exc:
+            print(f"warning: skipping Copilot source {path}: {exc}", file=sys.stderr)
+            continue
+        sessions.append(source)
+    return sessions
+
+
+def matching_sessions(
+    sessions: list[CopilotSource], cwd: Path, strict: bool = False
+) -> list[CopilotSource]:
+    """Select recorded start cwd, falling back to resume cwd only when absent."""
+    return [
+        source for source in sessions if cwd_matches(source.session.cwd, cwd, strict)
+    ]
+
+
+def newest_session(
+    sessions: list[CopilotSource], cwd: Path, strict: bool = False
+) -> CopilotSource | None:
+    """Prefer most recently active matching evidence, then globally if allowed."""
+    matches = matching_sessions(sessions, cwd, strict)
+    candidates = matches if matches or strict else sessions
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda source: (
+            source.session.last_activity_at
+            or datetime.min.replace(tzinfo=timezone.utc),
+            source.session.started_at or "",
+            source.session.session_id,
+            str(source.session.path),
+        ),
+    )
+
+
+def get_session_by_id(
+    sessions: list[CopilotSource], session_id: str
+) -> CopilotSource | None:
+    """Select a case-sensitive exact recorded identity or unique literal prefix."""
+    return select_recorded_id(
+        ((source.session.session_id, source) for source in sessions), session_id
     )
 
 

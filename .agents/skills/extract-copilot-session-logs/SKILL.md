@@ -24,7 +24,7 @@ The container only gets read-only access to `~/.copilot` (not the user's whole h
 
 The command runs the verified checkout's script, whose project root is the checkout. `--output "$PWD"` also sets the destination explicitly.
 
-4. If the user supplied extra arguments after invoking the skill, append them after `--all`. Common supported arguments are `--output DIR`, `--db PATH`, and `--strict` (only export sessions started in this exact directory). `--tool-result-bytes N` changes the tool-result cap (negative for no cap).
+4. If the user supplied extra arguments after invoking the skill, append them after `--all`. Common supported arguments are `--output DIR`, `--state-root DIR`, and `--strict` (only export sessions started in this exact directory). `--tool-result-bytes N` changes the tool-result cap (negative for no cap).
 5. Record the files written from the command's stderr diagnostics and report any skipped sessions or warnings.
 
 ## Output destinations
@@ -42,7 +42,7 @@ do not pass a batch directory as a single-session file destination.
 
 One `copilot_session_log_raw_<identifier>.json` file per session. Each envelope contains session metadata, ordered messages, tool calls with full inputs, and results capped at the configured byte limit with original size and truncation metadata.
 
-Copilot records images in the SQLite attachments table or per-session events log. Available image bytes are inlined as base64. A reference without a readable source remains explicit as `{"unavailable": true, "ref": ...}`. Do not hand-edit the generated JSON or add image descriptions.
+Copilot records images in the per-session events log. Available image bytes are inlined as base64. A reference without a readable source remains explicit as `{"unavailable": true, "ref": ...}`. Do not hand-edit the generated JSON or add image descriptions.
 
 ## Upload
 

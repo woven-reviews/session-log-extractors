@@ -3,10 +3,8 @@ import json
 import os
 import runpy
 import shutil
-import sqlite3
 import subprocess
 import sys
-from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -71,8 +69,6 @@ def test_help_uses_call_time_output_root(harness, tmp_path, monkeypatch, capsys)
             "copilot",
             [
                 COPILOT_ID,
-                "--db",
-                str(COPILOT_DB),
             ],
         ),
     ],
@@ -176,26 +172,26 @@ def test_copilot_checkout_defaults(subdirectory, selection, tmp_path):
     home = tmp_path / "home"
     copilot_home = home / ".copilot"
     copilot_home.mkdir(parents=True)
-    db = copilot_home / "session-store.db"
-    shutil.copyfile(COPILOT_DB, db)
     session_id = COPILOT_ID
-    with closing(sqlite3.connect(db)) as conn:
-        conn.execute("DELETE FROM sessions WHERE id != ?", (session_id,))
-        conn.execute("UPDATE sessions SET cwd = ?", (str(checkout),))
-        conn.commit()
     state = copilot_home / "session-state" / session_id
     state.mkdir(parents=True)
-    shutil.copyfile(COPILOT_TRANSCRIPT, state / "events.jsonl")
-    with closing(sqlite3.connect(db)) as conn:
-        conn.row_factory = sqlite3.Row
-        metadata = copilot.copilot_sources.get_session_by_id(conn, session_id)
+    records = []
+    # Change only recorded start cwd to the disposable checkout.
+    for line in COPILOT_TRANSCRIPT.read_text().splitlines():
+        record = json.loads(line)
+        if record["type"] == "session.start":
+            record["data"]["context"]["cwd"] = str(checkout)
+        records.append(json.dumps(record))
+    path = state / "events.jsonl"
+    path.write_text("\n".join(records) + "\n")
+    metadata = copilot.copilot_sources.read_source(path).session
     output = checkout / raw_filename("copilot", copilot.output_identifier(metadata))
     arguments = [session_id] if selection == "selected" else []
     if selection == "overrides":
-        moved_db = tmp_path / "override.db"
-        db.rename(moved_db)
+        moved_state = tmp_path / "override-state"
+        state.parent.rename(moved_state)
         output = tmp_path / "exports" / output.name
-        arguments = ["--db", str(moved_db), "--output", str(output.parent)]
+        arguments = ["--state-root", str(moved_state), "--output", str(output.parent)]
     result = subprocess.run(
         [sys.executable, str(wrapper), *arguments],
         cwd=cwd,

@@ -6,7 +6,7 @@ from copy import deepcopy
 import pytest
 from claude_fixture import TRANSCRIPT as CLAUDE_TRANSCRIPT
 from codex_fixture import TRANSCRIPT as CODEX_TRANSCRIPT
-from copilot_fixture import DATABASE, SESSION_ID, native_records
+from copilot_fixture import SESSION_ID, STATE_ROOT
 
 from session_log_extractors import copilot_sources
 from session_log_extractors import extract_claude_session_log as claude
@@ -19,11 +19,8 @@ from session_log_extractors import session_log_envelope as envelope
 def production_cli(request, monkeypatch):
     module = request.param
     if module is copilot:
-        records = native_records()
-        monkeypatch.setattr(
-            copilot_sources, "load_state_records", lambda session_id: records
-        )
-        args = [SESSION_ID, "--db", str(DATABASE)]
+        monkeypatch.setattr(copilot_sources, "COPILOT_STATE_ROOT", STATE_ROOT)
+        args = [SESSION_ID]
     else:
         transcript = CLAUDE_TRANSCRIPT if module is claude else CODEX_TRANSCRIPT
         args = ["--transcript", str(transcript)]

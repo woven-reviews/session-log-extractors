@@ -11,7 +11,7 @@ import pytest
 from claude_fixture import TRANSCRIPT
 from codex_fixture import CHILD_TRANSCRIPT, question_interaction
 from codex_fixture import TRANSCRIPT as CODEX_TRANSCRIPT
-from copilot_fixture import DATABASE, SESSION_ID, native_source, native_tool_source
+from copilot_fixture import SESSION_ID, STATE_ROOT, native_source, native_tool_source
 
 from session_log_extractors import (
     claude_protocol,
@@ -292,12 +292,10 @@ def test_copilot_cli_uses_public_stages_and_shared_export(monkeypatch, capsys):
 
     monkeypatch.setattr(copilot, "EXTRACTOR", RecordingExtractor())
     monkeypatch.setattr(copilot, "export_session", recording_export)
-    monkeypatch.setattr(copilot_sources, "load_state_records", lambda session_id: [])
+    monkeypatch.setattr(copilot_sources, "COPILOT_STATE_ROOT", STATE_ROOT)
     status = copilot.main(
         [
             SESSION_ID,
-            "--db",
-            str(DATABASE),
             "--output",
             "-",
             "--tool-result-bytes",
@@ -310,14 +308,12 @@ def test_copilot_cli_uses_public_stages_and_shared_export(monkeypatch, capsys):
     assert stages == ["read", "interpret", ("export", 7)]
 
 
-def test_copilot_public_reader_errors_and_empty_source():
-    conn = sqlite3.connect(":memory:")
-    conn.close()
-    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
-        copilot.EXTRACTOR.read_source(copilot.CopilotRequest(conn, {"id": "missing"}))
-    session = copilot.EXTRACTOR.interpret_source(
-        copilot_sources.CopilotSource({"id": "empty"}, [])
-    )
+def test_copilot_public_reader_errors_and_empty_source(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        copilot.EXTRACTOR.read_source(copilot.CopilotRequest(tmp_path / "missing"))
+    source = native_source()
+    source.state_records = []
+    session = copilot.EXTRACTOR.interpret_source(source)
     assert session["events"] == []
 
 
@@ -451,7 +447,7 @@ def test_full_identity_is_source_free_and_export_does_not_mutate_it(
     elif harness == "codex":
         source.session_id = expected_id
     else:
-        expected_id = source.session["id"]
+        expected_id = source.session.session_id
 
     def forbidden(*args, **kwargs):
         pytest.fail("interpret_source accessed its source store")

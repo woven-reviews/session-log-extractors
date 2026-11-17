@@ -55,8 +55,6 @@ def _calls(session: Session, native_calls: list[ToolCall]) -> list[_CallActivity
     native_call_objects = {id(call) for call in native_calls}
     for message in session["events"]:
         for index, call in enumerate(message.get("tool_calls") or []):
-            # Database fallback calls are display-compatible synthetic records,
-            # not evidence of conversation ownership for session_files rows.
             if id(call) not in native_call_objects:
                 continue
             evidence = _evidence("tool.input", json_value(call.get("input")))
@@ -384,22 +382,6 @@ def _slash_invocation(session: Session, message: Message) -> None:
         invocation["skill_links"] = links
 
 
-def _database_actions(session: Session, files: list[dict[str, JsonValue]]) -> None:
-    for row in files:
-        name = string_value(row.get("tool_name"))
-        session["file_actions"].append(
-            FileAction(
-                ref=f"copilot:f{len(session['file_actions'])}",
-                action_name=name if name is not None else "tool",
-                path=string_value(row.get("file_path")),
-                execution_outcome=ToolExecutionOutcome.UNKNOWN,
-                change=None,
-                evidence=_evidence("session_files", row),
-                activity=None,
-            )
-        )
-
-
 def _unique_call_scopes(calls: list[_CallActivity]) -> set[tuple[str | None, str]]:
     counts: dict[tuple[str | None, str], int] = {}
     for owner in calls:
@@ -522,7 +504,6 @@ def _remaining_action_facts(
 def interpret_actions(
     session: Session,
     native_records: list[dict[str, JsonValue]],
-    files: list[dict[str, JsonValue]],
     native_calls: list[ToolCall],
 ) -> None:
     """Attach established facts and derive indexes from those same records."""
@@ -548,4 +529,3 @@ def interpret_actions(
         if (owner.agent_id, owner.call.get("id", "")) in unique_scopes:
             unique_calls.append(owner)
     _remaining_action_facts(session, native_records, unique_calls, records)
-    _database_actions(session, files)
