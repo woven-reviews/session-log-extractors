@@ -52,8 +52,8 @@ uv run --locked python scripts/extract_copilot_session_log.py --all --output ./e
 ```
 
 Git must be available. The containing repository's worktree registry defines
-the boundary, including external linked worktrees; separate clones and ancestor
-directories are excluded. Unavailable registered worktrees are diagnosed and
+the boundary, including external linked worktrees; separate clones, including
+repositories nested inside a checkout, and ancestor directories are excluded. Unavailable registered worktrees are diagnosed and
 skipped. Sessions without usable absolute recorded directory evidence are
 diagnosed and excluded. Claude checks transcript evidence across project stores,
 since encoded directory names alone cannot establish ownership. Use

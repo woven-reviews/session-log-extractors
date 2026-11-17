@@ -338,6 +338,30 @@ def test_source_alias_is_exported_once(tmp_path, checkouts, harness):
     assert len(_output_names(output)) == 1
 
 
+def test_separate_repository_inside_checkout_is_excluded(tmp_path, checkouts, harness):
+    main, _ = checkouts
+    nested_clone = main / "vendor" / "other"
+    nested_clone.mkdir(parents=True)
+    _git(nested_clone, "init")
+    (nested_clone / "src").mkdir()
+    nested_worktree = main / ".worktrees" / "inner"
+    _git(main, "worktree", "add", "-b", "inner", str(nested_worktree))
+    home = tmp_path / "home"
+    _capture(home, harness, "main", str(main), 1)
+    _capture(home, harness, "inner", str(nested_worktree), 2)
+    _capture(home, harness, "clone", str(nested_clone / "src"), 3)
+    output = tmp_path / "exports"
+
+    result = _cli(harness, home, main, "--output", str(output))
+
+    assert result.returncode == 0, result.stderr
+    exported_ids = []
+    for path in output.glob("*.json"):
+        exported_ids.append(json.loads(path.read_text())["session_id"])
+    sorted_ids = sorted(exported_ids)
+    assert sorted_ids == ["inner", "main"]
+
+
 def test_looping_store_entry_does_not_stop_export(tmp_path, checkouts, harness):
     main, _ = checkouts
     home = tmp_path / "home"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from collections.abc import Callable, Iterable
@@ -17,6 +18,7 @@ Source = TypeVar("Source")
 _GIT_WORKTREE_PREFIX = "worktree "
 _GIT_BARE_FIELD = "bare"
 _GIT_PRUNABLE_FIELD = "prunable"
+_GIT_ENTRY = ".git"
 
 
 def _source_identity(path: Path) -> Path:
@@ -129,7 +131,25 @@ class RepositoryBoundary:
                     file=sys.stderr,
                 )
             return False
-        return any(directory.is_relative_to(root) for root in self.roots)
+        containing = [root for root in self.roots if directory.is_relative_to(root)]
+        if not containing:
+            return False
+        checkout = max(containing, key=lambda root: len(root.parts))
+        return not _inside_separate_repository(directory, checkout)
+
+
+def _inside_separate_repository(directory: Path, checkout: Path) -> bool:
+    """A Git entry between a session directory and its checkout marks another repo.
+
+    Registered nested worktrees are checkouts themselves, so the walk stops at
+    the deepest containing root. A removed directory leaves no such evidence.
+    """
+    current = directory
+    while current != checkout:
+        if os.path.lexists(current / _GIT_ENTRY):
+            return True
+        current = current.parent
+    return False
 
 
 def select_recorded_id(
