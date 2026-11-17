@@ -120,30 +120,6 @@ class RepositoryBoundary:
         return any(directory.is_relative_to(root) for root in self.roots)
 
 
-@dataclass(frozen=True)
-class DirectorySelection:
-    """Choose legacy cwd matching or the opt-in repository boundary once."""
-
-    cwd: Path
-    strict: bool = False
-    repository: RepositoryBoundary | None = None
-
-    @classmethod
-    def from_cwd(
-        cls, cwd: Path, strict: bool = False, *, repository: bool = False
-    ) -> DirectorySelection:
-        if strict and repository:
-            raise ValueError(f"{REPOSITORY_FLAG} cannot be combined with --strict")
-        boundary = RepositoryBoundary.discover(cwd) if repository else None
-        return cls(cwd, strict, boundary)
-
-    def matches(self, recorded_cwd: str | None, source: Path) -> bool:
-        """Keep repository containment separate from legacy ancestor overlap."""
-        if self.repository is not None:
-            return self.repository.matches(recorded_cwd, source)
-        return cwd_matches(recorded_cwd, self.cwd, self.strict)
-
-
 def select_recorded_id(
     candidates: Iterable[tuple[str, Source]], selector: str
 ) -> Source | None:

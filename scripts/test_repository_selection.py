@@ -23,7 +23,12 @@ from repository_fixture import (
     session_store_root as _store,
 )
 
-from session_log_extractors import session_selection
+from session_log_extractors import (
+    claude_sources,
+    codex_sources,
+    copilot_sources,
+    session_selection,
+)
 from session_log_extractors.extract_claude_session_log import encode_project_path
 
 
@@ -188,6 +193,42 @@ def test_shared_boundary_resolves_aliases_and_overlapping_roots(checkouts, tmp_p
     boundary = session_selection.RepositoryBoundary.discover(alias / "backend")
     assert boundary.matches(str(alias / "backend")) is True
     assert boundary.matches(str(linked / "frontend")) is True
+
+
+def test_harness_readers_consume_the_same_established_boundary(
+    tmp_path, checkouts, monkeypatch
+):
+    main, linked = checkouts
+    home = tmp_path / "home"
+    for harness in ("claude", "codex", "copilot"):
+        _capture(home, harness, "main", str(main))
+        _capture(home, harness, "linked", str(linked / "frontend"))
+        _capture(home, harness, "ancestor", str(tmp_path))
+    boundary = session_selection.RepositoryBoundary.discover(main)
+
+    def rediscovery_forbidden(*args):
+        pytest.fail("source filtering must consume the established boundary")
+
+    monkeypatch.setattr(
+        session_selection.RepositoryBoundary, "discover", rediscovery_forbidden
+    )
+
+    claude_paths = claude_sources.repository_transcripts(
+        _store(home, "claude"), boundary
+    )
+    codex_paths = codex_sources.repository_transcripts(_store(home, "codex"), boundary)
+    copilot_candidates = copilot_sources.discover_sessions(_store(home, "copilot"))
+    copilot_matches = copilot_sources.repository_sessions(copilot_candidates, boundary)
+
+    for paths in (claude_paths, codex_paths):
+        selected_ids = []
+        for path in paths:
+            selected_ids.append(path.stem)
+        assert sorted(selected_ids) == ["linked", "main"]
+    selected_ids = []
+    for source in copilot_matches:
+        selected_ids.append(source.session.session_id)
+    assert sorted(selected_ids) == ["linked", "main"]
 
 
 def test_stale_worktree_is_excluded_and_diagnosed(checkouts, capsys):

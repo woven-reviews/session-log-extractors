@@ -145,7 +145,7 @@ from session_log_extractors.session_model import (
 from session_log_extractors.session_output import (
     unique_identifier as _unique_identifier,
 )
-from session_log_extractors.session_selection import REPOSITORY_FLAG, DirectorySelection
+from session_log_extractors.session_selection import REPOSITORY_FLAG, RepositoryBoundary
 from session_log_extractors.tool_inputs.codex import input_schema as codex_input_schema
 
 _IMAGE_EXT = {
@@ -1085,29 +1085,34 @@ def _extract_source(source: CodexSource, tool_result_max_bytes: int) -> Envelope
     return export_session(session, tool_result_max_bytes)
 
 
-def _extract_all(
-    sessions_root: Optional[str],
-    output: Optional[str],
-    selection: DirectorySelection | None = None,
-    tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
-    *,
-    project_root: Optional[Path] = None,
-) -> int:
-    """Extract every matching Codex transcript, one JSON file each."""
+def _batch_transcripts(
+    sessions_root: str | None, strict: bool, repository: bool
+) -> list[Path]:
     root = (
         Path(sessions_root).expanduser()
         if sessions_root
         else codex_sources.CODEX_SESSIONS_ROOT
     )
     cwd = Path.cwd()
-    project_root = cwd if project_root is None else project_root
-    files = sorted(
-        codex_sources.matching_transcripts(root, cwd, selection=selection),
-        key=lambda p: (p.stat().st_mtime, str(p)),
-    )
+    if repository:
+        boundary = RepositoryBoundary.discover(cwd)
+        return codex_sources.repository_transcripts(root, boundary)
+    return codex_sources.matching_transcripts(root, cwd, strict)
+
+
+def _extract_all(
+    files: List[Path],
+    output: Optional[str],
+    tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
+    *,
+    project_root: Optional[Path] = None,
+) -> int:
+    """Write every selected Codex source, one JSON file each."""
+    project_root = Path.cwd() if project_root is None else project_root
+    files = sorted(files, key=lambda path: (path.stat().st_mtime, str(path)))
     if not files:
         print(
-            f"error: no Codex transcripts for {cwd} under {root}",
+            "error: no Codex transcripts selected",
             file=sys.stderr,
         )
         return 1
@@ -1121,7 +1126,7 @@ def _extract_all(
             file=sys.stderr,
         )
         return 1
-    print(f"extracting {len(files)} Codex session(s) from {root}", file=sys.stderr)
+    print(f"extracting {len(files)} Codex session(s)", file=sys.stderr)
 
     written = 0
     used_ids: set[str] = set()
@@ -1161,12 +1166,10 @@ def main(
         default_all = not args.session and not args.transcript and args.output != "-"
         if args.all or default_all:
             out = None if args.output == "-" else args.output
+            files = _batch_transcripts(args.sessions_root, args.strict, args.repository)
             return _extract_all(
-                args.sessions_root,
+                files,
                 out,
-                selection=DirectorySelection.from_cwd(
-                    Path.cwd(), args.strict, repository=args.repository
-                ),
                 tool_result_max_bytes=args.tool_result_bytes,
                 project_root=project_root,
             )

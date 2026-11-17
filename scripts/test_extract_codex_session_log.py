@@ -1426,7 +1426,7 @@ def test_extract_all_reports_error_when_nothing_matches():
         tmp = Path(tmp_name)
         sessions = tmp / "sessions"
         sessions.mkdir()
-        rc = _extract_all(str(sessions), str(tmp / "out"))
+        rc = _extract_all([], str(tmp / "out"))
         assert rc == 1
 
 
@@ -1457,7 +1457,9 @@ def test_extract_all_retains_success_but_reports_partial_failure(monkeypatch):
 
         monkeypatch.setattr(mod, "interpret_source", flaky_interpret_source)
         monkeypatch.chdir(project)
-        rc = mod._extract_all(str(sessions), str(out))
+        rc = mod._extract_all(
+            [sessions / "rollout-good.jsonl", sessions / "rollout-bad.jsonl"], str(out)
+        )
 
         assert rc == 1
         output_names = []
@@ -1627,7 +1629,7 @@ def test_extract_all_write_failure_is_skipped():
         old_cwd = os.getcwd()
         try:
             os.chdir(project)
-            rc = _extract_all(str(sessions), str(out))
+            rc = _extract_all([sessions / "rollout-one.jsonl"], str(out))
         finally:
             os.chdir(old_cwd)
 

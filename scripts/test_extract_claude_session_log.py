@@ -1274,7 +1274,7 @@ def test_main_all_mode_extracts_every_session():
 def test_extract_all_reports_error_for_missing_project_dir():
     err = io.StringIO()
     with contextlib.redirect_stderr(err):
-        rc = _extract_all(Path("/no/such/project/dir"), None)
+        rc = main(["--all", "--project-dir", "/no/such/project/dir"])
     assert rc == 1
     assert "no project transcript dir found" in err.getvalue()
 
@@ -1283,7 +1283,7 @@ def test_extract_all_reports_error_for_no_jsonl_files():
     proj = Path(tempfile.mkdtemp())
     err = io.StringIO()
     with contextlib.redirect_stderr(err):
-        rc = _extract_all(proj, None)
+        rc = main(["--all", "--project-dir", str(proj)])
     assert rc == 1
     assert "no .jsonl transcripts" in err.getvalue()
 
@@ -1294,7 +1294,7 @@ def test_extract_all_skips_unparseable_file():
     out_dir = Path(tempfile.mkdtemp())
     err = io.StringIO()
     with contextlib.redirect_stderr(err):
-        rc = _extract_all(proj, str(out_dir))
+        rc = _extract_all([proj / "bad.jsonl"], str(out_dir))
     assert rc == 1
     assert "skip bad" in err.getvalue()
 

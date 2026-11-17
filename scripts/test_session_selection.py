@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 from session_log_extractors.session_selection import (
-    DirectorySelection,
     RepositoryBoundary,
     cwd_matches,
     newest,
@@ -101,11 +100,6 @@ def test_repository_boundary_rejects_unusable_evidence(tmp_path, recorded, capsy
     matched = boundary.matches(recorded, tmp_path / "session.jsonl")
     assert matched is False
     assert "no usable recorded directory evidence" in capsys.readouterr().err
-
-
-def test_repository_and_strict_library_policies_are_incompatible(tmp_path):
-    with pytest.raises(ValueError, match="cannot be combined"):
-        DirectorySelection.from_cwd(tmp_path, True, repository=True)
 
 
 def test_repository_discovery_diagnoses_missing_git(tmp_path, monkeypatch):
