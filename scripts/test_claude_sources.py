@@ -16,21 +16,35 @@ def test_session_cwd_comes_from_the_native_capture():
     assert actual == "/tmp/CAPTURE_ROOT/workspace"
 
 
-def test_session_cwd_uses_first_nonempty_string():
+def _entries_with_unusable_directories():
+    """The native capture with every cwd removed, then three unusable values."""
     entries = load_entries(TRANSCRIPT)
-    # Vary only the first records' directory fields to exercise missing,
-    # malformed and changed directory evidence without inferring from tools.
     for entry in entries:
         entry.pop("cwd", None)
     entries[0]["cwd"] = None
     entries[1]["cwd"] = ""
     entries[2]["cwd"] = 12
-    missing = session_cwd(entries)
+    return entries
+
+
+def test_session_cwd_ignores_missing_and_malformed_directories():
+    # Directory fields are varied to exercise missing and malformed evidence
+    # without inferring a directory from tool inputs.
+    entries = _entries_with_unusable_directories()
+
+    actual = session_cwd(entries)
+
+    assert actual is None
+
+
+def test_session_cwd_uses_first_nonempty_string():
+    entries = _entries_with_unusable_directories()
     entries[3]["cwd"] = "/original"
     entries[4]["cwd"] = "/later"
-    recorded = session_cwd(entries)
-    assert missing is None
-    assert recorded == "/original"
+
+    actual = session_cwd(entries)
+
+    assert actual == "/original"
 
 
 def test_empty_session_has_no_directory():

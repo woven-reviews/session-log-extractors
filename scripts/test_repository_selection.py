@@ -222,15 +222,18 @@ def test_harness_readers_consume_the_same_established_boundary(
     copilot_candidates = copilot_sources.discover_sessions(_store(home, "copilot"))
     copilot_matches = copilot_sources.repository_sessions(copilot_candidates, boundary)
 
+    expected_ids = ["linked", "main"]
     for paths in (claude_paths, codex_paths):
         selected_ids = []
         for path in paths:
             selected_ids.append(path.stem)
-        assert sorted(selected_ids) == ["linked", "main"]
-    selected_ids = []
+        sorted_ids = sorted(selected_ids)
+        assert sorted_ids == expected_ids
+    copilot_ids = []
     for source in copilot_matches:
-        selected_ids.append(source.session.session_id)
-    assert sorted(selected_ids) == ["linked", "main"]
+        copilot_ids.append(source.session.session_id)
+    sorted_copilot_ids = sorted(copilot_ids)
+    assert sorted_copilot_ids == expected_ids
 
 
 def test_stale_worktree_is_excluded_and_diagnosed(checkouts, capsys):
@@ -315,7 +318,8 @@ def test_claude_cross_store_filename_collisions_retain_both_sources(
     identities = []
     for path in sorted(output.glob("*.json")):
         identities.append(json.loads(path.read_text())["session_id"])
-    assert sorted(identities) == ["linked", "main"]
+    sorted_identities = sorted(identities)
+    assert sorted_identities == ["linked", "main"]
 
 
 def test_source_alias_is_exported_once(tmp_path, checkouts, harness):
@@ -335,8 +339,9 @@ def test_source_alias_is_exported_once(tmp_path, checkouts, harness):
 
     result = _cli(harness, home, main, "--output", str(output))
 
+    exported_names = _output_names(output)
     assert result.returncode == 0, result.stderr
-    assert len(_output_names(output)) == 1
+    assert len(exported_names) == 1
 
 
 def test_separate_repository_inside_checkout_is_excluded(tmp_path, checkouts, harness):
@@ -376,8 +381,9 @@ def test_looping_store_entry_does_not_stop_export(tmp_path, checkouts, harness):
 
     result = _cli(harness, home, main, "--output", str(output))
 
+    exported_names = _output_names(output)
     assert result.returncode == 0, result.stderr
-    assert len(_output_names(output)) == 1
+    assert len(exported_names) == 1
 
 
 def test_copilot_resume_does_not_override_start_directory(tmp_path, checkouts):
@@ -435,8 +441,9 @@ def test_nested_registered_checkout_does_not_duplicate_exports(
 
     result = _cli(harness, home, main, "--output", str(output))
 
+    exported_names = _output_names(output)
     assert result.returncode == 0, result.stderr
-    assert len(_output_names(output)) == 1
+    assert len(exported_names) == 1
 
 
 def test_explicit_id_selection_keeps_legacy_scope_without_git(tmp_path, harness):
