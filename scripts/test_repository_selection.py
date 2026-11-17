@@ -321,8 +321,15 @@ def test_source_alias_is_exported_once(tmp_path, checkouts, harness):
     main, _ = checkouts
     home = tmp_path / "home"
     transcript = _capture(home, harness, "included", str(main))
-    alias = transcript.parent.parent / "alias-store"
-    alias.symlink_to(transcript.parent, target_is_directory=True)
+    alias_store = transcript.parent.parent / "alias-store"
+    if harness == "codex":
+        # Codex discovery uses rglob, which does not enter linked directories,
+        # so only a linked transcript file presents Codex with a second path.
+        alias_store.mkdir()
+        alias = alias_store / transcript.name
+        alias.symlink_to(transcript)
+    else:
+        alias_store.symlink_to(transcript.parent, target_is_directory=True)
     output = tmp_path / "exports"
 
     result = _cli(harness, home, main, "--output", str(output))
