@@ -6,6 +6,9 @@ uv manages `.venv` without manual activation. Use the committed `uv.lock` and
 the pinned Ruff version from the test extra. After intentional dependency
 changes, run `uv lock` and commit the updated lockfile.
 
+Before creating a release tag, set `[project].version` in `pyproject.toml` to
+the tag version without the `v` prefix, run `uv lock`, and commit both files.
+
 Format Python with `uv run --locked ruff format .`. Before committing, run the
 CI checks:
 
