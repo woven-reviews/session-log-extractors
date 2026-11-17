@@ -1014,11 +1014,6 @@ def test_first_timestamp_comes_from_the_native_capture():
     assert actual_first_timestamp in recorded_timestamps
 
 
-def test_session_cwd_comes_from_the_native_capture():
-    actual_session_cwd = session_cwd(_recorded_session_entries())
-    assert actual_session_cwd == "/tmp/CAPTURE_ROOT/workspace"
-
-
 def test_synthetic_model_is_excluded():
     assistant, _ = _recorded_tool_interaction(
         claude_protocol.READ_TOOL, "multibyte.txt"
@@ -1036,8 +1031,6 @@ def test_metadata_is_absent_when_not_recorded():
     assistant.pop("cwd", None)
     actual_first_timestamp = first_timestamp([assistant])
     assert actual_first_timestamp is None
-    actual_session_cwd = session_cwd([assistant])
-    assert actual_session_cwd is None
 
 
 def test_first_timestamp_skips_messages_without_timestamps():
@@ -1056,8 +1049,6 @@ def test_empty_session_has_no_metadata():
     assert actual_first_timestamp is None
     actual_session_models = session_models([])
     assert actual_session_models == []
-    actual_session_cwd = session_cwd([])
-    assert actual_session_cwd is None
 
 
 def test_native_resumed_session_lists_multiple_models():

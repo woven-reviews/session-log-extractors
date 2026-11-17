@@ -145,6 +145,7 @@ from session_log_extractors.session_model import (
 from session_log_extractors.session_output import (
     unique_identifier as _unique_identifier,
 )
+from session_log_extractors.session_selection import REPOSITORY_FLAG, DirectorySelection
 from session_log_extractors.tool_inputs.codex import input_schema as codex_input_schema
 
 _IMAGE_EXT = {
@@ -1000,7 +1001,13 @@ def build_arg_parser(project_root: Optional[Path] = None) -> argparse.ArgumentPa
         metavar="PATH",
         help="override Codex sessions root (default: ~/.codex/sessions)",
     )
-    parser.add_argument(
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument(
+        REPOSITORY_FLAG,
+        action="store_true",
+        help="select sessions from this Git repository and its registered worktrees, including subdirectories; no global fallback",
+    )
+    selection.add_argument(
         "--strict",
         action="store_true",
         help=(
@@ -1081,7 +1088,7 @@ def _extract_source(source: CodexSource, tool_result_max_bytes: int) -> Envelope
 def _extract_all(
     sessions_root: Optional[str],
     output: Optional[str],
-    strict: bool = False,
+    selection: DirectorySelection | None = None,
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
     *,
     project_root: Optional[Path] = None,
@@ -1095,7 +1102,7 @@ def _extract_all(
     cwd = Path.cwd()
     project_root = cwd if project_root is None else project_root
     files = sorted(
-        codex_sources.matching_transcripts(root, cwd, strict=strict),
+        codex_sources.matching_transcripts(root, cwd, selection=selection),
         key=lambda p: (p.stat().st_mtime, str(p)),
     )
     if not files:
@@ -1150,16 +1157,22 @@ def main(
     project_root = Path.cwd() if project_root is None else project_root
     args = build_arg_parser(project_root).parse_args(argv)
 
-    default_all = not args.session and not args.transcript and args.output != "-"
-    if args.all or default_all:
-        out = None if args.output == "-" else args.output
-        return _extract_all(
-            args.sessions_root,
-            out,
-            strict=args.strict,
-            tool_result_max_bytes=args.tool_result_bytes,
-            project_root=project_root,
-        )
+    try:
+        default_all = not args.session and not args.transcript and args.output != "-"
+        if args.all or default_all:
+            out = None if args.output == "-" else args.output
+            return _extract_all(
+                args.sessions_root,
+                out,
+                selection=DirectorySelection.from_cwd(
+                    Path.cwd(), args.strict, repository=args.repository
+                ),
+                tool_result_max_bytes=args.tool_result_bytes,
+                project_root=project_root,
+            )
+    except OSError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
     try:
         transcript = codex_sources.select_transcript(
@@ -1167,6 +1180,7 @@ def main(
             transcript=args.transcript,
             sessions_root=args.sessions_root,
             strict=args.strict,
+            repository=args.repository,
         )
     except OSError as exc:
         print(f"error: {exc}", file=sys.stderr)

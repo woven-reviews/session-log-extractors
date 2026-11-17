@@ -15,7 +15,11 @@ from session_log_extractors.copilot_protocol import (
 )
 from session_log_extractors.json_types import JsonValue, string_value
 from session_log_extractors.jsonl_sources import load_jsonl_objects, parse_jsonl_objects
-from session_log_extractors.session_selection import cwd_matches, select_recorded_id
+from session_log_extractors.session_selection import (
+    DirectorySelection,
+    select_recorded_id,
+    unique_paths,
+)
 
 COPILOT_STATE_ROOT = Path.home() / ".copilot" / "session-state"
 ImageInputs = Dict[str, Optional[bytes]]
@@ -135,20 +139,40 @@ def discover_sessions(root: Path) -> list[CopilotSource]:
 
 
 def matching_sessions(
-    sessions: list[CopilotSource], cwd: Path, strict: bool = False
+    sessions: list[CopilotSource],
+    cwd: Path,
+    strict: bool = False,
+    *,
+    selection: DirectorySelection | None = None,
 ) -> list[CopilotSource]:
     """Select recorded start cwd, falling back to resume cwd only when absent."""
-    return [
-        source for source in sessions if cwd_matches(source.session.cwd, cwd, strict)
-    ]
+    selection = selection or DirectorySelection(cwd, strict)
+    matched = []
+    paths = (
+        set(unique_paths(source.session.path for source in sessions))
+        if selection.repository is not None
+        else None
+    )
+    for source in sessions:
+        path = source.session.path
+        if paths is not None and path not in paths:
+            continue
+        if selection.matches(source.session.cwd, path):
+            matched.append(source)
+    return matched
 
 
 def newest_session(
-    sessions: list[CopilotSource], cwd: Path, strict: bool = False
+    sessions: list[CopilotSource],
+    cwd: Path,
+    strict: bool = False,
+    *,
+    repository: bool = False,
 ) -> CopilotSource | None:
     """Prefer most recently active matching evidence, then globally if allowed."""
-    matches = matching_sessions(sessions, cwd, strict)
-    candidates = matches if matches or strict else sessions
+    selection = DirectorySelection.from_cwd(cwd, strict, repository=repository)
+    matches = matching_sessions(sessions, cwd, selection=selection)
+    candidates = matches if matches or strict or repository else sessions
     if not candidates:
         return None
     return max(

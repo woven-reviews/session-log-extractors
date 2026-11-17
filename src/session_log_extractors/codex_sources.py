@@ -21,14 +21,13 @@ from session_log_extractors.codex_rollouts import (
 from session_log_extractors.json_types import JsonValue, parse_json
 from session_log_extractors.jsonl_sources import load_records
 from session_log_extractors.session_selection import (
-    cwd_matches as _cwd_matches,
+    DirectorySelection,
+    read_recorded_id,
+    select_recorded_id,
+    unique_paths,
 )
 from session_log_extractors.session_selection import (
     newest as newest,
-)
-from session_log_extractors.session_selection import (
-    read_recorded_id,
-    select_recorded_id,
 )
 
 CODEX_SESSIONS_ROOT = Path.home() / ".codex" / "sessions"
@@ -129,17 +128,23 @@ def session_cwd_from_file(path: Path) -> Optional[str]:
     return None
 
 
-def matching_transcripts(root: Path, cwd: Path, strict: bool = False) -> List[Path]:
+def matching_transcripts(
+    root: Path,
+    cwd: Path,
+    strict: bool = False,
+    *,
+    selection: DirectorySelection | None = None,
+) -> List[Path]:
     """Return every Codex transcript whose recorded cwd overlaps ``cwd``.
 
     In ``strict`` mode the recorded cwd must equal ``cwd`` exactly (no
     ancestor/descendant overlap).
     """
-    return [
-        p
-        for p in _automatic_transcripts(root)
-        if _cwd_matches(session_cwd_from_file(p), cwd, strict=strict)
-    ]
+    selection = selection or DirectorySelection(cwd, strict)
+    files = _automatic_transcripts(root)
+    if selection.repository is not None:
+        files = unique_paths(files)
+    return [p for p in files if selection.matches(session_cwd_from_file(p), p)]
 
 
 def output_identifier(transcript: Path) -> str:
@@ -156,6 +161,8 @@ def select_transcript(
     transcript: Optional[str],
     sessions_root: Optional[str],
     strict: bool = False,
+    *,
+    repository: bool = False,
 ) -> Path:
     """Pick a Codex transcript.
 
@@ -185,23 +192,22 @@ def select_transcript(
     if selector:
         return _select_prefix(_jsonl_files(root), selector)
 
-    files = _automatic_transcripts(root)
-
     cwd = Path.cwd()
-    cwd_matches = [
-        p for p in files if _cwd_matches(session_cwd_from_file(p), cwd, strict=strict)
-    ]
+    selection = DirectorySelection.from_cwd(cwd, strict, repository=repository)
+    cwd_matches = matching_transcripts(root, cwd, selection=selection)
     picked = newest(cwd_matches)
     if picked is not None:
         return picked
 
+    if repository:
+        raise FileNotFoundError(f"no Codex transcripts in Git repository from {cwd}")
     if strict:
         raise FileNotFoundError(
             f"no Codex transcript for {cwd} under {root} "
             "(--strict: cwd-overlap and newest-anywhere fallback disabled)"
         )
 
-    picked = newest(files)
+    picked = newest(_automatic_transcripts(root))
     if picked is not None:
         return picked
 

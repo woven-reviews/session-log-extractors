@@ -116,6 +116,7 @@ from session_log_extractors.session_model import (
 from session_log_extractors.session_output import (
     unique_identifier as _unique_identifier,
 )
+from session_log_extractors.session_selection import REPOSITORY_FLAG, DirectorySelection
 from session_log_extractors.tool_inputs.copilot import input_schema
 
 _COPILOT_IMAGE_REF = re.compile(r"\[image:\s*([^\]]+?)\s*\]", re.IGNORECASE)
@@ -1121,7 +1122,13 @@ def build_arg_parser(project_root: Optional[Path] = None) -> argparse.ArgumentPa
         default=None,
         help=f"Copilot session-state directory (default: {copilot_sources.COPILOT_STATE_ROOT})",
     )
-    parser.add_argument(
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument(
+        REPOSITORY_FLAG,
+        action="store_true",
+        help="select sessions from this Git repository and its registered worktrees, including subdirectories; no global fallback",
+    )
+    selection.add_argument(
         "--strict",
         action="store_true",
         help=(
@@ -1167,14 +1174,16 @@ def build_arg_parser(project_root: Optional[Path] = None) -> argparse.ArgumentPa
 def _extract_all(
     sessions: list[CopilotSource],
     output: Optional[str],
-    strict: bool = False,
+    selection: DirectorySelection | None = None,
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
     *,
     project_root: Optional[Path] = None,
 ) -> int:
     """Extract every matching Copilot session, one JSON file each."""
     project_root = Path.cwd() if project_root is None else project_root
-    sessions = copilot_sources.matching_sessions(sessions, Path.cwd(), strict=strict)
+    sessions = copilot_sources.matching_sessions(
+        sessions, Path.cwd(), selection=selection
+    )
     if not sessions:
         print(f"error: no Copilot sessions for {Path.cwd()}", file=sys.stderr)
         return 1
@@ -1214,7 +1223,9 @@ def _select_session(
         if session is None:
             print(f"error: no session found matching {args.session!r}", file=sys.stderr)
         return session
-    session = copilot_sources.newest_session(sessions, Path.cwd(), strict=args.strict)
+    session = copilot_sources.newest_session(
+        sessions, Path.cwd(), strict=args.strict, repository=args.repository
+    )
     if session is None:
         print(
             f"error: no Copilot sessions for {Path.cwd()}"
@@ -1269,7 +1280,9 @@ def main(
             return _extract_all(
                 sessions,
                 out,
-                args.strict,
+                DirectorySelection.from_cwd(
+                    Path.cwd(), args.strict, repository=args.repository
+                ),
                 args.tool_result_bytes,
                 project_root=project_root,
             )

@@ -28,6 +28,7 @@ Use `--help` on each script for its complete interface. Common options are:
 | --- | --- |
 | Positional session ID | Export one session. A unique exact recorded ID wins; otherwise a unique literal prefix is required. Matching is case-sensitive. |
 | `--all` | Export every matching project session; this is the default with no explicit selection. |
+| `--repository` | Select sessions started at or beneath this Git repository's main checkout or registered linked worktrees. Works from checkout subdirectories; never falls back globally. Cannot be combined with `--strict`. |
 | `--strict` | Require the exact recorded working directory rather than parent/descendant project matching, and disable the global fallback. |
 | `--output ./exports` | Choose a batch output directory. |
 | `--output ./session.json` | Choose a single-session file destination. |
@@ -42,8 +43,33 @@ are no longer used. See the [database removal audit](docs/copilot-event-sources.
 for compatibility and migration details.
 
 For all three harnesses, `--output -` without a selector can export another
-project's session when no project match exists. Use `--strict` or an explicit
-selector when project isolation is required.
+project's session when no project match exists. Use `--repository`, `--strict`,
+or an explicit selector when project isolation is required.
+
+For a manual repository-wide export, run from anywhere inside the intended
+checkout (including a registered linked worktree):
+
+```sh
+uv run --locked python scripts/extract_claude_session_log.py --repository --output ./exports
+uv run --locked python scripts/extract_codex_session_log.py --repository --output ./exports
+uv run --locked python scripts/extract_copilot_session_log.py --repository --output ./exports
+```
+
+Git must be available. The containing repository's worktree registry defines
+the boundary, including external linked worktrees; separate clones and ancestor
+directories are excluded. Unavailable registered worktrees are diagnosed and
+skipped. Sessions without usable absolute recorded directory evidence are
+diagnosed and excluded. Claude checks transcript evidence across project stores,
+since encoded directory names alone cannot establish ownership. Use
+`--output -` for the newest eligible session. No matches or failure to establish
+the Git boundary exits 1 without writing an export or changing existing files.
+
+Explicit IDs, transcript paths, and their precedence retain the existing rules
+even with `--repository`, and do not require Git discovery. Store overrides still
+limit where sources are read. `--strict` retains its legacy exact invocation
+directory behavior, excluding child directories and other worktrees. Neither
+mode changes automatic hooks that explicitly identify one session. Existing
+export files are never cleaned up automatically.
 
 Explicit selection never falls back to a newest unrelated session. Missing or
 ambiguous IDs fail with exit 1 and stderr diagnostics, without changing output

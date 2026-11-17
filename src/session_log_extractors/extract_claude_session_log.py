@@ -68,10 +68,14 @@ from session_log_extractors.claude_sources import (
     ClaudeSource,
     read_source,
     read_subagent_sources,
+    repository_transcripts,
     select_project_session,
 )
 from session_log_extractors.claude_sources import (
     load_entries as load_entries,
+)
+from session_log_extractors.claude_sources import (
+    session_cwd as session_cwd,
 )
 from session_log_extractors.extractor_contract import Extractor
 from session_log_extractors.json_types import JsonValue, string_value
@@ -95,6 +99,14 @@ from session_log_extractors.session_model import (
     SubagentSummary,
     ToolCall,
     ToolResult,
+)
+from session_log_extractors.session_output import (
+    unique_identifier as _unique_identifier,
+)
+from session_log_extractors.session_selection import (
+    REPOSITORY_FLAG,
+    DirectorySelection,
+    RepositoryBoundary,
 )
 from session_log_extractors.session_selection import (
     newest as newest,
@@ -209,6 +221,8 @@ def select_transcript(
     transcript: Optional[str],
     project_dir: Optional[str],
     strict: bool = False,
+    *,
+    repository: bool = False,
 ) -> Path:
     """Pick the transcript file to parse, following the documented precedence.
 
@@ -244,9 +258,27 @@ def select_transcript(
         where = f" in {proj}" if proj is not None else ""
         raise FileNotFoundError(f"no transcript matching {selector!r}{where}")
 
+    store = Path(project_dir).expanduser() if project_dir else None
+    return _implicit_transcript(cwd, store if repository else proj, strict, repository)
+
+
+def _implicit_transcript(
+    cwd: Path, project: Path | None, strict: bool, repository: bool
+) -> Path:
+    if repository:
+        store = project
+        picked = newest(
+            repository_transcripts(
+                PROJECTS_ROOT, RepositoryBoundary.discover(cwd), project_dir=store
+            )
+        )
+        if picked is not None:
+            return picked
+        raise FileNotFoundError(f"no Claude transcripts in Git repository from {cwd}")
+
     # Newest in the resolved project dir.
-    if proj is not None:
-        picked = newest(_jsonl_files(proj))
+    if project is not None:
+        picked = newest(_jsonl_files(project))
         if picked is not None:
             return picked
 
@@ -763,15 +795,6 @@ def session_models(entries: List[Dict[str, JsonValue]]) -> List[str]:
     return models
 
 
-def session_cwd(entries: List[Dict[str, JsonValue]]) -> Optional[str]:
-    """The working directory the session ran in, from the first entry carrying it."""
-    for entry in entries:
-        cwd = entry.get("cwd")
-        if isinstance(cwd, str) and cwd:
-            return cwd
-    return None
-
-
 def build_raw_envelope(
     transcript: Path,
     entries: List[Dict[str, JsonValue]],
@@ -947,7 +970,13 @@ def build_arg_parser(project_root: Optional[Path] = None) -> argparse.ArgumentPa
             "(default: resolved from the current working directory)"
         ),
     )
-    p.add_argument(
+    selection = p.add_mutually_exclusive_group()
+    selection.add_argument(
+        REPOSITORY_FLAG,
+        action="store_true",
+        help="select sessions from this Git repository and its registered worktrees, including subdirectories; no global fallback",
+    )
+    selection.add_argument(
         "--strict",
         action="store_true",
         help=(
@@ -1009,10 +1038,30 @@ def extract_transcript(
     return session_log_envelope.export_session(session, tool_result_max_bytes)
 
 
+def _batch_transcripts(
+    project_dir: Path | None, cwd: Path, selection: DirectorySelection | None
+) -> list[Path]:
+    selection = selection or DirectorySelection(cwd)
+    if selection.repository is not None:
+        files = repository_transcripts(
+            PROJECTS_ROOT, selection.repository, project_dir=project_dir
+        )
+    else:
+        project = project_dir or resolve_project_dir(None, cwd, strict=selection.strict)
+        if project is None or not project.is_dir():
+            where = project if project is not None else PROJECTS_ROOT
+            print(f"error: no project transcript dir found: {where}", file=sys.stderr)
+            return []
+        files = _jsonl_files(project)
+        if not files:
+            print(f"error: no .jsonl transcripts in {project}", file=sys.stderr)
+    return sorted(files, key=lambda path: path.stat().st_mtime)
+
+
 def _extract_all(
     project_dir: Optional[Path],
     output: Optional[str],
-    strict: bool = False,
+    selection: DirectorySelection | None = None,
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
     *,
     project_root: Optional[Path] = None,
@@ -1024,17 +1073,12 @@ def _extract_all(
     """
     cwd = Path.cwd()
     project_root = cwd if project_root is None else project_root
-    proj = project_dir or resolve_project_dir(None, cwd, strict=strict)
-    if proj is None or not proj.is_dir():
-        where = (
-            proj if proj is not None else f"(none matched cwd under {PROJECTS_ROOT})"
-        )
-        print(f"error: no project transcript dir found: {where}", file=sys.stderr)
-        return 1
-
-    files = sorted(_jsonl_files(proj), key=lambda p: p.stat().st_mtime)
+    files = _batch_transcripts(project_dir, cwd, selection)
     if not files:
-        print(f"error: no .jsonl transcripts in {proj}", file=sys.stderr)
+        print(
+            f"error: no Claude transcripts for {cwd} under {PROJECTS_ROOT}",
+            file=sys.stderr,
+        )
         return 1
 
     out_dir = Path(output).expanduser() if output else project_root
@@ -1046,9 +1090,10 @@ def _extract_all(
             file=sys.stderr,
         )
         return 1
-    print(f"extracting {len(files)} session(s) from {proj}", file=sys.stderr)
+    print(f"extracting {len(files)} session(s) for {cwd}", file=sys.stderr)
 
     written = 0
+    used_ids: set[str] = set()
     for transcript in files:
         session_id = transcript.stem
         try:
@@ -1056,7 +1101,8 @@ def _extract_all(
         except (OSError, ValueError) as exc:
             print(f"  skip {session_id} ({transcript}): {exc}", file=sys.stderr)
             continue
-        out_path = out_dir / raw_filename("claude", session_id)
+        ident = _unique_identifier(session_id, used_ids)
+        out_path = out_dir / raw_filename("claude", ident)
         try:
             write_envelope(out_path, envelope, TOOL_RESULT_BYTES_FLAG)
         except OSError as exc:
@@ -1075,17 +1121,23 @@ def main(
     project_root = Path.cwd() if project_root is None else project_root
     args = build_arg_parser(project_root).parse_args(argv)
 
-    # all-sessions is the default; a session id, --transcript or stdout opts out
-    if args.all or not (args.session or args.transcript or args.output == "-"):
-        proj = Path(args.project_dir).expanduser() if args.project_dir else None
-        out = None if args.output == "-" else args.output
-        return _extract_all(
-            proj,
-            out,
-            strict=args.strict,
-            tool_result_max_bytes=args.tool_result_bytes,
-            project_root=project_root,
-        )
+    try:
+        # all-sessions is the default; a session id, --transcript or stdout opts out
+        if args.all or not (args.session or args.transcript or args.output == "-"):
+            proj = Path(args.project_dir).expanduser() if args.project_dir else None
+            out = None if args.output == "-" else args.output
+            return _extract_all(
+                proj,
+                out,
+                selection=DirectorySelection.from_cwd(
+                    Path.cwd(), args.strict, repository=args.repository
+                ),
+                tool_result_max_bytes=args.tool_result_bytes,
+                project_root=project_root,
+            )
+    except OSError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
     try:
         transcript = select_transcript(
@@ -1093,6 +1145,7 @@ def main(
             transcript=args.transcript,
             project_dir=args.project_dir,
             strict=args.strict,
+            repository=args.repository,
         )
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)

@@ -6,6 +6,7 @@ needed. ``path`` retains transcript identity and its sidecar relationship.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List
@@ -13,11 +14,50 @@ from typing import Dict, List
 from session_log_extractors.json_types import JsonValue, parse_json
 from session_log_extractors.jsonl_sources import load_jsonl_objects
 from session_log_extractors.session_selection import (
+    RepositoryBoundary,
     read_recorded_id,
     select_recorded_id,
+    unique_paths,
 )
 
 load_entries = load_jsonl_objects
+
+
+def session_cwd(entries: List[Dict[str, JsonValue]]) -> str | None:
+    """Use the first nonempty recorded session directory, never tool inputs."""
+    for entry in entries:
+        cwd = entry.get("cwd")
+        if isinstance(cwd, str) and cwd:
+            return cwd
+    return None
+
+
+def repository_transcripts(
+    projects_root: Path,
+    boundary: RepositoryBoundary,
+    *,
+    project_dir: Path | None = None,
+) -> list[Path]:
+    """Read directory evidence across stores, excluding nested subagent logs.
+
+    An explicit project store limits discovery, but its encoded name never
+    establishes ownership. Resolve aliases before reading to export each source
+    once even when multiple stores point at the same transcript.
+    """
+    pattern = "*.jsonl" if project_dir is not None else "*/*.jsonl"
+    root = project_dir if project_dir is not None else projects_root
+    matches = []
+    for path in unique_paths(sorted(root.glob(pattern))):
+        if not path.is_file():
+            continue
+        try:
+            recorded_cwd = session_cwd(load_entries(path))
+        except (OSError, ValueError) as exc:
+            print(f"warning: skipping Claude source {path}: {exc}", file=sys.stderr)
+            continue
+        if boundary.matches(recorded_cwd, path):
+            matches.append(path)
+    return matches
 
 
 @dataclass
