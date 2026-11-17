@@ -35,9 +35,11 @@ Use `--help` on each script for its complete interface. Common options are:
 | `--tool-result-bytes N` | Cap textual tool results at N UTF-8 bytes; default **8,192**, zero clips nonempty text, any negative value retains full text. |
 
 Claude and Codex also accept `--transcript PATH`. Codex accepts a transcript
-path as its positional selection and `--sessions-root DIR` for discovery. Copilot accepts
-`--db PATH` for its SQLite store; it also reads the corresponding native session
-state and attachments. Copilot has no direct JSONL/state-root CLI flag.
+path as its positional selection and `--sessions-root DIR` for discovery. Copilot
+reads `~/.copilot/session-state/*/events.jsonl` and its referenced images; use
+`--state-root DIR` to select another session-state directory. SQLite and `--db`
+are no longer used. See the [database removal audit](docs/copilot-event-sources.md)
+for compatibility and migration details.
 
 For all three harnesses, `--output -` without a selector can export another
 project's session when no project match exists. Use `--strict` or an explicit
@@ -53,7 +55,11 @@ Blank files and valid objects with no conversation activity produce `events: []`
 There is no native-format recognition gate, so unrelated JSON objects can also
 produce an empty export. Nonblank input with no valid objects fails. Codex
 discovery still needs recorded cwd metadata; select a blank file explicitly.
-Copilot sessions without usable conversation likewise export an empty envelope.
+Copilot sessions with recorded lifecycle identity and no conversation export an
+empty envelope. Missing, unreadable, wholly invalid or identity-free Copilot event
+logs are diagnosed and excluded from discovery. A bad unrelated candidate does
+not prevent selecting a valid session. Start cwd and start time remain authoritative
+across resume; newest selection uses recorded activity timestamps.
 Missing/unreadable sources and output failures exit 1. Batch mode attempts all
 selected sessions and retains successful files; it exits 1 for any failure or
 no selected sessions. Tolerated skipped records alone do not fail extraction.

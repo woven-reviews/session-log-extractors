@@ -14,7 +14,7 @@ flowchart LR
 
 ## Responsibility boundaries
 
-The CLI selects sessions, owns connections, reports diagnostics, and writes output.
+The CLI orchestrates source-layer selection, reports diagnostics, and writes output.
 Readers snapshot the required records, sidecars, and image assets. Interpreters
 consume those snapshots without source I/O and return an uncapped shared session.
 All three adapters implement the [public stage contract](../src/session_log_extractors/extractor_contract.py).

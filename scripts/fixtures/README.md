@@ -308,8 +308,9 @@ Acceptance examples:
   or definitions do not establish an invocation.
 - Exact slash text, arguments, links, and definitions already present in source
   remain available. Definitions are never loaded from external paths.
-- Unlinked database file activity remains internal with unknown conversation
-  ownership. Export must not attach it to a nearby tool call.
+- Unassociated file evidence remains internal with unknown conversation
+  ownership. Export must not attach it to a nearby tool call. Copilot uses native
+  file actions; its captured SQLite rows remain historical audit evidence.
 
 See the [shared action tests](../test_session_actions.py) and production
 [Claude](../test_claude_actions.py), [Codex](../test_codex_actions.py), and

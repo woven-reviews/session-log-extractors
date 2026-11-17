@@ -103,7 +103,8 @@ skill call, not the second; no definition is borrowed by matching names.
 Zero-byte and short caps preserve these facts. Controlled modifications exercise
 missing/duplicate/cross-agent identifiers, additional or unmatched paths,
 orphan subagent activity, empty/missing task text, and standalone skill links.
-Database file rows stay internal and unassociated even in database-only fallback.
+Database file rows are historical audit evidence; extraction now uses native file
+actions exclusively. See the [event-source audit](../../../docs/copilot-event-sources.md).
 Compatibility tests compare existing model and JSON content with enrichment
 disabled; no generated prose baseline is required.
 
@@ -120,8 +121,8 @@ controlled parser examples, assets, IDs/ownership and native payload retention.
 legacy permission lifecycle, and legacy inline/data-URL attachment encodings
 which this successful capture cannot produce. The attachment variants use the
 current red PNG bytes. Tests retain controlled missing files, filesystem errors,
-malformed types, unknown tools, unmatched results, missing IDs, legacy database
-schemas, and collision cases.
+malformed types, unknown tools, unmatched results, missing IDs, lifecycle
+metadata boundaries, and collision cases.
 
 ## Capture workflow
 
@@ -170,7 +171,7 @@ that optional flag is absent). An explicitly non-user completion never inherits
 candidate activity. The inserted display separator shares that
 outcome attribution. Ambiguous request IDs and mismatched agent scopes leave
 results explicitly unmatched; missing completion provenance stays unknown.
-DB fallback text remains verbatim without inferred provenance.
+Database-only conversation recovery has been removed.
 
 All reviewed nonempty text in this selected capture now has resolved attribution,
 including generated notices of deliberate actions. This is asserted through JSON
