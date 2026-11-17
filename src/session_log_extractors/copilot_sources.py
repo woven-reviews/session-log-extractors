@@ -15,7 +15,12 @@ from session_log_extractors.copilot_protocol import (
 )
 from session_log_extractors.json_types import JsonValue, string_value
 from session_log_extractors.jsonl_sources import load_jsonl_objects, parse_jsonl_objects
-from session_log_extractors.session_selection import cwd_matches, select_recorded_id
+from session_log_extractors.session_selection import (
+    RepositoryBoundary,
+    exact_cwd_match,
+    select_recorded_id,
+    unique_paths,
+)
 
 COPILOT_STATE_ROOT = Path.home() / ".copilot" / "session-state"
 ImageInputs = Dict[str, Optional[bytes]]
@@ -134,25 +139,41 @@ def discover_sessions(root: Path) -> list[CopilotSource]:
     return sessions
 
 
-def matching_sessions(
-    sessions: list[CopilotSource], cwd: Path, strict: bool = False
+def exact_cwd_sessions(sessions: list[CopilotSource], cwd: Path) -> list[CopilotSource]:
+    """Match recorded start cwd exactly, using resume cwd only when absent."""
+    return [source for source in sessions if exact_cwd_match(source.session.cwd, cwd)]
+
+
+def repository_sessions(
+    sessions: list[CopilotSource], boundary: RepositoryBoundary
 ) -> list[CopilotSource]:
-    """Select recorded start cwd, falling back to resume cwd only when absent."""
+    """Filter native candidates through an established repository boundary."""
+    unique_source_paths = set(unique_paths(source.session.path for source in sessions))
     return [
-        source for source in sessions if cwd_matches(source.session.cwd, cwd, strict)
+        source
+        for source in sessions
+        if source.session.path in unique_source_paths
+        and boundary.matches(source.session.cwd, source.session.path)
     ]
 
 
 def newest_session(
     sessions: list[CopilotSource], cwd: Path, strict: bool = False
 ) -> CopilotSource | None:
-    """Prefer most recently active matching evidence, then globally if allowed."""
-    matches = matching_sessions(sessions, cwd, strict)
-    candidates = matches if matches or strict else sessions
-    if not candidates:
+    """Choose the newest repository session, or exact cwd evidence with strict."""
+    if strict:
+        candidates = exact_cwd_sessions(sessions, cwd)
+    else:
+        candidates = repository_sessions(sessions, RepositoryBoundary.discover(cwd))
+    return newest_recorded_session(candidates)
+
+
+def newest_recorded_session(sessions: list[CopilotSource]) -> CopilotSource | None:
+    """Choose the most recently active source from an already selected set."""
+    if not sessions:
         return None
     return max(
-        candidates,
+        sessions,
         key=lambda source: (
             source.session.last_activity_at
             or datetime.min.replace(tzinfo=timezone.utc),

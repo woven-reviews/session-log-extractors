@@ -1,15 +1,15 @@
 ---
 description: Extract all Claude Code session logs for this project
-allowed-tools: Bash(docker build:*), Bash(docker run:*), Bash(git rev-parse:*), Bash(command -v docker:*)
+allowed-tools: Bash(docker build:*), Bash(docker run:*), Bash(git rev-parse:*), Bash(git worktree list:*), Bash(command -v docker:*)
 ---
 
 Run the session log extractor and report what it wrote. It runs in Docker (see [scripts/Dockerfile](../../scripts/Dockerfile)) so no local Python install is required — only Docker itself.
 
-!`r=$(git rev-parse --show-toplevel 2>/dev/null || pwd); if [ ! -f "$r/scripts/extract_claude_session_log.py" ]; then echo "no scripts/extract_claude_session_log.py under $r — not inside a checkout of this repo (or a candidate clone of it); nothing to extract"; elif ! command -v docker >/dev/null 2>&1; then echo "docker is required to run the extractor — install Docker (or start Docker Desktop) and try again"; else image="rfp-monster-session-log-extractor:local"; docker build -q -f "$r/scripts/Dockerfile" -t "$image" "$r" >/dev/null; mounts=(-v "$r:$r"); [ -d "$HOME/.claude/projects" ] && mounts+=(-v "$HOME/.claude/projects:$HOME/.claude/projects:ro"); docker run --rm -e HOME="$HOME" -u "$(id -u):$(id -g)" -w "$r" "${mounts[@]}" "$image" "$r/scripts/extract_claude_session_log.py" $ARGUMENTS; fi`
+!`r=$(git rev-parse --show-toplevel 2>/dev/null || pwd); if [ ! -f "$r/scripts/extract_claude_session_log.py" ]; then echo "no scripts/extract_claude_session_log.py under $r — not inside a checkout of this repo (or a candidate clone of it); nothing to extract"; elif ! command -v docker >/dev/null 2>&1; then echo "docker is required to run the extractor — install Docker (or start Docker Desktop) and try again"; else image="rfp-monster-session-log-extractor:local"; docker build -q -f "$r/scripts/Dockerfile" -t "$image" "$r" >/dev/null; mounts=(-v "$r:$r"); common_git=$(git -C "$r" rev-parse --path-format=absolute --git-common-dir); mounts+=(-v "$common_git:$common_git:ro"); git_safe_count=1; git_env=(-e GIT_CONFIG_KEY_0=safe.directory -e "GIT_CONFIG_VALUE_0=$r"); while IFS= read -r -d '' field; do case "$field" in 'worktree '*) worktree_path=${field#worktree }; if [ -d "$worktree_path" ] && [ "$worktree_path" != "$r" ]; then mounts+=(-v "$worktree_path:$worktree_path:ro"); git_env+=(-e "GIT_CONFIG_KEY_$git_safe_count=safe.directory" -e "GIT_CONFIG_VALUE_$git_safe_count=$worktree_path"); git_safe_count=$((git_safe_count + 1)); fi ;; esac; done < <(git -C "$r" worktree list --porcelain -z); git_env+=(-e "GIT_CONFIG_COUNT=$git_safe_count"); [ -d "$HOME/.claude/projects" ] && mounts+=(-v "$HOME/.claude/projects:$HOME/.claude/projects:ro"); docker run --rm -e HOME="$HOME" -u "$(id -u):$(id -g)" -w "$r" "${git_env[@]}" "${mounts[@]}" "$image" "$r/scripts/extract_claude_session_log.py" $ARGUMENTS; fi`
 
 **Scoping.** Run from inside this repo's checkout, a candidate clone of it, or a subdirectory of either, the extractor resolves your session from your working directory alone — no clone-naming convention required. Run from anywhere else (no `scripts/extract_claude_session_log.py` at the resolved git root), it does *not* fall back to whatever session is newest anywhere on disk — it prints the message above and does nothing. If that happens, stop and say so; do not re-run without the scoping.
 
-The container gets read-only access to `~/.claude/projects` plus read-write access to this checkout. Output destinations must stay inside this shared checkout; destinations outside the checkout are unsupported. For batch export, use `--output ./exports`. For a single session, use a file destination such as `--output ./exports/session.json`, or stdout with `--output -`.
+The container gets read-only access to `~/.claude/projects` plus read-only access to registered linked worktrees and the shared Git directory, and read-write access to this checkout. Output destinations must stay inside this shared checkout; destinations outside the checkout are unsupported. For batch export, use `--output ./exports`. For a single session, use a file destination such as `--output ./exports/session.json`, or stdout with `--output -`.
 
 **What the container runs.** The image supplies Python and the installed shared exporter package. The
 script it runs is this checkout's own `scripts/extract_claude_session_log.py`
@@ -19,14 +19,16 @@ root from its own path, so it writes JSON there without being passed
 `--output`. Passing `--output "$r"` would break single-session runs, because in
 that mode `--output` names the JSON file, not a directory.
 
-Defaults to `--all`, writing one JSON file per session into the repo root:
+Defaults to `--all`, selecting sessions from the main checkout and registered
+linked worktrees, including subdirectories, and writing one JSON file per session
+into the repo root:
 `claude_session_log_raw_<session-id>.json`. Each envelope carries the conversation,
 full tool inputs, textual tool results capped at 8,192 bytes by default with their original size recorded,
 and pasted images inlined as base64. Markdown inside recorded messages is preserved.
 
 Pass-through args (optional): `--output ./exports` for a batch directory inside the checkout, `--strict`
-to only export sessions started in this exact directory (no parent-dir walk, no
-newest-anywhere fallback), or a single session id / `--output -` to extract just
+to only export sessions started in this exact directory (excluding subdirectories
+and other worktrees), or a single session id / `--output -` to extract just
 one. For a single session, `--output PATH` names the JSON file and `--output -`
 writes JSON to stdout; diagnostics go to stderr. `--tool-result-bytes N`
 changes the tool-result cap (negative for no cap). It replaces

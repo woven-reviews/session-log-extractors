@@ -110,6 +110,9 @@ def test_claude_checkout_defaults(subdirectory, selection, tmp_path):
     checkout = tmp_path / "checkout"
     scripts = checkout / "scripts"
     scripts.mkdir(parents=True)
+    subprocess.run(
+        ["git", "-C", str(checkout), "init"], check=True, capture_output=True
+    )
     wrapper = scripts / "extract_claude_session_log.py"
     shutil.copyfile(root / "scripts" / wrapper.name, wrapper)
     cwd = checkout / "nested" if subdirectory else checkout
@@ -118,7 +121,13 @@ def test_claude_checkout_defaults(subdirectory, selection, tmp_path):
     project = home / ".claude" / "projects" / encode_project_path(checkout)
     project.mkdir(parents=True)
     transcript = project / "session.jsonl"
-    shutil.copyfile(TRANSCRIPT, transcript)
+    records = []
+    for line in TRANSCRIPT.read_text().splitlines():
+        record = json.loads(line)
+        if "cwd" in record:
+            record["cwd"] = str(checkout)
+        records.append(json.dumps(record))
+    transcript.write_text("\n".join(records) + "\n")
     arguments = {
         "transcript": ["--transcript", str(transcript)],
         "all": ["--all", "--project-dir", str(project)],
@@ -165,6 +174,9 @@ def test_copilot_checkout_defaults(subdirectory, selection, tmp_path):
     checkout = tmp_path / "checkout"
     scripts = checkout / "scripts"
     scripts.mkdir(parents=True)
+    subprocess.run(
+        ["git", "-C", str(checkout), "init"], check=True, capture_output=True
+    )
     wrapper = scripts / "extract_copilot_session_log.py"
     shutil.copyfile(root / "scripts" / wrapper.name, wrapper)
     cwd = checkout / "nested" if subdirectory else checkout
@@ -255,6 +267,9 @@ def test_codex_checkout_paths(subdirectory, selection, destination, tmp_path):
     checkout = tmp_path / "checkout"
     scripts = checkout / "scripts"
     scripts.mkdir(parents=True)
+    subprocess.run(
+        ["git", "-C", str(checkout), "init"], check=True, capture_output=True
+    )
     wrapper = scripts / "extract_codex_session_log.py"
     shutil.copyfile(root / "scripts" / wrapper.name, wrapper)
     cwd = checkout / "nested" if subdirectory else checkout

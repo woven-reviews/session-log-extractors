@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from codex_fixture import TRANSCRIPT
+from repository_fixture import init_checkout
 
 from session_log_extractors import codex_protocol, codex_sources
 from session_log_extractors import extract_codex_session_log as codex
@@ -154,6 +155,7 @@ def test_partial_input_preserves_content_and_diagnoses_skips(
 def test_batch_attempts_every_session_and_keeps_success(
     failure, tmp_path, monkeypatch, capsys
 ):
+    init_checkout(tmp_path)
     monkeypatch.chdir(tmp_path)
     for name in ["first", "second", "third"]:
         _empty_transcript(tmp_path / f"{name}.jsonl", tmp_path, name)
@@ -181,7 +183,7 @@ def test_batch_attempts_every_session_and_keeps_success(
     ]
     if failure in ("read", "invalid"):
         monkeypatch.setattr(
-            codex_sources, "matching_transcripts", lambda *args, **kwargs: selected
+            codex_sources, "repository_transcripts", lambda *args, **kwargs: selected
         )
     monkeypatch.setattr(Path, "open", open_source)
 
@@ -202,6 +204,7 @@ def test_batch_attempts_every_session_and_keeps_success(
 
 
 def test_batch_output_directory_failure_returns_error(tmp_path, monkeypatch, capsys):
+    init_checkout(tmp_path)
     monkeypatch.chdir(tmp_path)
     _empty_transcript(tmp_path / "session.jsonl", tmp_path, "session")
     output = tmp_path / "blocked"
@@ -255,6 +258,9 @@ def test_script_exit_status_and_stdout_are_production_outcomes(
         check=False,
     )
 
+    if selection == "newest":
+        expected_status = 1
+        assert "directory evidence" in result.stderr
     assert result.returncode == expected_status
     if expected_status:
         assert result.stdout == ""

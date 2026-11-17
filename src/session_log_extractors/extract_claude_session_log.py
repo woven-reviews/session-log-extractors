@@ -68,10 +68,14 @@ from session_log_extractors.claude_sources import (
     ClaudeSource,
     read_source,
     read_subagent_sources,
+    repository_transcripts,
     select_project_session,
 )
 from session_log_extractors.claude_sources import (
     load_entries as load_entries,
+)
+from session_log_extractors.claude_sources import (
+    session_cwd as session_cwd,
 )
 from session_log_extractors.extractor_contract import Extractor
 from session_log_extractors.json_types import JsonValue, string_value
@@ -95,6 +99,12 @@ from session_log_extractors.session_model import (
     SubagentSummary,
     ToolCall,
     ToolResult,
+)
+from session_log_extractors.session_output import (
+    unique_identifier as _unique_identifier,
+)
+from session_log_extractors.session_selection import (
+    RepositoryBoundary,
 )
 from session_log_extractors.session_selection import (
     newest as newest,
@@ -210,21 +220,10 @@ def select_transcript(
     project_dir: Optional[str],
     strict: bool = False,
 ) -> Path:
-    """Pick the transcript file to parse, following the documented precedence.
+    """Prefer an explicit path/ID, otherwise select the newest repository session.
 
-    Precedence:
-      1. ``--transcript PATH`` (explicit file).
-      2. positional ``selector`` that is itself a path to an existing file.
-      3. positional ``selector`` as a case-sensitive recorded ID: unique exact
-         match, otherwise unique literal prefix in the resolved project dir.
-      4. newest ``.jsonl`` in the resolved project dir.
-      5. newest ``.jsonl`` across every project dir (global fallback).
-
-    In ``strict`` mode the project dir must match the cwd exactly (no
-    parent-walk) and the global fallback (step 5) is disabled, so the script
-    only ever reads sessions started in the current directory.
-
-    Raises ``FileNotFoundError`` with a clear message when nothing resolves.
+    Explicit selection retains its project-store lookup and bypasses Git. Strict
+    selection uses the exact encoded invocation store. There is no global fallback.
     """
     cwd = Path.cwd()
 
@@ -244,27 +243,37 @@ def select_transcript(
         where = f" in {proj}" if proj is not None else ""
         raise FileNotFoundError(f"no transcript matching {selector!r}{where}")
 
-    # Newest in the resolved project dir.
-    if proj is not None:
-        picked = newest(_jsonl_files(proj))
+    if strict:
+        picked = newest(_jsonl_files(proj)) if proj is not None else None
         if picked is not None:
             return picked
-
-    # Strict mode: never reach past the cwd's own project dir.
-    if strict:
         raise FileNotFoundError(
             f"no Claude Code transcript for {cwd} under {PROJECTS_ROOT} "
-            "(--strict: parent-walk and global fallback disabled)"
+            "(--strict: exact project directory only)"
         )
-
-    picked = _newest_global_transcript()
+    picked = newest(_repository_transcripts(project_dir, cwd))
     if picked is not None:
         return picked
+    raise FileNotFoundError(f"no Claude transcripts in Git repository from {cwd}")
 
-    raise FileNotFoundError(
-        "could not locate any Claude Code transcript "
-        f"(looked under {PROJECTS_ROOT}); pass --transcript PATH"
-    )
+
+def _repository_transcripts(project_dir: Optional[str], cwd: Path) -> list[Path]:
+    """Check recorded directories, optionally within one named project store."""
+    store = Path(project_dir).expanduser() if project_dir else None
+    boundary = RepositoryBoundary.discover(cwd)
+    return repository_transcripts(PROJECTS_ROOT, boundary, project_dir=store)
+
+
+def _strict_transcripts(project_dir: Optional[str], cwd: Path) -> list[Path]:
+    """List the named store, or the exact encoded invocation store."""
+    project = resolve_project_dir(project_dir, cwd, strict=True)
+    if project is None or not project.is_dir():
+        where = project if project is not None else PROJECTS_ROOT
+        raise FileNotFoundError(f"no project transcript dir found: {where}")
+    files = _jsonl_files(project)
+    if not files:
+        raise FileNotFoundError(f"no .jsonl transcripts in {project}")
+    return files
 
 
 def _explicit_transcript(transcript: str) -> Path:
@@ -280,14 +289,6 @@ def _selector_path(selector: Optional[str]) -> Optional[Path]:
         if path.is_file():
             return path
     return None
-
-
-def _newest_global_transcript() -> Optional[Path]:
-    all_files: List[Path] = []
-    if PROJECTS_ROOT.is_dir():
-        for directory in PROJECTS_ROOT.iterdir():
-            all_files.extend(_jsonl_files(directory))
-    return newest(all_files)
 
 
 # --------------------------------------------------------------------------- #
@@ -763,15 +764,6 @@ def session_models(entries: List[Dict[str, JsonValue]]) -> List[str]:
     return models
 
 
-def session_cwd(entries: List[Dict[str, JsonValue]]) -> Optional[str]:
-    """The working directory the session ran in, from the first entry carrying it."""
-    for entry in entries:
-        cwd = entry.get("cwd")
-        if isinstance(cwd, str) and cwd:
-            return cwd
-    return None
-
-
 def build_raw_envelope(
     transcript: Path,
     entries: List[Dict[str, JsonValue]],
@@ -922,11 +914,10 @@ def build_arg_parser(project_root: Optional[Path] = None) -> argparse.ArgumentPa
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            "Selection precedence:\n"
-            "  --transcript PATH  >  positional file path  >  positional session id\n"
-            "  >  newest .jsonl in the resolved project dir  >  newest .jsonl anywhere.\n\n"
-            "The project dir is resolved from the current working directory by\n"
-            "encoding its path (non-alphanumerics -> '-') under ~/.claude/projects/."
+            "Selection precedence: --transcript PATH > positional file path > recorded ID\n"
+            "> newest eligible repository session. No global fallback.\n"
+            "Without an explicit selector, export all repository sessions, including\n"
+            "registered worktrees and subdirectories. --strict uses the exact cwd store."
         ),
     )
     p.add_argument(
@@ -943,23 +934,24 @@ def build_arg_parser(project_root: Optional[Path] = None) -> argparse.ArgumentPa
         "--project-dir",
         metavar="PATH",
         help=(
-            "override the encoded project dir under ~/.claude/projects/ "
-            "(default: resolved from the current working directory)"
+            "limit discovery to this project store; default automatic selection "
+            "checks recorded directories across all ~/.claude/projects stores"
         ),
     )
     p.add_argument(
         "--strict",
         action="store_true",
         help=(
-            "only read sessions started in the current directory: disable the "
-            "parent-dir walk and the newest-anywhere global fallback"
+            "only read the exact invocation directory’s project store; "
+            "exclude subdirectories and other worktrees without Git discovery"
         ),
     )
     p.add_argument(
         "--all",
         action="store_true",
         help=(
-            "extract every session in the resolved project dir, one file per "
+            "extract every eligible repository session, including registered "
+            "worktrees and subdirectories, one file per "
             "session named claude_session_log_raw_<session-id>.json "
             "(in this mode --output is "
             "treated as the output directory; positional selector is ignored). "
@@ -1010,31 +1002,21 @@ def extract_transcript(
 
 
 def _extract_all(
-    project_dir: Optional[Path],
+    files: List[Path],
     output: Optional[str],
-    strict: bool = False,
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
     *,
     project_root: Optional[Path] = None,
 ) -> int:
-    """Extract every transcript in the project dir, one JSON file each.
-
-    The session id (the ``.jsonl`` stem) is the per-file identifier. Files are
-    written to ``output`` (treated as a directory) or the project root.
-    """
+    """Write every selected Claude source, one JSON file each."""
     cwd = Path.cwd()
     project_root = cwd if project_root is None else project_root
-    proj = project_dir or resolve_project_dir(None, cwd, strict=strict)
-    if proj is None or not proj.is_dir():
-        where = (
-            proj if proj is not None else f"(none matched cwd under {PROJECTS_ROOT})"
-        )
-        print(f"error: no project transcript dir found: {where}", file=sys.stderr)
-        return 1
-
-    files = sorted(_jsonl_files(proj), key=lambda p: p.stat().st_mtime)
+    files = sorted(files, key=lambda path: path.stat().st_mtime)
     if not files:
-        print(f"error: no .jsonl transcripts in {proj}", file=sys.stderr)
+        print(
+            f"error: no Claude transcripts for {cwd} under {PROJECTS_ROOT}",
+            file=sys.stderr,
+        )
         return 1
 
     out_dir = Path(output).expanduser() if output else project_root
@@ -1046,9 +1028,10 @@ def _extract_all(
             file=sys.stderr,
         )
         return 1
-    print(f"extracting {len(files)} session(s) from {proj}", file=sys.stderr)
+    print(f"extracting {len(files)} session(s) for {cwd}", file=sys.stderr)
 
     written = 0
+    used_ids: set[str] = set()
     for transcript in files:
         session_id = transcript.stem
         try:
@@ -1056,7 +1039,8 @@ def _extract_all(
         except (OSError, ValueError) as exc:
             print(f"  skip {session_id} ({transcript}): {exc}", file=sys.stderr)
             continue
-        out_path = out_dir / raw_filename("claude", session_id)
+        ident = _unique_identifier(session_id, used_ids)
+        out_path = out_dir / raw_filename("claude", ident)
         try:
             write_envelope(out_path, envelope, TOOL_RESULT_BYTES_FLAG)
         except OSError as exc:
@@ -1075,17 +1059,23 @@ def main(
     project_root = Path.cwd() if project_root is None else project_root
     args = build_arg_parser(project_root).parse_args(argv)
 
-    # all-sessions is the default; a session id, --transcript or stdout opts out
-    if args.all or not (args.session or args.transcript or args.output == "-"):
-        proj = Path(args.project_dir).expanduser() if args.project_dir else None
-        out = None if args.output == "-" else args.output
-        return _extract_all(
-            proj,
-            out,
-            strict=args.strict,
-            tool_result_max_bytes=args.tool_result_bytes,
-            project_root=project_root,
-        )
+    try:
+        # all-sessions is the default; a session id, --transcript or stdout opts out
+        if args.all or not (args.session or args.transcript or args.output == "-"):
+            out = None if args.output == "-" else args.output
+            if args.strict:
+                files = _strict_transcripts(args.project_dir, Path.cwd())
+            else:
+                files = _repository_transcripts(args.project_dir, Path.cwd())
+            return _extract_all(
+                files,
+                out,
+                tool_result_max_bytes=args.tool_result_bytes,
+                project_root=project_root,
+            )
+    except OSError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
     try:
         transcript = select_transcript(

@@ -24,6 +24,7 @@ from codex_fixture import (
     question_interaction,
     response_items,
 )
+from repository_fixture import copy_native_session, init_checkout, session_store_root
 
 from session_log_extractors import codex_protocol, session_log_envelope
 from session_log_extractors import extract_codex_session_log as mod
@@ -458,7 +459,7 @@ def test_codex_all_extracts_matching_sessions_to_unique_files():
         other = tmp / "other"
         sessions = tmp / "sessions" / "2026" / "01" / "01"
         out = tmp / "out"
-        project.mkdir()
+        init_checkout(project)
         other.mkdir()
 
         _write_jsonl(
@@ -510,7 +511,7 @@ def test_codex_no_selector_extracts_all_by_default():
         project = tmp / "project"
         sessions = tmp / "sessions" / "2026" / "01" / "01"
         out = tmp / "out"
-        project.mkdir()
+        init_checkout(project)
 
         _write_jsonl(
             sessions / "rollout-one.jsonl",
@@ -773,55 +774,24 @@ def test_select_transcript_selector_prefix_single_and_ambiguous_and_missing():
             select_transcript("nope", None, str(sessions))
 
 
-def test_select_transcript_falls_back_to_cwd_match_then_newest_anywhere():
-    with tempfile.TemporaryDirectory() as tmp_name:
-        tmp = Path(tmp_name)
-        project = tmp / "project"
-        other = tmp / "other"
-        sessions = tmp / "sessions"
-        project.mkdir()
-        other.mkdir()
-        sessions.mkdir()
+def test_select_transcript_never_falls_back_to_unrelated_sessions(
+    tmp_path, monkeypatch
+):
+    init_checkout(tmp_path / "project")
+    monkeypatch.chdir(tmp_path / "project")
+    included = copy_native_session(
+        tmp_path / "home", "codex", "included", str(Path.cwd())
+    )
+    copy_native_session(
+        tmp_path / "home", "codex", "excluded", str(tmp_path / "other"), 2
+    )
+    root = session_store_root(tmp_path / "home", "codex")
 
-        in_cwd = sessions / "rollout-in.jsonl"
-        in_cwd.write_text(
-            json.dumps(
-                {"type": "session_meta", "payload": {"id": "in", "cwd": str(project)}}
-            )
-        )
-        elsewhere = sessions / "rollout-else.jsonl"
-        elsewhere.write_text(
-            json.dumps(
-                {"type": "session_meta", "payload": {"id": "else", "cwd": str(other)}}
-            )
-        )
-
-        old_cwd = os.getcwd()
-        try:
-            os.chdir(project)
-            actual_select_transcript = select_transcript(None, None, str(sessions))
-            assert actual_select_transcript == in_cwd
-        finally:
-            os.chdir(old_cwd)
-
-        # No cwd-match: non-strict falls back to newest anywhere.
-        only_other_dir = tmp / "only_other_sessions"
-        only_other_dir.mkdir()
-        only_elsewhere = only_other_dir / "rollout-else.jsonl"
-        only_elsewhere.write_text(
-            json.dumps(
-                {"type": "session_meta", "payload": {"id": "else", "cwd": str(other)}}
-            )
-        )
-        old_cwd = os.getcwd()
-        try:
-            os.chdir(project)
-            actual_select_transcript = select_transcript(
-                None, None, str(only_other_dir)
-            )
-            assert actual_select_transcript == only_elsewhere
-        finally:
-            os.chdir(old_cwd)
+    selected = select_transcript(None, None, str(root))
+    assert selected == included
+    included.unlink()
+    with pytest.raises(FileNotFoundError, match="no Codex transcript"):
+        select_transcript(None, None, str(root))
 
 
 def test_select_transcript_strict_raises_when_no_exact_match():
@@ -1426,7 +1396,7 @@ def test_extract_all_reports_error_when_nothing_matches():
         tmp = Path(tmp_name)
         sessions = tmp / "sessions"
         sessions.mkdir()
-        rc = _extract_all(str(sessions), str(tmp / "out"))
+        rc = _extract_all([], str(tmp / "out"))
         assert rc == 1
 
 
@@ -1457,7 +1427,9 @@ def test_extract_all_retains_success_but_reports_partial_failure(monkeypatch):
 
         monkeypatch.setattr(mod, "interpret_source", flaky_interpret_source)
         monkeypatch.chdir(project)
-        rc = mod._extract_all(str(sessions), str(out))
+        rc = mod._extract_all(
+            [sessions / "rollout-good.jsonl", sessions / "rollout-bad.jsonl"], str(out)
+        )
 
         assert rc == 1
         output_names = []
@@ -1627,7 +1599,7 @@ def test_extract_all_write_failure_is_skipped():
         old_cwd = os.getcwd()
         try:
             os.chdir(project)
-            rc = _extract_all(str(sessions), str(out))
+            rc = _extract_all([sessions / "rollout-one.jsonl"], str(out))
         finally:
             os.chdir(old_cwd)
 
@@ -1643,6 +1615,7 @@ def test_main_write_failure_for_explicit_output_path(tmp_path):
 
 @pytest.mark.parametrize("mode", ["stdout", "file", "default", "batch"])
 def test_json_entrypoints_bypass_presentation(mode, tmp_path, monkeypatch, capsys):
+    init_checkout(tmp_path)
     transcript = tmp_path / "session.jsonl"
     entries = load_entries(TRANSCRIPT)
     entries[0]["payload"].update(id="s1", cwd=str(tmp_path))
@@ -1680,6 +1653,7 @@ def test_json_entrypoints_bypass_presentation(mode, tmp_path, monkeypatch, capsy
 def test_cli_preserves_nested_tools_and_result_cap(
     cap, batch, tmp_path, monkeypatch, capsys
 ):
+    init_checkout(tmp_path)
     monkeypatch.chdir(tmp_path)
     entries = _session_entries("s1", tmp_path, "é **content**")
     tool_input = {
@@ -1768,6 +1742,7 @@ def test_cli_warnings_stay_on_stderr(stdout, tmp_path, monkeypatch, capsys):
 
 
 def test_batch_duplicate_identifiers_preserve_both_json_files(tmp_path, monkeypatch):
+    init_checkout(tmp_path)
     monkeypatch.chdir(tmp_path)
     for name, text in [("a", "first"), ("b", "second")]:
         _write_jsonl(
@@ -1803,7 +1778,7 @@ def test_main_output_root_is_resolved_at_call_time(
 ):
     for name in ["first", "second"]:
         cwd = tmp_path / name
-        cwd.mkdir()
+        init_checkout(cwd)
         monkeypatch.chdir(cwd)
         transcript = cwd / "session.jsonl"
         _write_jsonl(transcript, _session_entries("s1", cwd, "hello"))
@@ -1823,6 +1798,7 @@ def test_main_output_root_is_resolved_at_call_time(
 
 @pytest.mark.parametrize("batch", [False, True])
 def test_codex_cli_uses_public_stages(batch, tmp_path, monkeypatch, capsys):
+    init_checkout(tmp_path)
     stages = []
 
     class RecordingExtractor:

@@ -12,6 +12,7 @@ from pathlib import Path
 
 import codex_fixture as fixture
 import pytest
+from repository_fixture import init_checkout
 
 from session_log_extractors import codex_sources as sources
 from session_log_extractors import extract_codex_session_log as codex
@@ -52,6 +53,7 @@ def _message(session, native):
 
 @pytest.fixture
 def rollouts(tmp_path, monkeypatch):
+    init_checkout(tmp_path)
     monkeypatch.chdir(tmp_path)
     root = tmp_path / "sessions"
     root.mkdir()
@@ -82,10 +84,10 @@ def test_bulk_exports_main_and_child_but_skips_newer_guardian(rollouts, bulk_fla
     assert sorted(ids) == ["child-recorded-id", "main-recorded-id"]
 
 
-@pytest.mark.parametrize("global_fallback", [False, True])
-def test_newest_skips_guardian_and_keeps_child(rollouts, global_fallback, monkeypatch):
+@pytest.mark.parametrize("from_child", [False, True])
+def test_newest_skips_guardian_and_keeps_child(rollouts, from_child, monkeypatch):
     root, paths = rollouts
-    if global_fallback:
+    if from_child:
         elsewhere = root.parent / "elsewhere"
         elsewhere.mkdir()
         monkeypatch.chdir(elsewhere)
@@ -98,7 +100,7 @@ def test_guardian_only_has_no_automatic_match(rollouts, strict):
     root, paths = rollouts
     paths[0].unlink()
     paths[1].unlink()
-    matching = sources.matching_transcripts(root, root.parent, strict=strict)
+    matching = sources.exact_cwd_transcripts(root, root.parent)
     assert matching == []
     with pytest.raises(FileNotFoundError):
         sources.select_transcript(None, None, str(root), strict=strict)
@@ -183,7 +185,7 @@ def test_guardian_context_resolves_all_prompts_and_preserves_evidence(
             "authorship", []
         )
     monkeypatch.undo()
-    assert sources.matching_transcripts(tmp_path, Path(source.cwd)) == []
+    assert sources.exact_cwd_transcripts(tmp_path, Path(source.cwd)) == []
 
 
 @pytest.mark.parametrize("boundary", ["missing", None, False, -1, 0, "78"])
@@ -274,7 +276,7 @@ def test_independent_child_indicators_keep_injections_and_agent_deliveries(
     assert _sources(_message(session, delivery)) == ["other_agent"]
     for event in session["events"]:
         assert "candidate" not in _sources(event)
-    matching = sources.matching_transcripts(tmp_path, Path(source.cwd))
+    matching = sources.exact_cwd_transcripts(tmp_path, Path(source.cwd))
     assert matching == [path]
 
 

@@ -21,14 +21,14 @@ from session_log_extractors.codex_rollouts import (
 from session_log_extractors.json_types import JsonValue, parse_json
 from session_log_extractors.jsonl_sources import load_records
 from session_log_extractors.session_selection import (
-    cwd_matches as _cwd_matches,
+    RepositoryBoundary,
+    exact_cwd_match,
+    read_recorded_id,
+    select_recorded_id,
+    unique_paths,
 )
 from session_log_extractors.session_selection import (
     newest as newest,
-)
-from session_log_extractors.session_selection import (
-    read_recorded_id,
-    select_recorded_id,
 )
 
 CODEX_SESSIONS_ROOT = Path.home() / ".codex" / "sessions"
@@ -129,16 +129,21 @@ def session_cwd_from_file(path: Path) -> Optional[str]:
     return None
 
 
-def matching_transcripts(root: Path, cwd: Path, strict: bool = False) -> List[Path]:
-    """Return every Codex transcript whose recorded cwd overlaps ``cwd``.
-
-    In ``strict`` mode the recorded cwd must equal ``cwd`` exactly (no
-    ancestor/descendant overlap).
-    """
+def exact_cwd_transcripts(root: Path, cwd: Path) -> List[Path]:
+    """Select native candidates recorded in exactly the invocation directory."""
     return [
-        p
-        for p in _automatic_transcripts(root)
-        if _cwd_matches(session_cwd_from_file(p), cwd, strict=strict)
+        path
+        for path in _automatic_transcripts(root)
+        if exact_cwd_match(session_cwd_from_file(path), cwd)
+    ]
+
+
+def repository_transcripts(root: Path, boundary: RepositoryBoundary) -> List[Path]:
+    """Filter native candidates through an established repository boundary."""
+    return [
+        path
+        for path in unique_paths(_automatic_transcripts(root))
+        if boundary.matches(session_cwd_from_file(path), path)
     ]
 
 
@@ -157,18 +162,10 @@ def select_transcript(
     sessions_root: Optional[str],
     strict: bool = False,
 ) -> Path:
-    """Pick a Codex transcript.
+    """Prefer an explicit path/ID, otherwise select the newest repository session.
 
-    Precedence:
-      1. --transcript PATH
-      2. positional selector that is an existing file
-      3. positional selector as case-sensitive recorded ID (unique exact, then prefix)
-      4. newest transcript whose recorded cwd overlaps the current cwd
-      5. newest transcript anywhere under ~/.codex/sessions
-
-    In ``strict`` mode step 4 requires an exact cwd match and step 5 (newest
-    anywhere) is disabled, so only sessions started in the current directory
-    are ever selected.
+    Explicit selection bypasses Git discovery. Strict selection instead requires
+    the exact invocation directory. Automatic selection never falls back globally.
     """
     if transcript:
         p = Path(transcript).expanduser()
@@ -185,30 +182,24 @@ def select_transcript(
     if selector:
         return _select_prefix(_jsonl_files(root), selector)
 
-    files = _automatic_transcripts(root)
-
     cwd = Path.cwd()
-    cwd_matches = [
-        p for p in files if _cwd_matches(session_cwd_from_file(p), cwd, strict=strict)
-    ]
-    picked = newest(cwd_matches)
-    if picked is not None:
-        return picked
+    picked = newest(scoped_transcripts(root, cwd, strict))
+    if picked is None:
+        raise no_scoped_transcripts(root, cwd, strict)
+    return picked
 
+
+def scoped_transcripts(root: Path, cwd: Path, strict: bool) -> List[Path]:
+    """Select the repository's sessions, or exact-cwd sessions with strict."""
     if strict:
-        raise FileNotFoundError(
-            f"no Codex transcript for {cwd} under {root} "
-            "(--strict: cwd-overlap and newest-anywhere fallback disabled)"
-        )
+        return exact_cwd_transcripts(root, cwd)
+    return repository_transcripts(root, RepositoryBoundary.discover(cwd))
 
-    picked = newest(files)
-    if picked is not None:
-        return picked
 
-    raise FileNotFoundError(
-        f"could not locate any Codex transcript (looked under {root}); "
-        "pass --transcript PATH"
-    )
+def no_scoped_transcripts(root: Path, cwd: Path, strict: bool) -> FileNotFoundError:
+    """Name the invocation directory, sessions root and scope that matched nothing."""
+    mode = " (--strict: exact cwd match only)" if strict else " in Git repository"
+    return FileNotFoundError(f"no Codex transcript for {cwd} under {root}{mode}")
 
 
 class _CodexSelectionIdentity:

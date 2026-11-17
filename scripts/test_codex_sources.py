@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from codex_fixture import ASSETS, TRANSCRIPT, image_message
+from repository_fixture import init_checkout
 
 from session_log_extractors import codex_protocol
 from session_log_extractors import codex_sources as sources
@@ -228,6 +229,8 @@ def test_reader_loads_native_path_images(record_type, tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("batch", [False, True])
 def test_cli_reuses_loaded_metadata_for_output_names(batch, tmp_path, monkeypatch):
+    init_checkout(tmp_path)
+    monkeypatch.chdir(tmp_path)
     path = tmp_path / "capture.jsonl"
     path.write_bytes(TRANSCRIPT.read_bytes())
     original = Path.open
@@ -240,7 +243,7 @@ def test_cli_reuses_loaded_metadata_for_output_names(batch, tmp_path, monkeypatc
 
     monkeypatch.setattr(Path, "open", tracked)
     if batch:
-        monkeypatch.setattr(sources, "matching_transcripts", lambda *a, **k: [path])
+        monkeypatch.setattr(sources, "repository_transcripts", lambda *a, **k: [path])
     args = (
         ["--all", "--sessions-root", str(tmp_path)]
         if batch

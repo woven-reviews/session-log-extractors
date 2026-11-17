@@ -3,13 +3,159 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeVar
 
 from session_log_extractors.json_types import JsonValue, parse_json
 
 Source = TypeVar("Source")
+
+_GIT_WORKTREE_PREFIX = "worktree "
+_GIT_BARE_FIELD = "bare"
+_GIT_PRUNABLE_FIELD = "prunable"
+_GIT_ENTRY = ".git"
+
+
+class RepositoryBoundaryError(FileNotFoundError):
+    """Git could not establish the repository that scopes automatic selection."""
+
+
+def _source_identity(path: Path) -> Path:
+    """Resolve aliases; an unresolvable link remains its own unreadable source."""
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError):
+        return path
+
+
+def unique_paths(paths: Iterable[Path]) -> list[Path]:
+    """Retain first discovery order while collapsing resolved source aliases."""
+    unique = []
+    seen = set()
+    for path in paths:
+        resolved = _source_identity(path)
+        if resolved not in seen:
+            seen.add(resolved)
+            unique.append(path)
+    return unique
+
+
+def _resolved_directory(recorded_cwd: str | None) -> Path | None:
+    if not recorded_cwd:
+        return None
+    try:
+        path = Path(recorded_cwd).expanduser()
+        return path.resolve() if path.is_absolute() else None
+    except (OSError, ValueError, RuntimeError):
+        return None
+
+
+def _git_output(cwd: Path, *args: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "--no-optional-locks", "-C", str(cwd), *args],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        detail = str(exc)
+        if isinstance(exc, subprocess.CalledProcessError) and isinstance(
+            exc.stderr, str
+        ):
+            detail = exc.stderr.strip() or detail
+        raise RepositoryBoundaryError(
+            f"cannot establish Git repository boundary from {cwd}: {detail}"
+        ) from exc
+    return result.stdout
+
+
+def _git_common_directory(cwd: Path) -> Path:
+    recorded = _git_output(
+        cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"
+    )
+    return Path(recorded.removesuffix("\n")).resolve()
+
+
+def _available_worktree(root: Path, fields: list[str], common_directory: Path) -> bool:
+    unavailable = not root.is_dir() or any(
+        field.partition(" ")[0] == _GIT_PRUNABLE_FIELD for field in fields
+    )
+    if not unavailable:
+        try:
+            unavailable = _git_common_directory(root) != common_directory
+        except OSError:
+            unavailable = True
+    if unavailable:
+        print(f"warning: unavailable registered worktree: {root}", file=sys.stderr)
+    return not unavailable
+
+
+@dataclass(frozen=True)
+class RepositoryBoundary:
+    """Resolved main and registered, available linked checkout roots."""
+
+    roots: tuple[Path, ...]
+
+    @classmethod
+    def discover(cls, cwd: Path) -> RepositoryBoundary:
+        """Use Git's worktree registry, never checkout names or path overlap."""
+        _git_output(cwd, "rev-parse", "--show-toplevel")
+        common_directory = _git_common_directory(cwd)
+        listing = _git_output(cwd, "worktree", "list", "--porcelain", "-z")
+        roots = []
+        for block in listing.split("\0\0"):
+            fields = block.split("\0")
+            if not fields[0].startswith(_GIT_WORKTREE_PREFIX):
+                continue
+            root = Path(fields[0].removeprefix(_GIT_WORKTREE_PREFIX)).resolve()
+            if _GIT_BARE_FIELD in fields:
+                continue
+            if not _available_worktree(root, fields, common_directory):
+                continue
+            if root not in roots:
+                roots.append(root)
+        if not roots:
+            raise RepositoryBoundaryError(
+                f"no available Git repository checkouts from {cwd}"
+            )
+        return cls(tuple(roots))
+
+    def matches(self, recorded_cwd: str | None, source: Path | None = None) -> bool:
+        """Accept only session directories at or below a registered checkout."""
+        directory = _resolved_directory(recorded_cwd)
+        if directory is None:
+            if source is not None:
+                print(
+                    f"warning: skipping {source}: no usable recorded directory evidence; "
+                    "select the session explicitly if needed",
+                    file=sys.stderr,
+                )
+            return False
+        containing = [root for root in self.roots if directory.is_relative_to(root)]
+        if not containing:
+            return False
+        checkout = max(containing, key=lambda root: len(root.parts))
+        return not _inside_separate_repository(directory, checkout)
+
+
+def _inside_separate_repository(directory: Path, checkout: Path) -> bool:
+    """A Git entry between a session directory and its checkout marks another repo.
+
+    Registered nested worktrees are checkouts themselves, so the walk stops at
+    the deepest containing root. A removed directory leaves no such evidence.
+    """
+    current = directory
+    while current != checkout:
+        if os.path.lexists(current / _GIT_ENTRY):
+            return True
+        current = current.parent
+    return False
 
 
 def select_recorded_id(
@@ -66,28 +212,11 @@ def read_recorded_id(
     return session_id
 
 
-def paths_overlap(path: Path, other: Path) -> bool:
-    """Match either resolved ancestor direction, including equality."""
-    try:
-        path.resolve().relative_to(other.resolve())
-        return True
-    except ValueError:
-        pass
-    try:
-        other.resolve().relative_to(path.resolve())
-        return True
-    except ValueError:
-        return False
-
-
-def cwd_matches(recorded_cwd: str | None, cwd: Path, strict: bool = False) -> bool:
-    """Match a recorded working directory using the requested strictness."""
+def exact_cwd_match(recorded_cwd: str | None, cwd: Path) -> bool:
+    """Match a recorded working directory to the exact invocation directory."""
     if not recorded_cwd:
         return False
-    recorded_path = Path(recorded_cwd).expanduser()
-    if strict:
-        return recorded_path.resolve() == cwd.resolve()
-    return paths_overlap(recorded_path, cwd)
+    return Path(recorded_cwd).expanduser().resolve() == cwd.resolve()
 
 
 def newest(paths: Iterable[Path]) -> Path | None:

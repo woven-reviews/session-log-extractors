@@ -976,8 +976,8 @@ def build_arg_parser(project_root: Optional[Path] = None) -> argparse.ArgumentPa
             "With no session selector, all matching project sessions are exported.\n"
             "Single-session selection precedence:\n"
             "  --transcript PATH > positional file path > positional session id/prefix\n"
-            "  > newest transcript whose recorded cwd overlaps the current cwd\n"
-            "  > newest transcript anywhere under ~/.codex/sessions.\n"
+            "  > newest session in this repository, including registered worktrees\n"
+            "  and subdirectories. No global fallback.\n"
             "Use --output - without a selector to print only that newest session.\n"
             "Blank files and objects with no events export events: []; no format gate.\n"
             "Skipped malformed/non-object records are diagnosed on stderr.\n"
@@ -1005,16 +1005,16 @@ def build_arg_parser(project_root: Optional[Path] = None) -> argparse.ArgumentPa
         action="store_true",
         help=(
             "only read sessions started in the current directory: require an "
-            "exact recorded-cwd match (no overlap) and disable the "
-            "newest-anywhere global fallback"
+            "exact recorded-cwd match without Git discovery; "
+            "exclude subdirectories and other worktrees"
         ),
     )
     parser.add_argument(
         "--all",
         action="store_true",
         help=(
-            "extract every Codex session whose recorded cwd overlaps the current "
-            "working directory, one file per session named "
+            "extract every Codex session in this repository, including registered "
+            "worktrees and subdirectories, one file per session named "
             "codex_session_log_raw_<session-id>.json (in this mode --output is treated "
             "as the output directory; positional selector is ignored). This is "
             "the default when no session selector is supplied"
@@ -1078,29 +1078,32 @@ def _extract_source(source: CodexSource, tool_result_max_bytes: int) -> Envelope
     return export_session(session, tool_result_max_bytes)
 
 
-def _extract_all(
-    sessions_root: Optional[str],
-    output: Optional[str],
-    strict: bool = False,
-    tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
-    *,
-    project_root: Optional[Path] = None,
-) -> int:
-    """Extract every matching Codex transcript, one JSON file each."""
+def _batch_transcripts(sessions_root: str | None, strict: bool) -> list[Path]:
     root = (
         Path(sessions_root).expanduser()
         if sessions_root
         else codex_sources.CODEX_SESSIONS_ROOT
     )
     cwd = Path.cwd()
-    project_root = cwd if project_root is None else project_root
-    files = sorted(
-        codex_sources.matching_transcripts(root, cwd, strict=strict),
-        key=lambda p: (p.stat().st_mtime, str(p)),
-    )
+    files = codex_sources.scoped_transcripts(root, cwd, strict)
+    if not files:
+        raise codex_sources.no_scoped_transcripts(root, cwd, strict)
+    return files
+
+
+def _extract_all(
+    files: List[Path],
+    output: Optional[str],
+    tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
+    *,
+    project_root: Optional[Path] = None,
+) -> int:
+    """Write every selected Codex source, one JSON file each."""
+    project_root = Path.cwd() if project_root is None else project_root
+    files = sorted(files, key=lambda path: (path.stat().st_mtime, str(path)))
     if not files:
         print(
-            f"error: no Codex transcripts for {cwd} under {root}",
+            "error: no Codex transcripts selected",
             file=sys.stderr,
         )
         return 1
@@ -1114,7 +1117,7 @@ def _extract_all(
             file=sys.stderr,
         )
         return 1
-    print(f"extracting {len(files)} Codex session(s) from {root}", file=sys.stderr)
+    print(f"extracting {len(files)} Codex session(s)", file=sys.stderr)
 
     written = 0
     used_ids: set[str] = set()
@@ -1150,16 +1153,20 @@ def main(
     project_root = Path.cwd() if project_root is None else project_root
     args = build_arg_parser(project_root).parse_args(argv)
 
-    default_all = not args.session and not args.transcript and args.output != "-"
-    if args.all or default_all:
-        out = None if args.output == "-" else args.output
-        return _extract_all(
-            args.sessions_root,
-            out,
-            strict=args.strict,
-            tool_result_max_bytes=args.tool_result_bytes,
-            project_root=project_root,
-        )
+    try:
+        default_all = not args.session and not args.transcript and args.output != "-"
+        if args.all or default_all:
+            out = None if args.output == "-" else args.output
+            files = _batch_transcripts(args.sessions_root, args.strict)
+            return _extract_all(
+                files,
+                out,
+                tool_result_max_bytes=args.tool_result_bytes,
+                project_root=project_root,
+            )
+    except OSError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
     try:
         transcript = codex_sources.select_transcript(
