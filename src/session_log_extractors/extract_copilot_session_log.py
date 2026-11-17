@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """Extract GitHub Copilot CLI session transcripts into JSON conversation envelopes.
 
-GitHub Copilot CLI records sessions in a SQLite database at:
+GitHub Copilot CLI records sessions in per-session event logs at:
 
-    ~/.copilot/session-store.db
+    ~/.copilot/session-state/<id>/events.jsonl
 
-The database contains tables for sessions, turns, checkpoints, files, and refs.
-This script queries that database to extract session conversations organized by
-repository.
+Discovery and extraction use these event logs while sessions are running.
+No session-store.db file or indexed database row is required.
 
 This script is mechanical: no LLM, no summarization, and no network access.
 User prose is reproduced verbatim; assistant responses are reproduced verbatim.
@@ -18,11 +17,12 @@ are retained as session records (the tool asked about, the decision, and feedbac
 human typed when denying) -- unlike the Claude/Codex logs, where only denials are
 observable.
 
-Valid empty sessions export JSON with events: [] and exit 0. Missing events.jsonl
-supports database-only extraction. Existing blank sidecars are valid; existing
-unreadable or wholly invalid sidecars fail. Mixed malformed/non-object records
-are skipped with bounded source/line warnings on stderr. Database, selection,
-and output errors exit 1. Batch attempts every session and exits 1 if any fail.
+Sessions with lifecycle evidence and no conversation export events: [] and exit 0.
+Files without recorded identity, unreadable files and wholly invalid logs are
+diagnosed and excluded from discovery. Mixed malformed/non-object records
+are skipped with bounded source/line warnings on stderr. Selection and output
+errors exit 1. Batch attempts every discovered matching session and exits 1 if
+any selected source fails.
 Diagnostics stay on stderr, separate from JSON.
 
 Examples
@@ -47,9 +47,8 @@ import argparse
 import base64
 import json
 import re
-import sqlite3
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -74,7 +73,11 @@ from session_log_extractors.copilot_questions import (
     CopilotQuestionInterpretation,
     interpret_questions,
 )
-from session_log_extractors.copilot_sources import CopilotSource, ImageInputs
+from session_log_extractors.copilot_sources import (
+    CopilotSession,
+    CopilotSource,
+    ImageInputs,
+)
 from session_log_extractors.extractor_contract import Extractor
 from session_log_extractors.json_types import JsonValue
 from session_log_extractors.json_types import json_value as _json_value
@@ -100,8 +103,6 @@ from session_log_extractors.session_model import (
     AuthorshipRange,
     AuthorshipSource,
     Event,
-    FileActivity,
-    FileActivityProvenance,
     Image,
     Message,
     NativeIdentity,
@@ -117,7 +118,6 @@ from session_log_extractors.session_output import (
 )
 from session_log_extractors.tool_inputs.copilot import input_schema
 
-_BASH_INPUT = re.compile(r"<bash-input>(.*?)</bash-input>", re.DOTALL | re.IGNORECASE)
 _COPILOT_IMAGE_REF = re.compile(r"\[image:\s*([^\]]+?)\s*\]", re.IGNORECASE)
 _DATA_IMAGE_URL = re.compile(r"^data:(image/[A-Za-z0-9.+-]+);base64,(.*)$", re.DOTALL)
 _IMAGE_EXT = {
@@ -182,7 +182,7 @@ def _parse_ts(ts: Optional[str]) -> Optional[datetime]:
         parsed = datetime.fromisoformat(ts.replace("Z", "+00:00"))
     except (TypeError, ValueError):
         return None
-    # SQLite writes naive timestamps; treat them as UTC so they compare with aware ones.
+    # Treat naive timestamps as UTC so they compare with aware native records.
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
@@ -526,33 +526,18 @@ def _path_image_ext(ref: Dict[str, str]) -> str:
     return guessed.split("/")[-1] if "/" in guessed else "img"
 
 
-def _recorded_session_id(session: Dict[str, JsonValue]) -> str:
-    identifier = session.get("id")
-    if isinstance(identifier, str) and identifier:
-        return identifier
-    return output_identifier(session)
-
-
-def output_identifier(session: Dict[str, JsonValue]) -> str:
-    """Generate a short identifier for output filenames."""
-    session_id = session.get("id", "unknown")
-    if not isinstance(session_id, str):
-        raise TypeError("Copilot session id must be a string")
-    # Use first 8 chars of session id
-    short_id = session_id[:8] if len(session_id) >= 8 else session_id
-
-    date = date_only(_string(session.get("created_at")))
-    if date and date != "unknown":
-        return f"{date}_{short_id}"
-    return short_id
+def output_identifier(session: CopilotSession) -> str:
+    """Use the original start date and short recorded ID for output filenames."""
+    short_id = session.session_id[:8]
+    date = date_only(session.started_at)
+    return f"{date}_{short_id}" if date != "unknown" else short_id
 
 
 @dataclass(frozen=True)
 class CopilotRequest:
-    """Selected metadata and a connection whose lifetime belongs to the caller."""
+    """Native event path or an already discovered snapshot awaiting image loading."""
 
-    connection: sqlite3.Connection
-    session: dict[str, JsonValue]
+    source: Path | CopilotSource
 
 
 def _identity(
@@ -604,7 +589,7 @@ def _apply_identity(message: Message | ToolResult, identity: NativeIdentity) -> 
 
 
 def _image_refs(
-    text: str, attachments: list[dict[str, JsonValue]], *, explicit: bool = True
+    text: str, attachments: list[dict[str, JsonValue]]
 ) -> list[dict[str, str]]:
     """Resolve legacy tokens and explicit attachments within their recorded owner."""
     lookup = _attachment_lookup(attachments)
@@ -613,7 +598,7 @@ def _image_refs(
         for name in _COPILOT_IMAGE_REF.findall(text)
         if name.strip()
     ]
-    for attachment in attachments if explicit else []:
+    for attachment in attachments:
         ref = _attachment_ref(attachment)
         if ref is not None and not any(_same_image(ref, other) for other in refs):
             refs.append(ref)
@@ -648,18 +633,6 @@ def _same_image(left: dict[str, str], right: dict[str, str]) -> bool:
 
     a, b = source(left), source(right)
     return a == b if a and b else left["name"] == right["name"]
-
-
-def _user_message(
-    text: str, timestamp: str | None, refs: list[dict[str, str]], source: CopilotSource
-) -> UserMessage:
-    message = user_event(0, timestamp, text, envelope_images(refs, source.image_inputs))
-    commands = [
-        command.strip() for command in _BASH_INPUT.findall(text) if command.strip()
-    ]
-    if commands:
-        message["shell_command"] = "\n".join(commands)
-    return message
 
 
 def _new_call(name: str, arguments: JsonValue) -> ToolCall:
@@ -741,9 +714,7 @@ class _CopilotSessionBuilder:
                     )
 
         text = _string(data.get("content")) or ""
-        if attachments:
-            return _image_refs(text, attachments)
-        return _image_refs(text, self.source.attachments, explicit=False)
+        return _image_refs(text, attachments)
 
     def assistant_message(
         self, record: dict[str, JsonValue], data: dict[str, JsonValue]
@@ -978,93 +949,13 @@ class _CopilotSessionBuilder:
         return self.events
 
 
-def _database_events(
-    source: CopilotSource, *, include_files: bool = True
-) -> list[Message]:
-    events: list[Message] = []
-    for index, row in enumerate(source.turns):
-        timestamp = _string(row.get("timestamp"))
-        text = _string(row.get("user_message")) or ""
-        user = _user_message(
-            text,
-            timestamp,
-            _image_refs(text, source.attachments, explicit=False),
-            source,
-        )
-        if user["text"] or user.get("images"):
-            events.append(user)
-        turn_index = row.get("turn_index", index)
-        calls = []
-        if include_files:
-            calls = [
-                _file_call(file)
-                for file in source.files
-                if file.get("turn_index") == turn_index
-            ]
-        text = (_string(row.get("assistant_response")) or "").strip()
-        if text or calls:
-            events.append(assistant_event(0, timestamp, text, calls))
-    return events
-
-
-def _file_call(file: dict[str, JsonValue]) -> ToolCall:
-    """Translate the database's tool name and target without parsing display text."""
-    name = str(file.get("tool_name") or "tool")
-    target = file.get("file_path")
-    return _new_call(name, {"target": str(target)} if target else {})
-
-
-def _file_events(source: CopilotSource) -> list[Message]:
-    """Keep DB file fallback as explicit activity without guessing native owners."""
-    events: list[Message] = []
-    for file in source.files:
-        timestamp = _string(file.get("first_seen_at"))
-        events.append(assistant_event(0, timestamp, "", [_file_call(file)]))
-    return events
-
-
-def read_source(
-    conn: sqlite3.Connection, session: Dict[str, JsonValue]
-) -> CopilotSource:
-    """Snapshot native records and referenced external image bytes."""
-    source = copilot_sources.read_source(conn, session)
-    attachments = source.attachments + _attachments_from_events(source.state_records)
-    source.image_inputs = copilot_sources.load_image_inputs(attachments)
-    return source
-
-
-def _file_activity(source: CopilotSource) -> list[FileActivity]:
-    activity = []
-    for file in source.files:
-        index = file.get("turn_index")
-        activity.append(
-            FileActivity(
-                file_path=_string(file.get("file_path")) or "",
-                tool_name=_string(file.get("tool_name")) or "tool",
-                provenance=FileActivityProvenance(
-                    record_type="copilot.session_files",
-                    turn_index=index if isinstance(index, int) else None,
-                    first_seen_at=_string(file.get("first_seen_at")),
-                ),
-            )
-        )
-    return activity
-
-
-def _apply_database_fallbacks(
-    source: CopilotSource, builder: _CopilotSessionBuilder
-) -> list[Message]:
-    """Supplement partial native activity without guessing message ownership."""
-    events = builder.events
-    has_native_messages = any(
-        record.get("type") in (USER_MESSAGE, ASSISTANT_MESSAGE)
-        for record in source.state_records
+def read_source(request: Path | CopilotSource) -> CopilotSource:
+    """Snapshot native records and images, reusing discovery evidence when supplied."""
+    source = (
+        copilot_sources.read_source(request) if isinstance(request, Path) else request
     )
-    if not has_native_messages:
-        events = _database_events(source, include_files=not builder.calls) + events
-    if not builder.calls and events and any(event.get("id") for event in events):
-        events.extend(_file_events(source))
-    return events
+    attachments = _attachments_from_events(source.state_records)
+    return replace(source, image_inputs=copilot_sources.load_image_inputs(attachments))
 
 
 def _session_skills(source: CopilotSource, calls: list[ToolCall]) -> list[str]:
@@ -1087,13 +978,8 @@ def _include_unassociated_question_results(
         return events
     original_message_ids = {event["i"]: id(event) for event in events}
     ordered = []
-    saw_native_event = False
     for event in events:
-        position = builder.event_positions.get(id(event))
-        if position is None:
-            position = len(builder.source.state_records) if saw_native_event else -1
-        else:
-            saw_native_event = True
+        position = builder.event_positions[id(event)]
         ordered.append((position, event))
     for position, call in questions.unassociated_results.items():
         record = builder.source.state_records[position]
@@ -1143,7 +1029,7 @@ def interpret_source(source: CopilotSource) -> Session:
     """Interpret complete supplied activity without I/O or export limits."""
     builder = _CopilotSessionBuilder(source)
     builder.build()
-    conversation = _apply_database_fallbacks(source, builder)
+    conversation = builder.events
     events = [
         event
         for event in conversation
@@ -1166,33 +1052,30 @@ def interpret_source(source: CopilotSource) -> Session:
     }
     session = Session(
         harness="copilot",
-        session_id=_recorded_session_id(source.session),
+        session_id=source.session.session_id,
         events=events,
-        cwd=_string(source.session.get("cwd")),
-        started_at=_string(source.session.get("created_at")),
+        cwd=source.session.cwd,
+        started_at=source.session.started_at,
         models=source.models,
         skills_used=_session_skills(source, calls),
         subagent_count=len(subagent_summaries(source.state_records)),
         unmatched_tool_results=builder.unmatched,
-        file_activity=_file_activity(source),
         unsupported_tools=sorted(unsupported_tools),
         permission_decisions=_permissions_from_events(source.state_records),
         interaction_questions=questions.questions,
         question_responses=questions.responses,
     )
 
-    interpret_decisions(
-        session, source.state_records, _string(source.session.get("id"))
-    )
-    interpret_actions(session, source.state_records, source.files, builder.native_calls)
+    interpret_decisions(session, source.state_records, source.session.session_id)
+    interpret_actions(session, source.state_records, builder.native_calls)
     return session
 
 
 class CopilotExtractor(Extractor[CopilotRequest, CopilotSource]):
-    """Public Copilot stage adapter; connection ownership stays with orchestration."""
+    """Public Copilot reader/interpreter stages."""
 
     def read_source(self, request: CopilotRequest) -> CopilotSource:
-        return read_source(request.connection, request.session)
+        return read_source(request.source)
 
     def interpret_source(self, source: CopilotSource) -> Session:
         return interpret_source(source)
@@ -1211,13 +1094,12 @@ def build_raw_envelope(
 
 
 def extract_session(
-    conn: sqlite3.Connection,
-    session: Dict[str, JsonValue],
+    source: CopilotSource,
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
 ) -> Envelope:
-    """Run the public stages, preserving caller-owned connection lifetime."""
-    source = EXTRACTOR.read_source(CopilotRequest(conn, session))
-    return build_raw_envelope(source, tool_result_max_bytes)
+    """Run the public stages from the selected native source."""
+    loaded = EXTRACTOR.read_source(CopilotRequest(source))
+    return build_raw_envelope(loaded, tool_result_max_bytes)
 
 
 def build_arg_parser(project_root: Optional[Path] = None) -> argparse.ArgumentParser:
@@ -1234,10 +1116,10 @@ def build_arg_parser(project_root: Optional[Path] = None) -> argparse.ArgumentPa
         help="case-sensitive recorded ID (unique exact, then literal prefix; --output - selects newest)",
     )
     parser.add_argument(
-        "--db",
+        "--state-root",
         metavar="PATH",
         default=None,
-        help=f"path to Copilot session database (default: {copilot_sources.COPILOT_DB})",
+        help=f"Copilot session-state directory (default: {copilot_sources.COPILOT_STATE_ROOT})",
     )
     parser.add_argument(
         "--strict",
@@ -1283,7 +1165,7 @@ def build_arg_parser(project_root: Optional[Path] = None) -> argparse.ArgumentPa
 
 
 def _extract_all(
-    conn: sqlite3.Connection,
+    sessions: list[CopilotSource],
     output: Optional[str],
     strict: bool = False,
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
@@ -1292,24 +1174,30 @@ def _extract_all(
 ) -> int:
     """Extract every matching Copilot session, one JSON file each."""
     project_root = Path.cwd() if project_root is None else project_root
-    sessions = copilot_sources.matching_sessions(conn, Path.cwd(), strict=strict)
+    sessions = copilot_sources.matching_sessions(sessions, Path.cwd(), strict=strict)
     if not sessions:
         print(f"error: no Copilot sessions for {Path.cwd()}", file=sys.stderr)
         return 1
-    sessions.sort(key=lambda s: _string(s.get("created_at")) or "")
+    sessions.sort(
+        key=lambda source: (
+            source.session.started_at or "",
+            source.session.session_id,
+            str(source.session.path),
+        )
+    )
     out_dir = Path(output).expanduser() if output else project_root
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"extracting {len(sessions)} Copilot session(s)", file=sys.stderr)
     written = 0
     used_ids: set[str] = set()
-    for session in sessions:
-        ident = str(session.get("id"))
+    for source in sessions:
+        ident = source.session.session_id
         try:
-            ident = _unique_identifier(output_identifier(session), used_ids)
+            ident = _unique_identifier(output_identifier(source.session), used_ids)
             out_path = out_dir / raw_filename("copilot", ident)
-            envelope = extract_session(conn, session, tool_result_max_bytes)
+            envelope = extract_session(source, tool_result_max_bytes)
             write_envelope(out_path, envelope, TOOL_RESULT_BYTES_FLAG)
-        except (OSError, ValueError, TypeError, sqlite3.Error) as exc:
+        except (OSError, ValueError, TypeError) as exc:
             print(f"  skip {ident}: {exc}", file=sys.stderr)
             continue
         written += 1
@@ -1319,14 +1207,14 @@ def _extract_all(
 
 
 def _select_session(
-    conn: sqlite3.Connection, args: argparse.Namespace
-) -> Optional[Dict[str, JsonValue]]:
+    sessions: list[CopilotSource], args: argparse.Namespace
+) -> CopilotSource | None:
     if args.session:
-        session = copilot_sources.get_session_by_id(conn, args.session)
+        session = copilot_sources.get_session_by_id(sessions, args.session)
         if session is None:
             print(f"error: no session found matching {args.session!r}", file=sys.stderr)
         return session
-    session = copilot_sources.newest_session(conn, Path.cwd(), strict=args.strict)
+    session = copilot_sources.newest_session(sessions, Path.cwd(), strict=args.strict)
     if session is None:
         print(
             f"error: no Copilot sessions for {Path.cwd()}"
@@ -1337,14 +1225,14 @@ def _select_session(
 
 
 def _extract_selected(
-    conn: sqlite3.Connection, args: argparse.Namespace, project_root: Path
+    sessions: list[CopilotSource], args: argparse.Namespace, project_root: Path
 ) -> int:
-    session = _select_session(conn, args)
-    if session is None:
+    source = _select_session(sessions, args)
+    if source is None:
         return 1
-    print(f"using session: {session['id']}", file=sys.stderr)
+    print(f"using session: {source.session.session_id}", file=sys.stderr)
     try:
-        envelope = extract_session(conn, session, args.tool_result_bytes)
+        envelope = extract_session(source, args.tool_result_bytes)
         if args.output == "-":
             payload = serialize_envelope(envelope)
             warn_if_oversized("stdout", payload, TOOL_RESULT_BYTES_FLAG)
@@ -1353,11 +1241,12 @@ def _extract_selected(
             out_path = (
                 Path(args.output).expanduser()
                 if args.output
-                else project_root / raw_filename("copilot", output_identifier(session))
+                else project_root
+                / raw_filename("copilot", output_identifier(source.session))
             )
             write_envelope(out_path, envelope, TOOL_RESULT_BYTES_FLAG)
             print(f"wrote {out_path}", file=sys.stderr)
-    except (OSError, ValueError, TypeError, sqlite3.Error) as exc:
+    except (OSError, ValueError, TypeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     return 0
@@ -1368,25 +1257,23 @@ def main(
 ) -> int:
     project_root = Path.cwd() if project_root is None else project_root
     args = build_arg_parser(project_root).parse_args(argv)
-    db_path = Path(args.db).expanduser() if args.db else copilot_sources.COPILOT_DB
+    root = (
+        Path(args.state_root).expanduser()
+        if args.state_root
+        else copilot_sources.COPILOT_STATE_ROOT
+    )
     try:
-        conn = copilot_sources.get_db_connection(db_path)
-    except (OSError, sqlite3.Error) as exc:
-        print(f"error: {db_path}: {exc}", file=sys.stderr)
-        return 1
-    try:
+        sessions = copilot_sources.discover_sessions(root)
         if args.all or (not args.session and args.output != "-"):
             out = None if args.output == "-" else args.output
             return _extract_all(
-                conn,
+                sessions,
                 out,
                 args.strict,
                 args.tool_result_bytes,
                 project_root=project_root,
             )
-        return _extract_selected(conn, args, project_root)
-    except (OSError, ValueError, TypeError, sqlite3.Error) as exc:
-        print(f"error: {db_path}: {exc}", file=sys.stderr)
+        return _extract_selected(sessions, args, project_root)
+    except (OSError, ValueError, TypeError) as exc:
+        print(f"error: {root}: {exc}", file=sys.stderr)
         return 1
-    finally:
-        conn.close()
