@@ -12,6 +12,12 @@ from session_log_extractors.codex_protocol import (
     SESSION_META as SESSION_META,
 )
 from session_log_extractors.codex_protocol import TURN_CONTEXT
+from session_log_extractors.codex_rollouts import (
+    CodexRolloutContext,
+    CodexRolloutKind,
+    recorded_ordinal,
+    rollout_context,
+)
 from session_log_extractors.json_types import JsonValue, parse_json
 from session_log_extractors.jsonl_sources import load_records
 from session_log_extractors.session_selection import (
@@ -39,8 +45,15 @@ class CodexSource:
     session_id: Optional[str] = None
     cwd: Optional[str] = None
     image_inputs: ImageInputs = field(default_factory=dict)
-    parent_session_id: str | None = None
-    history_start_ordinal: int | None = None
+    rollout: CodexRolloutContext = field(default_factory=CodexRolloutContext)
+
+    @property
+    def parent_session_id(self) -> str | None:
+        return self.rollout.parent_session_id
+
+    @property
+    def history_start_ordinal(self) -> int | None:
+        return self.rollout.history_start_ordinal
 
     @property
     def identifier(self) -> str:
@@ -61,7 +74,7 @@ def _jsonl_files(root: Path) -> List[Path]:
     return [p for p in root.rglob("*.jsonl") if p.is_file()]
 
 
-def session_id_from_file(path: Path) -> Optional[str]:
+def _session_metadata_from_file(path: Path) -> Dict[str, JsonValue]:
     try:
         with path.open("r", encoding="utf-8", errors="replace") as fh:
             for _, line in zip(range(50), fh, strict=False):
@@ -72,11 +85,24 @@ def session_id_from_file(path: Path) -> Optional[str]:
                 if not isinstance(obj, dict):
                     continue
                 if obj.get("type") == SESSION_META:
-                    sid = _payload(obj).get("id")
-                    return sid if isinstance(sid, str) else None
+                    return _payload(obj)
     except OSError:
-        return None
-    return None
+        return {}
+    return {}
+
+
+def session_id_from_file(path: Path) -> Optional[str]:
+    sid = _session_metadata_from_file(path).get("id")
+    return sid if isinstance(sid, str) else None
+
+
+def _automatic_transcripts(root: Path) -> List[Path]:
+    return [
+        path
+        for path in _jsonl_files(root)
+        if rollout_context(_session_metadata_from_file(path)).kind
+        != CodexRolloutKind.GUARDIAN
+    ]
 
 
 def session_cwd_from_file(path: Path) -> Optional[str]:
@@ -111,7 +137,7 @@ def matching_transcripts(root: Path, cwd: Path, strict: bool = False) -> List[Pa
     """
     return [
         p
-        for p in _jsonl_files(root)
+        for p in _automatic_transcripts(root)
         if _cwd_matches(session_cwd_from_file(p), cwd, strict=strict)
     ]
 
@@ -156,10 +182,10 @@ def select_transcript(
             return p
 
     root = Path(sessions_root).expanduser() if sessions_root else CODEX_SESSIONS_ROOT
-    files = _jsonl_files(root)
-
     if selector:
-        return _select_prefix(files, selector)
+        return _select_prefix(_jsonl_files(root), selector)
+
+    files = _automatic_transcripts(root)
 
     cwd = Path.cwd()
     cwd_matches = [
@@ -200,11 +226,9 @@ class _CodexSelectionIdentity:
         session_id = payload.get("id")
         if not self._metadata_seen:
             self._metadata_seen = True
-            parent = payload.get("parent_thread_id")
-            boundary = payload.get("subagent_history_start_ordinal")
-            self._parent_id = parent if isinstance(parent, str) else None
-            if isinstance(boundary, int) and not isinstance(boundary, bool):
-                self._history_boundary = boundary
+            context = rollout_context(payload)
+            self._parent_id = context.parent_session_id
+            self._history_boundary = context.history_start_ordinal
         elif self._is_inherited_parent(entry, session_id):
             return None
         return session_id if isinstance(session_id, str) else None
@@ -212,13 +236,12 @@ class _CodexSelectionIdentity:
     def _is_inherited_parent(
         self, entry: Dict[str, JsonValue], session_id: JsonValue
     ) -> bool:
-        ordinal = entry.get("ordinal")
+        ordinal = recorded_ordinal(entry.get("ordinal"))
         return (
             self._parent_id is not None
             and session_id == self._parent_id
             and self._history_boundary is not None
-            and isinstance(ordinal, int)
-            and not isinstance(ordinal, bool)
+            and ordinal is not None
             and 0 < ordinal < self._history_boundary
         )
 
@@ -250,11 +273,7 @@ def read_source(path: Path) -> CodexSource:
         if line <= 50 and entry.get("type") == SESSION_META and not id_seen:
             sid = payload.get("id")
             source.session_id = sid if isinstance(sid, str) else None
-            parent = payload.get("parent_thread_id")
-            source.parent_session_id = parent if isinstance(parent, str) else None
-            boundary = payload.get("subagent_history_start_ordinal")
-            if isinstance(boundary, int) and not isinstance(boundary, bool):
-                source.history_start_ordinal = boundary
+            source.rollout = rollout_context(payload)
             id_seen = True
         if line <= 80 and entry.get("type") in (SESSION_META, TURN_CONTEXT):
             cwd = payload.get("cwd")

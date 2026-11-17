@@ -1,6 +1,7 @@
 """Project recorded Codex content provenance onto unchanged message text."""
 
 import re
+from dataclasses import dataclass
 
 from session_log_extractors.codex_protocol import (
     AGENT_MESSAGE,
@@ -16,6 +17,11 @@ from session_log_extractors.codex_protocol import (
     TURN_ABORTED_CONTENT,
     USER_SHELL_COMMAND,
     USER_TEXT,
+)
+from session_log_extractors.codex_rollouts import (
+    CodexRolloutContext,
+    CodexRolloutKind,
+    recorded_ordinal,
 )
 from session_log_extractors.json_types import JsonValue
 from session_log_extractors.session_model import (
@@ -42,6 +48,40 @@ _PROVENANCE_SOURCES: dict[str, AuthorshipSource] = {
     "agents_md": AuthorshipSource.HARNESS,
     "skills": AuthorshipSource.HARNESS,
 }
+
+
+@dataclass(frozen=True)
+class CodexAuthorshipContext:
+    """Rollout ownership and the current record's position in inherited history."""
+
+    rollout: CodexRolloutContext = CodexRolloutContext()
+    ordinal: JsonValue = None
+
+    def content_source(self, source: AuthorshipSource) -> AuthorshipSource:
+        if self.rollout.kind == CodexRolloutKind.GUARDIAN:
+            return AuthorshipSource.HARNESS
+        if (
+            self.rollout.kind != CodexRolloutKind.SUBAGENT
+            or source != AuthorshipSource.CANDIDATE
+        ):
+            return source
+        boundary = self.rollout.history_start_ordinal
+        ordinal = recorded_ordinal(self.ordinal)
+        if boundary is not None and ordinal is not None and ordinal >= boundary:
+            return AuthorshipSource.OTHER_AGENT
+        # Without both positions, this could still be a copied human prompt.
+        return AuthorshipSource.UNKNOWN
+
+    def markers(self) -> list[AuthorshipMarker]:
+        if self.rollout.kind == CodexRolloutKind.ORDINARY:
+            return []
+        markers = list(self.rollout.markers)
+        if self.ordinal is not None:
+            markers.append(AuthorshipMarker(field="ordinal", value=self.ordinal))
+        return markers
+
+
+_DEFAULT_CONTEXT = CodexAuthorshipContext()
 
 
 def _source_markers(record: dict[str, JsonValue], path: str) -> list[AuthorshipMarker]:
@@ -190,23 +230,35 @@ def _shell_activity_range(
     return span
 
 
-def message_authorship(
+def _message_markers(
     payload: dict[str, JsonValue],
-    text: str,
-    timestamp: str | None,
     record_type: str,
-) -> list[AuthorshipRange]:
-    """Retain block boundaries, exact markers, and recorded content timestamps."""
-    if not text:
-        return []
+    context: CodexAuthorshipContext,
+) -> list[AuthorshipMarker]:
+    """Keep message identity and rollout evidence together on each range."""
     base = [AuthorshipMarker(field="type", value=record_type)]
     base.extend(_source_markers(payload, "payload"))
+    base.extend(context.markers())
     if payload.get("type") == AGENT_MESSAGE:
         for key in ("author", "recipient"):
             if key in payload:
                 base.append(
                     AuthorshipMarker(field=f"payload.{key}", value=payload[key])
                 )
+    return base
+
+
+def message_authorship(
+    payload: dict[str, JsonValue],
+    text: str,
+    timestamp: str | None,
+    record_type: str,
+    context: CodexAuthorshipContext = _DEFAULT_CONTEXT,
+) -> list[AuthorshipRange]:
+    """Retain block boundaries, exact markers, and recorded content timestamps."""
+    if not text:
+        return []
+    base = _message_markers(payload, record_type, context)
     content = payload.get("content")
     parts = _text_parts(content) if isinstance(content, list) else []
     if (
@@ -214,7 +266,15 @@ def message_authorship(
         or not parts
         or "\n".join(part for _, _, part in parts) != text
     ):
-        return [_authored_range(0, text, AuthorshipSource.UNKNOWN, base, timestamp)]
+        return [
+            _authored_range(
+                0,
+                text,
+                context.content_source(AuthorshipSource.UNKNOWN),
+                base,
+                timestamp,
+            )
+        ]
     metadata = _metadata(payload)
     ranges: list[AuthorshipRange] = []
     offset = 0
@@ -225,7 +285,9 @@ def message_authorship(
         if part:
             source = _block_source(payload, block, kind, provenance)
             span = _authored_range(offset, part, source, base + markers, timestamp)
-            ranges.append(_shell_activity_range(span, part, kind))
+            span = _shell_activity_range(span, part, kind)
+            span["source"] = context.content_source(span["source"])
+            ranges.append(span)
         # Existing text serialization joins blocks with newlines. Those inserted
         # separators stay uncovered (unknown), never attributed to a speaker.
         offset += len(part) + 1

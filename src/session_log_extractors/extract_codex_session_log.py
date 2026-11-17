@@ -70,7 +70,10 @@ from session_log_extractors.codex_actions import (
     populate_file_event,
     populate_subagent_identity,
 )
-from session_log_extractors.codex_authorship import message_authorship
+from session_log_extractors.codex_authorship import (
+    CodexAuthorshipContext,
+    message_authorship,
+)
 from session_log_extractors.codex_decisions import (
     populate_decision_facts,
 )
@@ -99,6 +102,7 @@ from session_log_extractors.codex_protocol import (
 from session_log_extractors.codex_questions import (
     _CodexQuestionInterpreter,
 )
+from session_log_extractors.codex_rollouts import recorded_ordinal
 from session_log_extractors.codex_sources import CodexSource, ImageInputs
 from session_log_extractors.extractor_contract import Extractor
 from session_log_extractors.json_types import (
@@ -546,17 +550,12 @@ def _user_message(
     timestamp: str | None,
     raw_text: str,
     images: list[Image],
-    record_type: str,
 ) -> UserMessage:
     """Normalize user content while retaining identity and command syntax."""
     kinds = _message_kinds(payload)
-    # Preserve original text before projecting native per-content authorship.
     message = user_event(0, timestamp, raw_text, images)
     _copy_identity(message, payload)
     _user_commands(message, raw_text)
-    message["authorship"] = message_authorship(
-        payload, raw_text, timestamp, record_type
-    )
     if kinds == [SELECTED_SKILL_INSTRUCTIONS]:
         invocation = _selected_skill(raw_text)
         if invocation is not None:
@@ -611,8 +610,8 @@ def _conversation_entries(source: CodexSource) -> list[dict[str, JsonValue]]:
         return source.entries
     entries = []
     for entry in source.entries:
-        ordinal = entry.get("ordinal")
-        if not isinstance(ordinal, int) or ordinal >= boundary:
+        ordinal = recorded_ordinal(entry.get("ordinal"))
+        if ordinal is None or ordinal >= boundary:
             entries.append(entry)
     return entries
 
@@ -622,6 +621,7 @@ class _CodexSessionBuilder:
 
     def __init__(self, source: CodexSource) -> None:
         self.source = source
+        self.authorship_context = CodexAuthorshipContext(source.rollout)
         self.session = Session(
             harness="codex",
             session_id=source.session_id or source.identifier,
@@ -671,7 +671,10 @@ class _CodexSessionBuilder:
         images = envelope_images(
             image_refs_from_user_message_payload(payload), self.source.image_inputs
         )
-        message = _user_message(payload, timestamp, raw_text, images, RESPONSE_ITEM)
+        message = _user_message(payload, timestamp, raw_text, images)
+        message["authorship"] = message_authorship(
+            payload, raw_text, timestamp, RESPONSE_ITEM, self.authorship_context
+        )
         self.flush_user()
         if message["text"] or images:
             self.pending_user = message
@@ -682,7 +685,10 @@ class _CodexSessionBuilder:
             image_refs_from_event(payload), self.source.image_inputs
         )
         raw_text = string_value(payload.get("message")) or ""
-        message = _user_message(payload, timestamp, raw_text, images, EVENT_MSG)
+        message = _user_message(payload, timestamp, raw_text, images)
+        message["authorship"] = message_authorship(
+            payload, raw_text, timestamp, EVENT_MSG, self.authorship_context
+        )
         self.merge_pending_user(message)
         if message["text"] or message.get("images") or message.get("command"):
             self.append_user(message)
@@ -723,7 +729,7 @@ class _CodexSessionBuilder:
         message = assistant_event(0, timestamp, text)
         _copy_identity(message, payload)
         message["authorship"] = message_authorship(
-            payload, text, timestamp, RESPONSE_ITEM
+            payload, text, timestamp, RESPONSE_ITEM, self.authorship_context
         )
         self.append(message)
 
@@ -807,6 +813,9 @@ class _CodexSessionBuilder:
         self.file_event(payload, timestamp)
 
     def entry(self, entry: dict[str, JsonValue]) -> None:
+        self.authorship_context = CodexAuthorshipContext(
+            self.source.rollout, entry.get("ordinal")
+        )
         payload = entry.get("payload")
         if not isinstance(payload, dict):
             return

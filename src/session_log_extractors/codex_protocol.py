@@ -45,3 +45,7 @@ PLAN_MODE: Final = "plan"
 ROLE_USER: Final = "user"
 ROLE_ASSISTANT: Final = "assistant"
 PLAN_STEP_PENDING: Final = "pending"
+
+THREAD_SOURCE_GUARDIAN: Final = "guardian_review"
+THREAD_SOURCE_SUBAGENT: Final = "subagent"
+SUBAGENT_GUARDIAN: Final = "guardian"
