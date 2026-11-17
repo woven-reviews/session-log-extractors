@@ -1089,7 +1089,7 @@ def _batch_transcripts(sessions_root: str | None, strict: bool) -> list[Path]:
     if not strict:
         boundary = RepositoryBoundary.discover(cwd)
         return codex_sources.repository_transcripts(root, boundary)
-    return codex_sources.matching_transcripts(root, cwd, strict)
+    return codex_sources.exact_cwd_transcripts(root, cwd)
 
 
 def _extract_all(

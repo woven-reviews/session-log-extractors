@@ -17,7 +17,7 @@ from session_log_extractors.json_types import JsonValue, string_value
 from session_log_extractors.jsonl_sources import load_jsonl_objects, parse_jsonl_objects
 from session_log_extractors.session_selection import (
     RepositoryBoundary,
-    cwd_matches,
+    exact_cwd_match,
     select_recorded_id,
     unique_paths,
 )
@@ -139,13 +139,9 @@ def discover_sessions(root: Path) -> list[CopilotSource]:
     return sessions
 
 
-def matching_sessions(
-    sessions: list[CopilotSource], cwd: Path, strict: bool = False
-) -> list[CopilotSource]:
-    """Preserve legacy start-cwd matching, using resume cwd only when absent."""
-    return [
-        source for source in sessions if cwd_matches(source.session.cwd, cwd, strict)
-    ]
+def exact_cwd_sessions(sessions: list[CopilotSource], cwd: Path) -> list[CopilotSource]:
+    """Match recorded start cwd exactly, using resume cwd only when absent."""
+    return [source for source in sessions if exact_cwd_match(source.session.cwd, cwd)]
 
 
 def repository_sessions(
@@ -166,7 +162,7 @@ def newest_session(
 ) -> CopilotSource | None:
     """Choose the newest repository session, or exact cwd evidence with strict."""
     if strict:
-        candidates = matching_sessions(sessions, cwd, strict=True)
+        candidates = exact_cwd_sessions(sessions, cwd)
     else:
         candidates = repository_sessions(sessions, RepositoryBoundary.discover(cwd))
     return newest_recorded_session(candidates)

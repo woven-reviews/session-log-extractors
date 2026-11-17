@@ -186,28 +186,11 @@ def read_recorded_id(
     return session_id
 
 
-def paths_overlap(path: Path, other: Path) -> bool:
-    """Match either resolved ancestor direction, including equality."""
-    try:
-        path.resolve().relative_to(other.resolve())
-        return True
-    except ValueError:
-        pass
-    try:
-        other.resolve().relative_to(path.resolve())
-        return True
-    except ValueError:
-        return False
-
-
-def cwd_matches(recorded_cwd: str | None, cwd: Path, strict: bool = False) -> bool:
-    """Match a recorded working directory using the requested strictness."""
+def exact_cwd_match(recorded_cwd: str | None, cwd: Path) -> bool:
+    """Match a recorded working directory to the exact invocation directory."""
     if not recorded_cwd:
         return False
-    recorded_path = Path(recorded_cwd).expanduser()
-    if strict:
-        return recorded_path.resolve() == cwd.resolve()
-    return paths_overlap(recorded_path, cwd)
+    return Path(recorded_cwd).expanduser().resolve() == cwd.resolve()
 
 
 def newest(paths: Iterable[Path]) -> Path | None:

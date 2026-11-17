@@ -22,7 +22,7 @@ from session_log_extractors.json_types import JsonValue, parse_json
 from session_log_extractors.jsonl_sources import load_records
 from session_log_extractors.session_selection import (
     RepositoryBoundary,
-    cwd_matches,
+    exact_cwd_match,
     read_recorded_id,
     select_recorded_id,
     unique_paths,
@@ -129,12 +129,12 @@ def session_cwd_from_file(path: Path) -> Optional[str]:
     return None
 
 
-def matching_transcripts(root: Path, cwd: Path, strict: bool = False) -> List[Path]:
-    """Preserve legacy recorded-cwd overlap or exact-current-directory matching."""
+def exact_cwd_transcripts(root: Path, cwd: Path) -> List[Path]:
+    """Select native candidates recorded in exactly the invocation directory."""
     return [
         path
         for path in _automatic_transcripts(root)
-        if cwd_matches(session_cwd_from_file(path), cwd, strict)
+        if exact_cwd_match(session_cwd_from_file(path), cwd)
     ]
 
 
@@ -184,7 +184,7 @@ def select_transcript(
 
     cwd = Path.cwd()
     if strict:
-        files = matching_transcripts(root, cwd, strict=True)
+        files = exact_cwd_transcripts(root, cwd)
     else:
         files = repository_transcripts(root, RepositoryBoundary.discover(cwd))
     picked = newest(files)

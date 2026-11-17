@@ -191,22 +191,24 @@ def test_models_preserve_producer_order_without_configured_or_internal_models(tm
 
 
 @pytest.mark.parametrize(
-    "recorded_cwd, strict, matches",
+    "recorded_cwd, matches",
     [
-        ("/workspace", True, True),
-        ("/workspace/child", True, False),
-        ("/workspace/child", False, True),
-        ("/", False, True),
-        ("/unrelated", False, False),
-        (None, False, False),
+        ("/workspace", True),
+        ("/workspace/child", False),
+        ("/", False),
+        ("/unrelated", False),
+        (None, False),
     ],
 )
-def test_directory_selection(recorded_cwd, strict, matches):
+def test_exact_directory_selection(recorded_cwd, matches):
     session = sources.CopilotSource(
         sources.CopilotSession(Path("unused"), "recorded", recorded_cwd)
     )
-    actual = sources.matching_sessions([session], Path("/workspace"), strict)
-    assert actual == ([session] if matches else [])
+    expected = [session] if matches else []
+
+    actual = sources.exact_cwd_sessions([session], Path("/workspace"))
+
+    assert actual == expected
 
 
 def test_newest_repository_selection_and_deterministic_ties(tmp_path):

@@ -100,7 +100,7 @@ def test_guardian_only_has_no_automatic_match(rollouts, strict):
     root, paths = rollouts
     paths[0].unlink()
     paths[1].unlink()
-    matching = sources.matching_transcripts(root, root.parent, strict=strict)
+    matching = sources.exact_cwd_transcripts(root, root.parent)
     assert matching == []
     with pytest.raises(FileNotFoundError):
         sources.select_transcript(None, None, str(root), strict=strict)
@@ -185,7 +185,7 @@ def test_guardian_context_resolves_all_prompts_and_preserves_evidence(
             "authorship", []
         )
     monkeypatch.undo()
-    assert sources.matching_transcripts(tmp_path, Path(source.cwd)) == []
+    assert sources.exact_cwd_transcripts(tmp_path, Path(source.cwd)) == []
 
 
 @pytest.mark.parametrize("boundary", ["missing", None, False, -1, 0, "78"])
@@ -276,7 +276,7 @@ def test_independent_child_indicators_keep_injections_and_agent_deliveries(
     assert _sources(_message(session, delivery)) == ["other_agent"]
     for event in session["events"]:
         assert "candidate" not in _sources(event)
-    matching = sources.matching_transcripts(tmp_path, Path(source.cwd))
+    matching = sources.exact_cwd_transcripts(tmp_path, Path(source.cwd))
     assert matching == [path]
 
 

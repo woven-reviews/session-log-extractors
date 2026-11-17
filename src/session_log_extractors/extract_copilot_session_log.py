@@ -1270,9 +1270,7 @@ def main(
                 boundary = RepositoryBoundary.discover(Path.cwd())
                 sessions = copilot_sources.repository_sessions(sessions, boundary)
             else:
-                sessions = copilot_sources.matching_sessions(
-                    sessions, Path.cwd(), args.strict
-                )
+                sessions = copilot_sources.exact_cwd_sessions(sessions, Path.cwd())
             return _extract_all(
                 sessions,
                 out,
