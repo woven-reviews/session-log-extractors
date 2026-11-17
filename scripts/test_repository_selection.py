@@ -114,6 +114,7 @@ def test_no_match_never_falls_back_or_writes(tmp_path, checkouts, harness, desti
     assert result.returncode == 1, result.stderr
     assert result.stdout == ""
     assert "no " in result.stderr.lower()
+    assert str(main) in result.stderr
     assert existing.read_text() == "existing export"
     assert _output_names(output) == [existing.name]
 
@@ -142,7 +143,7 @@ def test_repository_requires_git_boundary(tmp_path, harness, batch):
 
     assert result.returncode == 1
     assert result.stdout == ""
-    assert "Git repository" in result.stderr
+    assert result.stderr.startswith("error: cannot establish Git repository boundary")
     assert not output.exists()
 
 

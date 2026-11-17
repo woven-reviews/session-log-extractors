@@ -145,7 +145,6 @@ from session_log_extractors.session_model import (
 from session_log_extractors.session_output import (
     unique_identifier as _unique_identifier,
 )
-from session_log_extractors.session_selection import RepositoryBoundary
 from session_log_extractors.tool_inputs.codex import input_schema as codex_input_schema
 
 _IMAGE_EXT = {
@@ -1086,10 +1085,10 @@ def _batch_transcripts(sessions_root: str | None, strict: bool) -> list[Path]:
         else codex_sources.CODEX_SESSIONS_ROOT
     )
     cwd = Path.cwd()
-    if not strict:
-        boundary = RepositoryBoundary.discover(cwd)
-        return codex_sources.repository_transcripts(root, boundary)
-    return codex_sources.exact_cwd_transcripts(root, cwd)
+    files = codex_sources.scoped_transcripts(root, cwd, strict)
+    if not files:
+        raise codex_sources.no_scoped_transcripts(root, cwd, strict)
+    return files
 
 
 def _extract_all(

@@ -116,7 +116,10 @@ from session_log_extractors.session_model import (
 from session_log_extractors.session_output import (
     unique_identifier as _unique_identifier,
 )
-from session_log_extractors.session_selection import RepositoryBoundary
+from session_log_extractors.session_selection import (
+    RepositoryBoundary,
+    RepositoryBoundaryError,
+)
 from session_log_extractors.tool_inputs.copilot import input_schema
 
 _COPILOT_IMAGE_REF = re.compile(r"\[image:\s*([^\]]+?)\s*\]", re.IGNORECASE)
@@ -1278,6 +1281,9 @@ def main(
                 project_root=project_root,
             )
         return _extract_selected(sessions, args, project_root)
+    except RepositoryBoundaryError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     except (OSError, ValueError, TypeError) as exc:
         print(f"error: {root}: {exc}", file=sys.stderr)
         return 1

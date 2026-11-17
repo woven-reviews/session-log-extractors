@@ -269,11 +269,10 @@ def _strict_transcripts(project_dir: Optional[str], cwd: Path) -> list[Path]:
     project = resolve_project_dir(project_dir, cwd, strict=True)
     if project is None or not project.is_dir():
         where = project if project is not None else PROJECTS_ROOT
-        print(f"error: no project transcript dir found: {where}", file=sys.stderr)
-        return []
+        raise FileNotFoundError(f"no project transcript dir found: {where}")
     files = _jsonl_files(project)
     if not files:
-        print(f"error: no .jsonl transcripts in {project}", file=sys.stderr)
+        raise FileNotFoundError(f"no .jsonl transcripts in {project}")
     return files
 
 

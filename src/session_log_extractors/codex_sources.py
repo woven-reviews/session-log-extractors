@@ -183,15 +183,23 @@ def select_transcript(
         return _select_prefix(_jsonl_files(root), selector)
 
     cwd = Path.cwd()
+    picked = newest(scoped_transcripts(root, cwd, strict))
+    if picked is None:
+        raise no_scoped_transcripts(root, cwd, strict)
+    return picked
+
+
+def scoped_transcripts(root: Path, cwd: Path, strict: bool) -> List[Path]:
+    """Select the repository's sessions, or exact-cwd sessions with strict."""
     if strict:
-        files = exact_cwd_transcripts(root, cwd)
-    else:
-        files = repository_transcripts(root, RepositoryBoundary.discover(cwd))
-    picked = newest(files)
-    if picked is not None:
-        return picked
+        return exact_cwd_transcripts(root, cwd)
+    return repository_transcripts(root, RepositoryBoundary.discover(cwd))
+
+
+def no_scoped_transcripts(root: Path, cwd: Path, strict: bool) -> FileNotFoundError:
+    """Name the invocation directory, sessions root and scope that matched nothing."""
     mode = " (--strict: exact cwd match only)" if strict else " in Git repository"
-    raise FileNotFoundError(f"no Codex transcript for {cwd} under {root}{mode}")
+    return FileNotFoundError(f"no Codex transcript for {cwd} under {root}{mode}")
 
 
 class _CodexSelectionIdentity:

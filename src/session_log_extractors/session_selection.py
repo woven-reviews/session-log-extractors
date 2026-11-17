@@ -21,6 +21,10 @@ _GIT_PRUNABLE_FIELD = "prunable"
 _GIT_ENTRY = ".git"
 
 
+class RepositoryBoundaryError(FileNotFoundError):
+    """Git could not establish the repository that scopes automatic selection."""
+
+
 def _source_identity(path: Path) -> Path:
     """Resolve aliases; an unresolvable link remains its own unreadable source."""
     try:
@@ -65,7 +69,7 @@ def _git_output(cwd: Path, *args: str) -> str:
             exc.stderr, str
         ):
             detail = exc.stderr.strip() or detail
-        raise FileNotFoundError(
+        raise RepositoryBoundaryError(
             f"cannot establish Git repository boundary from {cwd}: {detail}"
         ) from exc
     return result.stdout
@@ -117,7 +121,9 @@ class RepositoryBoundary:
             if root not in roots:
                 roots.append(root)
         if not roots:
-            raise FileNotFoundError(f"no available Git repository checkouts from {cwd}")
+            raise RepositoryBoundaryError(
+                f"no available Git repository checkouts from {cwd}"
+            )
         return cls(tuple(roots))
 
     def matches(self, recorded_cwd: str | None, source: Path | None = None) -> bool:

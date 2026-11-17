@@ -1289,8 +1289,9 @@ def test_extract_all_reports_error_for_missing_project_dir():
     err = io.StringIO()
     with contextlib.redirect_stderr(err):
         rc = main(["--all", "--strict", "--project-dir", "/no/such/project/dir"])
+    stderr = err.getvalue()
     assert rc == 1
-    assert "no project transcript dir found" in err.getvalue()
+    assert stderr == "error: no project transcript dir found: /no/such/project/dir\n"
 
 
 def test_extract_all_reports_error_for_no_jsonl_files():
@@ -1298,8 +1299,9 @@ def test_extract_all_reports_error_for_no_jsonl_files():
     err = io.StringIO()
     with contextlib.redirect_stderr(err):
         rc = main(["--all", "--strict", "--project-dir", str(proj)])
+    stderr = err.getvalue()
     assert rc == 1
-    assert "no .jsonl transcripts" in err.getvalue()
+    assert stderr == f"error: no .jsonl transcripts in {proj}\n"
 
 
 def test_extract_all_skips_unparseable_file():
