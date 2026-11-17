@@ -6,7 +6,8 @@ from copy import deepcopy
 import pytest
 from claude_fixture import TRANSCRIPT
 from codex_fixture import TRANSCRIPT as CODEX_TRANSCRIPT
-from copilot_fixture import native_records, native_source
+from copilot_fixture import ROOT as COPILOT_ROOT
+from copilot_fixture import native_records
 
 from session_log_extractors import claude_protocol, codex_protocol, copilot_protocol
 from session_log_extractors.claude_sources import read_source
@@ -286,10 +287,12 @@ def test_unlinked_definition_remains_content_without_creating_an_invocation():
 
 
 def test_native_database_file_activity_remains_internal_without_a_call_association():
-    source = native_source()
-    assert source.files, "Capture must supply database file activity"
+    # Historical rows exercise the shared exporter independently of extraction.
+    captured = json.loads((COPILOT_ROOT / "native" / "session-store.json").read_text())
+    file_rows = captured["session_files"]
+    assert file_rows, "Capture must supply database file activity"
     actions = []
-    for row in source.files:
+    for row in file_rows:
         actions.append(
             FileAction(
                 ref=f"a{len(actions)}",
@@ -304,7 +307,7 @@ def test_native_database_file_activity_remains_internal_without_a_call_associati
     # Project only the separate DB evidence; a turn index is not a call ID.
     session = Session(
         harness="copilot",
-        session_id=source.session["id"],
+        session_id=captured["sessions"][0]["id"],
         events=[],
         file_actions=actions,
     )
@@ -315,7 +318,7 @@ def test_native_database_file_activity_remains_internal_without_a_call_associati
     assert session == original
     assert exported["events"] == []
     assert "file_actions" not in exported
-    for action, row in zip(session["file_actions"], source.files, strict=True):
+    for action, row in zip(session["file_actions"], file_rows, strict=True):
         assert action["activity"] is None
         assert action["evidence"][0]["value"] == row
 

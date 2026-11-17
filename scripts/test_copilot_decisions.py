@@ -176,8 +176,6 @@ def test_unmatched_plan_responses_remain_internal_without_guessed_owners():
     responses = _plan_responses(source)
     # Keep only real responses; neither database turns nor unrelated calls prove ownership.
     source.state_records = responses
-    source.turns = []
-    source.files = []
     session = interpret_source(source)
     assert session is not None
     assert len(session["plan_decisions"]) == len(responses)

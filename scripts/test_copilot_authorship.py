@@ -369,23 +369,6 @@ def test_missing_record_data_has_no_invented_text_or_submission():
     assert actual_submitted_text is None
 
 
-def test_database_fallback_keeps_literal_text_without_inferred_authorship():
-    source = native_source()
-    # Retain one captured DB turn while simulating absence of native state records.
-    source.state_records = []
-    source.turns = [source.turns[0]]
-    source.files = []
-    original = "  🙂\n<system-reminder>literal DB input</system-reminder>\n\n\n "
-    source.turns[0]["user_message"] = original
-
-    session = copilot.interpret_source(source)
-    message = session["events"][0]
-
-    assert message["text"] == original
-    assert "authorship" not in message
-    assert "submitted" not in message
-
-
 def test_native_assistant_prose_is_harness_with_recorded_model_provenance():
     source = native_source()
     session = copilot.interpret_source(source)

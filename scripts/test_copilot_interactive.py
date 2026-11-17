@@ -7,7 +7,6 @@ from copy import deepcopy
 import pytest
 from copilot_fixture import (
     ASSETS,
-    DATABASE,
     SESSION_ID,
     STATE_ROOT,
     native_source,
@@ -294,8 +293,6 @@ def test_native_cli_stdout_and_file_agree(tmp_path, monkeypatch, capsys):
     output = tmp_path / "session.json"
     common = [
         SESSION_ID,
-        "--db",
-        str(DATABASE),
         "--tool-result-bytes",
         "17",
         "--output",

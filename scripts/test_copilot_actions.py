@@ -141,24 +141,6 @@ def test_native_slash_invocation_enriches_one_occurrence_with_linked_definition(
     assert len(session["invocations"]) == 3
 
 
-def test_database_file_facts_remain_unassociated_without_confirming_changes():
-    source = native_source()
-    source.state_records = []
-    session = interpret_source(source)
-    assert session is not None
-
-    assert len(session["file_actions"]) == len(source.files)
-    for action, row in zip(session["file_actions"], source.files, strict=True):
-        assert action["action_name"] == row["tool_name"]
-        assert action["path"] == row["file_path"]
-        assert action["activity"] is None
-        assert action["change"] is None
-        assert action["execution_outcome"] == "unknown"
-    for message in export_session(session, 0)["events"]:
-        for call in message.get("tool_calls", []):
-            assert "file_actions" not in call
-
-
 def _tool_source(name):
     """Narrow a native occurrence without changing its recorded tool payloads."""
     source = native_source()
@@ -180,8 +162,6 @@ def _tool_source(name):
         if record["data"].get("toolCallId") == request["toolCallId"]:
             records.append(record)
     source.state_records = records
-    source.files = []
-    source.turns = []
     return source, request
 
 
@@ -375,14 +355,13 @@ def test_enrichment_preserves_all_existing_json_and_model_content(monkeypatch):
     assert exported_enriched == exported_baseline
 
 
-def test_database_only_facts_survive_without_conversation():
+def test_absent_native_activity_does_not_invent_file_facts():
     source = native_source()
     source.state_records = []
-    source.turns = []
     session = interpret_source(source)
     assert session is not None
     assert session["events"] == []
-    assert session["file_actions"]
+    assert session["file_actions"] == []
 
 
 def test_malformed_call_fields_preserve_unknown_path_and_full_input():
@@ -428,8 +407,6 @@ def _slash_source():
             selected.append(record)
     assert len(selected) == 1, "Capture must supply the operator's slash submission"
     source.state_records = selected
-    source.files = []
-    source.turns = []
     return source, selected[0]
 
 
@@ -485,8 +462,6 @@ def test_unlinked_native_invocations_preserve_definitions_without_loading(conten
     else:
         record["data"]["content"] = content
     source.state_records = [record]
-    source.files = []
-    source.turns = []
     session = interpret_source(source)
     assert session is not None
 
@@ -540,21 +515,6 @@ def test_repeated_slash_submissions_have_separate_invocations():
     assert first["ref"] != second["ref"]
     assert first["slash_text"] == second["slash_text"]
     assert first["activity"]["message_i"] != second["activity"]["message_i"]
-
-
-def test_database_facts_preserve_recorded_empty_names_and_paths():
-    source = native_source()
-    source.state_records = []
-    source.turns = []
-    source.files = [source.files[0]]
-    source.files[0]["tool_name"] = ""
-    source.files[0]["file_path"] = ""
-    session = interpret_source(source)
-    assert session is not None
-
-    (action,) = session["file_actions"]
-    assert action["action_name"] == ""
-    assert action["path"] == ""
 
 
 @pytest.mark.parametrize("separator", [" ", "\t", "\n"])

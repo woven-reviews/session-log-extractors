@@ -47,8 +47,6 @@ def _question_source():
     response = _human_response(source)["data"]["response"]
     response["content"] = {"choice": response["content"][name]}
     response["requestedSchema"]["properties"] = {"choice": field}
-    source.turns = []
-    source.files = []
     return source
 
 
